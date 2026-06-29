@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 
 APP_TITLE = "Clarté360 - Roue des valeurs"
-APP_VERSION = "V1.1"
+APP_VERSION = "V2.0"
 BRAND_COLOR = "#008080"
 LOGO_PATH = Path("assets/logo_clarte360.png")
 DOMAINES = ["Personnel", "Travail", "Famille", "Social", "Couple / intimité"]
@@ -61,21 +61,32 @@ def update_timestamp():
 
 
 def header():
-    col_logo, col_title = st.columns([0.09, 0.91])
+    st.markdown("<div class='brand-header'>", unsafe_allow_html=True)
+    col_logo, col_title = st.columns([0.13, 0.87])
     with col_logo:
         if LOGO_PATH.exists():
-            st.image(str(LOGO_PATH), width=58)
+            st.image(str(LOGO_PATH), width=86)
         else:
             st.write("🧭")
     with col_title:
         st.markdown(f"# {APP_TITLE}")
         st.markdown(f"<div class='small-note'>Application {APP_VERSION} - aide neutre à la construction de la roue des valeurs</div>", unsafe_allow_html=True)
-    st.write("")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def clean_filename(text):
     text = (text or "beneficiaire").strip().replace(" ", "_")
     return "".join(c for c in text if c.isalnum() or c in "_-.")
+
+
+def export_basename(data, outil="RoueValeurs"):
+    """Norme Clarté360 : AAAAMMJJ_HHMMSS_NOM_PRENOM_NomOutil.extension"""
+    b = data.get("beneficiaire", {})
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nom = clean_filename((b.get("nom") or "NOM").upper())
+    prenom_raw = b.get("prenom") or "PRENOM"
+    prenom = clean_filename(prenom_raw[:1].upper() + prenom_raw[1:]) if prenom_raw else "PRENOM"
+    return f"{timestamp}_{nom}_{prenom}_{outil}"
 
 
 def moyenne_valeur(valeur):
@@ -257,8 +268,19 @@ def sidebar():
 
 
 def page_beneficiaire():
-    st.markdown("## 1. Coordonnées du bénéficiaire")
-    st.markdown("<div class='rule-box'>Seuls le prénom, le nom et la date de réalisation sont nécessaires en V1.1. Le mail n'est pas demandé afin de limiter les données personnelles collectées.</div>", unsafe_allow_html=True)
+    st.markdown("## 1. Identification du bénéficiaire")
+    st.markdown(
+        """
+        <div class='privacy-box'>
+        🔒 <strong>Confidentialité et maîtrise de vos données</strong><br>
+        Aucune donnée personnelle ou sensible saisie dans cette application n'est sauvegardée sur un serveur Clarté360 ni transmise à un tiers.
+        Vous restez le seul maître à bord de vos informations. Si votre travail n'est pas terminé et que vous souhaitez le reprendre plus tard,
+        vous devez obligatoirement télécharger le fichier <strong>JSON</strong> : c'est le seul fichier qui permet de retrouver et modifier votre questionnaire.
+        Cette absence de sauvegarde serveur est volontaire et répond à une logique de protection des données et de respect du RGPD.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.write("")
     b = st.session_state.data["beneficiaire"]
     c1, c2, c3 = st.columns(3)
@@ -359,7 +381,7 @@ def page_roue():
     png_bytes = fig_to_png_bytes(fig)
     plt.close(fig)
     b = st.session_state.data["beneficiaire"]
-    base = clean_filename(f"roue_valeurs_{b.get('prenom','')}_{b.get('nom','')}_{b.get('date_realisation','')}")
+    base = export_basename(st.session_state.data)
     c1, c2 = st.columns(2)
     with c1:
         st.download_button("Télécharger la roue en PNG", data=png_bytes, file_name=f"{base}.png", mime="image/png")
@@ -372,7 +394,7 @@ def page_export():
     st.markdown("## 5. Export / Import")
     data = st.session_state.data
     b = data["beneficiaire"]
-    base = clean_filename(f"roue_valeurs_{b.get('prenom','')}_{b.get('nom','')}_{b.get('date_realisation','')}")
+    base = export_basename(st.session_state.data)
     json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     rows = build_rows(data)
     csv_buf = io.StringIO()

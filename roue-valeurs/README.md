@@ -1,50 +1,30 @@
-# Clarte360 - Roue des valeurs V1.1
+# Clarté360 - Roue des valeurs V2.0
 
-Application Streamlit locale pour aider un beneficiaire ou un coache a construire sa roue des valeurs, sans interpretation automatique.
+Application Streamlit d'aide neutre à la construction de la roue des valeurs.
 
-## Installation
+## V2.0
 
-Si les dependances ont deja ete installees une fois, il n'est pas necessaire de relancer cette commande.
-
-```bash
-pip install -r requirements.txt
-```
-
-## Lancement
-
-Double-cliquer sur :
+- En-tête Clarté360 avec logo.
+- Couleur principale Clarté360 : `#008080`.
+- Message de confidentialité RGPD renforcé.
+- Aucune sauvegarde serveur des données saisies.
+- Export JSON obligatoire pour reprendre un travail non terminé.
+- Nommage automatique des exports selon la norme :
 
 ```text
-lancer_roue_valeurs.bat
+AAAAMMJJ_HHMMSS_NOM_PRENOM_RoueValeurs.extension
 ```
 
-ou lancer manuellement :
+## Lancement local
 
 ```bash
 python -m streamlit run app.py
 ```
 
-## Donnees demandees
+## Déploiement Streamlit
 
-- Prenom du beneficiaire
-- Nom du beneficiaire
-- Date de realisation automatique, modifiable si besoin
+Chemin du fichier principal :
 
-Le mail n'est pas demande en V1.1, car il n'est pas utile pour construire la roue et limite les donnees personnelles collectees.
-
-## Fonctionnalites
-
-- Creation d'un questionnaire vierge
-- Import d'un JSON existant pour modifier ou dupliquer une roue
-- Nombre de valeurs libre
-- Couleur personnalisable par valeur
-- 5 domaines de vie : Personnel, Travail, Famille, Social, Couple / intimite
-- Action ou reaction concrete obligatoire pour justifier la cotation
-- Si aucun exemple concret n'est donne, la cote maximale recommande est 2/10
-- Une valeur peut etre cotee a 0 et ne sera alors pas coloriee sur la roue
-- Export JSON, CSV, PNG et PDF
-
-## Important
-
-Le lien `localhost:8501` fonctionne uniquement sur l'ordinateur qui lance l'application.
-Pour une version permanente accessible a distance, il faudra deployer l'application sur un hebergement type Streamlit Cloud, OVH, Render ou serveur Clarte360.
+```text
+roue-valeurs/app.py
+```
