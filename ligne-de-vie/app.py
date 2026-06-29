@@ -20,7 +20,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 BRAND = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
@@ -32,7 +32,10 @@ st.markdown(
     f"""
     <style>
     .main .block-container {{ padding-top: 1.2rem; max-width: 1180px; }}
-    h1, h2, h3 {{ color: {BRAND}; }}
+    h1, h2, h3,
+    [data-testid="stMarkdownContainer"] h1,
+    [data-testid="stMarkdownContainer"] h2,
+    [data-testid="stMarkdownContainer"] h3 {{ color: {BRAND} !important; }}
     .c360-card {{
         border: 1px solid #dbe7e7; border-radius: 14px; padding: 1rem 1.15rem;
         background: #f7fbfb; margin: 0.6rem 0 1rem 0;
@@ -272,6 +275,8 @@ def make_pdf_bytes(fig_png: bytes | None = None) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=1.2*cm, leftMargin=1.2*cm, topMargin=0.8*cm, bottomMargin=0.8*cm)
     styles = getSampleStyleSheet()
+    styles["Title"].textColor = colors.HexColor(BRAND)
+    styles["Heading2"].textColor = colors.HexColor(BRAND)
     story = []
     if LOGO_PATH.exists():
         story.append(Image(str(LOGO_PATH), width=3.0*cm, height=1.1*cm, kind="proportional"))

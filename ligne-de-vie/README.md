@@ -1,8 +1,8 @@
-# Clarté360 - Ligne de vie V3.0
+# Clarté360 - Ligne de vie V3.1
 
 Application Streamlit pour construire une ligne de vie dans un cadre coaching / bilan de compétences.
 
-## V3.0
+## V3.1
 
 - Points de la ligne de vie reliés automatiquement.
 - Placement intelligent des noms courts pour limiter les chevauchements.
@@ -24,3 +24,7 @@ Application Streamlit pour construire une ligne de vie dans un cadre coaching / 
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+
+## V3.1
+- Restauration et renforcement du code couleur Clarté360 (#008080) sur les titres Streamlit et PDF.
