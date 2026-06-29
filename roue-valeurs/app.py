@@ -13,9 +13,10 @@ import pandas as pd
 import streamlit as st
 
 APP_TITLE = "Clarté360 - Roue des valeurs"
-APP_VERSION = "V2.0"
+APP_VERSION = "V2.1"
 BRAND_COLOR = "#008080"
-LOGO_PATH = Path("assets/logo_clarte360.png")
+BASE_DIR = Path(__file__).resolve().parent
+LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
 DOMAINES = ["Personnel", "Travail", "Famille", "Social", "Couple / intimité"]
 DEFAULT_COLORS = [
     "#008080", "#F2C94C", "#EB5757", "#2F80ED", "#9B51E0", "#27AE60",
@@ -28,11 +29,14 @@ st.markdown(
     f"""
     <style>
         .main .block-container {{max-width: 1180px; padding-top: 2rem;}}
-        h1, h2, h3 {{color: {BRAND_COLOR};}}
-        .stButton button {{border-radius: 10px;}}
-        .small-note {{color:#6B7280; font-size:0.95rem;}}
-        .rule-box {{background:#F1F8F8; border-left:5px solid {BRAND_COLOR}; padding:16px; border-radius:8px;}}
-        .warn-box {{background:#FFF7E6; border-left:5px solid #F2C94C; padding:12px; border-radius:8px;}}
+        h1, h2, h3 {{color: {BRAND_COLOR} !important;}}
+        .brand-header {{margin-bottom: 1.25rem; padding-bottom: 0.75rem; border-bottom: 1px solid #E5E7EB;}}
+        .small-note {{color:#6B7280; font-size:0.95rem; margin-top: -0.6rem;}}
+        .privacy-box {{background:#F1F8F8; border-left:6px solid {BRAND_COLOR}; padding:16px 18px; border-radius:10px; line-height:1.55;}}
+        .rule-box {{background:#F1F8F8; border-left:5px solid {BRAND_COLOR}; padding:16px; border-radius:8px; line-height:1.5;}}
+        .warn-box {{background:#FFF7E6; border-left:5px solid #F2C94C; padding:12px; border-radius:8px; line-height:1.5;}}
+        div.stButton > button:first-child {{border-radius:10px; border:1px solid {BRAND_COLOR}; color:{BRAND_COLOR};}}
+        div.stDownloadButton > button:first-child {{border-radius:10px; border:1px solid {BRAND_COLOR}; color:{BRAND_COLOR};}}
     </style>
     """,
     unsafe_allow_html=True,
@@ -62,12 +66,12 @@ def update_timestamp():
 
 def header():
     st.markdown("<div class='brand-header'>", unsafe_allow_html=True)
-    col_logo, col_title = st.columns([0.13, 0.87])
+    col_logo, col_title = st.columns([0.16, 0.84])
     with col_logo:
         if LOGO_PATH.exists():
-            st.image(str(LOGO_PATH), width=86)
+            st.image(str(LOGO_PATH), width=112)
         else:
-            st.write("🧭")
+            st.error("Logo Clarté360 introuvable : assets/logo_clarte360.png")
     with col_title:
         st.markdown(f"# {APP_TITLE}")
         st.markdown(f"<div class='small-note'>Application {APP_VERSION} - aide neutre à la construction de la roue des valeurs</div>", unsafe_allow_html=True)

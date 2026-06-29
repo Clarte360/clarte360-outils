@@ -1,30 +1,17 @@
-# Clarté360 - Roue des valeurs V2.0
+# Clarté360 - Roue des valeurs V2.1
 
-Application Streamlit d'aide neutre à la construction de la roue des valeurs.
+## Corrections V2.1
 
-## V2.0
+- Correction robuste du chemin du logo avec `Path(__file__).resolve().parent`.
+- Affichage du vrai logo Clarté360 dans l’en-tête.
+- Application renforcée de la couleur officielle Clarté360 `#008080` sur les titres et boutons.
+- Bandeau RGPD/confidentialité conservé.
+- Exports horodatés selon la norme : `AAAAMMJJ_HHMMSS_NOM_PRENOM_RoueValeurs.extension`.
 
-- En-tête Clarté360 avec logo.
-- Couleur principale Clarté360 : `#008080`.
-- Message de confidentialité RGPD renforcé.
-- Aucune sauvegarde serveur des données saisies.
-- Export JSON obligatoire pour reprendre un travail non terminé.
-- Nommage automatique des exports selon la norme :
+## Déploiement
 
-```text
-AAAAMMJJ_HHMMSS_NOM_PRENOM_RoueValeurs.extension
-```
+Remplacer le contenu du dossier GitHub `roue-valeurs` par les fichiers de cette version, puis :
 
-## Lancement local
-
-```bash
-python -m streamlit run app.py
-```
-
-## Déploiement Streamlit
-
-Chemin du fichier principal :
-
-```text
-roue-valeurs/app.py
-```
+1. Commit : `V2.1 - Correction logo et charte Clarté360`
+2. Push origin
+3. Streamlit redéploie automatiquement.
