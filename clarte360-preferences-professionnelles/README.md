@@ -1,54 +1,42 @@
 # Clarté360 - Préférences professionnelles
 
-Application Streamlit destinée au bénéficiaire.
+Version 1.9.0 - online avec code d'accès obligatoire.
 
-## Lancement local
+## Fonctionnement
 
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+1. Le bénéficiaire renseigne prénom, nom et email.
+2. L'application envoie un code d'accès au bénéficiaire.
+3. L'application envoie aussi une notification à contact@clarte360.com indiquant que cette personne va réaliser le test Préférences professionnelles.
+4. Le questionnaire ne démarre qu'après saisie du code correct.
+5. À la question 60, le JSON final est généré.
+6. Le JSON final est envoyé automatiquement à Clarté360 si les Secrets SMTP sont configurés.
+7. Le bénéficiaire peut télécharger son JSON final et son rapport PDF.
 
-En local, si les emails ne sont pas configurés, l'application affiche le code d'accès à l'écran pour les tests.
+## Secrets Streamlit Cloud
 
-## Déploiement Streamlit Cloud
-
-1. Déposer ce dossier sur GitHub.
-2. Créer une application Streamlit Cloud en pointant vers `app.py`.
-3. Dans Streamlit Cloud : `Settings > Secrets`, coller :
+Dans Streamlit Cloud > Settings > Secrets, renseigner :
 
 ```toml
 [email]
 smtp_server = "ssl0.ovh.net"
 smtp_port = 465
 smtp_user = "contact@clarte360.com"
-smtp_password = "REMPLACER_PAR_LE_MOT_DE_PASSE"
+smtp_password = "VOTRE_MOT_DE_PASSE"
 from_email = "contact@clarte360.com"
 to_email = "contact@clarte360.com"
 ```
 
-Le vrai mot de passe ne doit jamais être mis dans GitHub.
+Ne jamais mettre le vrai mot de passe dans GitHub.
 
 ## Questionnaire
 
-Le questionnaire officiel est dans :
+Le questionnaire est piloté par :
 
-`data/questions_preferences_professionnelles_v1.xlsx`
+- `data/questions_preferences_professionnelles_v1.xlsx`
+- `data/questions_preferences_professionnelles_v1.json`
 
-Il n'est pas modifiable depuis l'interface bénéficiaire. Pour publier une nouvelle version :
+Le bénéficiaire ne peut pas modifier le questionnaire.
 
-1. Modifier le fichier Excel dans `data/`.
-2. Vérifier que les 60 questions actives sont conformes.
-3. Commit/push sur GitHub.
-4. Streamlit Cloud redéploiera l'application.
+## Reprise
 
-## Fonctionnement bénéficiaire
-
-- Prénom, nom et email obligatoires.
-- Un code d'accès est envoyé au bénéficiaire.
-- Clarté360 reçoit une notification de génération du code.
-- Le questionnaire se déroule sans retour arrière.
-- Le bénéficiaire peut interrompre la passation et télécharger un JSON de sauvegarde.
-- À la reprise, l'application reprend automatiquement à la première question non répondue.
-- À la fin : génération du JSON final et du PDF.
-- Si SMTP configuré : transmission automatique du JSON final à `contact@clarte360.com`.
+Le bénéficiaire peut interrompre la passation et télécharger un JSON de sauvegarde. À la reprise, l'ordre initial des questions est conservé et l'application reprend à la première question non répondue.

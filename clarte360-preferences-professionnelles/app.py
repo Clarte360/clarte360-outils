@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.9.0"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -214,8 +214,8 @@ def restore_from_progress(payload: dict):
 def reset_all():
     for key in [
         "session_id", "passation_id", "question_order", "option_orders", "answers", "current_index",
-        "started_at", "beneficiaire", "test_started", "email_sent", "pending_beneficiaire",
-        "verification_code", "code_sent", "code_status"
+        "started_at", "beneficiaire", "test_started", "email_sent", "start_email_sent",
+        "pending_beneficiaire", "access_code", "code_sent", "code_message", "code_verified"
     ]:
         st.session_state.pop(key, None)
     st.rerun()
@@ -290,80 +290,123 @@ def questionnaire_checksum() -> str:
         return "indisponible"
 
 
-def generate_verification_code() -> str:
-    return str(random.randint(100000, 999999))
+def get_email_config() -> dict | None:
+    """Lit la configuration SMTP depuis Streamlit Secrets.
 
-
-def get_email_config():
+    Aucun mot de passe ne doit être stocké dans GitHub.
+    En production Streamlit Cloud, les valeurs sont à renseigner dans Settings > Secrets.
+    """
     try:
-        cfg = st.secrets.get("email", None)
+        cfg = st.secrets.get("email", {})
+        required = ["smtp_server", "smtp_port", "smtp_user", "smtp_password", "from_email", "to_email"]
+        if not cfg or any(not str(cfg.get(k, "")).strip() for k in required):
+            return None
+        return {k: cfg.get(k) for k in required}
     except Exception:
         return None
-    return cfg
 
 
 def send_email(to_email: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> tuple[bool, str]:
     cfg = get_email_config()
-    if not cfg:
-        return False, "Email non configuré dans Streamlit Secrets."
-    smtp_host = cfg.get("smtp_server") or cfg.get("smtp_host")
-    smtp_port = int(cfg.get("smtp_port", 465))
-    smtp_user = cfg.get("smtp_user")
-    smtp_password = cfg.get("smtp_password")
-    from_email = cfg.get("from_email", smtp_user)
-    if not all([smtp_host, smtp_port, smtp_user, smtp_password, from_email]):
-        return False, "Configuration SMTP incomplète."
+    if cfg is None:
+        return False, "SMTP non configuré. Aucun email n'a été envoyé."
 
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = from_email
-    msg["To"] = to_email
-    msg.set_content(body)
-    if attachment is not None and attachment_name:
-        msg.add_attachment(attachment, maintype="application", subtype="json", filename=attachment_name)
     try:
-        # Port 465 : SSL direct. Port 587 : STARTTLS.
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=20) as smtp:
-                smtp.login(smtp_user, smtp_password)
+        msg = EmailMessage()
+        msg["From"] = cfg["from_email"]
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg.set_content(body)
+        if attachment is not None and attachment_name:
+            msg.add_attachment(attachment, maintype="application", subtype="json", filename=attachment_name)
+
+        port = int(cfg["smtp_port"])
+        server = str(cfg["smtp_server"])
+        user = str(cfg["smtp_user"])
+        password = str(cfg["smtp_password"])
+
+        if port == 465:
+            with smtplib.SMTP_SSL(server, port, timeout=20) as smtp:
+                smtp.login(user, password)
                 smtp.send_message(msg)
         else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as smtp:
-                if bool(cfg.get("use_tls", True)):
-                    smtp.starttls()
-                smtp.login(smtp_user, smtp_password)
+            with smtplib.SMTP(server, port, timeout=20) as smtp:
+                smtp.starttls()
+                smtp.login(user, password)
                 smtp.send_message(msg)
         return True, "Email envoyé."
     except Exception as exc:
-        return False, f"Envoi email impossible : {exc}"
+        return False, f"Erreur d'envoi email : {exc}"
 
 
-def send_access_code(beneficiaire: dict, code: str) -> tuple[bool, str]:
-    email = beneficiaire.get("email", "").strip()
+def generate_access_code() -> str:
+    return f"{random.randint(100000, 999999)}"
+
+
+def send_access_code_email(beneficiaire: dict, access_code: str) -> tuple[bool, str]:
+    """Envoie le code au bénéficiaire ET une notification à Clarté360.
+
+    Le démarrage du questionnaire est bloqué si l'un des deux envois échoue.
+    Cela garantit que Clarté360 est informé qu'une personne va réaliser le test.
+    """
+    cfg = get_email_config()
+    if cfg is None:
+        return False, "SMTP non configuré : impossible d'envoyer le code d'accès. Configurez les Secrets Streamlit."
+
     prenom = beneficiaire.get("prenom", "")
     nom = beneficiaire.get("nom", "")
-    if not email:
-        return False, "Adresse email manquante."
-    subject_user = "Votre code Clarté360 - Préférences professionnelles"
+    email = beneficiaire.get("email", "")
+    admin_to = cfg.get("to_email", FINAL_EMAIL_TO) if cfg else FINAL_EMAIL_TO
+    now_txt = datetime.now().isoformat(timespec="seconds")
+
+    # 1) Notification Clarté360 : une personne va faire le test.
+    subject_admin = "Clarté360 - Nouveau code d'accès Préférences professionnelles"
+    body_admin = (
+        "Une personne vient de demander un code d'accès pour réaliser l'outil Clarté360 - Préférences professionnelles.\n\n"
+        f"Bénéficiaire : {prenom} {nom}\n"
+        f"Email : {email}\n"
+        f"Date de demande : {now_txt}\n\n"
+        "Information : le JSON final sera transmis automatiquement à Clarté360 lorsque la question 60 sera validée.\n\n"
+        "Message automatique Clarté360."
+    )
+    ok_admin, msg_admin = send_email(admin_to, subject_admin, body_admin)
+    if not ok_admin:
+        return False, "Notification Clarté360 non envoyée : " + msg_admin
+
+    # 2) Code d'accès au bénéficiaire.
+    subject_user = "Votre code d'accès Clarté360"
     body_user = (
         f"Bonjour {prenom},\n\n"
-        f"Votre code d'accès au questionnaire Clarté360 - Préférences professionnelles est : {code}\n\n"
-        "Ce code vous permet de démarrer votre passation.\n\n"
+        "Voici votre code d'accès pour démarrer le questionnaire Clarté360 - Préférences professionnelles :\n\n"
+        f"{access_code}\n\n"
+        "Ce code permet de sécuriser le démarrage de votre passation.\n\n"
+        "À la fin du questionnaire, vous pourrez télécharger votre rapport PDF et votre fichier JSON.\n\n"
         "Clarté360"
     )
     ok_user, msg_user = send_email(email, subject_user, body_user)
-    # Notification interne à Clarté360. Non bloquante si l'envoi au bénéficiaire a réussi.
-    subject_admin = "Clarté360 - Code d'accès généré"
+    if not ok_user:
+        return False, "Code bénéficiaire non envoyé : " + msg_user
+
+    return True, "Code envoyé au bénéficiaire et notification transmise à Clarté360."
+
+def send_start_notification(beneficiaire: dict, passation_id: str) -> tuple[bool, str]:
+    """Notification interne optionnelle au démarrage de la passation.
+
+    En local ou sans Streamlit Secrets, la fonction retourne un message non bloquant.
+    """
+    prenom = beneficiaire.get("prenom", "")
+    nom = beneficiaire.get("nom", "")
+    email = beneficiaire.get("email", "")
+    subject_admin = "Clarté360 - Nouvelle passation démarrée"
     body_admin = (
-        "Un code d'accès vient d'être généré pour l'outil Préférences professionnelles.\n\n"
+        "Une nouvelle passation vient de démarrer pour l'outil Préférences professionnelles.\n\n"
         f"Bénéficiaire : {prenom} {nom}\n"
         f"Email : {email}\n"
-        f"Code : {code}\n"
-        f"Date : {datetime.now().isoformat(timespec='seconds')}\n"
+        f"ID passation : {passation_id}\n"
+        f"Date : {datetime.now().isoformat(timespec='seconds')}\n\n"
         "Le JSON final sera transmis automatiquement à la fin si l'envoi SMTP est configuré."
     )
-    send_email(FINAL_EMAIL_TO, subject_admin, body_admin)
-    return ok_user, msg_user
+    return send_email(FINAL_EMAIL_TO, subject_admin, body_admin)
 
 
 def base_export_payload(completed: bool) -> dict:
@@ -585,7 +628,9 @@ def try_send_final_json(json_bytes: bytes, file_name: str, beneficiaire: dict) -
         f"Date : {datetime.now().isoformat(timespec='seconds')}\n\n"
         "Message automatique."
     )
-    ok, msg = send_email(FINAL_EMAIL_TO, subject, body, attachment=json_bytes, attachment_name=file_name)
+    cfg = get_email_config()
+    destination = cfg.get("to_email", FINAL_EMAIL_TO) if cfg else FINAL_EMAIL_TO
+    ok, msg = send_email(destination, subject, body, attachment=json_bytes, attachment_name=file_name)
     if ok:
         return True, "JSON final transmis automatiquement à Clarté360."
     return False, msg
@@ -661,59 +706,70 @@ with st.expander("Comprendre les 10 préférences explorées"):
 
 if not st.session_state.get("test_started"):
     st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>1. Identification du bénéficiaire</h2>", unsafe_allow_html=True)
-    st.write("Ces informations seront intégrées au rapport PDF, au JSON de sauvegarde et au JSON final. L'adresse email permet de transmettre un code d'accès au questionnaire.")
+    st.write(
+        "Ces informations seront intégrées au rapport PDF, au JSON de sauvegarde et au JSON final. "
+        "L'adresse email est obligatoire : elle permet de recevoir le code d'accès au questionnaire. Clarté360 reçoit également une notification lorsqu'un code est généré."
+    )
 
-    with st.form("beneficiaire_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            prenom = st.text_input("Prénom *", value=st.session_state.get("pending_beneficiaire", {}).get("prenom", ""))
-        with col2:
-            nom = st.text_input("Nom *", value=st.session_state.get("pending_beneficiaire", {}).get("nom", ""))
-        email = st.text_input("Adresse email *", value=st.session_state.get("pending_beneficiaire", {}).get("email", ""))
-        consent = st.checkbox("Je comprends que cet outil est un support d’exploration et non un test psychométrique.")
-        request_code = st.form_submit_button("Recevoir mon code d'accès", type="primary")
+    if not st.session_state.get("code_sent"):
+        with st.form("beneficiaire_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                prenom = st.text_input("Prénom *")
+            with col2:
+                nom = st.text_input("Nom *")
+            email = st.text_input("Adresse email *")
+            consent = st.checkbox("Je comprends que cet outil est un support d’exploration et non un test psychométrique.")
+            send_code = st.form_submit_button("Recevoir mon code d'accès", type="primary")
 
-    if request_code:
-        if not prenom.strip() or not nom.strip() or not email.strip():
-            st.error("Merci de renseigner le prénom, le nom et l'adresse email.")
-        elif "@" not in email or "." not in email:
-            st.error("Merci de renseigner une adresse email valide.")
-        elif not consent:
-            st.error("Merci de confirmer la compréhension du cadre d’utilisation.")
-        else:
-            code = generate_verification_code()
-            beneficiaire_tmp = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip()}
-            st.session_state.pending_beneficiaire = beneficiaire_tmp
-            st.session_state.verification_code = code
-            ok, msg = send_access_code(beneficiaire_tmp, code)
-            st.session_state.code_sent = True
-            st.session_state.code_status = msg
-            if ok:
-                st.success("Un code d'accès vient d'être envoyé par email.")
+        if send_code:
+            if not prenom.strip() or not nom.strip() or not email.strip():
+                st.error("Merci de renseigner le prénom, le nom et l'adresse email.")
+            elif "@" not in email or "." not in email:
+                st.error("Merci de renseigner une adresse email valide.")
+            elif not consent:
+                st.error("Merci de confirmer la compréhension du cadre d’utilisation.")
             else:
-                st.warning("Email non envoyé automatiquement. Mode local ou SMTP non configuré.")
-                st.info(f"Code de test local : {code}")
-            st.rerun()
+                beneficiaire_tmp = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip()}
+                code = generate_access_code()
+                ok, msg = send_access_code_email(beneficiaire_tmp, code)
+                st.session_state.pending_beneficiaire = beneficiaire_tmp
+                st.session_state.access_code = code
+                st.session_state.code_sent = ok
+                st.session_state.code_message = msg
+                if ok:
+                    st.success("Un code d'accès vient d'être envoyé à l'adresse email indiquée.")
+                    st.rerun()
+                else:
+                    st.error("Le code n'a pas pu être envoyé. Vérifiez la configuration SMTP dans Streamlit Secrets.")
+                    st.caption(msg)
+                    st.caption("En ligne, configurez les Secrets SMTP Streamlit pour activer l'envoi du code.")
+    else:
+        b = st.session_state.get("pending_beneficiaire", {})
+        st.success(f"Code envoyé à : {b.get('email','')}")
+        code_input = st.text_input("Saisissez le code d'accès reçu par email *", max_chars=6)
+        col_a, col_b = st.columns([1, 1])
+        with col_a:
+            validate_code = st.button("Valider le code et démarrer", type="primary")
+        with col_b:
+            if st.button("Modifier l'adresse email"):
+                for k in ["pending_beneficiaire", "access_code", "code_sent", "code_message", "code_verified"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
 
-    if st.session_state.get("code_sent"):
-        st.markdown(f"<h3 style='color:{OFFICIAL_TEAL};'>2. Saisir le code reçu</h3>", unsafe_allow_html=True)
-        if st.session_state.get("code_status"):
-            st.caption(st.session_state.code_status)
-        with st.form("code_form"):
-            entered_code = st.text_input("Code d'accès *")
-            start = st.form_submit_button("Commencer le questionnaire", type="primary")
-        if start:
-            if entered_code.strip() != str(st.session_state.get("verification_code", "")):
-                st.error("Code incorrect. Merci de vérifier le code reçu.")
-            else:
+        if validate_code:
+            expected = str(st.session_state.get("access_code", "")).strip()
+            if code_input.strip() == expected:
+                st.session_state.code_verified = True
                 b = st.session_state.get("pending_beneficiaire", {})
                 start_new_session(active_questions, nom=b.get("nom", ""), prenom=b.get("prenom", ""), email=b.get("email", ""))
                 st.rerun()
+            else:
+                st.error("Code incorrect. Merci de vérifier le code reçu par email.")
     st.stop()
 
 beneficiaire = st.session_state.get("beneficiaire", {})
 st.markdown(f"**Bénéficiaire :** {beneficiaire.get('prenom','')} {beneficiaire.get('nom','')}")
-
 answered = len(st.session_state.answers)
 total = len(st.session_state.question_order)
 progress = answered / total if total else 0
