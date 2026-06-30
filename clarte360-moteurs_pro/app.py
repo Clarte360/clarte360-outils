@@ -18,7 +18,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -45,8 +45,18 @@ div.stButton > button[kind="primary"] {{ background-color: {OFFICIAL_TEAL}; bord
 .slider-card-left {{ border-left: 6px solid {OFFICIAL_TEAL}; padding: .85rem 1rem; background: #f8fbfb; border-radius: .7rem; min-height: 100px; }}
 .slider-card-right {{ border-left: 6px solid #9bc7c7; padding: .85rem 1rem; background: #f8fbfb; border-radius: .7rem; min-height: 100px; }}
 .small-muted {{ color:#666; font-size:.9rem; }}
-/* Masquer autant que possible les valeurs numériques du slider Streamlit */
-div[data-testid="stSlider"] label, div[data-testid="stSlider"] [data-testid="stTickBar"], div[data-testid="stSlider"] div[role="slider"] + div {{ visibility: hidden !important; }}
+/* Curseur Clarté360 : aucune valeur numérique visible pour le bénéficiaire */
+div[data-testid="stSlider"] label {{ display: none !important; }}
+div[data-testid="stSlider"] [data-testid="stTickBar"] {{ display: none !important; }}
+div[data-testid="stSlider"] [data-testid="stTickBarMin"] {{ display: none !important; }}
+div[data-testid="stSlider"] [data-testid="stTickBarMax"] {{ display: none !important; }}
+div[data-testid="stSlider"] [data-testid="stSliderThumbValue"] {{ display: none !important; }}
+div[data-testid="stSlider"] [class*="ThumbValue"] {{ display: none !important; }}
+div[data-testid="stSlider"] div[role="slider"] + div {{ display: none !important; }}
+div[data-testid="stSlider"] div[role="slider"] {{ background-color: {OFFICIAL_TEAL} !important; border-color: {OFFICIAL_TEAL} !important; }}
+div[data-testid="stSlider"] [class*="track"] {{ background-color: {OFFICIAL_TEAL} !important; }}
+/* Ne pas afficher les bornes 0/10 ni la valeur courante, même si Streamlit change légèrement son DOM */
+div[data-testid="stSlider"] p {{ display: none !important; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -516,7 +526,6 @@ def questionnaire_screen(active, dims, params):
             st.session_state.positions[cid] = int(pos)
             st.session_state.current_index += 1
             st.rerun()
-    st.caption("Le curseur permet une réponse nuancée. La cotation interne n’est pas affichée pendant la passation.")
 
 
 def results_screen(active, dims, params):
