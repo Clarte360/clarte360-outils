@@ -31,3 +31,13 @@ code_expiration_minutes = 15
 
 ## Modifier le questionnaire
 Modifier uniquement `data/moteurs_professionnels_curseurs_v0_1.xlsx`, puis commit/push sur GitHub.
+
+
+## Version 1.2.0
+
+- Refonte de la zone de positionnement.
+- Curseur placé entre les deux propositions.
+- Suppression de toute valeur numérique visible.
+- Renforcement de la charte graphique Clarté360 (#008080).
+- Nouvelle consigne : positionnement au plus près de la proposition qui ressemble le plus au bénéficiaire.
+- Boutons vocaux simplifiés : Écouter / Arrêter.

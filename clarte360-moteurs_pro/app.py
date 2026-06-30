@@ -18,7 +18,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -39,11 +39,17 @@ st.markdown(f"""
 .stProgress > div > div > div > div {{ background-color: {OFFICIAL_TEAL}; }}
 h1, h2, h3 {{ color: {OFFICIAL_TEAL}; }}
 div.stButton > button[kind="primary"] {{ background-color: {OFFICIAL_TEAL}; border-color: {OFFICIAL_TEAL}; }}
+div.stButton > button[kind="primary"]:hover {{ background-color: #006f6f; border-color: #006f6f; }}
+.clarte-title-accent {{ color: {OFFICIAL_TEAL}; }}
 .clarte-box {{ border-left: 6px solid {OFFICIAL_TEAL}; background: {LIGHT_TEAL}; padding: 1rem 1.1rem; border-radius: .55rem; margin: 1rem 0; color: {DARK_TEXT}; }}
 .objectif-box {{ border: 1px solid #cfe6e6; background: #f8fbfb; padding: 1.2rem 1.4rem; border-radius: .9rem; margin: 1rem 0 1.4rem 0; color: {DARK_TEXT}; }}
 .clarte-card {{ border: 1px solid #d9eeee; border-radius: .8rem; padding: 1rem; background: #fff; box-shadow: 0 1px 8px rgba(0,128,128,.08); margin-bottom: 1rem; }}
-.slider-card-left {{ border-left: 6px solid {OFFICIAL_TEAL}; padding: .85rem 1rem; background: #f8fbfb; border-radius: .7rem; min-height: 100px; }}
-.slider-card-right {{ border-left: 6px solid #9bc7c7; padding: .85rem 1rem; background: #f8fbfb; border-radius: .7rem; min-height: 100px; }}
+.question-title {{ color: {OFFICIAL_TEAL}; font-size: 2rem; font-weight: 750; margin: 1rem 0 .8rem 0; }}
+.slider-instruction {{ color: {DARK_TEXT}; font-weight: 600; font-size: 1rem; margin: .8rem 0 .4rem 0; }}
+.slider-card-left, .slider-card-right {{ border-left: 6px solid {OFFICIAL_TEAL}; padding: 1rem 1.15rem; background: #f8fbfb; border-radius: .85rem; min-height: 116px; display: flex; align-items: center; box-shadow: 0 2px 10px rgba(0,128,128,.08); border-top: 1px solid #d9eeee; border-right: 1px solid #d9eeee; border-bottom: 1px solid #d9eeee; }}
+.slider-card-right {{ border-left-color: #9bc7c7; }}
+.slider-card-left b, .slider-card-right b {{ font-size: 1.02rem; line-height: 1.35; }}
+.slider-spacer {{ height: 38px; }}
 .small-muted {{ color:#666; font-size:.9rem; }}
 /* Curseur Clarté360 : aucune valeur numérique visible pour le bénéficiaire */
 div[data-testid="stSlider"] label {{ display: none !important; }}
@@ -53,8 +59,10 @@ div[data-testid="stSlider"] [data-testid="stTickBarMax"] {{ display: none !impor
 div[data-testid="stSlider"] [data-testid="stSliderThumbValue"] {{ display: none !important; }}
 div[data-testid="stSlider"] [class*="ThumbValue"] {{ display: none !important; }}
 div[data-testid="stSlider"] div[role="slider"] + div {{ display: none !important; }}
-div[data-testid="stSlider"] div[role="slider"] {{ background-color: {OFFICIAL_TEAL} !important; border-color: {OFFICIAL_TEAL} !important; }}
+div[data-testid="stSlider"] div[role="slider"] {{ background-color: {OFFICIAL_TEAL} !important; border-color: {OFFICIAL_TEAL} !important; box-shadow: 0 0 0 2px rgba(0,128,128,.12) !important; }}
 div[data-testid="stSlider"] [class*="track"] {{ background-color: {OFFICIAL_TEAL} !important; }}
+div[data-testid="stSlider"] [data-baseweb="slider"] {{ padding-top: 0 !important; }}
+div[data-testid="stSlider"] [data-baseweb="slider"] > div {{ background: #e4eeee !important; }}
 /* Ne pas afficher les bornes 0/10 ni la valeur courante, même si Streamlit change légèrement son DOM */
 div[data-testid="stSlider"] p {{ display: none !important; }}
 </style>
@@ -383,7 +391,7 @@ def create_pdf(scores_df: pd.DataFrame, payload: dict) -> bytes:
 
 def speak_button(text: str, key: str):
     escaped = json.dumps(text)
-    if st.button("🔊 Lire la situation et les deux propositions", key=key):
+    if st.button("🔊 Écouter", key=key):
         components.html(f"""
         <script>
         const text = {escaped};
@@ -394,7 +402,7 @@ def speak_button(text: str, key: str):
         window.speechSynthesis.speak(u);
         </script>
         """, height=0)
-    if st.button("■ Arrêter la lecture", key=key+"_stop"):
+    if st.button("⏹ Arrêter", key=key+"_stop"):
         components.html("<script>window.speechSynthesis.cancel();</script>", height=0)
 
 
@@ -404,7 +412,7 @@ def display_header():
         if LOGO_PATH.exists():
             st.image(str(LOGO_PATH), width=80)
     with c2:
-        st.title("Clarté360 – Moteurs professionnels")
+        st.markdown("# Clarté360 – <span class='clarte-title-accent'>Moteurs professionnels</span>", unsafe_allow_html=True)
         st.caption("Outil propriétaire d’exploration des sources d’énergie professionnelle")
 
 
@@ -436,7 +444,7 @@ def identification_screen(active, dims, params):
     st.markdown("""
     <div class="clarte-box">
     <b>Comment répondre ?</b><br>
-    Pour chaque situation, vous verrez deux propositions positives. Déplacez le curseur vers la proposition qui vous correspond le plus aujourd’hui. Vous pouvez aussi le laisser au milieu si les deux propositions vous parlent autant. Aucune note n’est visible pendant la passation.
+    Pour chaque situation, vous verrez deux propositions positives. Positionnez le curseur au plus près de la proposition qui vous ressemble le plus aujourd'hui. Si les deux propositions vous correspondent autant l'une que l'autre, laissez-le naturellement au milieu. Aucune note n’est visible pendant la passation.
     </div>
     """, unsafe_allow_html=True)
     with st.expander("Voir les moteurs explorés"):
@@ -505,20 +513,23 @@ def questionnaire_screen(active, dims, params):
     cid = st.session_state.cursor_order[idx]
     row = active.set_index("ID").loc[cid]
     st.progress((idx) / total)
-    st.markdown(f"### Question {idx + 1} / {total}")
+    st.markdown(f"<div class='question-title'>Question {idx + 1} / {total}</div>", unsafe_allow_html=True)
     situation = str(row["Situation / consigne"])
     left = str(row["Proposition gauche"])
     right = str(row["Proposition droite"])
     st.markdown(f"<div class='clarte-card'><h3>{situation}</h3></div>", unsafe_allow_html=True)
-    speak_text = f"Question {idx+1} sur {total}. {situation}. Proposition à gauche : {left}. Proposition à droite : {right}. Déplacez le curseur vers la proposition qui vous correspond le plus."
+    speak_text = f"Question {idx+1} sur {total}. {situation}. Proposition à gauche : {left}. Proposition à droite : {right}. Positionnez le curseur au plus près de la proposition qui vous ressemble le plus aujourd'hui. Si les deux propositions vous correspondent autant l'une que l'autre, laissez-le naturellement au milieu."
     speak_button(speak_text, f"speak_{cid}")
-    col1, col2 = st.columns(2)
+    st.markdown("<div class='slider-instruction'>Positionnez le curseur au plus près de la proposition qui vous ressemble le plus aujourd'hui. Si les deux propositions vous correspondent autant l'une que l'autre, laissez-le naturellement au milieu.</div>", unsafe_allow_html=True)
+    default_pos = int(st.session_state.positions.get(cid, int(row.get("Position défaut", 5))))
+    col1, col_slider, col2 = st.columns([3, 4, 3], vertical_alignment="center")
     with col1:
         st.markdown(f"<div class='slider-card-left'><b>{left}</b></div>", unsafe_allow_html=True)
+    with col_slider:
+        st.markdown("<div class='slider-spacer'></div>", unsafe_allow_html=True)
+        pos = st.slider("Positionnement", min_value=0, max_value=10, value=default_pos, step=1, key=f"slider_{cid}", label_visibility="collapsed")
     with col2:
         st.markdown(f"<div class='slider-card-right'><b>{right}</b></div>", unsafe_allow_html=True)
-    default_pos = int(st.session_state.positions.get(cid, int(row.get("Position défaut", 5))))
-    pos = st.slider("Déplacez le curseur", min_value=0, max_value=10, value=default_pos, step=1, key=f"slider_{cid}", label_visibility="collapsed")
     cprev, cnext = st.columns([1, 2])
     # Pas de retour arrière volontairement : passation en sens unique.
     with cnext:
