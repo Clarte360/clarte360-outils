@@ -33,7 +33,7 @@ code_expiration_minutes = 15
 Modifier uniquement `data/moteurs_professionnels_curseurs_v0_1.xlsx`, puis commit/push sur GitHub.
 
 
-## Version 1.2.0
+## Version 1.3.0
 
 - Refonte de la zone de positionnement.
 - Curseur placé entre les deux propositions.

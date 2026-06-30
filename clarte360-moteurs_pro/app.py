@@ -18,7 +18,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -46,25 +46,47 @@ div.stButton > button[kind="primary"]:hover {{ background-color: #006f6f; border
 .clarte-card {{ border: 1px solid #d9eeee; border-radius: .8rem; padding: 1rem; background: #fff; box-shadow: 0 1px 8px rgba(0,128,128,.08); margin-bottom: 1rem; }}
 .question-title {{ color: {OFFICIAL_TEAL}; font-size: 2rem; font-weight: 750; margin: 1rem 0 .8rem 0; }}
 .slider-instruction {{ color: {DARK_TEXT}; font-weight: 600; font-size: 1rem; margin: .8rem 0 .4rem 0; }}
-.slider-card-left, .slider-card-right {{ border-left: 6px solid {OFFICIAL_TEAL}; padding: 1rem 1.15rem; background: #f8fbfb; border-radius: .85rem; min-height: 116px; display: flex; align-items: center; box-shadow: 0 2px 10px rgba(0,128,128,.08); border-top: 1px solid #d9eeee; border-right: 1px solid #d9eeee; border-bottom: 1px solid #d9eeee; }}
-.slider-card-right {{ border-left-color: #9bc7c7; }}
-.slider-card-left b, .slider-card-right b {{ font-size: 1.02rem; line-height: 1.35; }}
-.slider-spacer {{ height: 38px; }}
+.positioning-row {{ margin-top: .6rem; margin-bottom: 1.2rem; }}
+.slider-card-left, .slider-card-right {{
+    border-left: 7px solid {OFFICIAL_TEAL};
+    padding: 1.15rem 1.25rem;
+    background: #f8fbfb;
+    border-radius: .95rem;
+    min-height: 135px;
+    height: 135px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    box-shadow: 0 3px 16px rgba(0,128,128,.10);
+    border-top: 1px solid #d9eeee;
+    border-right: 1px solid #d9eeee;
+    border-bottom: 1px solid #d9eeee;
+}}
+.slider-card-right {{ border-left-color: #7fb8b8; }}
+.slider-card-left b, .slider-card-right b {{ font-size: 1.08rem; line-height: 1.35; }}
+.slider-spacer {{ height: 36px; }}
+.connector-label {{ text-align:center; color:{OFFICIAL_TEAL}; font-size:.85rem; font-weight:700; margin-bottom:.15rem; }}
 .small-muted {{ color:#666; font-size:.9rem; }}
 /* Curseur Clarté360 : aucune valeur numérique visible pour le bénéficiaire */
 div[data-testid="stSlider"] label {{ display: none !important; }}
-div[data-testid="stSlider"] [data-testid="stTickBar"] {{ display: none !important; }}
-div[data-testid="stSlider"] [data-testid="stTickBarMin"] {{ display: none !important; }}
-div[data-testid="stSlider"] [data-testid="stTickBarMax"] {{ display: none !important; }}
-div[data-testid="stSlider"] [data-testid="stSliderThumbValue"] {{ display: none !important; }}
-div[data-testid="stSlider"] [class*="ThumbValue"] {{ display: none !important; }}
-div[data-testid="stSlider"] div[role="slider"] + div {{ display: none !important; }}
-div[data-testid="stSlider"] div[role="slider"] {{ background-color: {OFFICIAL_TEAL} !important; border-color: {OFFICIAL_TEAL} !important; box-shadow: 0 0 0 2px rgba(0,128,128,.12) !important; }}
-div[data-testid="stSlider"] [class*="track"] {{ background-color: {OFFICIAL_TEAL} !important; }}
-div[data-testid="stSlider"] [data-baseweb="slider"] {{ padding-top: 0 !important; }}
-div[data-testid="stSlider"] [data-baseweb="slider"] > div {{ background: #e4eeee !important; }}
-/* Ne pas afficher les bornes 0/10 ni la valeur courante, même si Streamlit change légèrement son DOM */
+div[data-testid="stSlider"] [data-testid="stTickBar"],
+div[data-testid="stSlider"] [data-testid="stTickBarMin"],
+div[data-testid="stSlider"] [data-testid="stTickBarMax"],
+div[data-testid="stSlider"] [data-testid="stSliderThumbValue"],
+div[data-testid="stSlider"] [class*="ThumbValue"],
+div[data-testid="stSlider"] div[role="slider"] + div,
 div[data-testid="stSlider"] p {{ display: none !important; }}
+div[data-testid="stSlider"] {{ padding-top: 0 !important; }}
+div[data-testid="stSlider"] [data-baseweb="slider"] {{ padding-top: 0 !important; padding-bottom: 0 !important; }}
+div[data-testid="stSlider"] [data-baseweb="slider"] > div {{ background: #dfeaea !important; height: 10px !important; }}
+div[data-testid="stSlider"] div[role="slider"] {{
+    background-color: {OFFICIAL_TEAL} !important;
+    border: 3px solid white !important;
+    box-shadow: 0 0 0 3px rgba(0,128,128,.25) !important;
+}}
+/* cible large pour neutraliser la couleur rouge native Streamlit */
+div[data-testid="stSlider"] div[style*="background"] {{ accent-color: {OFFICIAL_TEAL} !important; }}
+.stSlider * {{ accent-color: {OFFICIAL_TEAL} !important; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -412,7 +434,7 @@ def display_header():
         if LOGO_PATH.exists():
             st.image(str(LOGO_PATH), width=80)
     with c2:
-        st.markdown("# Clarté360 – <span class='clarte-title-accent'>Moteurs professionnels</span>", unsafe_allow_html=True)
+        st.markdown("# <span class='clarte-title-accent'>Clarté360 – Moteurs professionnels</span>", unsafe_allow_html=True)
         st.caption("Outil propriétaire d’exploration des sources d’énergie professionnelle")
 
 
@@ -522,14 +544,16 @@ def questionnaire_screen(active, dims, params):
     speak_button(speak_text, f"speak_{cid}")
     st.markdown("<div class='slider-instruction'>Positionnez le curseur au plus près de la proposition qui vous ressemble le plus aujourd'hui. Si les deux propositions vous correspondent autant l'une que l'autre, laissez-le naturellement au milieu.</div>", unsafe_allow_html=True)
     default_pos = int(st.session_state.positions.get(cid, int(row.get("Position défaut", 5))))
-    col1, col_slider, col2 = st.columns([3, 4, 3], vertical_alignment="center")
+    st.markdown("<div class='positioning-row'>", unsafe_allow_html=True)
+    col1, col_slider, col2 = st.columns([3.2, 4.8, 3.2], vertical_alignment="center")
     with col1:
         st.markdown(f"<div class='slider-card-left'><b>{left}</b></div>", unsafe_allow_html=True)
     with col_slider:
-        st.markdown("<div class='slider-spacer'></div>", unsafe_allow_html=True)
+        st.markdown("<div class='connector-label'>Votre position</div>", unsafe_allow_html=True)
         pos = st.slider("Positionnement", min_value=0, max_value=10, value=default_pos, step=1, key=f"slider_{cid}", label_visibility="collapsed")
     with col2:
         st.markdown(f"<div class='slider-card-right'><b>{right}</b></div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
     cprev, cnext = st.columns([1, 2])
     # Pas de retour arrière volontairement : passation en sens unique.
     with cnext:
