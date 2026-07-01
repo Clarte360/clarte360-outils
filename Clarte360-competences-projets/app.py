@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Clarté360 – Outil 5 V1
+Clarté360 – Analyse des compétences transférables et faisabilité du projet professionnel V1.1
 Analyse des compétences transférables et aide à la décision projet professionnel.
 
 Sources locales attendues dans /data :
@@ -146,25 +146,44 @@ def touch() -> None:
 # -----------------------------
 
 def get_secret(name: str, default: str = "") -> str:
+    """Compatibilité ancienne et nouvelle configuration Secrets.
+    Priorité à la section [email] utilisée par les autres apps Clarté360.
+    Fallback sur les clés plates SMTP_* si une ancienne configuration existe.
+    """
     try:
+        if "email" in st.secrets:
+            e = st.secrets.get("email", {})
+            mapping = {
+                "SMTP_HOST": "smtp_server",
+                "SMTP_PORT": "smtp_port",
+                "SMTP_USER": "smtp_user",
+                "SMTP_PASSWORD": "smtp_password",
+                "SMTP_FROM": "from_email",
+                "ADMIN_EMAIL": "to_email",
+            }
+            key = mapping.get(name, name)
+            if key in e and e.get(key):
+                return str(e.get(key))
         return str(st.secrets.get(name, default))
     except Exception:
         return default
 
 
 def smtp_configured() -> bool:
-    return bool(get_secret("SMTP_HOST") and get_secret("SMTP_USER") and get_secret("SMTP_PASSWORD"))
+    return bool(get_secret("SMTP_HOST") and get_secret("SMTP_USER") and get_secret("SMTP_PASSWORD") and get_secret("SMTP_FROM"))
 
 
 def send_mail(to_email: str, subject: str, body: str, attachments: Optional[List[Tuple[str, bytes, str]]] = None) -> Tuple[bool, str]:
-    """Envoie un email simple avec pièces jointes optionnelles.
-    attachments = [(filename, bytes, mime_type)].
+    """Envoie un email avec la même logique que les apps Préférences/Moteurs.
+    Secrets attendus :
+    [email]
+    smtp_server, smtp_port, smtp_user, smtp_password, from_email, to_email
     """
     if not smtp_configured():
-        return False, "SMTP non configuré dans Streamlit Secrets."
+        return False, "SMTP non configuré dans les Secrets Streamlit."
     try:
         host = get_secret("SMTP_HOST")
-        port = int(get_secret("SMTP_PORT", "587"))
+        port = int(get_secret("SMTP_PORT", "465"))
         user = get_secret("SMTP_USER")
         pwd = get_secret("SMTP_PASSWORD")
         sender = get_secret("SMTP_FROM", user)
@@ -174,16 +193,20 @@ def send_mail(to_email: str, subject: str, body: str, attachments: Optional[List
         msg["Subject"] = subject
         msg.set_content(body)
         for filename, payload, mime in attachments or []:
-            maintype, subtype = (mime.split("/", 1) + ["octet-stream"])[:2] if "/" in mime else ("application", "octet-stream")
+            maintype, subtype = mime.split("/", 1) if "/" in mime else ("application", "octet-stream")
             msg.add_attachment(payload, maintype=maintype, subtype=subtype, filename=filename)
-        with smtplib.SMTP(host, port, timeout=20) as s:
-            s.starttls()
-            s.login(user, pwd)
-            s.send_message(msg)
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=25) as server:
+                server.login(user, pwd)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=25) as server:
+                server.starttls()
+                server.login(user, pwd)
+                server.send_message(msg)
         return True, "Email envoyé."
     except Exception as e:
-        return False, f"Erreur SMTP : {e}"
-
+        return False, f"Erreur email : {e}"
 
 # -----------------------------
 # Chargement ROME
@@ -446,7 +469,7 @@ def pdf_report(rome: Dict[str, Dict[str, Any]]) -> bytes:
     normal = styles["BodyText"]
     story = []
     b = st.session_state.beneficiaire
-    story.append(Paragraph("Clarté360 – Outil 5", styles["ClarteTitle"]))
+    story.append(Paragraph("Clarté360 – Analyse des compétences transférables et faisabilité du projet professionnel", styles["ClarteTitle"]))
     story.append(Paragraph("Analyse des compétences transférables", styles["Heading2"]))
     story.append(Spacer(1, 0.3*cm))
     story.append(Paragraph(f"Bénéficiaire : <b>{b.get('prenom','')} {b.get('nom','')}</b>", normal))
@@ -495,7 +518,8 @@ def inject_css() -> None:
     <style>
     .stApp {{ background: {CLARTE_BG}; }}
     h1, h2, h3 {{ color: {CLARTE_DARK}; }}
-    .clarte-title span {{ color: {CLARTE_TEAL}; }}
+    .clarte-title {{ color: {CLARTE_TEAL} !important; margin-bottom:0.2rem; }}
+    .clarte-subtitle {{ color:#6B7280; font-size:1.05rem; margin-top:0.2rem; }}
     .clarte-card {{
         background:#FFFFFF; border:1px solid #D7ECEA; border-radius:18px; padding:22px;
         box-shadow:0 4px 14px rgba(0,0,0,0.04); margin-bottom:16px;
@@ -514,8 +538,8 @@ def header() -> None:
         if ICON.exists():
             st.image(str(ICON), width=90)
     with cols[1]:
-        st.markdown('<h1 class="clarte-title">Clarté360 – <span>Outil 5</span></h1>', unsafe_allow_html=True)
-        st.markdown("<div class='small-muted'>Analyse des compétences transférables et faisabilité du projet professionnel</div>", unsafe_allow_html=True)
+        st.markdown('<h1 class="clarte-title">Clarté360</h1>', unsafe_allow_html=True)
+        st.markdown("<div class='clarte-subtitle'>Analyse des compétences transférables et faisabilité du projet professionnel</div>", unsafe_allow_html=True)
 
 
 def access_screen() -> None:
@@ -538,10 +562,10 @@ def access_screen() -> None:
             code = make_code()
             st.session_state.generated_code = code
             st.session_state.beneficiaire = {"prenom": prenom, "nom": nom, "email": email, "consultant": consultant}
-            msg = f"Bonjour {prenom},\n\nVotre code d'accès Clarté360 Outil 5 est : {code}\n\nCe code vous permet d'ouvrir votre session et de sauvegarder votre travail."
-            ok, info = send_mail(email, "Votre code d'accès Clarté360 – Outil 5", msg)
+            msg = f"Bonjour {prenom},\n\nVotre code d'accès Clarté360 est : {code}\n\nCe code vous permet d'ouvrir votre session et de sauvegarder votre travail."
+            ok, info = send_mail(email, "Votre code d'accès Clarté360", msg)
             admin_email = get_secret("ADMIN_EMAIL", "contact@clarte360.com")
-            send_mail(admin_email, "Connexion Clarté360 Outil 5", f"Code généré pour {prenom} {nom} - {email} - {now_iso()}")
+            send_mail(admin_email, "Connexion Clarté360 – Compétences projets", f"Code généré pour {prenom} {nom} - {email} - {now_iso()}")
             if ok:
                 st.success("Code envoyé par email.")
             else:
@@ -764,7 +788,7 @@ def tab_decision(rome: Dict[str, Dict[str, Any]]) -> None:
             attachments = [("clarte360_outil5_final.json", make_json_download(), "application/json")]
             if REPORTLAB_OK:
                 attachments.append(("clarte360_outil5_rapport_final.pdf", pdf_report(rome), "application/pdf"))
-            ok, info = send_mail(admin_email, f"Outil 5 final – {b.get('prenom','')} {b.get('nom','')}", "Dossier Outil 5 clôturé en pièce jointe.", attachments=attachments)
+            ok, info = send_mail(admin_email, f"Clarté360 Compétences projets final – {b.get('prenom','')} {b.get('nom','')}", "Dossier Outil 5 clôturé en pièce jointe.", attachments=attachments)
             if ok:
                 st.success("Dossier envoyé à Clarté360.")
             else:
@@ -789,7 +813,7 @@ def main_app() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Clarté360 – Outil 5", page_icon=str(ICON) if ICON.exists() else "🧭", layout="wide")
+    st.set_page_config(page_title="Clarté360 – Compétences & projets", page_icon=str(ICON) if ICON.exists() else "🧭", layout="wide")
     inject_css()
     init_state()
     # Auto-sauvegarde conceptuelle : en Streamlit Cloud, le vrai téléchargement automatique navigateur est bloqué.
