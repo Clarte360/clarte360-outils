@@ -1,4 +1,5 @@
 import json
+import html
 import secrets
 import string
 from copy import deepcopy
@@ -15,7 +16,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 
 APP_TITLE = "Clarté360 — Boucle auto-validante"
-APP_VERSION = "V1.0 — outil de séance accompagnateur"
+APP_VERSION = "V1.1 — outil de séance accompagnateur"
 BRAND_COLOR = "#008b8b"
 ACCENT = "#e7f5f4"
 WARN = "#fff4e6"
@@ -68,6 +69,32 @@ st.markdown(
     .loop-content {{font-size:1rem; margin-top:.5rem;}}
     .arrow {{font-size:2rem; color:{BRAND_COLOR}; text-align:center; padding-top:1.5rem;}}
     .danger {{color:#b00020; font-weight:700;}}
+
+    div.stButton > button[kind="primary"], div.stDownloadButton > button[kind="primary"] {
+        background-color: #008b8b !important;
+        border-color: #008b8b !important;
+        color: white !important;
+    }
+    div.stButton > button:hover, div.stDownloadButton > button:hover {
+        border-color: #006f6f !important;
+        color: white !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #008b8b !important;
+        border-bottom-color: #008b8b !important;
+    }
+    .loop-wrap {position:relative; width:100%; max-width:920px; height:560px; margin:1rem auto 1.5rem auto;}
+    .loop-svg {position:absolute; inset:0; width:100%; height:100%; z-index:1;}
+    .loop-node {position:absolute; z-index:2; width:250px; min-height:105px; background:#ffffff; border:3px solid #008b8b; border-radius:18px; padding:14px; box-shadow:0 4px 14px rgba(0,0,0,.08);}
+    .loop-node-top {left:50%; top:12px; transform:translateX(-50%);}
+    .loop-node-right {right:5px; top:205px;}
+    .loop-node-bottom {left:50%; bottom:15px; transform:translateX(-50%);}
+    .loop-node-left {left:5px; top:205px;}
+    .loop-node-title {font-size:.78rem; color:#008b8b; font-weight:800; text-transform:uppercase; letter-spacing:.03em; margin-bottom:8px;}
+    .loop-node-text {font-size:1rem; line-height:1.25; color:#1f2937; white-space:pre-wrap;}
+    .loop-node-empty {color:#6b7280; font-style:italic;}
+    .loop-center {position:absolute; z-index:2; left:50%; top:49%; transform:translate(-50%,-50%); background:#e7f5f4; border:2px dashed #008b8b; color:#006f6f; border-radius:999px; padding:10px 18px; font-weight:700; text-align:center;}
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -268,6 +295,7 @@ def select_beneficiaire():
     return b
 
 
+
 def default_croyance():
     return {
         "id": make_id("cr"),
@@ -276,25 +304,14 @@ def default_croyance():
         "statut": "Découverte",
         "phase_decouverte": {
             "date": str(date.today()),
-            "formulation_exacte": "",
-            "contexte": "",
-            "emotion": "",
-            "objectif_lie": "",
-            "type_croyance": "A vérifier",
-            "validation": {
-                "sur_quoi_base": "",
-                "autres_personnes_pensent_differemment": "",
-                "avis_personnel": "",
-                "freine_objectif": False,
-                "concerne_tierce_personne": False,
-                "commentaire_consultant": "",
-            },
             "boucle": {
                 "croyance": "",
                 "comportement_actuel": "",
                 "resultat_actuel": "",
                 "renforcement": "",
             },
+            "commentaire_seance": "",
+            "concerne_tierce_personne": False,
         },
         "phase_action": {
             "selectionnee_phase6": False,
@@ -306,7 +323,6 @@ def default_croyance():
             "suivi": "",
         },
     }
-
 
 def add_croyance(b):
     st.markdown("## 2. Ajouter une croyance découverte")
@@ -331,7 +347,7 @@ def select_croyance(b):
     st.markdown("## 3. Sélectionner une croyance")
     labels = []
     for c in croyances:
-        txt = c.get("phase_decouverte", {}).get("formulation_exacte") or c.get("phase_decouverte", {}).get("boucle", {}).get("croyance") or "Croyance à compléter"
+        txt = c.get("phase_decouverte", {}).get("boucle", {}).get("croyance") or c.get("phase_decouverte", {}).get("formulation_exacte") or "Croyance à compléter"
         labels.append(f"[{c.get('statut','')}] {txt[:90]}")
     ids = [c["id"] for c in croyances]
     default_index = 0
@@ -353,25 +369,60 @@ def arrow(text="↓"):
     st.markdown(f"<div class='arrow'>{text}</div>", unsafe_allow_html=True)
 
 
+
+def e(txt):
+    return html.escape(str(txt or ""))
+
+
+def loop_text(value):
+    if value:
+        return e(value)
+    return "<span class='loop-node-empty'>À compléter</span>"
+
+
+def render_current_loop_html(bcl):
+    croyance = loop_text(bcl.get("croyance"))
+    comportement = loop_text(bcl.get("comportement_actuel"))
+    resultat = loop_text(bcl.get("resultat_actuel"))
+    renforcement = loop_text(bcl.get("renforcement") or "Le résultat semble confirmer la croyance")
+    return f"""
+<div class="loop-wrap">
+  <svg class="loop-svg" viewBox="0 0 920 560" preserveAspectRatio="none">
+    <defs>
+      <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+        <path d="M0,0 L0,6 L9,3 z" fill="#008b8b" />
+      </marker>
+    </defs>
+    <path d="M575 90 C735 95 805 145 798 217" fill="none" stroke="#008b8b" stroke-width="5" marker-end="url(#arrowhead)"/>
+    <path d="M790 318 C760 445 650 500 575 493" fill="none" stroke="#008b8b" stroke-width="5" marker-end="url(#arrowhead)"/>
+    <path d="M345 492 C190 492 110 430 125 318" fill="none" stroke="#008b8b" stroke-width="5" marker-end="url(#arrowhead)"/>
+    <path d="M125 215 C115 105 270 76 345 88" fill="none" stroke="#008b8b" stroke-width="5" marker-end="url(#arrowhead)"/>
+  </svg>
+  <div class="loop-node loop-node-top"><div class="loop-node-title">1. Croyance</div><div class="loop-node-text">{croyance}</div></div>
+  <div class="loop-node loop-node-right"><div class="loop-node-title">2. Comportement induit</div><div class="loop-node-text">{comportement}</div></div>
+  <div class="loop-node loop-node-bottom"><div class="loop-node-title">3. Résultat actuel</div><div class="loop-node-text">{resultat}</div></div>
+  <div class="loop-node loop-node-left"><div class="loop-node-title">4. Renforcement</div><div class="loop-node-text">{renforcement}</div></div>
+  <div class="loop-center">La boucle se referme<br/>et se valide elle-même</div>
+</div>
+"""
+
+
 def draw_current_loop(c):
     bcl = c.get("phase_decouverte", {}).get("boucle", {})
     st.markdown("### Boucle auto-validante actuelle")
-    col1, col2, col3 = st.columns([1, 0.18, 1])
-    with col1:
-        flow_box("Croyance", bcl.get("croyance"))
-    with col2:
-        arrow("→")
-    with col3:
-        flow_box("Comportement actuel", bcl.get("comportement_actuel"))
-    st.columns([0.44, 0.12, 0.44])[1].markdown("<div class='arrow'>↓</div>", unsafe_allow_html=True)
-    col4, col5, col6 = st.columns([1, 0.18, 1])
-    with col4:
-        flow_box("Renforcement", bcl.get("renforcement") or "Le résultat semble confirmer la croyance")
-    with col5:
-        arrow("←")
-    with col6:
-        flow_box("Résultat actuel", bcl.get("resultat_actuel"))
+    st.markdown(render_current_loop_html(bcl), unsafe_allow_html=True)
 
+
+def draw_example_loop():
+    example = {
+        "croyance": "Je suis incapable de me faire de nouveaux amis.",
+        "comportement_actuel": "Je reste souvent seul chez moi.",
+        "resultat_actuel": "Solitude, tristesse, mauvaise estime personnelle.",
+        "renforcement": "Je me dis : tu vois bien, je suis incapable de créer de nouveaux liens.",
+    }
+    with st.expander("Voir un exemple de boucle auto-validante", expanded=False):
+        st.markdown(render_current_loop_html(example), unsafe_allow_html=True)
+        st.caption("Exemple inspiré du support HEC : croyance → comportement → résultat → renforcement de la croyance.")
 
 def draw_exit_loop(c):
     act = c.get("phase_action", {})
@@ -386,46 +437,55 @@ def draw_exit_loop(c):
     st.markdown("<div class='brand-box'><strong>Logique HEC :</strong> pour agir sur la croyance, on travaille sur le comportement. Le nouveau comportement vise un résultat différent, capable de desserrer progressivement la boucle.</div>", unsafe_allow_html=True)
 
 
+
 def edit_discovery(c):
-    st.markdown("## Phase 3 — Repérer et formaliser la croyance")
+    st.markdown("## Phase 3 — Construire la boucle auto-validante")
     st.markdown(
-        "<div class='brand-box'>Cette partie sert à clarifier une croyance apparue en séance. On vérifie qu'il s'agit bien d'une croyance sur soi, sur les autres en général ou sur le monde. Si la phrase concerne une tierce personne précise, elle ne relève pas de cet outil.</div>",
+        "<div class='brand-box'>En phase 3, l'objectif n'est pas de résoudre la croyance ni de la relier à un objectif de coaching. L'objectif est simplement de faire apparaître la boucle : la croyance exprimée, le comportement qu'elle provoque, le résultat obtenu, puis la manière dont ce résultat vient renforcer la croyance.</div>",
         unsafe_allow_html=True,
     )
+    st.markdown("### Consignes de réalisation")
+    st.markdown("""
+1. Notez la croyance exprimée par le coaché, avec ses mots.
+2. Identifiez le comportement que cette croyance provoque ou entretient.
+3. Notez le résultat actuel obtenu à cause de ce comportement.
+4. Faites apparaître comment ce résultat confirme ou renforce la croyance de départ.
+
+À ce stade, on reste dans la découverte. Le travail de sortie de boucle se fera plus tard, en phase 6, uniquement si l'accompagnateur décide que cette croyance est utile à travailler.
+""")
+    draw_example_loop()
+
     ph = c.setdefault("phase_decouverte", {})
-    v = ph.setdefault("validation", {})
     bcl = ph.setdefault("boucle", {})
+    # Compatibilité avec les anciens JSON V1.0
+    if not bcl.get("croyance") and ph.get("formulation_exacte"):
+        bcl["croyance"] = ph.get("formulation_exacte", "")
 
     ph["date"] = str(st.date_input("Date de découverte", value=date.fromisoformat(ph.get("date") or str(date.today())), key=f"date_{c['id']}"))
-    ph["formulation_exacte"] = st.text_area("Formulation exacte entendue", value=ph.get("formulation_exacte", ""), height=80, key=f"form_{c['id']}")
-    ph["contexte"] = st.text_area("Contexte dans lequel la croyance apparaît", value=ph.get("contexte", ""), height=80, key=f"ctx_{c['id']}")
-    ph["emotion"] = st.text_input("Émotion / ressenti associé", value=ph.get("emotion", ""), key=f"emo_{c['id']}")
-    ph["objectif_lie"] = st.text_input("Objectif ou demande auquel cela semble relié", value=ph.get("objectif_lie", ""), key=f"obj_{c['id']}")
-    ph["type_croyance"] = st.selectbox("Type de croyance", TYPE_CROYANCE, index=TYPE_CROYANCE.index(ph.get("type_croyance", "A vérifier")) if ph.get("type_croyance") in TYPE_CROYANCE else 3, key=f"type_{c['id']}")
 
-    st.markdown("### Questions fondamentales de validation")
-    v["sur_quoi_base"] = st.text_area("Sur quoi vous basez-vous pour dire cela ?", value=v.get("sur_quoi_base", ""), key=f"base_{c['id']}")
-    v["autres_personnes_pensent_differemment"] = st.text_area("D'après vous, est-ce que d'autres personnes pourraient penser différemment ?", value=v.get("autres_personnes_pensent_differemment", ""), key=f"diff_{c['id']}")
-    v["avis_personnel"] = st.text_area("Et vous, qu'en pensez-vous vraiment ?", value=v.get("avis_personnel", ""), key=f"avis_{c['id']}")
-    v["freine_objectif"] = st.checkbox("Cette croyance semble constituer un frein par rapport à l'objectif", value=bool(v.get("freine_objectif", False)), key=f"frein_{c['id']}")
-    v["concerne_tierce_personne"] = st.checkbox("Attention : cette formulation concerne une tierce personne précise", value=bool(v.get("concerne_tierce_personne", False)), key=f"tierce_{c['id']}")
-    if v.get("concerne_tierce_personne"):
-        st.warning("Selon la logique HEC, la boucle auto-validante ne s'utilise pas si la croyance porte sur une tierce personne précise. Il faudra traiter ce cas avec un autre outil.")
-    v["commentaire_consultant"] = st.text_area("Commentaire de l'accompagnateur", value=v.get("commentaire_consultant", ""), key=f"com_{c['id']}")
+    st.markdown("### Remplir la boucle")
+    col1, col2 = st.columns(2)
+    with col1:
+        bcl["croyance"] = st.text_area("1. Croyance exprimée", value=bcl.get("croyance", ""), height=90, key=f"croy_{c['id']}", help="Écrire la phrase entendue, avec les mots du coaché.")
+        bcl["resultat_actuel"] = st.text_area("3. Résultat actuel", value=bcl.get("resultat_actuel", ""), height=90, key=f"res_{c['id']}", help="Quel résultat ce comportement produit-il concrètement ?")
+    with col2:
+        bcl["comportement_actuel"] = st.text_area("2. Comportement induit par la croyance", value=bcl.get("comportement_actuel", ""), height=90, key=f"comp_{c['id']}", help="Que fait ou ne fait pas la personne à cause de cette croyance ?")
+        bcl["renforcement"] = st.text_area("4. Renforcement de la croyance", value=bcl.get("renforcement", ""), height=90, key=f"renf_{c['id']}", help="En quoi le résultat obtenu donne-t-il raison à la croyance ?")
 
-    st.markdown("### Construction de la boucle actuelle")
-    bcl["croyance"] = st.text_area("Croyance", value=bcl.get("croyance") or ph.get("formulation_exacte", ""), height=70, key=f"croy_{c['id']}")
-    bcl["comportement_actuel"] = st.text_area("Comportement actuel engendré par cette croyance", value=bcl.get("comportement_actuel", ""), height=80, key=f"comp_{c['id']}")
-    bcl["resultat_actuel"] = st.text_area("Résultat actuel obtenu", value=bcl.get("resultat_actuel", ""), height=80, key=f"res_{c['id']}")
-    bcl["renforcement"] = st.text_area("Comment le résultat renforce la croyance", value=bcl.get("renforcement", ""), height=80, key=f"renf_{c['id']}")
     draw_current_loop(c)
 
+    with st.expander("Point d'attention accompagnateur", expanded=False):
+        st.markdown("La boucle auto-validante convient aux croyances sur soi, sur les autres en général ou sur le monde. Si la croyance vise une personne précise, elle relève d'un autre outil HEC.")
+        ph["concerne_tierce_personne"] = st.checkbox("Cette croyance vise une personne précise", value=bool(ph.get("concerne_tierce_personne", ph.get("validation", {}).get("concerne_tierce_personne", False))), key=f"tierce_{c['id']}")
+        if ph.get("concerne_tierce_personne"):
+            st.warning("Ne pas utiliser la boucle auto-validante pour une croyance portant sur une personne identifiée.")
+
+    ph["commentaire_seance"] = st.text_area("Notes très brèves de séance (facultatif)", value=ph.get("commentaire_seance", ph.get("validation", {}).get("commentaire_consultant", "")), height=70, key=f"com_{c['id']}")
     c["statut"] = st.selectbox("Statut", STATUTS, index=STATUTS.index(c.get("statut", "Découverte")) if c.get("statut") in STATUTS else 0, key=f"stat_{c['id']}")
-    if st.button("Enregistrer les modifications de cette croyance", type="primary", key=f"save_disc_{c['id']}"):
+    if st.button("Enregistrer cette boucle", type="primary", key=f"save_disc_{c['id']}"):
         c["updated_at"] = now_iso()
         touch()
-        st.success("Croyance mise à jour dans le JSON courant. Pensez à exporter le JSON général.")
-
+        st.success("Boucle enregistrée dans le JSON courant. Pensez à exporter le JSON général.")
 
 def action_table(c):
     act = c.setdefault("phase_action", {})
@@ -509,10 +569,8 @@ def build_pdf_for_croyance(b, c):
     story.append(t)
     story.append(Spacer(1, .4*cm))
     v = ph.get("validation", {})
-    story.append(Paragraph("Questions de validation", styles["TealH2"]))
-    for lab, key in [("Sur quoi vous basez-vous ?", "sur_quoi_base"),("D'autres pourraient penser différemment ?", "autres_personnes_pensent_differemment"),("Et vous, qu'en pensez-vous ?", "avis_personnel"),("Commentaire accompagnateur", "commentaire_consultant")]:
-        story.append(Paragraph(f"<b>{lab}</b><br/>{paragraph_safe(v.get(key)) or 'Non renseigné'}", styles["Normal"]))
-        story.append(Spacer(1, .15*cm))
+    story.append(Paragraph("Notes de séance", styles["TealH2"]))
+    story.append(Paragraph(paragraph_safe(ph.get("commentaire_seance", "")) or "Aucune note renseignée.", styles["Normal"]))
     story.append(PageBreak())
     act = c.get("phase_action", {})
     story.append(Paragraph("Phase 6 — Scénario de sortie", styles["TealH2"]))
@@ -551,20 +609,21 @@ def exports_for_croyance(b, c):
         st.download_button("Exporter JSON général", data=json_bytes(), file_name=safe_name("clarte360_croyances_general", "json"), mime="application/json")
 
 
+
 def croyance_list_table(b):
     rows = []
     for c in b.get("croyances", []):
         ph = c.get("phase_decouverte", {})
+        bcl = ph.get("boucle", {})
         rows.append({
             "Statut": c.get("statut", ""),
             "Date": ph.get("date", ""),
-            "Croyance": ph.get("formulation_exacte") or ph.get("boucle", {}).get("croyance", ""),
-            "Type": ph.get("type_croyance", ""),
-            "Frein objectif": "Oui" if ph.get("validation", {}).get("freine_objectif") else "Non",
+            "Croyance": bcl.get("croyance") or ph.get("formulation_exacte", ""),
+            "Comportement": bcl.get("comportement_actuel", ""),
+            "Résultat actuel": bcl.get("resultat_actuel", ""),
         })
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
 
 def main():
     init_state()
