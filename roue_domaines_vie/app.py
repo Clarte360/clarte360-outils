@@ -18,7 +18,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
 
 APP_TITLE = "Clarté360 - Roue des domaines de vie"
-APP_VERSION = "V1.2"
+APP_VERSION = "V1.3"
 BRAND_COLOR = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
@@ -476,8 +476,18 @@ def domain_selector(section_key, title, include_existing=True):
 def phase_1():
     st.markdown("## Phase 1 — Construire la roue des domaines de vie aujourd'hui")
     st.markdown("<div class='brand-box'>Dans cette première phase, représentez votre vie telle qu'elle est aujourd'hui. Ne cherchez pas à obtenir une roue équilibrée ou agréable : l'intérêt est de montrer ce qui prend réellement de la place dans votre vie actuelle.</div>", unsafe_allow_html=True)
+
+    st.markdown("### Questions d'aide à la réflexion")
+    st.markdown("""
+- Quels domaines occupent beaucoup de temps concret dans votre semaine ?
+- Quels domaines occupent peu de temps mais beaucoup de charge mentale ?
+- Quels domaines reviennent souvent dans vos pensées, vos obligations ou vos préoccupations ?
+- Y a-t-il un domaine absent aujourd'hui ? Dans ce cas, ne le forcez pas dans la roue actuelle.
+""")
+    st.info("Déplacez progressivement les réglettes et observez la roue se dessiner. Les pourcentages sont calculés automatiquement : ne cherchez pas à faire un calcul, fiez-vous à votre ressenti global.")
+
     selected = domain_selector("actuel", "Roue actuelle")
-        if selected and st.button("Valider ma roue actuelle", type="primary"):
+    if selected and st.button("Valider ma roue actuelle", type="primary"):
         vals, total = norm_values(st.session_state.data["actuel"].get("valeurs", {}), selected)
         if total <= 0:
             st.error("Merci de donner une valeur à au moins un domaine.")
@@ -606,12 +616,4 @@ def main():
         phase_4()
 
 if __name__ == "__main__":
-    main()st.markdown("### Questions d'aide à la réflexion")
-    st.markdown("""
-- Quels domaines occupent beaucoup de temps concret dans votre semaine ?
-- Quels domaines occupent peu de temps mais beaucoup de charge mentale ?
-- Quels domaines reviennent souvent dans vos pensées, vos obligations ou vos préoccupations ?
-- Y a-t-il un domaine absent aujourd'hui ? Dans ce cas, ne le forcez pas dans la roue actuelle.
-""")
-    st.info("Déplacez progressivement les réglettes et observez la roue se dessiner. Les pourcentages sont calculés automatiquement : ne cherchez pas à faire un calcul, fiez-vous à votre ressenti global.")
-    
+    main()
