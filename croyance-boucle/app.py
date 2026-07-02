@@ -70,30 +70,30 @@ st.markdown(
     .arrow {{font-size:2rem; color:{BRAND_COLOR}; text-align:center; padding-top:1.5rem;}}
     .danger {{color:#b00020; font-weight:700;}}
 
-    div.stButton > button[kind="primary"], div.stDownloadButton > button[kind="primary"] {
+    div.stButton > button[kind="primary"], div.stDownloadButton > button[kind="primary"] {{
         background-color: #008b8b !important;
         border-color: #008b8b !important;
         color: white !important;
-    }
-    div.stButton > button:hover, div.stDownloadButton > button:hover {
+    }}
+    div.stButton > button:hover, div.stDownloadButton > button:hover {{
         border-color: #006f6f !important;
         color: white !important;
-    }
-    .stTabs [aria-selected="true"] {
+    }}
+    .stTabs [aria-selected="true"] {{
         color: #008b8b !important;
         border-bottom-color: #008b8b !important;
-    }
-    .loop-wrap {position:relative; width:100%; max-width:920px; height:560px; margin:1rem auto 1.5rem auto;}
-    .loop-svg {position:absolute; inset:0; width:100%; height:100%; z-index:1;}
-    .loop-node {position:absolute; z-index:2; width:250px; min-height:105px; background:#ffffff; border:3px solid #008b8b; border-radius:18px; padding:14px; box-shadow:0 4px 14px rgba(0,0,0,.08);}
-    .loop-node-top {left:50%; top:12px; transform:translateX(-50%);}
-    .loop-node-right {right:5px; top:205px;}
-    .loop-node-bottom {left:50%; bottom:15px; transform:translateX(-50%);}
-    .loop-node-left {left:5px; top:205px;}
-    .loop-node-title {font-size:.78rem; color:#008b8b; font-weight:800; text-transform:uppercase; letter-spacing:.03em; margin-bottom:8px;}
-    .loop-node-text {font-size:1rem; line-height:1.25; color:#1f2937; white-space:pre-wrap;}
-    .loop-node-empty {color:#6b7280; font-style:italic;}
-    .loop-center {position:absolute; z-index:2; left:50%; top:49%; transform:translate(-50%,-50%); background:#e7f5f4; border:2px dashed #008b8b; color:#006f6f; border-radius:999px; padding:10px 18px; font-weight:700; text-align:center;}
+    }}
+    .loop-wrap {{position:relative; width:100%; max-width:920px; height:560px; margin:1rem auto 1.5rem auto;}}
+    .loop-svg {{position:absolute; inset:0; width:100%; height:100%; z-index:1;}}
+    .loop-node {{position:absolute; z-index:2; width:250px; min-height:105px; background:#ffffff; border:3px solid #008b8b; border-radius:18px; padding:14px; box-shadow:0 4px 14px rgba(0,0,0,.08);}}
+    .loop-node-top {{left:50%; top:12px; transform:translateX(-50%);}}
+    .loop-node-right {{right:5px; top:205px;}}
+    .loop-node-bottom {{left:50%; bottom:15px; transform:translateX(-50%);}}
+    .loop-node-left {{left:5px; top:205px;}}
+    .loop-node-title {{font-size:.78rem; color:#008b8b; font-weight:800; text-transform:uppercase; letter-spacing:.03em; margin-bottom:8px;}}
+    .loop-node-text {{font-size:1rem; line-height:1.25; color:#1f2937; white-space:pre-wrap;}}
+    .loop-node-empty {{color:#6b7280; font-style:italic;}}
+    .loop-center {{position:absolute; z-index:2; left:50%; top:49%; transform:translate(-50%,-50%); background:#e7f5f4; border:2px dashed #008b8b; color:#006f6f; border-radius:999px; padding:10px 18px; font-weight:700; text-align:center;}}
 
 </style>
 """,
