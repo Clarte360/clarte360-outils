@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 APP_TITLE = "Clarté360 - Roue des valeurs"
-APP_VERSION = "V2.3"
+APP_VERSION = "V2.4"
 BRAND_COLOR = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
@@ -459,15 +459,16 @@ def fig_to_png_bytes(fig):
     return buf.getvalue()
 
 
-def create_pdf_bytes(data):
+def create_pdf_bytes(data, include_values=True, include_energy=True):
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
-        fig = create_wheel_figure(data, small=False)
-        pdf.savefig(fig, bbox_inches="tight")
-        plt.close(fig)
+        if include_values:
+            fig = create_wheel_figure(data, small=False)
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
 
         rows = build_rows(data)
-        if rows:
+        if include_values and rows:
             fig2, ax = plt.subplots(figsize=(8.27, 11.69))
             ax.axis("off")
             b = data["beneficiaire"]
@@ -505,7 +506,7 @@ def create_pdf_bytes(data):
 
         # Page complémentaire Valeurs énergies si l'espace a été activé
         ve = data.get("valeurs_energies", {})
-        if ve.get("access_granted") and ve.get("selected"):
+        if include_energy and ve.get("access_granted") and ve.get("selected"):
             fig3, ax3 = plt.subplots(figsize=(8.27, 11.69))
             ax3.axis("off")
             ax3.text(0.03, 0.97, "Clarté360 - Valeurs énergies", fontsize=16, fontweight="bold", color=BRAND_COLOR, va="top")
@@ -545,6 +546,13 @@ def create_pdf_bytes(data):
             fig4 = create_energy_wheel_figure(data, small=False)
             pdf.savefig(fig4, bbox_inches="tight")
             plt.close(fig4)
+        if not include_values and not (ve.get("access_granted") and ve.get("selected")):
+            fig_empty, ax_empty = plt.subplots(figsize=(8.27, 11.69))
+            ax_empty.axis("off")
+            ax_empty.text(0.03, 0.97, "Clarté360 - Valeurs énergies", fontsize=16, fontweight="bold", color=BRAND_COLOR, va="top")
+            ax_empty.text(0.03, 0.92, "Aucune valeur énergie n'a été renseignée. Cet espace est optionnel.", fontsize=11, va="top")
+            pdf.savefig(fig_empty, bbox_inches="tight")
+            plt.close(fig_empty)
     buf.seek(0)
     return buf.getvalue()
 
@@ -562,7 +570,7 @@ def add_default_values(nb):
 
 def sidebar():
     st.sidebar.markdown("## Navigation")
-    pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et domaines", "4. Roue", "5. Valeurs énergies", "6. Export / Import"]
+    pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et domaines", "4. Roue des valeurs", "5. Valeurs énergies", "6. Export / Rapports"]
     st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
     st.sidebar.markdown("---")
     uploaded = st.sidebar.file_uploader("Ouvrir un questionnaire JSON", type=["json"])
@@ -721,18 +729,35 @@ def page_valeurs():
 
 def page_roue():
     st.markdown("## 4. Roue des valeurs")
+    st.write("Cette étape permet de visualiser la roue principale. Les exports ci-dessous concernent uniquement la roue des valeurs, sans l'espace complémentaire Valeurs énergies.")
     fig = create_wheel_figure(st.session_state.data, small=True)
     st.pyplot(fig, use_container_width=False)
     png_bytes = fig_to_png_bytes(fig)
     plt.close(fig)
-    b = st.session_state.data["beneficiaire"]
-    base = export_basename(st.session_state.data)
-    c1, c2 = st.columns(2)
+    data = st.session_state.data
+    base = export_basename(data)
+    json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    rows = build_rows(data)
+    csv_buf = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(csv_buf, fieldnames=list(rows[0].keys()), delimiter=";")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    st.markdown("### Export / Import de la roue des valeurs")
+    st.info("Vous pouvez télécharger ici le rapport complet de la roue principale, le JSON modifiable et les fichiers utiles. Le travail sur les Valeurs énergies reste optionnel et produit ses propres sorties uniquement s'il est activé.")
+    c1, c2, c3 = st.columns(3)
     with c1:
-        st.download_button("Télécharger la roue en PNG", data=png_bytes, file_name=f"{base}.png", mime="image/png")
+        st.download_button("Télécharger le JSON modifiable", json_bytes, file_name=f"{base}.json", mime="application/json")
     with c2:
-        pdf_bytes = create_pdf_bytes(st.session_state.data)
-        st.download_button("Télécharger le PDF", data=pdf_bytes, file_name=f"{base}.pdf", mime="application/pdf")
+        st.download_button("Télécharger le rapport Roue des valeurs", data=create_pdf_bytes(data, include_values=True, include_energy=False), file_name=f"{base}_rapport_roue_valeurs.pdf", mime="application/pdf")
+    with c3:
+        st.download_button("Télécharger la roue en PNG", data=png_bytes, file_name=f"{base}_roue_valeurs.png", mime="image/png")
+    c4, c5 = st.columns(2)
+    with c4:
+        st.download_button("Télécharger le CSV", csv_buf.getvalue().encode("utf-8-sig"), file_name=f"{base}.csv", mime="text/csv")
+    with c5:
+        st.caption("L'import d'un JSON se fait depuis la barre latérale gauche : Ouvrir un questionnaire JSON.")
 
 
 
@@ -854,10 +879,9 @@ def page_valeurs_energies():
         plt.close(fig)
 
 def page_export():
-    st.markdown("## 5. Export / Import")
+    st.markdown("## 6. Export / Rapports")
     data = st.session_state.data
-    b = data["beneficiaire"]
-    base = export_basename(st.session_state.data)
+    base = export_basename(data)
     json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     rows = build_rows(data)
     csv_buf = io.StringIO()
@@ -865,9 +889,35 @@ def page_export():
         writer = csv.DictWriter(csv_buf, fieldnames=list(rows[0].keys()), delimiter=";")
         writer.writeheader()
         writer.writerows(rows)
-    st.download_button("Télécharger le JSON modifiable", json_bytes, file_name=f"{base}.json", mime="application/json")
+
+    st.markdown("### Exports principaux")
+    st.info("La roue des valeurs peut être utilisée seule. Les Valeurs énergies sont un travail complémentaire optionnel : certaines personnes ne l'utiliseront pas, et c'est normal.")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.download_button("JSON modifiable complet", json_bytes, file_name=f"{base}.json", mime="application/json")
+    with c2:
+        st.download_button("CSV roue des valeurs", csv_buf.getvalue().encode("utf-8-sig"), file_name=f"{base}.csv", mime="text/csv")
+    with c3:
+        fig = create_wheel_figure(data, small=True)
+        st.download_button("PNG roue des valeurs", fig_to_png_bytes(fig), file_name=f"{base}_roue_valeurs.png", mime="image/png")
+        plt.close(fig)
+
+    st.markdown("### Rapports PDF")
+    r1, r2, r3 = st.columns(3)
+    with r1:
+        st.download_button("Rapport Roue des valeurs", create_pdf_bytes(data, include_values=True, include_energy=False), file_name=f"{base}_rapport_roue_valeurs.pdf", mime="application/pdf")
+    with r2:
+        ve = data.get("valeurs_energies", {})
+        if ve.get("access_granted") and ve.get("selected"):
+            st.download_button("Rapport Valeurs énergies", create_pdf_bytes(data, include_values=False, include_energy=True), file_name=f"{base}_rapport_valeurs_energies.pdf", mime="application/pdf")
+        else:
+            st.caption("Rapport Valeurs énergies disponible uniquement si l'onglet optionnel a été activé et renseigné.")
+    with r3:
+        st.download_button("Rapport complet", create_pdf_bytes(data, include_values=True, include_energy=True), file_name=f"{base}_rapport_complet.pdf", mime="application/pdf")
+
     st.markdown("### Transmission au consultant")
-    st.info("En cliquant sur le bouton ci-dessous, le fichier JSON est transmis à votre consultant Clarté360 afin de préparer l’analyse et la restitution. Vous conservez également la possibilité de télécharger votre propre JSON.")
+    st.info("En cliquant sur le bouton ci-dessous, le fichier JSON complet est transmis à votre consultant Clarté360 afin de préparer l’analyse et la restitution. Vous conservez également la possibilité de télécharger votre propre JSON.")
     if st.button("Transmettre le JSON au consultant", type="primary"):
         ok, msg = send_final_json_to_consultant(data, json_bytes, f"{base}.json")
         if ok:
@@ -876,13 +926,9 @@ def page_export():
         else:
             st.error("La transmission automatique n’a pas pu être effectuée.")
             st.caption(msg)
-    st.download_button("Télécharger le CSV", csv_buf.getvalue().encode("utf-8-sig"), file_name=f"{base}.csv", mime="text/csv")
-    fig = create_wheel_figure(data, small=True)
-    st.download_button("Télécharger le PNG", fig_to_png_bytes(fig), file_name=f"{base}.png", mime="image/png")
-    plt.close(fig)
-    st.download_button("Télécharger le PDF", create_pdf_bytes(data), file_name=f"{base}.pdf", mime="application/pdf")
+
     if rows:
-        st.markdown("### Aperçu des données")
+        st.markdown("### Aperçu des données de la roue principale")
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
