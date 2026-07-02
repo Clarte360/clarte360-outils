@@ -2,8 +2,12 @@ import csv
 import io
 import json
 import math
+import secrets
+import smtplib
+import string
 from copy import deepcopy
 from datetime import date, datetime
+from email.message import EmailMessage
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -13,11 +17,12 @@ import pandas as pd
 import streamlit as st
 
 APP_TITLE = "Clarté360 - Roue des valeurs"
-APP_VERSION = "V2.1"
+APP_VERSION = "V2.2"
 BRAND_COLOR = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
 DOMAINES = ["Personnel", "Travail", "Famille", "Social", "Couple / intimité"]
+FINAL_EMAIL_TO = "contact@clarte360.com"
 DEFAULT_COLORS = [
     "#008080", "#F2C94C", "#EB5757", "#2F80ED", "#9B51E0", "#27AE60",
     "#F2994A", "#56CCF2", "#BB6BD9", "#219653", "#F67280", "#6C5CE7",
@@ -43,12 +48,209 @@ st.markdown(
 )
 
 
+def get_email_config() -> dict | None:
+    """Lit la configuration SMTP Streamlit Secrets au format déjà utilisé par Clarté360."""
+    try:
+        cfg = st.secrets.get("email", {})
+        required = ["smtp_server", "smtp_port", "smtp_user", "smtp_password", "from_email", "to_email"]
+        if all(k in cfg and str(cfg[k]).strip() for k in required):
+            return {k: str(cfg[k]).strip() for k in required}
+    except Exception:
+        pass
+    return None
+
+
+def send_email(to_email: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> tuple[bool, str]:
+    cfg = get_email_config()
+    if not cfg:
+        return False, "SMTP non configuré. Aucun email n'a été envoyé."
+    try:
+        msg = EmailMessage()
+        msg["From"] = cfg["from_email"]
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg.set_content(body)
+        if attachment is not None and attachment_name:
+            msg.add_attachment(attachment, maintype="application", subtype="json", filename=attachment_name)
+        port = int(cfg["smtp_port"])
+        server = cfg["smtp_server"]
+        user = cfg["smtp_user"]
+        password = cfg["smtp_password"]
+        if port == 465:
+            with smtplib.SMTP_SSL(server, port, timeout=20) as smtp:
+                smtp.login(user, password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(server, port, timeout=20) as smtp:
+                smtp.starttls()
+                smtp.login(user, password)
+                smtp.send_message(msg)
+        return True, "Email envoyé."
+    except Exception as exc:
+        return False, f"Erreur d'envoi email : {exc}"
+
+
+def generate_access_code(length: int = 6) -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    # évite les caractères ambigus
+    alphabet = alphabet.replace("O", "").replace("0", "").replace("I", "").replace("1", "")
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def send_access_code_email(beneficiaire: dict, access_code: str) -> tuple[bool, str]:
+    cfg = get_email_config()
+    if not cfg:
+        return False, "SMTP non configuré : impossible d'envoyer le code d'accès. Configurez les Secrets Streamlit."
+    prenom = beneficiaire.get("prenom", "")
+    nom = beneficiaire.get("nom", "")
+    email = beneficiaire.get("email", "")
+    admin_to = cfg.get("to_email", FINAL_EMAIL_TO)
+
+    subject_admin = "Clarté360 - Nouveau code d'accès Roue des valeurs"
+    body_admin = (
+        "Une personne vient de demander un code d'accès pour réaliser l'outil Clarté360 - Roue des valeurs.\n\n"
+        f"Prénom : {prenom}\n"
+        f"Nom : {nom}\n"
+        f"Email : {email}\n"
+        f"Code généré : {access_code}\n"
+        f"Date/heure : {datetime.now().isoformat(timespec='seconds')}\n"
+    )
+    ok_admin, msg_admin = send_email(admin_to, subject_admin, body_admin)
+
+    subject_user = "Votre code d'accès Clarté360"
+    body_user = (
+        f"Bonjour {prenom},\n\n"
+        "Voici votre code d'accès pour démarrer l'outil Clarté360 - Roue des valeurs :\n\n"
+        f"{access_code}\n\n"
+        "Ce code permet de sécuriser le démarrage de votre passation.\n\n"
+        "Vos réponses seront utilisées uniquement dans le cadre de votre accompagnement. "
+        "Le fichier JSON pourra être transmis à votre consultant Clarté360 afin de préparer la restitution.\n\n"
+        "Cordialement,\nClarté360\n"
+    )
+    ok_user, msg_user = send_email(email, subject_user, body_user)
+    if ok_user:
+        return True, "Code envoyé au bénéficiaire."
+    return False, f"Notification consultant : {msg_admin} / Envoi bénéficiaire : {msg_user}"
+
+
+def send_final_json_to_consultant(data: dict, json_bytes: bytes, file_name: str) -> tuple[bool, str]:
+    cfg = get_email_config()
+    destination = cfg.get("to_email", FINAL_EMAIL_TO) if cfg else FINAL_EMAIL_TO
+    b = data.get("beneficiaire", {})
+    subject = "Clarté360 - JSON final Roue des valeurs"
+    body = (
+        "Le bénéficiaire a terminé l'outil Clarté360 - Roue des valeurs.\n\n"
+        f"Prénom : {b.get('prenom','')}\n"
+        f"Nom : {b.get('nom','')}\n"
+        f"Email : {b.get('email','')}\n"
+        f"Date de réalisation : {b.get('date_realisation','')}\n"
+        f"Date/heure d'envoi : {datetime.now().isoformat(timespec='seconds')}\n\n"
+        "Le JSON joint permet de reprendre les données et de régénérer les sorties de l'outil.\n"
+    )
+    return send_email(destination, subject, body, attachment=json_bytes, attachment_name=file_name)
+
+
+def ensure_access_state():
+    for k, v in {
+        "access_code": "",
+        "code_sent": False,
+        "code_verified": False,
+        "pending_beneficiaire": None,
+        "final_json_sent": False,
+    }.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def access_gate() -> bool:
+    """Retourne True lorsque le code est validé."""
+    ensure_access_state()
+    if st.session_state.get("code_verified"):
+        return True
+
+    header()
+    st.markdown("## Accès bénéficiaire")
+    st.write("Cet outil n'est pas un test psychométrique. Il sert de support d'exploration et d'échange avec votre consultant Clarté360.")
+    st.markdown(
+        """
+        <div class='privacy-box'>
+        🔒 <strong>Confidentialité et transmission</strong><br>
+        Vos réponses restent sous votre contrôle. Le fichier JSON final pourra être transmis à votre consultant Clarté360 afin de préparer l'analyse et la restitution. Aucune donnée n'est exploitée hors du cadre de votre accompagnement.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    if not st.session_state.get("code_sent"):
+        with st.form("access_request_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                prenom = st.text_input("Prénom *")
+                nom = st.text_input("Nom *")
+            with c2:
+                email = st.text_input("Adresse email *")
+                consultant = st.text_input("Consultant", value="Clarté360")
+            consent = st.checkbox("Je comprends que mes réponses seront utilisées uniquement dans le cadre de mon accompagnement et que le JSON pourra être transmis à mon consultant.")
+            submit = st.form_submit_button("Recevoir / générer mon code d'accès", type="primary")
+        if submit:
+            if not prenom.strip() or not nom.strip() or not email.strip():
+                st.error("Merci de renseigner le prénom, le nom et l'adresse email.")
+            elif "@" not in email or "." not in email:
+                st.error("Merci de renseigner une adresse email valide.")
+            elif not consent:
+                st.error("Merci de confirmer la compréhension de l'utilisation des données.")
+            else:
+                beneficiaire_tmp = {"prenom": prenom.strip(), "nom": nom.strip(), "email": email.strip(), "consultant": consultant.strip()}
+                code = generate_access_code()
+                ok, msg = send_access_code_email(beneficiaire_tmp, code)
+                st.session_state.pending_beneficiaire = beneficiaire_tmp
+                st.session_state.access_code = code
+                st.session_state.code_sent = ok
+                if ok:
+                    st.success("Un code d'accès vient d'être envoyé à l'adresse email indiquée.")
+                    st.rerun()
+                else:
+                    st.error("Le code n'a pas pu être envoyé. Vérifiez la configuration SMTP dans Streamlit Secrets.")
+                    st.caption(msg)
+                    st.info(f"Mode test : code généré = {code}")
+                    st.session_state.code_sent = True
+    else:
+        b = st.session_state.get("pending_beneficiaire") or {}
+        st.success(f"Code généré pour : {b.get('prenom','')} {b.get('nom','')} - {b.get('email','')}")
+        code_input = st.text_input("Saisir le code d'accès", max_chars=6, type="password")
+        c1, c2 = st.columns([0.18, 0.82])
+        with c1:
+            if st.button("Entrer dans l'outil", type="primary"):
+                if code_input.strip().upper() == str(st.session_state.get("access_code", "")).strip().upper():
+                    st.session_state.code_verified = True
+                    data = empty_state()
+                    data["beneficiaire"].update({
+                        "prenom": b.get("prenom", ""),
+                        "nom": b.get("nom", ""),
+                        "email": b.get("email", ""),
+                        "consultant": b.get("consultant", "Clarté360"),
+                        "date_realisation": date.today().isoformat(),
+                    })
+                    st.session_state.data = data
+                    st.rerun()
+                else:
+                    st.error("Code incorrect.")
+        with c2:
+            if st.button("Modifier les informations"):
+                for k in ["access_code", "code_sent", "code_verified", "pending_beneficiaire"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+    return False
+
+
 def empty_state():
     return {
         "version": APP_VERSION,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "beneficiaire": {"prenom": "", "nom": "", "date_realisation": date.today().isoformat()},
+        "beneficiaire": {"prenom": "", "nom": "", "email": "", "consultant": "Clarté360", "date_realisation": date.today().isoformat()},
+        "access": {"started_at": datetime.now().isoformat(timespec="seconds"), "code_verified": False},
         "valeurs": [],
     }
 
@@ -293,6 +495,11 @@ def page_beneficiaire():
     with c2:
         b["nom"] = st.text_input("Nom du bénéficiaire", value=b.get("nom", ""))
     with c3:
+        b["email"] = st.text_input("Adresse email", value=b.get("email", ""))
+    c4, c5 = st.columns(2)
+    with c4:
+        b["consultant"] = st.text_input("Consultant", value=b.get("consultant", "Clarté360"))
+    with c5:
         current_date = date.fromisoformat(b.get("date_realisation", date.today().isoformat())) if b.get("date_realisation") else date.today()
         b["date_realisation"] = st.date_input("Date de réalisation", value=current_date).isoformat()
     update_timestamp()
@@ -407,6 +614,16 @@ def page_export():
         writer.writeheader()
         writer.writerows(rows)
     st.download_button("Télécharger le JSON modifiable", json_bytes, file_name=f"{base}.json", mime="application/json")
+    st.markdown("### Transmission au consultant")
+    st.info("En cliquant sur le bouton ci-dessous, le fichier JSON est transmis à votre consultant Clarté360 afin de préparer l’analyse et la restitution. Vous conservez également la possibilité de télécharger votre propre JSON.")
+    if st.button("Transmettre le JSON au consultant", type="primary"):
+        ok, msg = send_final_json_to_consultant(data, json_bytes, f"{base}.json")
+        if ok:
+            st.session_state.final_json_sent = True
+            st.success("JSON transmis au consultant Clarté360.")
+        else:
+            st.error("La transmission automatique n’a pas pu être effectuée.")
+            st.caption(msg)
     st.download_button("Télécharger le CSV", csv_buf.getvalue().encode("utf-8-sig"), file_name=f"{base}.csv", mime="text/csv")
     fig = create_wheel_figure(data, small=True)
     st.download_button("Télécharger le PNG", fig_to_png_bytes(fig), file_name=f"{base}.png", mime="image/png")
@@ -419,6 +636,9 @@ def page_export():
 
 def main():
     ensure_state()
+    ensure_access_state()
+    if not access_gate():
+        return
     sidebar()
     header()
     if st.session_state.page.startswith("1"):
