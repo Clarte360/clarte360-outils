@@ -1,9 +1,11 @@
 import io
 import json
 import secrets
+import smtplib
 import string
 from copy import deepcopy
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -16,7 +18,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
 
 APP_TITLE = "Clarté360 - Roue des domaines de vie"
-APP_VERSION = "V1.0"
+APP_VERSION = "V1.2"
 BRAND_COLOR = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
@@ -30,6 +32,8 @@ DOMAINES = {
 }
 DEFAULT_ORDER = list(DOMAINES.keys())
 DEFAULT_COLORS = ["#008080", "#F2C94C", "#EB5757", "#2F80ED", "#9B51E0", "#27AE60", "#F2994A"]
+FINAL_EMAIL_TO = "contact@clarte360.com"
+ACCESS_CODE_VALIDITY_MINUTES = 30
 
 st.set_page_config(page_title=APP_TITLE, page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🧭", layout="wide")
 
