@@ -1,598 +1,309 @@
+import io
 import json
-import html
 import secrets
+import smtplib
 import string
 from copy import deepcopy
-from datetime import date, datetime
-from io import BytesIO
+from datetime import datetime, date, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
 
-APP_TITLE = "Clarté360 — Boucle auto-validante"
-APP_VERSION = "V1.1 — outil de séance accompagnateur"
-BRAND_COLOR = "#008b8b"
-ACCENT = "#e7f5f4"
-WARN = "#fff4e6"
-DATA_SCHEMA_VERSION = "1.0"
+APP_TITLE = "Clarté360 - Roue des domaines de vie"
+APP_VERSION = "V1.3"
+BRAND_COLOR = "#008080"
+BASE_DIR = Path(__file__).resolve().parent
+LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
 
-# === CLARTE360_CONSULTANT_CODES_START ===
-CONSULTANT_CODES = {
-    "C360-7KQ4-P9XM": "",
-    "C360-D2HF-8LQA": "",
-    "C360-M6TZ-3RVC": "",
-    "C360-X9PA-5WGN": "",
-    "C360-B4NY-2KRD": "",
-    "C360-Q8LC-6FHS": "",
-    "C360-V3ME-9TZA": "",
-    "C360-H7RS-4JQP": "",
-    "C360-L5WD-8CBN": "",
-    "C360-P2GK-7XMF": "",
-    "C360-T9AV-3LQH": "",
-    "C360-N6CJ-5RWP": "",
-    "C360-F4XM-9DKE": "",
-    "C360-R8QB-2VLS": "",
-    "C360-K3HN-6ZTA": "",
-    "C360-W5LP-4GRC": "",
-    "C360-A9TD-7MFX": "",
-    "C360-J2RV-8QNB": "",
-    "C360-S6KC-3WPH": "",
-    "C360-Z4QL-5TMD": "",
+DOMAINES = {
+    "Professionnel": "Tout ce qui concerne le monde du travail : emploi, recherche d'emploi, activité professionnelle, projet professionnel, formation liée au travail, responsabilités professionnelles.",
+    "Personnel": "Le temps passé avec soi-même : repos, santé, loisirs personnels, sport individuel, réflexion, solitude choisie, relation à soi.",
+    "Familial": "La famille au sens large : enfants, parents, frères et sœurs, famille élargie, belle-famille, obligations ou présences familiales.",
+    "Couple / intimité": "La relation avec la personne qui partage l'intimité. Ce domaine est distinct de la famille. Il peut naturellement ne pas exister dans votre vie actuelle.",
+    "Social / amitié": "Les relations hors famille, couple et travail : amis, voisins, vie associative, communauté, rencontres, activités collectives."
 }
-# === CLARTE360_CONSULTANT_CODES_END ===
+DEFAULT_ORDER = list(DOMAINES.keys())
+DEFAULT_COLORS = ["#008080", "#F2C94C", "#EB5757", "#2F80ED", "#9B51E0", "#27AE60", "#F2994A"]
+FINAL_EMAIL_TO = "contact@clarte360.com"
+ACCESS_CODE_VALIDITY_MINUTES = 30
 
-TYPE_CROYANCE = [
-    "Sur soi / identité",
-    "Sur les autres en général",
-    "Sur le monde",
-    "A vérifier",
-]
-STATUTS = ["Découverte", "Validée", "A travailler en phase 6", "Travaillée", "Archivée"]
+st.set_page_config(page_title=APP_TITLE, page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🧭", layout="wide")
 
-st.set_page_config(page_title=APP_TITLE, page_icon="🔁", layout="wide")
-
-st.markdown(
-    f"""
+st.markdown(f"""
 <style>
-    .main-title {{color:{BRAND_COLOR}; font-weight:800;}}
-    .brand-box {{background:{ACCENT}; border-left:6px solid {BRAND_COLOR}; padding:1rem; border-radius:12px; margin:.6rem 0;}}
-    .warn-box {{background:{WARN}; border-left:6px solid #f0a000; padding:1rem; border-radius:12px; margin:.6rem 0;}}
-    .mini-note {{font-size:.9rem; color:#555;}}
-    .loop-card {{border:2px solid {BRAND_COLOR}; border-radius:18px; padding:1rem; background:white; text-align:center; min-height:108px;}}
-    .loop-label {{font-size:.85rem; text-transform:uppercase; color:{BRAND_COLOR}; font-weight:700;}}
-    .loop-content {{font-size:1rem; margin-top:.5rem;}}
-    .arrow {{font-size:2rem; color:{BRAND_COLOR}; text-align:center; padding-top:1.5rem;}}
-    .danger {{color:#b00020; font-weight:700;}}
-
-    div.stButton > button[kind="primary"], div.stDownloadButton > button[kind="primary"] {
-        background-color: #008b8b !important;
-        border-color: #008b8b !important;
-        color: white !important;
-    }
-    div.stButton > button:hover, div.stDownloadButton > button:hover {
-        border-color: #006f6f !important;
-        color: white !important;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #008b8b !important;
-        border-bottom-color: #008b8b !important;
-    }
-    .loop-wrap {position:relative; width:100%; max-width:920px; height:560px; margin:1rem auto 1.5rem auto;}
-    .loop-svg {position:absolute; inset:0; width:100%; height:100%; z-index:1;}
-    .loop-node {position:absolute; z-index:2; width:250px; min-height:105px; background:#ffffff; border:3px solid #008b8b; border-radius:18px; padding:14px; box-shadow:0 4px 14px rgba(0,0,0,.08);}
-    .loop-node-top {left:50%; top:12px; transform:translateX(-50%);}
-    .loop-node-right {right:5px; top:205px;}
-    .loop-node-bottom {left:50%; bottom:15px; transform:translateX(-50%);}
-    .loop-node-left {left:5px; top:205px;}
-    .loop-node-title {font-size:.78rem; color:#008b8b; font-weight:800; text-transform:uppercase; letter-spacing:.03em; margin-bottom:8px;}
-    .loop-node-text {font-size:1rem; line-height:1.25; color:#1f2937; white-space:pre-wrap;}
-    .loop-node-empty {color:#6b7280; font-style:italic;}
-    .loop-center {position:absolute; z-index:2; left:50%; top:49%; transform:translate(-50%,-50%); background:#e7f5f4; border:2px dashed #008b8b; color:#006f6f; border-radius:999px; padding:10px 18px; font-weight:700; text-align:center;}
-
+.main .block-container {{max-width: 1180px; padding-top: 1.6rem;}}
+h1, h2, h3 {{color: {BRAND_COLOR} !important;}}
+.brand-box {{background:#F1F8F8; border-left:6px solid {BRAND_COLOR}; padding:16px 18px; border-radius:10px; line-height:1.55;}}
+.info-box {{background:#F8FAFC; border:1px solid #E5E7EB; padding:14px 16px; border-radius:10px; line-height:1.55;}}
+.warn-box {{background:#FFF7E6; border-left:5px solid #F2C94C; padding:12px 14px; border-radius:8px; line-height:1.5;}}
+.ok-box {{background:#ECFDF5; border-left:5px solid #10B981; padding:12px 14px; border-radius:8px; line-height:1.5;}}
+.small-note {{color:#6B7280; font-size:0.92rem;}}
+div.stButton > button:first-child {{border-radius:10px; border:1px solid {BRAND_COLOR}; color:{BRAND_COLOR}; background:white;}}
+div.stButton > button:first-child:hover {{background:#F1F8F8; color:{BRAND_COLOR}; border-color:{BRAND_COLOR};}}
+div.stButton > button[kind="primary"] {{background:{BRAND_COLOR} !important; color:white !important; border:1px solid {BRAND_COLOR} !important;}}
+div.stButton > button[kind="primary"] * {{color:white !important;}}
+div.stDownloadButton > button:first-child {{border-radius:10px; border:1px solid {BRAND_COLOR}; color:{BRAND_COLOR}; background:white;}}
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
 
-def now_iso():
-    return datetime.now().isoformat(timespec="seconds")
+def generate_access_code(length=6):
+    alphabet = (string.ascii_uppercase + string.digits).replace("O", "").replace("0", "").replace("I", "").replace("1", "")
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def make_id(prefix):
-    return prefix + "_" + datetime.now().strftime("%Y%m%d%H%M%S") + "_" + secrets.token_hex(3)
+def get_email_config() -> dict | None:
+    """Lit la configuration SMTP Streamlit Secrets, section [email]."""
+    try:
+        cfg = st.secrets.get("email", {})
+        required = ["smtp_server", "smtp_port", "smtp_user", "smtp_password", "from_email", "to_email"]
+        if all(k in cfg and str(cfg[k]).strip() for k in required):
+            return {k: str(cfg[k]).strip() for k in required}
+    except Exception:
+        pass
+    return None
 
 
-def empty_store():
+def send_email(to_email: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> tuple[bool, str]:
+    cfg = get_email_config()
+    if not cfg:
+        return False, "SMTP non configuré. Aucun email n'a été envoyé."
+    try:
+        msg = EmailMessage()
+        msg["From"] = cfg["from_email"]
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg.set_content(body)
+        if attachment is not None and attachment_name:
+            msg.add_attachment(attachment, maintype="application", subtype="json", filename=attachment_name)
+        port = int(cfg["smtp_port"])
+        if port == 465:
+            with smtplib.SMTP_SSL(str(cfg["smtp_server"]), port, timeout=20) as smtp:
+                smtp.login(str(cfg["smtp_user"]), str(cfg["smtp_password"]))
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(str(cfg["smtp_server"]), port, timeout=20) as smtp:
+                smtp.starttls()
+                smtp.login(str(cfg["smtp_user"]), str(cfg["smtp_password"]))
+                smtp.send_message(msg)
+        return True, "Email envoyé."
+    except Exception as exc:
+        return False, f"Erreur d'envoi email : {exc}"
+
+
+def send_access_code_email(beneficiaire: dict, access_code: str, expires_at: datetime) -> tuple[bool, str]:
+    cfg = get_email_config()
+    if not cfg:
+        return False, "SMTP non configuré : impossible d'envoyer le code d'accès. Configurez les Secrets Streamlit."
+
+    prenom = beneficiaire.get("prenom", "")
+    nom = beneficiaire.get("nom", "")
+    email = beneficiaire.get("email", "")
+    consultant = beneficiaire.get("consultant", "")
+    date_realisation = beneficiaire.get("date_realisation", "")
+    admin_to = cfg.get("to_email", FINAL_EMAIL_TO)
+    now_txt = datetime.now().isoformat(timespec="seconds")
+    expires_txt = expires_at.strftime("%H:%M")
+
+    subject_admin = "Clarté360 - Nouveau code d'accès Roue des domaines de vie"
+    body_admin = (
+        "Une personne vient de demander un code d'accès pour réaliser l'outil Clarté360 - Roue des domaines de vie.\n\n"
+        f"Prénom : {prenom}\n"
+        f"Nom : {nom}\n"
+        f"Email : {email}\n"
+        f"Consultant : {consultant}\n"
+        f"Date de réalisation : {date_realisation}\n"
+        f"Code généré : {access_code}\n"
+        f"Durée de validité : {ACCESS_CODE_VALIDITY_MINUTES} minutes, jusqu'à {expires_txt} environ.\n"
+        f"Date/heure : {now_txt}\n"
+    )
+    ok_admin, msg_admin = send_email(admin_to, subject_admin, body_admin)
+
+    subject_user = "Votre code d'accès Clarté360"
+    body_user = (
+        f"Bonjour {prenom},\n\n"
+        "Voici votre code d'accès pour démarrer l'outil Clarté360 - Roue des domaines de vie :\n\n"
+        f"{access_code}\n\n"
+        f"Ce code est valable {ACCESS_CODE_VALIDITY_MINUTES} minutes.\n\n"
+        "Vos réponses restent sous votre contrôle. Le fichier JSON final pourra être transmis à votre consultant Clarté360 afin de préparer l'analyse et la restitution.\n\n"
+        "Cordialement,\nClarté360\n"
+    )
+    ok_user, msg_user = send_email(email, subject_user, body_user)
+    if ok_user:
+        return True, "Code envoyé au bénéficiaire."
+    return False, f"Notification consultant : {msg_admin} / Envoi bénéficiaire : {msg_user}"
+
+
+def send_final_json_to_consultant(data: dict, json_bytes_data: bytes, file_name: str) -> tuple[bool, str]:
+    cfg = get_email_config()
+    destination = cfg.get("to_email", FINAL_EMAIL_TO) if cfg else FINAL_EMAIL_TO
+    b = data.get("beneficiaire", {})
+    subject = "Clarté360 - JSON final Roue des domaines de vie"
+    body = (
+        "Le bénéficiaire a généré le JSON final de l'outil Clarté360 - Roue des domaines de vie.\n\n"
+        f"Prénom : {b.get('prenom','')}\n"
+        f"Nom : {b.get('nom','')}\n"
+        f"Email : {b.get('email','')}\n"
+        f"Consultant : {b.get('consultant','')}\n"
+        f"Date de réalisation : {b.get('date_realisation','')}\n"
+        f"Date/heure d'envoi : {datetime.now().isoformat(timespec='seconds')}\n\n"
+        "Le JSON joint permet de reprendre les données et de régénérer les sorties de l'outil.\n"
+    )
+    return send_email(destination, subject, body, attachment=json_bytes_data, attachment_name=file_name)
+
+
+def empty_data():
     return {
         "app": APP_TITLE,
-        "schema_version": DATA_SCHEMA_VERSION,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-        "beneficiaires": [],
+        "version": APP_VERSION,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "beneficiaire": {"prenom":"", "nom":"", "email":"", "consultant":"", "date_realisation": str(date.today())},
+        "access_code": "",
+        "phase": 1,
+        "actuel": {"domaines_presents": [], "valeurs": {}, "notes": {}},
+        "debrief_actuel_termine": False,
+        "ideal": {"domaines_presents": [], "valeurs": {}, "notes": {}},
+        "ideal_valide": False,
+        "comparaison": {"constats":"", "actions": []}
     }
 
 
 def init_state():
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-    if "consultant_code" not in st.session_state:
-        st.session_state.consultant_code = ""
-    if "store" not in st.session_state:
-        st.session_state.store = empty_store()
-    if "selected_beneficiaire_id" not in st.session_state:
-        st.session_state.selected_beneficiaire_id = None
-    if "selected_croyance_id" not in st.session_state:
-        st.session_state.selected_croyance_id = None
-    if "last_export_hint" not in st.session_state:
-        st.session_state.last_export_hint = "Aucune sauvegarde téléchargée pendant cette session."
-
-
-def touch():
-    st.session_state.store["updated_at"] = now_iso()
-
-
-def json_bytes():
-    touch()
-    return json.dumps(st.session_state.store, ensure_ascii=False, indent=2).encode("utf-8")
-
-
-def safe_name(prefix, ext):
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{prefix}_{stamp}.{ext}"
-
-
-def auth_gate():
-    if st.session_state.authenticated:
-        return True
-    st.markdown(f"<h1 class='main-title'>{APP_TITLE}</h1>", unsafe_allow_html=True)
-    st.markdown(f"<div class='mini-note'>{APP_VERSION}</div>", unsafe_allow_html=True)
-    st.markdown(
-        "<div class='brand-box'>Cet outil est réservé à l'accompagnateur. Il sert à repérer, formaliser puis travailler en séance une boucle auto-validante liée à une croyance. Il ne s'agit pas d'un outil bénéficiaire autonome.</div>",
-        unsafe_allow_html=True,
-    )
-    code = st.text_input("Code accompagnateur", type="password")
-    if st.button("Entrer", type="primary"):
-        if code.strip().upper() in CONSULTANT_CODES:
-            st.session_state.authenticated = True
-            st.session_state.consultant_code = code.strip().upper()
-            st.rerun()
-        else:
-            st.error("Code accompagnateur incorrect.")
-    return False
+    if "data" not in st.session_state:
+        st.session_state.data = empty_data()
+    if "code_verified" not in st.session_state:
+        st.session_state.code_verified = False
+    defaults = {
+        "access_code": "",
+        "code_sent": False,
+        "code_expires_at": None,
+        "pending_beneficiaire": None,
+        "final_json_sent": False,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
 
 def header():
-    st.markdown(f"<h1 class='main-title'>{APP_TITLE}</h1>", unsafe_allow_html=True)
-    st.caption(APP_VERSION)
-    c1, c2 = st.columns([3, 2])
-    with c1:
-        st.info("Pensez à exporter le JSON général avant de quitter. Streamlit conserve les données pendant la session, mais le fichier JSON reste votre sauvegarde de référence.")
-    with c2:
-        st.download_button("💾 Sauvegarder / exporter le JSON général", data=json_bytes(), file_name=safe_name("clarte360_croyances_general", "json"), mime="application/json", type="primary")
+    cols = st.columns([1, 8])
+    with cols[0]:
+        if LOGO_PATH.exists():
+            st.image(str(LOGO_PATH), width=70)
+    with cols[1]:
+        st.markdown(f"# {APP_TITLE}")
+        st.markdown(f"<div class='small-note'>{APP_VERSION} - outil d'exploration accompagné</div>", unsafe_allow_html=True)
 
 
-def sidebar():
-    st.sidebar.markdown("## Sauvegarde")
-    st.sidebar.download_button("Exporter JSON général", data=json_bytes(), file_name=safe_name("clarte360_croyances_general", "json"), mime="application/json")
-    uploaded = st.sidebar.file_uploader("Importer JSON général", type=["json"])
-    if uploaded is not None:
-        try:
-            loaded = json.loads(uploaded.read().decode("utf-8"))
-            if "beneficiaires" not in loaded:
-                st.sidebar.error("Ce fichier ne ressemble pas à un JSON général Clarté360 croyances.")
-            else:
-                st.session_state.store = loaded
-                st.session_state.selected_beneficiaire_id = None
-                st.session_state.selected_croyance_id = None
-                st.sidebar.success("JSON importé.")
-                st.rerun()
-        except Exception as exc:
-            st.sidebar.error(f"Import impossible : {exc}")
-    st.sidebar.markdown("---")
-    st.sidebar.caption(f"Code actif : {st.session_state.consultant_code}")
-    if st.sidebar.button("Verrouiller l'accès"):
-        st.session_state.authenticated = False
-        st.session_state.consultant_code = ""
-        st.rerun()
+def norm_values(values, selected):
+    out = {d: float(values.get(d, 0)) for d in selected}
+    total = sum(max(0, v) for v in out.values())
+    if total <= 0:
+        return out, 0
+    return {d: round(max(0, v) * 100 / total, 1) for d, v in out.items()}, total
 
 
-def beneficiaire_label(b):
-    dob = b.get("date_naissance", "")
-    return f"{b.get('nom','').upper()} {b.get('prenom','')} — {dob}"
+def pie_png(values, title):
+    fig, ax = plt.subplots(figsize=(6.2, 4.8))
+    labels = [k for k, v in values.items() if v > 0]
+    sizes = [v for v in values.values() if v > 0]
+    if not labels:
+        ax.text(0.5, 0.5, "Aucune donnée", ha="center", va="center")
+        ax.axis("off")
+    else:
+        colors_list = DEFAULT_COLORS[:len(labels)]
+        ax.pie(sizes, labels=[f"{l}\n{v:g}%" for l, v in zip(labels, sizes)], startangle=90, colors=colors_list, wedgeprops={"linewidth": 1, "edgecolor": "white"})
+        ax.axis("equal")
+    ax.set_title(title, color=BRAND_COLOR, fontsize=14, fontweight="bold")
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
 
 
-def get_beneficiaire(bid):
-    for b in st.session_state.store.get("beneficiaires", []):
-        if b.get("id") == bid:
-            return b
-    return None
+def display_pie(values, title):
+    st.image(pie_png(values, title), use_container_width=True)
 
 
-def get_croyance(b, cid):
-    if not b:
-        return None
-    for c in b.get("croyances", []):
-        if c.get("id") == cid:
-            return c
-    return None
+def json_bytes():
+    return json.dumps(st.session_state.data, ensure_ascii=False, indent=2).encode("utf-8")
 
 
-def add_beneficiaire_form():
-    with st.expander("Ajouter un bénéficiaire", expanded=False):
-        with st.form("new_beneficiaire"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                prenom = st.text_input("Prénom *")
-            with c2:
-                nom = st.text_input("Nom *")
-            with c3:
-                dob = st.date_input("Date de naissance *", value=date(1990, 1, 1), min_value=date(1920,1,1), max_value=date.today())
-            email = st.text_input("Email (facultatif)")
-            submitted = st.form_submit_button("Créer le bénéficiaire", type="primary")
-        if submitted:
-            if not prenom.strip() or not nom.strip():
-                st.error("Merci de renseigner prénom et nom.")
-            else:
-                b = {
-                    "id": make_id("ben"),
-                    "created_at": now_iso(),
-                    "updated_at": now_iso(),
-                    "prenom": prenom.strip(),
-                    "nom": nom.strip(),
-                    "date_naissance": str(dob),
-                    "email": email.strip(),
-                    "croyances": [],
-                }
-                st.session_state.store["beneficiaires"].append(b)
-                st.session_state.selected_beneficiaire_id = b["id"]
-                touch()
-                st.success("Bénéficiaire ajouté.")
-                st.rerun()
+def safe_filename(prefix, ext):
+    b = st.session_state.data.get("beneficiaire", {})
+    name = f"{b.get('nom','')}_{b.get('prenom','')}".strip("_").replace(" ", "_") or "beneficiaire"
+    return f"{prefix}_{name}_{date.today().isoformat()}.{ext}"
 
 
-def select_beneficiaire():
-    st.markdown("## 1. Bénéficiaire")
-    add_beneficiaire_form()
-    bens = st.session_state.store.get("beneficiaires", [])
-    if not bens:
-        st.warning("Aucun bénéficiaire dans le JSON général.")
-        return None
-    labels = {beneficiaire_label(b): b["id"] for b in bens}
-    current = st.session_state.selected_beneficiaire_id
-    default_index = 0
-    if current:
-        for i, bid in enumerate(labels.values()):
-            if bid == current:
-                default_index = i
-                break
-    chosen = st.selectbox("Sélectionner un bénéficiaire", list(labels.keys()), index=default_index)
-    st.session_state.selected_beneficiaire_id = labels[chosen]
-    b = get_beneficiaire(st.session_state.selected_beneficiaire_id)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Croyances", len(b.get("croyances", [])))
-    c2.metric("Validées", sum(1 for c in b.get("croyances", []) if c.get("statut") in ["Validée", "A travailler en phase 6", "Travaillée"]))
-    c3.metric("Travaillées", sum(1 for c in b.get("croyances", []) if c.get("statut") == "Travaillée"))
-    with st.expander("Supprimer l'historique complet de ce bénéficiaire", expanded=False):
-        st.markdown("<span class='danger'>Action irréversible dans le JSON courant.</span>", unsafe_allow_html=True)
-        confirm = st.text_input("Pour confirmer, tapez SUPPRIMER", key="confirm_delete_benef")
-        if st.button("Supprimer ce bénéficiaire et toutes ses croyances"):
-            if confirm == "SUPPRIMER":
-                st.session_state.store["beneficiaires"] = [x for x in bens if x.get("id") != b.get("id")]
-                st.session_state.selected_beneficiaire_id = None
-                st.session_state.selected_croyance_id = None
-                touch()
-                st.success("Bénéficiaire supprimé du JSON courant. Exportez le JSON si vous voulez conserver cette modification.")
-                st.rerun()
-            else:
-                st.error("Confirmation incorrecte.")
-    return b
-
-
-
-def default_croyance():
-    return {
-        "id": make_id("cr"),
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-        "statut": "Découverte",
-        "phase_decouverte": {
-            "date": str(date.today()),
-            "boucle": {
-                "croyance": "",
-                "comportement_actuel": "",
-                "resultat_actuel": "",
-                "renforcement": "",
-            },
-            "commentaire_seance": "",
-            "concerne_tierce_personne": False,
-        },
-        "phase_action": {
-            "selectionnee_phase6": False,
-            "date_travail": "",
-            "pourquoi_utile": "",
-            "resultat_souhaite": "",
-            "nouveau_comportement": "",
-            "actions": [],
-            "suivi": "",
-        },
-    }
-
-def add_croyance(b):
-    st.markdown("## 2. Ajouter une croyance découverte")
-    st.markdown(
-        "<div class='brand-box'>Pendant la phase de découverte, l'accompagnateur peut ajouter une croyance à tout moment. À ce stade, on la repère et on la formalise ; on ne cherche pas encore à la modifier.</div>",
-        unsafe_allow_html=True,
-    )
-    if st.button("➕ Ajouter une nouvelle croyance découverte", type="primary"):
-        c = default_croyance()
-        b.setdefault("croyances", []).append(c)
-        b["updated_at"] = now_iso()
-        st.session_state.selected_croyance_id = c["id"]
-        touch()
-        st.rerun()
-
-
-def select_croyance(b):
-    croyances = b.get("croyances", [])
-    if not croyances:
-        st.info("Aucune croyance enregistrée pour ce bénéficiaire.")
-        return None
-    st.markdown("## 3. Sélectionner une croyance")
-    labels = []
-    for c in croyances:
-        txt = c.get("phase_decouverte", {}).get("boucle", {}).get("croyance") or c.get("phase_decouverte", {}).get("formulation_exacte") or "Croyance à compléter"
-        labels.append(f"[{c.get('statut','')}] {txt[:90]}")
-    ids = [c["id"] for c in croyances]
-    default_index = 0
-    if st.session_state.selected_croyance_id in ids:
-        default_index = ids.index(st.session_state.selected_croyance_id)
-    idx = st.selectbox("Croyance", range(len(labels)), format_func=lambda i: labels[i], index=default_index)
-    st.session_state.selected_croyance_id = ids[idx]
-    return get_croyance(b, ids[idx])
-
-
-def flow_box(label, content):
-    st.markdown(
-        f"<div class='loop-card'><div class='loop-label'>{label}</div><div class='loop-content'>{content or 'À compléter'}</div></div>",
-        unsafe_allow_html=True,
-    )
-
-
-def arrow(text="↓"):
-    st.markdown(f"<div class='arrow'>{text}</div>", unsafe_allow_html=True)
-
-
-
-def e(txt):
-    return html.escape(str(txt or ""))
-
-
-def loop_text(value):
-    if value:
-        return e(value)
-    return "<span class='loop-node-empty'>À compléter</span>"
-
-
-def render_current_loop_html(bcl):
-    croyance = loop_text(bcl.get("croyance"))
-    comportement = loop_text(bcl.get("comportement_actuel"))
-    resultat = loop_text(bcl.get("resultat_actuel"))
-    renforcement = loop_text(bcl.get("renforcement") or "Le résultat semble confirmer la croyance")
-    return f"""
-<div class="loop-wrap">
-  <svg class="loop-svg" viewBox="0 0 920 560" preserveAspectRatio="none">
-    <defs>
-      <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-        <path d="M0,0 L0,6 L9,3 z" fill="#008b8b" />
-      </marker>
-    </defs>
-    <path d="M575 90 C735 95 805 145 798 217" fill="none" stroke="#008b8b" stroke-width="5" marker-end="url(#arrowhead)"/>
-    <path d="M790 318 C760 445 650 500 575 493" fill="none" stroke="#008b8b" stroke-width="5" marker-end="url(#arrowhead)"/>
-    <path d="M345 492 C190 492 110 430 125 318" fill="none" stroke="#008b8b" stroke-width="5" marker-end="url(#arrowhead)"/>
-    <path d="M125 215 C115 105 270 76 345 88" fill="none" stroke="#008b8b" stroke-width="5" marker-end="url(#arrowhead)"/>
-  </svg>
-  <div class="loop-node loop-node-top"><div class="loop-node-title">1. Croyance</div><div class="loop-node-text">{croyance}</div></div>
-  <div class="loop-node loop-node-right"><div class="loop-node-title">2. Comportement induit</div><div class="loop-node-text">{comportement}</div></div>
-  <div class="loop-node loop-node-bottom"><div class="loop-node-title">3. Résultat actuel</div><div class="loop-node-text">{resultat}</div></div>
-  <div class="loop-node loop-node-left"><div class="loop-node-title">4. Renforcement</div><div class="loop-node-text">{renforcement}</div></div>
-  <div class="loop-center">La boucle se referme<br/>et se valide elle-même</div>
-</div>
-"""
-
-
-def draw_current_loop(c):
-    bcl = c.get("phase_decouverte", {}).get("boucle", {})
-    st.markdown("### Boucle auto-validante actuelle")
-    st.markdown(render_current_loop_html(bcl), unsafe_allow_html=True)
-
-
-def draw_example_loop():
-    example = {
-        "croyance": "Je suis incapable de me faire de nouveaux amis.",
-        "comportement_actuel": "Je reste souvent seul chez moi.",
-        "resultat_actuel": "Solitude, tristesse, mauvaise estime personnelle.",
-        "renforcement": "Je me dis : tu vois bien, je suis incapable de créer de nouveaux liens.",
-    }
-    with st.expander("Voir un exemple de boucle auto-validante", expanded=False):
-        st.markdown(render_current_loop_html(example), unsafe_allow_html=True)
-        st.caption("Exemple inspiré du support HEC : croyance → comportement → résultat → renforcement de la croyance.")
-
-def draw_exit_loop(c):
-    act = c.get("phase_action", {})
-    st.markdown("### Scénario de sortie de boucle")
-    col1, col2, col3 = st.columns([1, 0.18, 1])
-    with col1:
-        flow_box("Résultat souhaité", act.get("resultat_souhaite"))
-    with col2:
-        arrow("←")
-    with col3:
-        flow_box("Nouveau comportement", act.get("nouveau_comportement"))
-    st.markdown("<div class='brand-box'><strong>Logique HEC :</strong> pour agir sur la croyance, on travaille sur le comportement. Le nouveau comportement vise un résultat différent, capable de desserrer progressivement la boucle.</div>", unsafe_allow_html=True)
-
-
-
-def edit_discovery(c):
-    st.markdown("## Phase 3 — Construire la boucle auto-validante")
-    st.markdown(
-        "<div class='brand-box'>En phase 3, l'objectif n'est pas de résoudre la croyance ni de la relier à un objectif de coaching. L'objectif est simplement de faire apparaître la boucle : la croyance exprimée, le comportement qu'elle provoque, le résultat obtenu, puis la manière dont ce résultat vient renforcer la croyance.</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("### Consignes de réalisation")
-    st.markdown("""
-1. Notez la croyance exprimée par le coaché, avec ses mots.
-2. Identifiez le comportement que cette croyance provoque ou entretient.
-3. Notez le résultat actuel obtenu à cause de ce comportement.
-4. Faites apparaître comment ce résultat confirme ou renforce la croyance de départ.
-
-À ce stade, on reste dans la découverte. Le travail de sortie de boucle se fera plus tard, en phase 6, uniquement si l'accompagnateur décide que cette croyance est utile à travailler.
-""")
-    draw_example_loop()
-
-    ph = c.setdefault("phase_decouverte", {})
-    bcl = ph.setdefault("boucle", {})
-    # Compatibilité avec les anciens JSON V1.0
-    if not bcl.get("croyance") and ph.get("formulation_exacte"):
-        bcl["croyance"] = ph.get("formulation_exacte", "")
-
-    ph["date"] = str(st.date_input("Date de découverte", value=date.fromisoformat(ph.get("date") or str(date.today())), key=f"date_{c['id']}"))
-
-    st.markdown("### Remplir la boucle")
-    col1, col2 = st.columns(2)
-    with col1:
-        bcl["croyance"] = st.text_area("1. Croyance exprimée", value=bcl.get("croyance", ""), height=90, key=f"croy_{c['id']}", help="Écrire la phrase entendue, avec les mots du coaché.")
-        bcl["resultat_actuel"] = st.text_area("3. Résultat actuel", value=bcl.get("resultat_actuel", ""), height=90, key=f"res_{c['id']}", help="Quel résultat ce comportement produit-il concrètement ?")
-    with col2:
-        bcl["comportement_actuel"] = st.text_area("2. Comportement induit par la croyance", value=bcl.get("comportement_actuel", ""), height=90, key=f"comp_{c['id']}", help="Que fait ou ne fait pas la personne à cause de cette croyance ?")
-        bcl["renforcement"] = st.text_area("4. Renforcement de la croyance", value=bcl.get("renforcement", ""), height=90, key=f"renf_{c['id']}", help="En quoi le résultat obtenu donne-t-il raison à la croyance ?")
-
-    draw_current_loop(c)
-
-    with st.expander("Point d'attention accompagnateur", expanded=False):
-        st.markdown("La boucle auto-validante convient aux croyances sur soi, sur les autres en général ou sur le monde. Si la croyance vise une personne précise, elle relève d'un autre outil HEC.")
-        ph["concerne_tierce_personne"] = st.checkbox("Cette croyance vise une personne précise", value=bool(ph.get("concerne_tierce_personne", ph.get("validation", {}).get("concerne_tierce_personne", False))), key=f"tierce_{c['id']}")
-        if ph.get("concerne_tierce_personne"):
-            st.warning("Ne pas utiliser la boucle auto-validante pour une croyance portant sur une personne identifiée.")
-
-    ph["commentaire_seance"] = st.text_area("Notes très brèves de séance (facultatif)", value=ph.get("commentaire_seance", ph.get("validation", {}).get("commentaire_consultant", "")), height=70, key=f"com_{c['id']}")
-    c["statut"] = st.selectbox("Statut", STATUTS, index=STATUTS.index(c.get("statut", "Découverte")) if c.get("statut") in STATUTS else 0, key=f"stat_{c['id']}")
-    if st.button("Enregistrer cette boucle", type="primary", key=f"save_disc_{c['id']}"):
-        c["updated_at"] = now_iso()
-        touch()
-        st.success("Boucle enregistrée dans le JSON courant. Pensez à exporter le JSON général.")
-
-def action_table(c):
-    act = c.setdefault("phase_action", {})
-    actions = act.setdefault("actions", [])
-    st.markdown("### Mini-plan d'action précis, factuel et daté")
-    if st.button("Ajouter une action", key=f"addact_{c['id']}"):
-        actions.append({"action":"", "date":"", "contexte":"", "indicateur":"", "obstacle":"", "solution":""})
-        st.rerun()
-    to_delete = None
-    for i, a in enumerate(actions):
-        with st.expander(f"Action {i+1} — {a.get('action') or 'à compléter'}", expanded=True):
-            a["action"] = st.text_area("Action précise", value=a.get("action", ""), key=f"a_{c['id']}_{i}")
-            col1, col2 = st.columns(2)
-            with col1:
-                a["date"] = st.text_input("Date / échéance", value=a.get("date", ""), key=f"d_{c['id']}_{i}")
-                a["contexte"] = st.text_input("Où / avec qui / dans quel contexte ?", value=a.get("contexte", ""), key=f"ctxa_{c['id']}_{i}")
-            with col2:
-                a["indicateur"] = st.text_input("Comment saurai-je que c'est fait ?", value=a.get("indicateur", ""), key=f"ind_{c['id']}_{i}")
-                a["obstacle"] = st.text_input("Obstacle possible", value=a.get("obstacle", ""), key=f"obs_{c['id']}_{i}")
-            a["solution"] = st.text_input("Solution prévue si l'obstacle apparaît", value=a.get("solution", ""), key=f"sol_{c['id']}_{i}")
-            if st.button("Supprimer cette action", key=f"del_{c['id']}_{i}"):
-                to_delete = i
-    if to_delete is not None:
-        actions.pop(to_delete)
-        st.rerun()
-
-
-def edit_phase6(c):
-    st.markdown("## Phase 6 — Sortir de la boucle par l'action")
-    st.markdown(
-        "<div class='brand-box'>Cette partie s'utilise lorsque l'accompagnateur décide qu'une croyance est utile à travailler parce qu'elle freine l'objectif. On ne cherche pas à convaincre le coaché que la croyance est fausse : on construit un comportement différent pour obtenir un résultat différent.</div>",
-        unsafe_allow_html=True,
-    )
-    draw_current_loop(c)
-    act = c.setdefault("phase_action", {})
-    act["selectionnee_phase6"] = st.checkbox("Cette croyance est sélectionnée pour un travail en phase 6", value=bool(act.get("selectionnee_phase6", False)), key=f"sel6_{c['id']}")
-    act["date_travail"] = str(st.date_input("Date du travail en phase 6", value=date.fromisoformat(act.get("date_travail") or str(date.today())), key=f"dt6_{c['id']}"))
-    act["pourquoi_utile"] = st.text_area("Pourquoi cette croyance est utile à travailler maintenant ?", value=act.get("pourquoi_utile", ""), height=90, key=f"why6_{c['id']}")
-    st.markdown("### Question centrale")
-    st.markdown("<div class='warn-box'><strong>À votre avis, que pourriez-vous faire pour ne plus rester dans cette boucle ?</strong></div>", unsafe_allow_html=True)
-    act["resultat_souhaite"] = st.text_area("Résultat souhaité en lieu et place du résultat actuel", value=act.get("resultat_souhaite", ""), height=90, key=f"rs6_{c['id']}")
-    act["nouveau_comportement"] = st.text_area("Nouveau comportement à mettre en place immédiatement", value=act.get("nouveau_comportement", ""), height=90, key=f"nc6_{c['id']}")
-    draw_exit_loop(c)
-    action_table(c)
-    act["suivi"] = st.text_area("Notes de suivi / débriefing ultérieur", value=act.get("suivi", ""), height=90, key=f"suivi_{c['id']}")
-    if st.button("Enregistrer le travail de phase 6", type="primary", key=f"save6_{c['id']}"):
-        c["statut"] = "Travaillée"
-        c["updated_at"] = now_iso()
-        touch()
-        st.success("Travail enregistré dans le JSON courant. Pensez à exporter le JSON général.")
-
-
-def paragraph_safe(txt):
-    return (txt or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
-
-
-def build_pdf_for_croyance(b, c):
-    buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.3*cm, bottomMargin=1.3*cm)
+def build_pdf():
+    data = st.session_state.data
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="TealTitle", parent=styles["Title"], textColor=colors.HexColor(BRAND_COLOR), fontSize=20, leading=24))
-    styles.add(ParagraphStyle(name="TealH2", parent=styles["Heading2"], textColor=colors.HexColor(BRAND_COLOR), fontSize=14))
+    styles.add(ParagraphStyle(name="TealTitle", parent=styles["Title"], textColor=colors.HexColor(BRAND_COLOR), fontSize=22, leading=26))
+    styles.add(ParagraphStyle(name="TealH2", parent=styles["Heading2"], textColor=colors.HexColor(BRAND_COLOR), fontSize=15, leading=18))
+    styles.add(ParagraphStyle(name="Small", parent=styles["Normal"], fontSize=9, leading=11))
     story = []
-    story.append(Paragraph("Clarté360 — Boucle auto-validante", styles["TealTitle"]))
-    story.append(Spacer(1, .2*cm))
-    story.append(Paragraph(f"Bénéficiaire : {paragraph_safe(beneficiaire_label(b))}", styles["Normal"]))
-    story.append(Paragraph(f"Date d'édition : {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
-    story.append(Spacer(1, .4*cm))
-    ph = c.get("phase_decouverte", {})
-    bcl = ph.get("boucle", {})
-    story.append(Paragraph("Phase 3 — Boucle actuelle", styles["TealH2"]))
-    data = [
-        ["Élément", "Contenu"],
-        ["Croyance", paragraph_safe(bcl.get("croyance"))],
-        ["Comportement actuel", paragraph_safe(bcl.get("comportement_actuel"))],
-        ["Résultat actuel", paragraph_safe(bcl.get("resultat_actuel"))],
-        ["Renforcement", paragraph_safe(bcl.get("renforcement"))],
-    ]
-    t = Table(data, colWidths=[4*cm, 12*cm])
-    t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor(BRAND_COLOR)),("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),0.3,colors.grey),("VALIGN",(0,0),(-1,-1),"TOP")]))
-    story.append(t)
-    story.append(Spacer(1, .4*cm))
-    v = ph.get("validation", {})
-    story.append(Paragraph("Notes de séance", styles["TealH2"]))
-    story.append(Paragraph(paragraph_safe(ph.get("commentaire_seance", "")) or "Aucune note renseignée.", styles["Normal"]))
+    if LOGO_PATH.exists():
+        story.append(RLImage(str(LOGO_PATH), width=2.2*cm, height=2.2*cm))
+    story.append(Paragraph("Roue des domaines de vie", styles["TealTitle"]))
+    b = data.get("beneficiaire", {})
+    story.append(Paragraph(f"Bénéficiaire : {b.get('prenom','')} {b.get('nom','')}<br/>Consultant : {b.get('consultant','')}<br/>Date : {b.get('date_realisation','')}", styles["Normal"]))
+    story.append(Spacer(1, 0.4*cm))
+    story.append(Paragraph("Principe de l'exercice", styles["TealH2"]))
+    story.append(Paragraph("L'exercice met en regard la roue actuelle et la roue idéale sans contrainte. Les parts représentent la présence ressentie de chaque domaine dans la vie de la personne, en tenant compte du temps occupé, de la charge mentale, de l'attention mobilisée et de l'énergie prise ou investie.", styles["Normal"]))
+    story.append(Spacer(1, 0.5*cm))
+    actuel_vals, _ = norm_values(data.get("actuel", {}).get("valeurs", {}), data.get("actuel", {}).get("domaines_presents", []))
+    ideal_vals, _ = norm_values(data.get("ideal", {}).get("valeurs", {}), data.get("ideal", {}).get("domaines_presents", []))
+    story.append(Paragraph("Roue actuelle", styles["TealH2"]))
+    img1 = io.BytesIO(pie_png(actuel_vals, "Aujourd'hui"))
+    story.append(RLImage(img1, width=14*cm, height=9*cm))
+    story.append(Paragraph("Notes du débriefing actuel", styles["TealH2"]))
+    notes = data.get("actuel", {}).get("notes", {})
+    if notes:
+        tbl = [["Domaine", "Note"]] + [[k, v or ""] for k, v in notes.items() if k in actuel_vals]
+        t = Table(tbl, colWidths=[4*cm, 12*cm])
+        t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor(BRAND_COLOR)),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),0.25,colors.grey),('VALIGN',(0,0),(-1,-1),'TOP')]))
+        story.append(t)
+    else:
+        story.append(Paragraph("Aucune note renseignée.", styles["Normal"]))
     story.append(PageBreak())
-    act = c.get("phase_action", {})
-    story.append(Paragraph("Phase 6 — Scénario de sortie", styles["TealH2"]))
-    data2 = [
-        ["Élément", "Contenu"],
-        ["Pourquoi travailler cette croyance", paragraph_safe(act.get("pourquoi_utile"))],
-        ["Résultat souhaité", paragraph_safe(act.get("resultat_souhaite"))],
-        ["Nouveau comportement", paragraph_safe(act.get("nouveau_comportement"))],
-    ]
-    t2 = Table(data2, colWidths=[5*cm, 11*cm])
-    t2.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor(BRAND_COLOR)),("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),0.3,colors.grey),("VALIGN",(0,0),(-1,-1),"TOP")]))
-    story.append(t2)
-    story.append(Spacer(1, .4*cm))
-    story.append(Paragraph("Plan d'action", styles["TealH2"]))
-    actions = act.get("actions", [])
+    story.append(Paragraph("Roue idéale sans contrainte", styles["TealH2"]))
+    img2 = io.BytesIO(pie_png(ideal_vals, "Idéal sans contrainte"))
+    story.append(RLImage(img2, width=14*cm, height=9*cm))
+    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph("Comparaison", styles["TealH2"]))
+    all_domains = list(dict.fromkeys(list(actuel_vals.keys()) + list(ideal_vals.keys())))
+    comp_tbl = [["Domaine", "Aujourd'hui", "Idéal", "Écart"]]
+    for d in all_domains:
+        a = actuel_vals.get(d, 0)
+        i = ideal_vals.get(d, 0)
+        comp_tbl.append([d, f"{a:g}%", f"{i:g}%", f"{i-a:+g} pts"])
+    t = Table(comp_tbl, colWidths=[5.5*cm, 3*cm, 3*cm, 3*cm])
+    t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor(BRAND_COLOR)),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),0.25,colors.grey),('ALIGN',(1,1),(-1,-1),'CENTER')]))
+    story.append(t)
+    story.append(Spacer(1, 0.4*cm))
+    story.append(Paragraph("Constats", styles["TealH2"]))
+    story.append(Paragraph(data.get("comparaison", {}).get("constats", "") or "Aucun constat renseigné.", styles["Normal"]))
+    actions = data.get("comparaison", {}).get("actions", [])
+    story.append(Paragraph("Actions imaginables", styles["TealH2"]))
     if actions:
-        tbl = [["Action", "Date", "Indicateur", "Obstacle / solution"]]
+        tbl = [["Domaine", "Action", "Premier pas", "Échéance"]]
         for a in actions:
-            tbl.append([paragraph_safe(a.get("action")), paragraph_safe(a.get("date")), paragraph_safe(a.get("indicateur")), paragraph_safe((a.get("obstacle") or "") + " / " + (a.get("solution") or ""))])
-        tt = Table(tbl, colWidths=[5*cm, 2.5*cm, 4*cm, 4.5*cm])
-        tt.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),colors.HexColor(BRAND_COLOR)),("TEXTCOLOR",(0,0),(-1,0),colors.white),("GRID",(0,0),(-1,-1),0.3,colors.grey),("VALIGN",(0,0),(-1,-1),"TOP")]))
-        story.append(tt)
+            tbl.append([a.get("domaine", ""), a.get("action", ""), a.get("premier_pas", ""), a.get("echeance", "")])
+        t = Table(tbl, colWidths=[3.2*cm, 5.5*cm, 4.2*cm, 2.5*cm])
+        t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor(BRAND_COLOR)),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),0.25,colors.grey),('VALIGN',(0,0),(-1,-1),'TOP')]))
+        story.append(t)
     else:
         story.append(Paragraph("Aucune action renseignée.", styles["Normal"]))
     doc.build(story)
@@ -600,53 +311,309 @@ def build_pdf_for_croyance(b, c):
     return buf.getvalue()
 
 
-def exports_for_croyance(b, c):
-    st.markdown("## 4. Exports")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.download_button("Télécharger la fiche PDF de cette croyance", data=build_pdf_for_croyance(b, c), file_name=safe_name("clarte360_boucle_autovalidante", "pdf"), mime="application/pdf", type="primary")
-    with col2:
-        st.download_button("Exporter JSON général", data=json_bytes(), file_name=safe_name("clarte360_croyances_general", "json"), mime="application/json")
+def access_gate():
+    data = st.session_state.data
+    if st.session_state.code_verified:
+        return True
+
+    st.markdown("## Accès bénéficiaire")
+    st.markdown(
+        "<div class='brand-box'>"
+        "Cet espace permet de préparer l'exercice de la roue des domaines de vie avec votre accompagnateur. "
+        "Pour commencer, renseignez votre identité et votre adresse email. Un code d'accès à durée limitée vous sera envoyé par email. "
+        "Un message automatique informe également Clarté360 qu'une personne utilise le programme."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    if not st.session_state.get("code_sent", False):
+        with st.form("access_code_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                prenom = st.text_input("Prénom *", value=data["beneficiaire"].get("prenom", ""))
+                nom = st.text_input("Nom *", value=data["beneficiaire"].get("nom", ""))
+                email = st.text_input("Adresse email *", value=data["beneficiaire"].get("email", ""))
+            with c2:
+                consultant = st.text_input("Consultant", value=data["beneficiaire"].get("consultant", "Clarté360"))
+                d = st.date_input("Date de réalisation", value=date.today())
+            send_code = st.form_submit_button("Recevoir mon code d'accès", type="primary")
+
+        if send_code:
+            if not prenom.strip() or not nom.strip() or not email.strip():
+                st.error("Merci de renseigner le prénom, le nom et l'adresse email.")
+            elif "@" not in email or "." not in email:
+                st.error("Merci de renseigner une adresse email valide.")
+            else:
+                beneficiaire_tmp = {
+                    "prenom": prenom.strip(),
+                    "nom": nom.strip(),
+                    "email": email.strip(),
+                    "consultant": consultant.strip(),
+                    "date_realisation": str(d),
+                }
+                code = generate_access_code()
+                expires_at = datetime.now() + timedelta(minutes=ACCESS_CODE_VALIDITY_MINUTES)
+                ok, msg = send_access_code_email(beneficiaire_tmp, code, expires_at)
+                if ok:
+                    st.session_state.access_code = code
+                    st.session_state.code_sent = True
+                    st.session_state.code_expires_at = expires_at.isoformat(timespec="seconds")
+                    st.session_state.pending_beneficiaire = beneficiaire_tmp
+                    data["access_code"] = code
+                    data["access_code_created_at"] = datetime.now().isoformat(timespec="seconds")
+                    data["access_code_expires_at"] = st.session_state.code_expires_at
+                    data["beneficiaire"] = beneficiaire_tmp
+                    st.success("Un code d'accès vient d'être envoyé à l'adresse email indiquée.")
+                    st.rerun()
+                else:
+                    st.error(msg)
+                    st.caption("En ligne, configurez les Secrets SMTP Streamlit avec les paramètres OVH pour activer l'envoi du code.")
+    else:
+        b = st.session_state.get("pending_beneficiaire") or data.get("beneficiaire", {})
+        st.success(f"Code envoyé à : {b.get('email','')}")
+        expires_raw = st.session_state.get("code_expires_at")
+        expired = False
+        if expires_raw:
+            try:
+                expires_at = datetime.fromisoformat(expires_raw)
+                remaining = int((expires_at - datetime.now()).total_seconds() // 60)
+                if remaining >= 0:
+                    st.info(f"Ce code est encore valable environ {remaining + 1} minute(s).")
+                else:
+                    expired = True
+            except Exception:
+                pass
+        if expired:
+            st.error("Le code a expiré. Merci de demander un nouveau code.")
+            if st.button("Demander un nouveau code"):
+                st.session_state.code_sent = False
+                st.session_state.access_code = ""
+                st.session_state.code_expires_at = None
+                st.rerun()
+            return False
+
+        code_in = st.text_input("Saisissez le code d'accès reçu par email *", max_chars=6, type="password")
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if st.button("Valider le code et démarrer", type="primary"):
+                if code_in.strip().upper() == st.session_state.get("access_code", ""):
+                    st.session_state.code_verified = True
+                    st.session_state.data["beneficiaire"] = b
+                    st.rerun()
+                else:
+                    st.error("Code incorrect.")
+        with c2:
+            if st.button("Modifier l'adresse email"):
+                st.session_state.code_sent = False
+                st.session_state.access_code = ""
+                st.session_state.code_expires_at = None
+                st.session_state.pending_beneficiaire = None
+                st.rerun()
+    return False
+
+def sidebar_tools():
+    st.sidebar.markdown("## Clarté360")
+    st.sidebar.write(APP_VERSION)
+    st.sidebar.download_button("Télécharger le JSON", data=json_bytes(), file_name=safe_filename("roue_domaines_vie", "json"), mime="application/json")
+    uploaded = st.sidebar.file_uploader("Importer un JSON", type=["json"])
+    if uploaded is not None:
+        try:
+            loaded = json.loads(uploaded.read().decode("utf-8"))
+            st.session_state.data = loaded
+            st.session_state.code_verified = True
+            st.sidebar.success("JSON importé.")
+            st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"Import impossible : {exc}")
+    if st.sidebar.button("Réinitialiser l'exercice"):
+        st.session_state.clear()
+        st.rerun()
 
 
+def progress_bar():
+    phase = st.session_state.data.get("phase", 1)
+    labels = ["1. Roue actuelle", "2. Débriefing", "3. Roue idéale", "4. Comparaison / actions"]
+    cols = st.columns(4)
+    for i, lab in enumerate(labels, start=1):
+        with cols[i-1]:
+            if phase == i:
+                st.markdown(f"<div class='brand-box'><strong>{lab}</strong></div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div class='info-box'>{lab}</div>", unsafe_allow_html=True)
 
-def croyance_list_table(b):
+
+def domain_selector(section_key, title, include_existing=True):
+    data = st.session_state.data
+    sec = data[section_key]
+    st.markdown(f"### {title}")
+    
+    selected = st.multiselect("Domaines à faire apparaître dans la roue", options=DEFAULT_ORDER, default=sec.get("domaines_presents", []) if include_existing else [], key=f"{section_key}_domains")
+    sec["domaines_presents"] = selected
+    if selected:
+        with st.expander("Définition des domaines", expanded=True):
+            for d in selected:
+                st.markdown(f"**{d}** — {DOMAINES[d]}")
+        st.markdown("#### Répartition")
+        st.markdown("La valeur ne mesure pas uniquement le temps passé. Elle doit tenir compte de la place globale du domaine : temps concret, charge mentale, préoccupations, énergie mobilisée, contraintes ressenties, attention disponible. La roue sera recalculée en pourcentage pour remplir 100 % du cercle.")
+        cols = st.columns(2)
+        for idx, d in enumerate(selected):
+            with cols[idx % 2]:
+                current = float(sec.get("valeurs", {}).get(d, 10))
+                val = st.slider(d, 0, 100, int(current), 1, key=f"{section_key}_val_{d}")
+                sec.setdefault("valeurs", {})[d] = val
+        values, total = norm_values(sec.get("valeurs", {}), selected)
+        if total <= 0:
+            st.warning("La somme des valeurs est à zéro. Donnez une valeur à au moins un domaine présent.")
+        else:
+            st.markdown("#### Aperçu de la roue")
+            display_pie(values, title)
+            st.dataframe(pd.DataFrame([{"Domaine": k, "Part recalculée": f"{v:g}%", "Valeur saisie": sec['valeurs'].get(k, 0)} for k, v in values.items()]), use_container_width=True, hide_index=True)
+    else:
+        st.warning("Sélectionnez au moins un domaine présent pour construire la roue.")
+    return selected
+
+
+def phase_1():
+    st.markdown("## Phase 1 — Construire la roue des domaines de vie aujourd'hui")
+    st.markdown("<div class='brand-box'>Dans cette première phase, représentez votre vie telle qu'elle est aujourd'hui. Ne cherchez pas à obtenir une roue équilibrée ou agréable : l'intérêt est de montrer ce qui prend réellement de la place dans votre vie actuelle.</div>", unsafe_allow_html=True)
+
+    st.markdown("### Questions d'aide à la réflexion")
+    st.markdown("""
+- Quels domaines occupent beaucoup de temps concret dans votre semaine ?
+- Quels domaines occupent peu de temps mais beaucoup de charge mentale ?
+- Quels domaines reviennent souvent dans vos pensées, vos obligations ou vos préoccupations ?
+- Y a-t-il un domaine absent aujourd'hui ? Dans ce cas, ne le forcez pas dans la roue actuelle.
+""")
+    st.info("Déplacez progressivement les réglettes et observez la roue se dessiner. Les pourcentages sont calculés automatiquement : ne cherchez pas à faire un calcul, fiez-vous à votre ressenti global.")
+
+    selected = domain_selector("actuel", "Roue actuelle")
+    if selected and st.button("Valider ma roue actuelle", type="primary"):
+        vals, total = norm_values(st.session_state.data["actuel"].get("valeurs", {}), selected)
+        if total <= 0:
+            st.error("Merci de donner une valeur à au moins un domaine.")
+        else:
+            st.session_state.data["phase"] = 2
+            st.rerun()
+
+
+def phase_2():
+    data = st.session_state.data
+    st.markdown("## Phase 2 — Débriefing de la roue actuelle")
+    st.markdown("<div class='brand-box'>Prenez le temps d'observer la roue avec votre accompagnateur. L'objectif est d'écouter ce que ce schéma évoque : étonnement, confirmation, tensions, absences, envies de changement, points à approfondir.</div>", unsafe_allow_html=True)
+    selected = data["actuel"].get("domaines_presents", [])
+    values, _ = norm_values(data["actuel"].get("valeurs", {}), selected)
+    display_pie(values, "Roue actuelle - aujourd'hui")
+    st.markdown("### Notes par domaine")
+    for d in selected:
+        data["actuel"].setdefault("notes", {})[d] = st.text_area(f"Ce que je retiens pour : {d}", value=data["actuel"].get("notes", {}).get(d, ""), key=f"note_actuel_{d}")
+    data["actuel"]["note_generale"] = st.text_area("Note générale sur la roue actuelle", value=data["actuel"].get("note_generale", ""))
+    st.markdown("<div class='warn-box'>Lorsque le débriefing est terminé, la roue actuelle sera masquée pour permettre de construire la roue idéale sans être influencé par le premier schéma.</div>", unsafe_allow_html=True)
+    confirm = st.checkbox("Je confirme que le débriefing de la roue actuelle est terminé.")
+    if confirm and st.button("Passer à la roue idéale sans contrainte", type="primary"):
+        data["debrief_actuel_termine"] = True
+        data["phase"] = 3
+        st.rerun()
+
+
+def phase_3():
+    st.markdown("## Phase 3 — Imaginer la roue idéale sans contrainte")
+    st.markdown("<div class='brand-box'>Pour cette étape, mettez de côté la première roue. Imaginez une vie idéale et sans contrainte. Tout vous est possible. Ne repartez pas de ce que vous avez aujourd'hui : repartez de ce que vous aimeriez vivre si les contraintes matérielles, professionnelles, familiales, sociales ou intérieures étaient levées.</div>", unsafe_allow_html=True)
+    st.markdown("### Consignes")
+    st.markdown("""
+- Vous pouvez faire apparaître un domaine absent aujourd'hui si vous souhaitez qu'il ait une place dans votre vie idéale.
+- Vous pouvez retirer un domaine qui existe aujourd'hui si, dans cette projection, vous ne souhaitez pas lui donner de place.
+- La roue idéale n'est pas un engagement immédiat : c'est une projection pour ouvrir la réflexion.
+- Pensez en termes de présence souhaitée, de qualité de vie, d'énergie disponible et de charge mentale apaisée.
+""")
+    selected = domain_selector("ideal", "Roue idéale sans contrainte")
+    st.session_state.data["ideal"]["projection_libre"] = st.text_area("Ce que j'aimerais dans cette vie idéale", value=st.session_state.data["ideal"].get("projection_libre", ""))
+    if selected and st.button("Valider ma roue idéale", type="primary"):
+        vals, total = norm_values(st.session_state.data["ideal"].get("valeurs", {}), selected)
+        if total <= 0:
+            st.error("Merci de donner une valeur à au moins un domaine.")
+        else:
+            st.session_state.data["ideal_valide"] = True
+            st.session_state.data["phase"] = 4
+            st.rerun()
+
+
+def action_editor(all_domains):
+    data = st.session_state.data
+    actions = data["comparaison"].setdefault("actions", [])
+    st.markdown("### Actions imaginables")
+    st.markdown("L'objectif n'est pas de tout transformer immédiatement. Notez des actions possibles, même petites, qui pourraient faire évoluer progressivement la roue actuelle vers la roue souhaitée.")
+    if st.button("Ajouter une action"):
+        actions.append({"domaine": all_domains[0] if all_domains else "", "action": "", "premier_pas": "", "echeance": ""})
+        st.rerun()
+    to_delete = None
+    for i, act in enumerate(actions):
+        with st.expander(f"Action {i+1} - {act.get('domaine','') or 'à compléter'}", expanded=True):
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                act["domaine"] = st.selectbox("Domaine", options=all_domains or DEFAULT_ORDER, index=(all_domains or DEFAULT_ORDER).index(act.get("domaine")) if act.get("domaine") in (all_domains or DEFAULT_ORDER) else 0, key=f"act_dom_{i}")
+                act["echeance"] = st.text_input("Échéance / moment possible", value=act.get("echeance", ""), key=f"act_ech_{i}")
+            with c2:
+                act["action"] = st.text_area("Action imaginable", value=act.get("action", ""), key=f"act_action_{i}")
+                act["premier_pas"] = st.text_area("Premier petit pas concret", value=act.get("premier_pas", ""), key=f"act_pas_{i}")
+            if st.button("Supprimer cette action", key=f"del_action_{i}"):
+                to_delete = i
+    if to_delete is not None:
+        actions.pop(to_delete)
+        st.rerun()
+
+
+def phase_4():
+    data = st.session_state.data
+    st.markdown("## Phase 4 — Comparer les deux roues et ouvrir les pistes d'action")
+    st.markdown("<div class='brand-box'>Les deux roues reviennent maintenant ensemble. Le débriefing porte sur les écarts, les absences, les domaines qui prennent trop ou pas assez de place, et les mouvements réalistes ou désirables pour aller vers une vie plus alignée.</div>", unsafe_allow_html=True)
+    actuel_vals, _ = norm_values(data["actuel"].get("valeurs", {}), data["actuel"].get("domaines_presents", []))
+    ideal_vals, _ = norm_values(data["ideal"].get("valeurs", {}), data["ideal"].get("domaines_presents", []))
+    c1, c2 = st.columns(2)
+    with c1:
+        display_pie(actuel_vals, "Aujourd'hui")
+    with c2:
+        display_pie(ideal_vals, "Idéal sans contrainte")
+    all_domains = list(dict.fromkeys(list(actuel_vals.keys()) + list(ideal_vals.keys())))
     rows = []
-    for c in b.get("croyances", []):
-        ph = c.get("phase_decouverte", {})
-        bcl = ph.get("boucle", {})
-        rows.append({
-            "Statut": c.get("statut", ""),
-            "Date": ph.get("date", ""),
-            "Croyance": bcl.get("croyance") or ph.get("formulation_exacte", ""),
-            "Comportement": bcl.get("comportement_actuel", ""),
-            "Résultat actuel": bcl.get("resultat_actuel", ""),
-        })
-    if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    for d in all_domains:
+        a = actuel_vals.get(d, 0)
+        i = ideal_vals.get(d, 0)
+        rows.append({"Domaine": d, "Aujourd'hui": f"{a:g}%", "Idéal": f"{i:g}%", "Écart": f"{i-a:+g} pts"})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.markdown("### Débriefing final")
+    data["comparaison"]["constats"] = st.text_area("Ce que la comparaison me fait comprendre", value=data["comparaison"].get("constats", ""), height=140)
+    data["comparaison"]["questions"] = st.text_area("Questions à approfondir avec l'accompagnateur", value=data["comparaison"].get("questions", ""), height=100)
+    action_editor(all_domains)
+    st.markdown("### Exports")
+    st.download_button("Télécharger le rapport PDF", data=build_pdf(), file_name=safe_filename("rapport_roue_domaines_vie", "pdf"), mime="application/pdf", type="primary")
+    final_json = json_bytes()
+    json_name = safe_filename("roue_domaines_vie", "json")
+    st.download_button("Télécharger les données JSON", data=final_json, file_name=json_name, mime="application/json")
+    if st.button("Transmettre le JSON au consultant Clarté360", type="primary"):
+        ok, msg = send_final_json_to_consultant(data, final_json, json_name)
+        if ok:
+            st.session_state.final_json_sent = True
+            st.success("JSON transmis au consultant Clarté360.")
+        else:
+            st.error(msg)
+
 
 def main():
     init_state()
-    if not auth_gate():
-        return
     header()
-    sidebar()
-    b = select_beneficiaire()
-    if not b:
+    if not access_gate():
         return
-    croyance_list_table(b)
-    add_croyance(b)
-    c = select_croyance(b)
-    if not c:
-        return
-    tabs = st.tabs(["Phase 3 — Découverte", "Phase 6 — Action", "PDF / JSON"])
-    with tabs[0]:
-        edit_discovery(c)
-    with tabs[1]:
-        edit_phase6(c)
-    with tabs[2]:
-        exports_for_croyance(b, c)
-
+    sidebar_tools()
+    progress_bar()
+    phase = st.session_state.data.get("phase", 1)
+    if phase == 1:
+        phase_1()
+    elif phase == 2:
+        phase_2()
+    elif phase == 3:
+        phase_3()
+    else:
+        phase_4()
 
 if __name__ == "__main__":
     main()
