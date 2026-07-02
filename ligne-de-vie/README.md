@@ -1,22 +1,38 @@
-# Clarté360 - Ligne de vie V3.1
+# Clarté360 - Ligne de vie V3.2
 
-Application Streamlit pour construire une ligne de vie dans un cadre coaching / bilan de compétences.
+Application Streamlit pour construire une ligne de vie dans un cadre bilan de compétences / accompagnement Clarté360.
 
-## V3.1
+## V3.2 - code d'accès et transmission consultant
+
+- Ajout d'un code d'accès obligatoire au démarrage.
+- Fonctionnement aligné sur les outils Préférences et Moteurs : saisie prénom, nom, email puis réception du code par email.
+- Notification automatique à Clarté360 lors de la demande de code.
+- Information explicite du bénéficiaire sur la transmission possible du JSON au consultant.
+- Ajout de l'email dans le JSON.
+- Bouton de transmission du JSON final au consultant Clarté360.
+- Conservation des exports existants : JSON, CSV, PDF et PNG.
+
+## Secrets Streamlit attendus
+
+```toml
+[email]
+smtp_server = "ssl0.ovh.net"
+smtp_port = 465
+smtp_user = "contact@clarte360.com"
+smtp_password = "VOTRE_MOT_DE_PASSE"
+from_email = "contact@clarte360.com"
+to_email = "contact@clarte360.com"
+```
+
+## Fonctionnalités conservées
 
 - Points de la ligne de vie reliés automatiquement.
-- Placement intelligent des noms courts pour limiter les chevauchements.
-- Les textes des points à +9/+10 sont placés sous le point pour éviter la coupure dans le PDF.
-- Les textes des points à -9/-10 sont placés au-dessus du point.
-- Marges graphiques élargies pour améliorer le rendu écran et PDF.
-- Saisie des événements avec jour/mois/année : le jour `00` est accepté si le jour exact est inconnu.
-- Mois et année obligatoires pour permettre le classement chronologique.
+- Placement intelligent des noms courts.
+- Saisie des événements avec jour/mois/année, avec jour `00` accepté si le jour exact est inconnu.
 - Classement automatique des événements.
 - Zone de projection optionnelle à 5 ou 10 ans.
 - Exploration facultative des remontées avec trace écrite optionnelle.
-- Les remontées enregistrées apparaissent maintenant dans le PDF.
-- Export JSON, CSV, PDF et PNG.
-- Logique RGPD : aucune sauvegarde serveur.
+- Les remontées enregistrées apparaissent dans le PDF.
 
 ## Lancement local
 
@@ -24,7 +40,3 @@ Application Streamlit pour construire une ligne de vie dans un cadre coaching / 
 pip install -r requirements.txt
 streamlit run app.py
 ```
-
-
-## V3.1
-- Restauration et renforcement du code couleur Clarté360 (#008080) sur les titres Streamlit et PDF.
