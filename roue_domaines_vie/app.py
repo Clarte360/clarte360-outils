@@ -27,7 +27,7 @@ DOMAINES = {
     "Professionnel": "Tout ce qui concerne le monde du travail : emploi, recherche d'emploi, activité professionnelle, projet professionnel, formation liée au travail, responsabilités professionnelles.",
     "Personnel": "Le temps passé avec soi-même : repos, santé, loisirs personnels, sport individuel, réflexion, solitude choisie, relation à soi.",
     "Familial": "La famille au sens large : enfants, parents, frères et sœurs, famille élargie, belle-famille, obligations ou présences familiales.",
-    "Couple / intimité": "La relation avec la personne qui partage l'intimité. Ce domaine est distinct de la famille. Il peut être absent aujourd'hui et ne doit pas être forcé.",
+    "Couple / intimité": "La relation avec la personne qui partage l'intimité. Ce domaine est distinct de la famille. Il peut naturellement ne pas exister dans votre vie actuelle.",
     "Social / amitié": "Les relations hors famille, couple et travail : amis, voisins, vie associative, communauté, rencontres, activités collectives."
 }
 DEFAULT_ORDER = list(DOMAINES.keys())
@@ -446,7 +446,7 @@ def domain_selector(section_key, title, include_existing=True):
     data = st.session_state.data
     sec = data[section_key]
     st.markdown(f"### {title}")
-    st.markdown("<div class='info-box'><strong>Important :</strong> seuls les domaines réellement présents doivent être retenus. Un domaine peut être absent aujourd'hui ou ne pas être souhaité dans l'idéal. Il n'y a aucune obligation de faire apparaître les cinq domaines.</div>", unsafe_allow_html=True)
+    
     selected = st.multiselect("Domaines à faire apparaître dans la roue", options=DEFAULT_ORDER, default=sec.get("domaines_presents", []) if include_existing else [], key=f"{section_key}_domains")
     sec["domaines_presents"] = selected
     if selected:
@@ -477,14 +477,7 @@ def phase_1():
     st.markdown("## Phase 1 — Construire la roue des domaines de vie aujourd'hui")
     st.markdown("<div class='brand-box'>Dans cette première phase, représentez votre vie telle qu'elle est aujourd'hui. Ne cherchez pas à obtenir une roue équilibrée ou agréable : l'intérêt est de montrer ce qui prend réellement de la place dans votre vie actuelle.</div>", unsafe_allow_html=True)
     selected = domain_selector("actuel", "Roue actuelle")
-    st.markdown("### Questions d'aide à la réflexion")
-    st.markdown("""
-- Quels domaines occupent beaucoup de temps concret dans votre semaine ?
-- Quels domaines occupent peu de temps mais beaucoup de charge mentale ?
-- Quels domaines reviennent souvent dans vos pensées, vos obligations ou vos préoccupations ?
-- Y a-t-il un domaine absent aujourd'hui ? Dans ce cas, ne le forcez pas dans la roue actuelle.
-""")
-    if selected and st.button("Valider ma roue actuelle", type="primary"):
+        if selected and st.button("Valider ma roue actuelle", type="primary"):
         vals, total = norm_values(st.session_state.data["actuel"].get("valeurs", {}), selected)
         if total <= 0:
             st.error("Merci de donner une valeur à au moins un domaine.")
@@ -613,4 +606,12 @@ def main():
         phase_4()
 
 if __name__ == "__main__":
-    main()
+    main()st.markdown("### Questions d'aide à la réflexion")
+    st.markdown("""
+- Quels domaines occupent beaucoup de temps concret dans votre semaine ?
+- Quels domaines occupent peu de temps mais beaucoup de charge mentale ?
+- Quels domaines reviennent souvent dans vos pensées, vos obligations ou vos préoccupations ?
+- Y a-t-il un domaine absent aujourd'hui ? Dans ce cas, ne le forcez pas dans la roue actuelle.
+""")
+    st.info("Déplacez progressivement les réglettes et observez la roue se dessiner. Les pourcentages sont calculés automatiquement : ne cherchez pas à faire un calcul, fiez-vous à votre ressenti global.")
+    
