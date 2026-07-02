@@ -1,48 +1,25 @@
-# Clarté360 – Outil 5 V1.1 opérationnelle
+# Clarté360 – Analyse des compétences transférables et faisabilité du projet professionnel
 
-Application Streamlit pour l'analyse des compétences transférables et l'aide au choix du projet professionnel.
+Version 1.2.0 – Correctifs opérationnels
 
-## Fonctionnalités V1.1
+Corrections principales :
+- exploitation réelle des JSON Valeurs, Préférences professionnelles et Moteurs professionnels ;
+- saisie manuelle du RIASEC Diagoriente et comparaison avec le RIASEC des fiches ROME ;
+- affichage du statut A / ECA / NA dans les accordéons de compétences ;
+- synthèse du nombre total de compétences ROME, avec pourcentages A / ECA / NA ;
+- analyse par famille de compétences ;
+- explication pédagogique des contextes ROME ;
+- remplacement de “motivations” par “moteurs professionnels” ;
+- suppression de l’effet note scolaire dans la synthèse ;
+- explication du calcul de compatibilité globale ;
+- plan d’action généré uniquement à partir du métier final retenu ;
+- plan d’action autonome après génération ;
+- regroupement des actions par indice ;
+- traçabilité de l’origine des actions ;
+- export JSON et PDF enrichis.
 
-- Code d'accès obligatoire avec envoi email si SMTP configuré.
-- Reprise possible par import d'une sauvegarde JSON.
-- Chargement local du référentiel ROME XML.
-- Table RIASEC Clarté360 intégrée.
-- Recherche métier par code ROME, intitulé ou appellation.
-- Shortlist de 1 à 3 métiers.
-- Analyse compétence par compétence : Acquis / En cours d'acquisition / Non acquis / Non applicable.
-- Justification obligatoire attendue pour Acquis et ECA : Quand ? Où ? Comment ?
-- Plan d'acquisition attendu pour ECA et NA.
-- Croisement avec valeurs, préférences, motivations, RIASEC, contraintes, mobilité, formation, marché.
-- Aide à la décision optionnelle via indice Clarté360 non prescriptif.
-- Choix final manuel du bénéficiaire avec confirmation du libre arbitre.
-- Export JSON intermédiaire et final.
-- Export PDF final.
-- Envoi du dossier final à contact@clarte360.com si SMTP configuré.
-- Journal de sessions début / clôture.
 
-## Déploiement Streamlit Cloud
 
-1. Déposer le contenu du dossier dans GitHub.
-2. Pointer Streamlit Cloud sur `app.py`.
-3. Ajouter les secrets SMTP si l'envoi email doit être actif.
-
-## Secrets Streamlit recommandés
-
-```toml
-SMTP_HOST = "ssl0.ovh.net"
-SMTP_PORT = "587"
-SMTP_USER = "contact@clarte360.com"
-SMTP_PASSWORD = "mot_de_passe_ovh"
-SMTP_FROM = "contact@clarte360.com"
-ADMIN_EMAIL = "contact@clarte360.com"
-MASTER_CODE = "code_admin_de_secours"
-```
-
-Sans SMTP, l'application fonctionne en mode test : le code s'affiche à l'écran et les exports sont téléchargeables.
-
-## Fichiers de données nécessaires
-
-- `data/RefRomeXml.zip`
-- `data/rome_riasec_clarte360.xlsx`
-- `data/site_icon.png`
+## V1.2.1
+- Titre principal aligné avec les autres applications Clarté360.
+- Ajout du bloc Objectif de l'outil sur l’écran d’accueil.

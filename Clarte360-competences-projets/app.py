@@ -42,8 +42,8 @@ try:
 except Exception:
     REPORTLAB_OK = False
 
-APP_VERSION = "1.1.0"
-APP_NAME = "Clarté360 – Analyse des compétences transférables"
+APP_VERSION = "1.2.0"
+APP_NAME = "Clarté360 – Analyse des compétences transférables et faisabilité du projet professionnel"
 DATA_DIR = Path(__file__).parent / "data"
 ROME_ZIP = DATA_DIR / "RefRomeXml.zip"
 RIASEC_XLSX = DATA_DIR / "rome_riasec_clarte360.xlsx"
@@ -399,7 +399,7 @@ def score_for_job(code: str) -> Dict[str, Any]:
         "Compétences": competence_score,
         "Valeurs": float(constraints.get("valeurs", 50)),
         "Préférences": float(constraints.get("preferences", 50)),
-        "Motivations": float(constraints.get("motivations", 50)),
+        "Moteurs professionnels": float(constraints.get("moteurs", constraints.get("moteurs", 50))),
         "RIASEC": float(constraints.get("riasec", 50)),
         "Contraintes": float(constraints.get("contraintes", 50)),
         "Mobilité": float(constraints.get("mobilite", 50)),
@@ -410,7 +410,7 @@ def score_for_job(code: str) -> Dict[str, Any]:
         "Compétences": 25,
         "Valeurs": 10,
         "Préférences": 10,
-        "Motivations": 15,
+        "Moteurs professionnels": 15,
         "RIASEC": 5,
         "Contraintes": 10,
         "Mobilité": 5,
@@ -420,6 +420,173 @@ def score_for_job(code: str) -> Dict[str, Any]:
     total = sum(criteria[k] * weights[k] for k in criteria) / sum(weights.values())
     return {"score": round(total, 1), "criteria": criteria, "weights": weights}
 
+
+
+def comp_key(code: str, c: Dict[str, str]) -> str:
+    return safe_key(code, c.get("code_ogr", ""), c.get("type", ""), c.get("libelle", ""))
+
+
+def all_competence_rows(code: str, rome: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    item = rome.get(code, {})
+    comp_data = st.session_state.analyses.setdefault(code, {}).setdefault("competences", {})
+    rows = []
+    for c in item.get("competences", []):
+        k = comp_key(code, c)
+        current = comp_data.setdefault(k, {
+            "statut": "Non renseigné", "preuve": "", "plan": "", "commentaire": "",
+            "libelle": c.get("libelle", ""), "type": c.get("type", ""),
+            "groupe": c.get("groupe", ""), "coeur_metier": c.get("coeur_metier", ""),
+            "code_ogr": c.get("code_ogr", "")
+        })
+        rows.append({"key": k, **c, **current})
+    return rows
+
+
+def competence_stats(code: str, rome: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    rows = all_competence_rows(code, rome)
+    total = len(rows)
+    counts = {"Acquis": 0, "En cours d'acquisition": 0, "Non acquis": 0, "Non applicable": 0, "Non renseigné": 0}
+    by_family: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        statut = r.get("statut", "Non renseigné") or "Non renseigné"
+        if statut not in counts:
+            counts[statut] = 0
+        counts[statut] += 1
+        fam = r.get("type", "Autre") or "Autre"
+        fam_row = by_family.setdefault(fam, {"Famille": fam, "Total": 0, "A": 0, "ECA": 0, "NA": 0, "NR": 0, "% acquis": 0.0})
+        fam_row["Total"] += 1
+        if statut == "Acquis": fam_row["A"] += 1
+        elif statut == "En cours d'acquisition": fam_row["ECA"] += 1
+        elif statut == "Non acquis": fam_row["NA"] += 1
+        elif statut != "Non applicable": fam_row["NR"] += 1
+    for fam_row in by_family.values():
+        fam_row["% acquis"] = round(fam_row["A"] / fam_row["Total"] * 100, 1) if fam_row["Total"] else 0
+    return {"total": total, "counts": counts, "families": list(by_family.values()), "rows": rows}
+
+
+def status_short(statut: str) -> str:
+    return {
+        "Acquis": "🟢 A",
+        "En cours d'acquisition": "🟠 ECA",
+        "Non acquis": "🔴 NA",
+        "Non applicable": "⚪ N.A.",
+        "Non renseigné": "⚫ NR",
+    }.get(statut or "Non renseigné", "⚫ NR")
+
+
+def pct_label(n: int, total: int) -> str:
+    return f"{n} / {total} ({round(n/total*100,1) if total else 0} %)"
+
+
+def appreciation(score: float) -> str:
+    if score >= 80: return "Très élevée"
+    if score >= 65: return "Élevée"
+    if score >= 50: return "À approfondir"
+    if score >= 35: return "Fragile"
+    return "Très fragile"
+
+
+def parse_clarte_json(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Extrait les éléments utiles depuis les JSON Clarté360 existants.
+    Les apps Préférences et Moteurs stockent déjà les scores sous la clé scores.
+    """
+    out = {"raw": payload, "scores": [], "top": [], "low": [], "summary": ""}
+    scores = payload.get("scores") or payload.get("resultats") or []
+    if isinstance(scores, dict):
+        scores = list(scores.values())
+    clean_scores = []
+    for r in scores if isinstance(scores, list) else []:
+        if not isinstance(r, dict):
+            continue
+        label = r.get("Dimension") or r.get("Moteur") or r.get("Valeur") or r.get("Libellé") or r.get("libelle") or r.get("Code") or "Élément"
+        pct = r.get("Pourcentage") if "Pourcentage" in r else r.get("score") if "score" in r else r.get("Score")
+        try:
+            pct = float(str(pct).replace("%", "").replace(",", "."))
+        except Exception:
+            pct = None
+        clean_scores.append({"Libellé": clean_text(label), "Pourcentage": pct, "Lecture": clean_text(r.get("Lecture", ""))})
+    clean_scores = [r for r in clean_scores if r["Pourcentage"] is not None]
+    clean_scores.sort(key=lambda x: x["Pourcentage"], reverse=True)
+    out["scores"] = clean_scores
+    out["top"] = clean_scores[:3]
+    out["low"] = sorted(clean_scores, key=lambda x: x["Pourcentage"])[:3]
+    if clean_scores:
+        out["summary"] = "Principaux résultats : " + ", ".join(f"{r['Libellé']} ({r['Pourcentage']:.0f} %)" for r in clean_scores[:3])
+    return out
+
+
+def render_import_analysis(label: str, key: str, cross: Dict[str, Any]) -> None:
+    block = cross.get(key, {}) if isinstance(cross.get(key), dict) else {}
+    parsed = block.get("parsed") or {}
+    notes = block.get("notes", "")
+    if parsed.get("scores"):
+        df = pd.DataFrame(parsed["scores"])
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        chart_df = df.set_index("Libellé")[["Pourcentage"]]
+        st.bar_chart(chart_df, height=220)
+        st.caption("Ces données seront reprises dans la synthèse et croisées avec les métiers retenus. Le radar détaillé sera reconstruit dans l'interface Consultant à partir du JSON complet.")
+    elif notes:
+        st.info("Aucun score structuré détecté automatiquement dans ce JSON ; la note de synthèse sera conservée.")
+    else:
+        st.caption("Aucun élément importé pour le moment.")
+
+
+def riasec_match(user_code: str, job_code: str) -> Tuple[int, str]:
+    user = clean_text(user_code).upper().replace(" ", "")
+    job = clean_text(job_code).upper().replace(" ", "")
+    if not user or not job:
+        return 50, "Non déterminé"
+    score = 0
+    if len(user) >= 1 and user[0] in job[:1]: score += 60
+    if len(user) >= 2 and user[1] in job[:2]: score += 30
+    if len(user) >= 3 and user[2] in job[:3]: score += 10
+    return min(score, 100), "Très cohérent" if score >= 80 else "Cohérent" if score >= 50 else "À explorer"
+
+
+def plan_action_from_competences(code: str, rome: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows = []
+    for i, r in enumerate(all_competence_rows(code, rome), start=1):
+        statut = r.get("statut")
+        action = clean_text(r.get("plan", ""))
+        if statut in ("En cours d'acquisition", "Non acquis") and action:
+            rows.append({
+                "ID": f"PA-{i:03d}",
+                "Ind": "",
+                "Origine": f"ROME {code} – {r.get('type','')} – {r.get('libelle','')} – {status_short(statut)}",
+                "Famille": r.get("type", ""),
+                "Compétence concernée": r.get("libelle", ""),
+                "Statut origine": statut,
+                "Action à réaliser": action,
+                "Moyens externes / internes": "",
+                "Objectif visé par cette action": f"Acquérir ou renforcer : {r.get('libelle','')}",
+                "Date de réalisation": "",
+                "Indicateur de réussite": "",
+                "Commentaires": "",
+            })
+    return rows
+
+
+def regroup_plan_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    result = []
+    for r in rows:
+        ind = clean_text(str(r.get("Ind", "")))
+        if not ind:
+            result.append(r)
+            continue
+        if ind not in grouped:
+            grouped[ind] = dict(r)
+            result.append(grouped[ind])
+        else:
+            base = grouped[ind]
+            for col in ["Origine", "Famille", "Compétence concernée", "Action à réaliser", "Moyens externes / internes", "Objectif visé par cette action", "Indicateur de réussite", "Commentaires"]:
+                a = clean_text(str(base.get(col, "")))
+                b = clean_text(str(r.get(col, "")))
+                if b and b not in a:
+                    base[col] = (a + "\n" + b).strip() if a else b
+            if not clean_text(str(base.get("Date de réalisation", ""))) and clean_text(str(r.get("Date de réalisation", ""))):
+                base["Date de réalisation"] = r.get("Date de réalisation", "")
+    return result
 
 def validate_job_analysis(code: str, rome: Dict[str, Dict[str, Any]]) -> List[str]:
     """Retourne les points à compléter pour rendre l'analyse exploitable."""
@@ -464,13 +631,12 @@ def pdf_report(rome: Dict[str, Dict[str, Any]]) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.4*cm, leftMargin=1.4*cm, topMargin=1.4*cm, bottomMargin=1.4*cm)
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="ClarteTitle", parent=styles["Title"], textColor=colors.HexColor(CLARTE_TEAL_DARK), fontSize=20, leading=24))
-    styles.add(ParagraphStyle(name="ClarteH", parent=styles["Heading2"], textColor=colors.HexColor(CLARTE_TEAL), fontSize=14))
+    styles.add(ParagraphStyle(name="ClarteTitle", parent=styles["Title"], textColor=colors.HexColor(CLARTE_TEAL_DARK), fontSize=18, leading=22))
+    styles.add(ParagraphStyle(name="ClarteH", parent=styles["Heading2"], textColor=colors.HexColor(CLARTE_TEAL), fontSize=13))
     normal = styles["BodyText"]
     story = []
     b = st.session_state.beneficiaire
     story.append(Paragraph("Clarté360 – Analyse des compétences transférables et faisabilité du projet professionnel", styles["ClarteTitle"]))
-    story.append(Paragraph("Analyse des compétences transférables", styles["Heading2"]))
     story.append(Spacer(1, 0.3*cm))
     story.append(Paragraph(f"Bénéficiaire : <b>{b.get('prenom','')} {b.get('nom','')}</b>", normal))
     story.append(Paragraph(f"Email : {b.get('email','')}", normal))
@@ -479,32 +645,75 @@ def pdf_report(rome: Dict[str, Dict[str, Any]]) -> bytes:
         story.append(Paragraph("Connexions : " + "; ".join([f"{x.get('event','')} {x.get('at','')}" for x in st.session_state.sessions]), normal))
     story.append(Spacer(1, 0.4*cm))
 
+    # Données importées
+    story.append(Paragraph("Données Clarté360 importées", styles["ClarteH"]))
+    for label, key in [("Valeurs", "valeurs"), ("Préférences professionnelles", "preferences"), ("Moteurs professionnels", "moteurs")]:
+        block = st.session_state.cross_data.get(key, {}) if isinstance(st.session_state.cross_data.get(key), dict) else {}
+        parsed = block.get("parsed", {})
+        note = block.get("notes", "")
+        summary = parsed.get("summary") or note or "Non renseigné"
+        story.append(Paragraph(f"<b>{label}</b> : {clean_text(summary)}", normal))
+    rblock = st.session_state.cross_data.get("riasec", {}) if isinstance(st.session_state.cross_data.get("riasec"), dict) else {}
+    story.append(Paragraph(f"<b>RIASEC Diagoriente</b> : {rblock.get('profil','Non renseigné')}", normal))
+    story.append(Spacer(1, 0.4*cm))
+
     for code in st.session_state.shortlist:
         item = rome.get(code, {})
         story.append(Paragraph(f"{code} – {item.get('intitule','')}", styles["ClarteH"]))
-        story.append(Paragraph(f"RIASEC : {item.get('riasec','Non renseigné')}", normal))
-        story.append(Paragraph(clean_text(item.get("definition", "")), normal))
+        story.append(Paragraph(f"RIASEC métier : {item.get('riasec','Non renseigné')}", normal))
+        if item.get("definition"):
+            story.append(Paragraph(clean_text(item.get("definition", "")), normal))
         sc = score_for_job(code)
-        story.append(Paragraph(f"Indice Clarté360 optionnel : <b>{sc['score']} / 100</b>", normal))
-        rows = [["Critère", "Score"]] + [[k, str(v)] for k, v in sc["criteria"].items()]
-        table = Table(rows, colWidths=[8*cm, 4*cm])
+        story.append(Paragraph(f"Compatibilité globale : <b>{appreciation(sc['score'])}</b>", normal))
+        stats = competence_stats(code, rome)
+        total = stats["total"]
+        counts = stats["counts"]
+        story.append(Paragraph(f"Total compétences ROME : <b>{total}</b> – Acquises : {pct_label(counts.get('Acquis',0), total)} – ECA : {pct_label(counts.get('En cours d\'acquisition',0), total)} – NA : {pct_label(counts.get('Non acquis',0), total)}", normal))
+        if stats["families"]:
+            rows = [["Famille", "Total", "A", "ECA", "NA", "% acquis"]]
+            for r in stats["families"]:
+                rows.append([r["Famille"], r["Total"], r["A"], r["ECA"], r["NA"], r["% acquis"]])
+            table = Table(rows, colWidths=[5.2*cm, 2*cm, 1.5*cm, 1.5*cm, 1.5*cm, 2*cm])
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor(CLARTE_TEAL)),
+                ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+                ("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey),
+                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ]))
+            story.append(table)
+        with_calc = [["Critère", "Score", "Pondération"]] + [[k, str(sc["criteria"][k]), str(sc["weights"][k])] for k in sc["criteria"]]
+        table = Table(with_calc, colWidths=[6.5*cm, 3*cm, 3*cm])
         table.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor(CLARTE_TEAL)),
             ("TEXTCOLOR", (0,0), (-1,0), colors.white),
             ("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ]))
+        story.append(Spacer(1, 0.2*cm))
         story.append(table)
-        story.append(Spacer(1, 0.3*cm))
-        comp = st.session_state.analyses.get(code, {}).get("competences", {})
-        counts = {s: 0 for s in STATUS_OPTIONS}
-        for v in comp.values():
-            counts[v.get("statut", "Non renseigné")] = counts.get(v.get("statut", "Non renseigné"), 0) + 1
-        story.append(Paragraph("Synthèse compétences : " + ", ".join(f"{k}: {v}" for k,v in counts.items() if v), normal))
         story.append(Spacer(1, 0.4*cm))
+
     story.append(Paragraph("Décision finale", styles["ClarteH"]))
-    story.append(Paragraph(st.session_state.decision.get("choix_final", "Non renseigné"), normal))
+    choice = st.session_state.decision.get("choix_final", "Non renseigné")
+    story.append(Paragraph(f"Projet retenu : <b>{choice}</b>", normal))
     story.append(Paragraph(st.session_state.decision.get("justification", ""), normal))
+    story.append(Paragraph("Plan d'action", styles["ClarteH"]))
+    plan_rows = st.session_state.decision.get("plan_action_rows", [])
+    if plan_rows:
+        rows = [["Origine", "Action", "Moyens", "Objectif", "Date", "Indicateur"]]
+        for r in plan_rows[:60]:
+            rows.append([clean_text(str(r.get("Origine", "")))[:90], clean_text(str(r.get("Action à réaliser", "")))[:90], clean_text(str(r.get("Moyens externes / internes", "")))[:70], clean_text(str(r.get("Objectif visé par cette action", "")))[:80], clean_text(str(r.get("Date de réalisation", ""))), clean_text(str(r.get("Indicateur de réussite", "")))[:70]])
+        table = Table(rows, colWidths=[3.2*cm, 3.4*cm, 2.8*cm, 3.2*cm, 2*cm, 3*cm], repeatRows=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor(CLARTE_TEAL)),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey),
+            ("VALIGN", (0,0), (-1,-1), "TOP"),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ]))
+        story.append(table)
+    else:
+        story.append(Paragraph("Plan d'action non généré.", normal))
     doc.build(story)
     return buf.getvalue()
 
@@ -533,17 +742,37 @@ def inject_css() -> None:
 
 
 def header() -> None:
-    cols = st.columns([1, 6])
+    cols = st.columns([1, 7])
     with cols[0]:
         if ICON.exists():
-            st.image(str(ICON), width=90)
+            st.image(str(ICON), width=105)
     with cols[1]:
-        st.markdown('<h1 class="clarte-title">Clarté360</h1>', unsafe_allow_html=True)
-        st.markdown("<div class='clarte-subtitle'>Analyse des compétences transférables et faisabilité du projet professionnel</div>", unsafe_allow_html=True)
+        st.markdown('<h1 class="clarte-title">Clarté360 - Analyse des compétences transférables et faisabilité du projet professionnel</h1>', unsafe_allow_html=True)
+        st.markdown("<div class='clarte-subtitle'>Version 1.2 - outil propriétaire d’exploration des compétences, de la faisabilité et du plan d’action</div>", unsafe_allow_html=True)
+
+
+def objectif_outil_card() -> None:
+    st.markdown("""
+    <div class='clarte-card'>
+        <h3 style='margin-top:0;'>Objectif de l'outil</h3>
+        <p>
+        Cet outil permet d'analyser l'adéquation entre un ou plusieurs projets professionnels et les compétences attendues dans le référentiel ROME.
+        Il aide à repérer les compétences déjà acquises, celles en cours d'acquisition et celles qui restent à développer.
+        </p>
+        <p>
+        L'objectif n'est pas de décider automatiquement à la place du bénéficiaire, mais de construire une lecture structurée : compétences transférables,
+        cohérence avec les valeurs, préférences professionnelles, moteurs professionnels, RIASEC, contraintes, mobilité et faisabilité du projet.
+        </p>
+        <p>
+        Le résultat sert de support d'échange avec le consultant Clarté360 et alimente le choix final ainsi que le plan d'action du bilan de compétences.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def access_screen() -> None:
     header()
+    objectif_outil_card()
     st.markdown("<div class='clarte-card'>", unsafe_allow_html=True)
     st.subheader("Accès bénéficiaire")
     st.write("Cet outil n'est pas un test psychométrique. Il sert de support d'analyse et d'échange avec le consultant Clarté360.")
@@ -626,24 +855,43 @@ def tab_identite() -> None:
 
 
 def tab_imports() -> None:
-    st.subheader("2. Données des autres outils")
-    st.write("Import facultatif des JSON Clarté360 déjà réalisés. La V1 accepte aussi une saisie manuelle.")
+    st.subheader("2. Données des autres outils Clarté360")
+    st.info("Les imports ne sont pas passifs : les JSON importés sont lus, résumés, puis utilisés pour éclairer l'adéquation aux métiers retenus. Les JSON complets restent conservés pour la future interface Clarté360 Consultant.")
     cross = st.session_state.cross_data.copy()
-    for label, key in [("Roue des valeurs", "valeurs"), ("Préférences professionnelles", "preferences"), ("Motivations professionnelles", "motivations"), ("Diagoriente / RIASEC", "diagoriente")]:
+    tool_defs = [
+        ("Roue des valeurs", "valeurs", "Importer le JSON de la roue des valeurs si disponible."),
+        ("Préférences professionnelles", "preferences", "Importer le JSON de l'outil Préférences professionnelles."),
+        ("Moteurs professionnels", "moteurs", "Importer le JSON de l'outil Moteurs professionnels."),
+    ]
+    for label, key, help_text in tool_defs:
         st.markdown(f"#### {label}")
-        upl = st.file_uploader(f"Importer JSON {label}", type=["json"], key=f"upl_{key}")
+        upl = st.file_uploader(help_text, type=["json"], key=f"upl_{key}")
+        block = cross.get(key, {}) if isinstance(cross.get(key), dict) else {}
         if upl:
             try:
-                cross[key] = {"json": json.loads(upl.read().decode("utf-8")), "notes": cross.get(key, {}).get("notes", "")}
-                st.success("Importé.")
+                raw = json.loads(upl.read().decode("utf-8"))
+                block["json"] = raw
+                block["parsed"] = parse_clarte_json(raw)
+                st.success("JSON importé et analysé.")
             except Exception as e:
                 st.error(f"Lecture impossible : {e}")
-        current_notes = cross.get(key, {}).get("notes", "") if isinstance(cross.get(key), dict) else ""
-        notes = st.text_area(f"Synthèse / éléments utiles {label}", value=current_notes, key=f"notes_{key}", height=90)
-        cross[key] = {**(cross.get(key, {}) if isinstance(cross.get(key), dict) else {}), "notes": notes}
+        notes = st.text_area(f"Synthèse / éléments utiles – {label}", value=block.get("notes", ""), key=f"notes_{key}", height=90)
+        block["notes"] = notes
+        cross[key] = block
+        render_import_analysis(label, key, cross)
+
+    st.markdown("#### RIASEC Diagoriente")
+    st.caption("Le RIASEC provient de Diagoriente : il n'y a pas de JSON à importer. Saisir simplement le profil dominant utilisé pendant l'entretien.")
+    rblock = cross.get("riasec", {}) if isinstance(cross.get("riasec"), dict) else {}
+    cols = st.columns(3)
+    with cols[0]: rblock["r1"] = st.selectbox("1er code RIASEC", [""] + list("RIASEC"), index=([""] + list("RIASEC")).index(rblock.get("r1", "")) if rblock.get("r1", "") in [""] + list("RIASEC") else 0)
+    with cols[1]: rblock["r2"] = st.selectbox("2e code RIASEC", [""] + list("RIASEC"), index=([""] + list("RIASEC")).index(rblock.get("r2", "")) if rblock.get("r2", "") in [""] + list("RIASEC") else 0)
+    with cols[2]: rblock["r3"] = st.selectbox("3e code optionnel", [""] + list("RIASEC"), index=([""] + list("RIASEC")).index(rblock.get("r3", "")) if rblock.get("r3", "") in [""] + list("RIASEC") else 0)
+    rblock["profil"] = "".join([rblock.get("r1", ""), rblock.get("r2", ""), rblock.get("r3", "")])
+    rblock["notes"] = st.text_area("Note d'interprétation RIASEC", value=rblock.get("notes", ""), height=80)
+    cross["riasec"] = rblock
     st.session_state.cross_data = cross
     touch()
-
 
 def tab_metiers(rome: Dict[str, Dict[str, Any]]) -> None:
     st.subheader("3. Recherche et shortlist métiers ROME")
@@ -685,87 +933,204 @@ def tab_competences(rome: Dict[str, Dict[str, Any]]) -> None:
         return
     code = st.selectbox("Métier à analyser", st.session_state.shortlist, format_func=lambda c: f"{c} – {rome[c]['intitule']}")
     item = rome[code]
+    dec = st.session_state.decision
+    plan_exists = bool(dec.get("plan_action_generated")) and dec.get("choix_final") == code
+    if plan_exists:
+        st.warning("Le plan d'action a déjà été généré à partir de cette étude des compétences. L'étude est figée pour éviter de rendre le plan incohérent.")
+        allow_edit = st.checkbox("Je comprends le risque et je souhaite modifier quand même l'étude des compétences", value=False)
+    else:
+        allow_edit = True
     st.markdown(f"### {code} – {item['intitule']}")
-    st.caption("Pour Acquis ou En cours d'acquisition : preuve obligatoire. Pour ECA ou Non acquis : plan d'acquisition recommandé.")
+    st.caption("Pour Acquis ou En cours d'acquisition : preuve obligatoire. Pour ECA ou Non acquis : action d'acquisition à renseigner pour alimenter le plan d'action.")
+
+    stats = competence_stats(code, rome)
+    total = stats["total"]
+    counts = stats["counts"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total compétences ROME", total)
+    c2.metric("Acquises", pct_label(counts.get("Acquis",0), total))
+    c3.metric("En cours", pct_label(counts.get("En cours d'acquisition",0), total))
+    c4.metric("Non acquises", pct_label(counts.get("Non acquis",0), total))
+    if stats["families"]:
+        with st.expander("Synthèse par famille de compétences", expanded=True):
+            st.dataframe(pd.DataFrame(stats["families"]), hide_index=True, use_container_width=True)
+
     filt = st.multiselect("Types à afficher", ["Savoir-faire", "Savoir-être professionnel", "Savoir"], default=["Savoir-faire", "Savoir-être professionnel", "Savoir"])
     core_only = st.checkbox("Afficher uniquement les éléments principaux", value=False)
     comp_data = st.session_state.analyses.setdefault(code, {}).setdefault("competences", {})
     comps = [c for c in item["competences"] if c["type"] in filt]
     if core_only:
         comps = [c for c in comps if c.get("coeur_metier") == "Principale"]
-    st.write(f"{len(comps)} éléments affichés.")
+    st.write(f"{len(comps)} éléments affichés sur {total} compétences ROME au total.")
     for c in comps:
-        k = safe_key(code, c.get("code_ogr",""), c["type"], c["libelle"])
-        current = comp_data.setdefault(k, {"statut": "Non renseigné", "preuve": "", "plan": "", "commentaire": "", "libelle": c["libelle"], "type": c["type"], "groupe": c.get("groupe",""), "coeur_metier": c.get("coeur_metier","")})
-        with st.expander(f"{c['type']} | {c.get('groupe','')} | {c['libelle']}", expanded=False):
-            current["statut"] = st.selectbox("Statut", STATUS_OPTIONS, index=STATUS_OPTIONS.index(current.get("statut", "Non renseigné")), key=f"statut_{k}")
-            current["preuve"] = st.text_area("Preuve / justification : Quand ? Où ? Comment ?", value=current.get("preuve", ""), key=f"preuve_{k}", height=80)
-            current["plan"] = st.text_area("Si ECA ou NA : comment acquérir / renforcer ?", value=current.get("plan", ""), key=f"plan_{k}", height=80)
-            current["commentaire"] = st.text_area("Commentaire consultant", value=current.get("commentaire", ""), key=f"comment_{k}", height=70)
+        k = comp_key(code, c)
+        current = comp_data.setdefault(k, {"statut": "Non renseigné", "preuve": "", "plan": "", "commentaire": "", "libelle": c["libelle"], "type": c["type"], "groupe": c.get("groupe",""), "coeur_metier": c.get("coeur_metier",""), "code_ogr": c.get("code_ogr", "")})
+        label = f"{status_short(current.get('statut','Non renseigné'))} | {c['type']} | {c.get('groupe','')} | {c['libelle']}"
+        with st.expander(label, expanded=False):
+            current["statut"] = st.selectbox("Statut", STATUS_OPTIONS, index=STATUS_OPTIONS.index(current.get("statut", "Non renseigné")), key=f"statut_{k}", disabled=not allow_edit)
+            current["preuve"] = st.text_area("Preuve / justification : Quand ? Où ? Comment ?", value=current.get("preuve", ""), key=f"preuve_{k}", height=80, disabled=not allow_edit)
+            current["plan"] = st.text_area("Action à réaliser / Comment acquérir ou renforcer ?", value=current.get("plan", ""), key=f"plan_{k}", height=80, disabled=not allow_edit)
+            current["commentaire"] = st.text_area("Commentaire consultant", value=current.get("commentaire", ""), key=f"comment_{k}", height=70, disabled=not allow_edit)
     touch()
 
-
 def tab_contextes(rome: Dict[str, Dict[str, Any]]) -> None:
-    st.subheader("5. Contraintes, contextes et faisabilité")
+    st.subheader("5. Contextes ROME, contraintes et faisabilité")
     if not st.session_state.shortlist:
         st.warning("Sélectionnez d'abord un métier.")
         return
+    st.info("Les contextes ROME décrivent les conditions d'exercice habituellement rencontrées dans le métier : environnement de travail, public, horaires, déplacements, type d'employeur, statut, contraintes. Ils ne sont pas des obligations, mais aident à vérifier la compatibilité concrète du projet.")
+    cross = st.session_state.cross_data
+    user_riasec = (cross.get("riasec", {}) if isinstance(cross.get("riasec"), dict) else {}).get("profil", "")
     for code in st.session_state.shortlist:
         item = rome[code]
         with st.expander(f"{code} – {item['intitule']}", expanded=True):
             st.markdown("**Contextes ROME**")
-            for ctx in item.get("contextes", [])[:60]:
-                st.caption(f"{ctx['groupe']} : {ctx['libelle']}")
+            if item.get("contextes"):
+                ctx_df = pd.DataFrame(item.get("contextes", []))[["groupe", "libelle"]].drop_duplicates()
+                st.dataframe(ctx_df, hide_index=True, use_container_width=True, height=220)
+            else:
+                st.caption("Aucun contexte ROME détecté pour cette fiche.")
             cdata = st.session_state.constraints.setdefault(code, {})
-            st.markdown("**Cotation d'exploration (optionnelle, non décisionnelle)**")
-            cols = st.columns(3)
+            job_riasec = item.get("riasec", "")
+            if user_riasec and job_riasec:
+                rscore, rlabel = riasec_match(user_riasec, job_riasec)
+                cdata.setdefault("riasec", rscore)
+                st.caption(f"RIASEC Diagoriente : {user_riasec} | RIASEC métier : {job_riasec} | Lecture : {rlabel}")
+            st.markdown("**Cotation d'exploration**")
+            st.caption("Cette cotation est une aide à la réflexion. Elle ne décide jamais à votre place : elle sert à préparer l'échange avec le consultant et à rendre le calcul final compréhensible.")
             fields = [
-                ("valeurs", "Compatibilité valeurs"), ("preferences", "Compatibilité préférences"), ("motivations", "Compatibilité motivations"),
-                ("riasec", "Cohérence RIASEC"), ("contraintes", "Contraintes personnelles"), ("mobilite", "Mobilité"),
-                ("formation", "Formation accessible"), ("marche", "Marché / débouchés"), ("adhesion", "Adhésion bénéficiaire"),
+                ("valeurs", "Compatibilité valeurs", "Le métier permet-il de vivre les valeurs importantes pour le bénéficiaire ?"),
+                ("preferences", "Compatibilité préférences", "Les conditions de travail correspondent-elles aux préférences professionnelles ?"),
+                ("moteurs", "Compatibilité moteurs professionnels", "Le métier nourrit-il les principaux moteurs professionnels ?"),
+                ("riasec", "Cohérence RIASEC", "Le profil RIASEC Diagoriente est-il proche du profil RIASEC du métier ?"),
+                ("contraintes", "Contraintes personnelles", "Les contraintes personnelles sont-elles compatibles avec ce projet ?"),
+                ("mobilite", "Mobilité", "La mobilité nécessaire est-elle possible et acceptée ?"),
+                ("formation", "Formation accessible", "Les formations ou prérequis nécessaires sont-ils accessibles ?"),
+                ("marche", "Marché / débouchés", "Le projet semble-t-il réaliste au regard des débouchés identifiés ?"),
+                ("adhesion", "Adhésion bénéficiaire", "Le bénéficiaire exprime-t-il une envie réelle de poursuivre cette piste ?"),
             ]
-            for i, (key, label) in enumerate(fields):
+            cols = st.columns(3)
+            for i, (key, label, help_text) in enumerate(fields):
                 with cols[i % 3]:
+                    st.caption(help_text)
                     cdata[key] = st.slider(label, 0, 100, int(cdata.get(key, 50)), key=f"slider_{code}_{key}")
             cdata["freins"] = st.text_area("Freins / obstacles repérés", value=cdata.get("freins", ""), key=f"freins_{code}")
             cdata["leviers"] = st.text_area("Leviers / ressources", value=cdata.get("leviers", ""), key=f"leviers_{code}")
             cdata["actions"] = st.text_area("Actions à mener pour valider la faisabilité", value=cdata.get("actions", ""), key=f"actions_{code}")
     touch()
 
-
 def tab_synthese(rome: Dict[str, Dict[str, Any]]) -> None:
-    st.subheader("6. Synthèse comparée")
+    st.subheader("6. Synthèse comparée et aide à la décision")
     if not st.session_state.shortlist:
         st.warning("Aucun métier à comparer.")
         return
+    st.info("La synthèse compare les projets, mais ne décide pas à la place du bénéficiaire. L'appréciation Clarté360 est un support d'analyse multicritères.")
     rows = []
     for code in st.session_state.shortlist:
         item = rome[code]
         sc = score_for_job(code)
-        comp_data = st.session_state.analyses.get(code, {}).get("competences", {})
-        acquired = sum(1 for v in comp_data.values() if v.get("statut") == "Acquis")
-        eca = sum(1 for v in comp_data.values() if v.get("statut") == "En cours d'acquisition")
-        na = sum(1 for v in comp_data.values() if v.get("statut") == "Non acquis")
-        rows.append({"Code": code, "Métier": item["intitule"], "RIASEC": item.get("riasec",""), "Acquis": acquired, "ECA": eca, "NA": na, "Indice optionnel": sc["score"]})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
-    st.warning("L'indice Clarté360 est une aide à la décision. Il ne remplace pas le choix du bénéficiaire ni l'analyse du consultant.")
-    for code in st.session_state.shortlist:
-        sc = score_for_job(code)
-        st.markdown(f"#### {code} – {rome[code]['intitule']} : {sc['score']} / 100")
-        st.progress(int(sc["score"]))
-        st.json(sc["criteria"], expanded=False)
+        stats = competence_stats(code, rome)
+        total = stats["total"]
+        counts = stats["counts"]
+        rows.append({
+            "Code": code,
+            "Métier": item["intitule"],
+            "RIASEC": item.get("riasec",""),
+            "Total compétences ROME": total,
+            "Acquis": f"{counts.get('Acquis',0)} ({round(counts.get('Acquis',0)/total*100,1) if total else 0} %)",
+            "ECA": f"{counts.get('En cours d\'acquisition',0)} ({round(counts.get('En cours d\'acquisition',0)/total*100,1) if total else 0} %)",
+            "NA": f"{counts.get('Non acquis',0)} ({round(counts.get('Non acquis',0)/total*100,1) if total else 0} %)",
+            "Compatibilité globale": appreciation(sc["score"]),
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.warning("L'appréciation globale n'est pas une note scolaire. Elle agrège plusieurs dimensions et reste subordonnée au choix libre du bénéficiaire et à l'analyse du consultant.")
 
+    for code in st.session_state.shortlist:
+        item = rome[code]
+        sc = score_for_job(code)
+        stats = competence_stats(code, rome)
+        total = stats["total"]
+        counts = stats["counts"]
+        st.markdown(f"### {code} – {item['intitule']}")
+        st.markdown(f"**Compatibilité globale : {appreciation(sc['score'])}**")
+        st.progress(int(sc["score"]))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total compétences ROME", total)
+        c2.metric("A", pct_label(counts.get("Acquis",0), total))
+        c3.metric("ECA", pct_label(counts.get("En cours d'acquisition",0), total))
+        c4.metric("NA", pct_label(counts.get("Non acquis",0), total))
+        if stats["families"]:
+            st.dataframe(pd.DataFrame(stats["families"]), hide_index=True, use_container_width=True)
+        with st.expander("Comment est calculée cette appréciation ?", expanded=False):
+            st.write("L'appréciation Clarté360 est calculée à partir d'une pondération indicative. Elle sert uniquement de support d'analyse.")
+            wdf = pd.DataFrame([{"Critère": k, "Score": sc["criteria"][k], "Pondération": sc["weights"][k]} for k in sc["criteria"]])
+            st.dataframe(wdf, hide_index=True, use_container_width=True)
+            st.caption("Pondération actuelle : compétences transférables, valeurs, préférences, moteurs professionnels, RIASEC, contraintes, mobilité, formation et marché. Cette logique pourra être ajustée dans l'interface Consultant.")
 
 def tab_decision(rome: Dict[str, Dict[str, Any]]) -> None:
     st.subheader("7. Décision finale et plan d'action")
     dec = st.session_state.decision.copy()
     options = [""] + st.session_state.shortlist
+    previous_choice = dec.get("choix_final", "")
     dec["choix_final"] = st.selectbox("Projet retenu par le bénéficiaire", options, index=options.index(dec.get("choix_final", "")) if dec.get("choix_final", "") in options else 0, format_func=lambda c: "Aucun" if c == "" else f"{c} – {rome[c]['intitule']}")
+    if previous_choice and previous_choice != dec["choix_final"] and dec.get("plan_action_generated"):
+        st.warning("Le projet retenu a changé alors qu'un plan d'action existe déjà. Le plan existant reste conservé mais devra être régénéré volontairement si nécessaire.")
     dec["choix_mode"] = st.radio("Mode de choix", ["Choix manuel du bénéficiaire", "Choix accompagné consultant", "Choix avec aide automatisée optionnelle"], index=["Choix manuel du bénéficiaire", "Choix accompagné consultant", "Choix avec aide automatisée optionnelle"].index(dec.get("choix_mode", "Choix manuel du bénéficiaire")))
     dec["justification"] = st.text_area("Justification du choix", value=dec.get("justification", ""), height=120)
-    dec["plan_action"] = st.text_area("Plan d'action : étapes, calendrier, formations, enquêtes métier, contacts", value=dec.get("plan_action", ""), height=180)
     dec["points_vigilance"] = st.text_area("Points de vigilance", value=dec.get("points_vigilance", ""), height=100)
     dec["validation_beneficiaire"] = st.checkbox("Le bénéficiaire confirme que le choix final lui appartient", value=dec.get("validation_beneficiaire", False))
+
+    st.markdown("### Plan d'action")
+    st.caption("Le plan d'action ne concerne qu'un seul métier : le projet professionnel retenu. Il est généré depuis les compétences ECA / NA du métier choisi, puis devient indépendant.")
+    chosen = dec.get("choix_final", "")
+    if not chosen:
+        st.warning("Sélectionnez d'abord le projet final pour générer le plan d'action.")
+    else:
+        if not dec.get("plan_action_generated"):
+            if st.button("Générer le plan d'action à partir de l'étude des compétences"):
+                dec["plan_action_rows"] = plan_action_from_competences(chosen, rome)
+                dec["plan_action_generated"] = True
+                dec["plan_action_source_code"] = chosen
+                dec["plan_action_generated_at"] = now_iso()
+                st.success("Plan d'action généré. Il devient maintenant indépendant de l'étude des compétences.")
+                st.session_state.decision = dec
+                st.rerun()
+        else:
+            st.success(f"Plan d'action généré le {dec.get('plan_action_generated_at','')} à partir du métier {dec.get('plan_action_source_code','')}. Il n'est plus remis à zéro automatiquement.")
+            if dec.get("plan_action_source_code") != chosen:
+                st.error("Le plan d'action existant ne correspond pas au métier actuellement retenu. Utilisez une régénération volontaire uniquement si vous souhaitez repartir de zéro.")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if st.button("MAJ regroupement par Ind"):
+                    dec["plan_action_rows"] = regroup_plan_rows(dec.get("plan_action_rows", []))
+                    st.session_state.decision = dec
+                    st.rerun()
+            with col_b:
+                with st.expander("Régénération exceptionnelle", expanded=False):
+                    st.warning("Cette action remplace le plan d'action actuel par une nouvelle extraction depuis l'étude des compétences. À utiliser uniquement volontairement.")
+                    if st.button("Écraser et régénérer le plan d'action"):
+                        dec["plan_action_rows"] = plan_action_from_competences(chosen, rome)
+                        dec["plan_action_generated"] = True
+                        dec["plan_action_source_code"] = chosen
+                        dec["plan_action_generated_at"] = now_iso()
+                        st.session_state.decision = dec
+                        st.rerun()
+
+        rows = dec.get("plan_action_rows", [])
+        if dec.get("plan_action_generated"):
+            if not rows:
+                st.info("Aucune action issue des compétences ECA / NA n'a été trouvée. Vous pouvez ajouter des lignes manuellement.")
+            df = pd.DataFrame(rows)
+            base_cols = ["Ind", "Origine", "Action à réaliser", "Moyens externes / internes", "Objectif visé par cette action", "Date de réalisation", "Indicateur de réussite", "Commentaires", "ID", "Famille", "Compétence concernée", "Statut origine"]
+            for col in base_cols:
+                if col not in df.columns:
+                    df[col] = ""
+            edited = st.data_editor(df[base_cols], use_container_width=True, num_rows="dynamic", hide_index=True, key="plan_action_editor")
+            dec["plan_action_rows"] = edited.to_dict(orient="records")
+            with st.expander("Comprendre l'origine des actions", expanded=False):
+                st.write("La colonne Origine explique pourquoi une action apparaît dans le plan : elle reprend le code ROME, la famille de compétence, la compétence concernée et le statut ECA / NA au moment de la génération.")
+                st.write("Les colonnes techniques ID, Famille, Compétence concernée et Statut origine seront utiles pour la traçabilité et la future interface Clarté360 Consultant.")
+
     st.session_state.decision = dec
     val = global_validation(rome)
     if val["ok"]:
@@ -795,7 +1160,6 @@ def tab_decision(rome: Dict[str, Dict[str, Any]]) -> None:
                 st.warning(info)
                 st.info("SMTP absent : télécharge le JSON/PDF final et transmets-les manuellement.")
     touch()
-
 
 def main_app() -> None:
     rome = load_rome()
