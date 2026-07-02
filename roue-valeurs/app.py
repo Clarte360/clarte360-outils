@@ -17,12 +17,13 @@ import pandas as pd
 import streamlit as st
 
 APP_TITLE = "Clarté360 - Roue des valeurs"
-APP_VERSION = "V2.2"
+APP_VERSION = "V2.3"
 BRAND_COLOR = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
 DOMAINES = ["Personnel", "Travail", "Famille", "Social", "Couple / intimité"]
 FINAL_EMAIL_TO = "contact@clarte360.com"
+ENERGY_ACCESS_CODE = "CLAENER360"
 DEFAULT_COLORS = [
     "#008080", "#F2C94C", "#EB5757", "#2F80ED", "#9B51E0", "#27AE60",
     "#F2994A", "#56CCF2", "#BB6BD9", "#219653", "#F67280", "#6C5CE7",
@@ -40,8 +41,13 @@ st.markdown(
         .privacy-box {{background:#F1F8F8; border-left:6px solid {BRAND_COLOR}; padding:16px 18px; border-radius:10px; line-height:1.55;}}
         .rule-box {{background:#F1F8F8; border-left:5px solid {BRAND_COLOR}; padding:16px; border-radius:8px; line-height:1.5;}}
         .warn-box {{background:#FFF7E6; border-left:5px solid #F2C94C; padding:12px; border-radius:8px; line-height:1.5;}}
-        div.stButton > button:first-child {{border-radius:10px; border:1px solid {BRAND_COLOR}; color:{BRAND_COLOR};}}
-        div.stDownloadButton > button:first-child {{border-radius:10px; border:1px solid {BRAND_COLOR}; color:{BRAND_COLOR};}}
+        div.stButton > button:first-child {{border-radius:10px; border:1px solid {BRAND_COLOR}; color:{BRAND_COLOR}; background:white;}}
+        div.stButton > button:first-child:hover {{border-color:{BRAND_COLOR}; color:{BRAND_COLOR}; background:#F1F8F8;}}
+        div.stButton > button[kind="primary"] {{background:{BRAND_COLOR} !important; color:white !important; border:1px solid {BRAND_COLOR} !important;}}
+        div.stButton > button[kind="primary"] * {{color:white !important;}}
+        div.stDownloadButton > button:first-child {{border-radius:10px; border:1px solid {BRAND_COLOR}; color:{BRAND_COLOR}; background:white;}}
+        div.stDownloadButton > button:first-child:hover {{border-color:{BRAND_COLOR}; color:{BRAND_COLOR}; background:#F1F8F8;}}
+        .energy-box {{background:#F1F8F8; border-left:6px solid {BRAND_COLOR}; padding:16px 18px; border-radius:10px; line-height:1.55;}}
     </style>
     """,
     unsafe_allow_html=True,
@@ -252,14 +258,76 @@ def empty_state():
         "beneficiaire": {"prenom": "", "nom": "", "email": "", "consultant": "Clarté360", "date_realisation": date.today().isoformat()},
         "access": {"started_at": datetime.now().isoformat(timespec="seconds"), "code_verified": False},
         "valeurs": [],
+        "valeurs_energies": {"access_granted": False, "selected": [], "entries": {}, "created_at": "", "updated_at": ""},
     }
 
 
 def ensure_state():
     if "data" not in st.session_state:
         st.session_state.data = empty_state()
+    ensure_energy_state()
     if "page" not in st.session_state:
         st.session_state.page = "1. Bénéficiaire"
+
+
+def ensure_energy_state():
+    data = st.session_state.data
+    if "valeurs_energies" not in data or not isinstance(data.get("valeurs_energies"), dict):
+        data["valeurs_energies"] = {"access_granted": False, "selected": [], "entries": {}, "created_at": "", "updated_at": ""}
+    ve = data["valeurs_energies"]
+    ve.setdefault("access_granted", False)
+    ve.setdefault("selected", [])
+    ve.setdefault("entries", {})
+    ve.setdefault("created_at", "")
+    ve.setdefault("updated_at", "")
+
+
+def make_empty_value(index: int) -> dict:
+    return {
+        "nom": f"Valeur {index+1}",
+        "definition": "",
+        "couleur": DEFAULT_COLORS[index % len(DEFAULT_COLORS)],
+        "domaines": [{"domaine": d, "periode": "", "exemple": "", "cote": 0} for d in DOMAINES],
+    }
+
+
+def delete_value_at(index: int):
+    values = st.session_state.data.get("valeurs", [])
+    if 0 <= index < len(values):
+        values.pop(index)
+        # Nettoyage des sélections énergie afin d'éviter des indices obsolètes
+        ensure_energy_state()
+        ve = st.session_state.data["valeurs_energies"]
+        new_selected = []
+        new_entries = {}
+        for old_idx in ve.get("selected", []):
+            try:
+                old_idx = int(old_idx)
+            except Exception:
+                continue
+            if old_idx == index:
+                continue
+            new_idx = old_idx - 1 if old_idx > index else old_idx
+            new_selected.append(new_idx)
+            if str(old_idx) in ve.get("entries", {}):
+                new_entries[str(new_idx)] = ve["entries"][str(old_idx)]
+        ve["selected"] = new_selected[:3]
+        ve["entries"] = new_entries
+        update_timestamp()
+
+
+def appreciation_label(score: float) -> str:
+    try:
+        score = float(score)
+    except Exception:
+        score = 0
+    if score >= 8:
+        return "Très présente"
+    if score >= 6:
+        return "Présente"
+    if score >= 4:
+        return "À renforcer"
+    return "Faiblement vécue aujourd'hui"
 
 
 def update_timestamp():
@@ -434,6 +502,49 @@ def create_pdf_bytes(data):
                     y -= 0.006
             pdf.savefig(fig2, bbox_inches="tight")
             plt.close(fig2)
+
+        # Page complémentaire Valeurs énergies si l'espace a été activé
+        ve = data.get("valeurs_energies", {})
+        if ve.get("access_granted") and ve.get("selected"):
+            fig3, ax3 = plt.subplots(figsize=(8.27, 11.69))
+            ax3.axis("off")
+            ax3.text(0.03, 0.97, "Clarté360 - Valeurs énergies", fontsize=16, fontweight="bold", color=BRAND_COLOR, va="top")
+            ax3.text(0.03, 0.935, "Les valeurs énergie sont les valeurs retenues comme sources principales de mobilisation pour l'objectif ou le projet travaillé.", fontsize=10, va="top", wrap=True)
+            y = 0.89
+            for raw_idx in ve.get("selected", []):
+                try:
+                    idx = int(raw_idx)
+                except Exception:
+                    continue
+                if idx < 0 or idx >= len(data.get("valeurs", [])):
+                    continue
+                val = data["valeurs"][idx]
+                entry = ve.get("entries", {}).get(str(idx), {})
+                if y < 0.18:
+                    pdf.savefig(fig3, bbox_inches="tight")
+                    plt.close(fig3)
+                    fig3, ax3 = plt.subplots(figsize=(8.27, 11.69))
+                    ax3.axis("off")
+                    y = 0.96
+                ax3.text(0.03, y, f"{val.get('nom','')} - initial : {entry.get('score_initial', moyenne_valeur(val))}/10 - revisité : {entry.get('score_revise', moyenne_valeur(val))}/10", fontsize=12, fontweight="bold", color=BRAND_COLOR, va="top")
+                y -= 0.03
+                comment = entry.get("commentaire", "")
+                if comment:
+                    ax3.text(0.05, y, f"Énergie pour le projet : {comment[:190]}", fontsize=9, va="top")
+                    y -= 0.035
+                items = entry.get("maintien", []) if float(entry.get("score_revise", 0)) >= 10 else entry.get("actions", [])
+                label = "Points d'appui à conserver" if float(entry.get("score_revise", 0)) >= 10 else "Actions à mettre en œuvre"
+                ax3.text(0.05, y, label, fontsize=9.5, fontweight="bold", va="top")
+                y -= 0.022
+                for item in [x for x in items if str(x).strip()]:
+                    ax3.text(0.07, y, f"• {str(item)[:180]}", fontsize=8.8, va="top")
+                    y -= 0.02
+                y -= 0.015
+            pdf.savefig(fig3, bbox_inches="tight")
+            plt.close(fig3)
+            fig4 = create_energy_wheel_figure(data, small=False)
+            pdf.savefig(fig4, bbox_inches="tight")
+            plt.close(fig4)
     buf.seek(0)
     return buf.getvalue()
 
@@ -443,12 +554,7 @@ def add_default_values(nb):
     current = len(data["valeurs"])
     if nb > current:
         for i in range(current, nb):
-            data["valeurs"].append({
-                "nom": f"Valeur {i+1}",
-                "definition": "",
-                "couleur": DEFAULT_COLORS[i % len(DEFAULT_COLORS)],
-                "domaines": [{"domaine": d, "periode": "", "exemple": "", "cote": 0} for d in DOMAINES],
-            })
+            data["valeurs"].append(make_empty_value(i))
     elif nb < current:
         data["valeurs"] = data["valeurs"][:nb]
     update_timestamp()
@@ -456,7 +562,7 @@ def add_default_values(nb):
 
 def sidebar():
     st.sidebar.markdown("## Navigation")
-    pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et domaines", "4. Roue", "5. Export / Import"]
+    pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et domaines", "4. Roue", "5. Valeurs énergies", "6. Export / Import"]
     st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
     st.sidebar.markdown("---")
     uploaded = st.sidebar.file_uploader("Ouvrir un questionnaire JSON", type=["json"])
@@ -547,10 +653,38 @@ def page_valeurs():
     st.markdown("## 3. Valeurs et domaines de vie")
     st.write("Pour chaque valeur, renseignez les 5 domaines de vie. Le programme ne suggère aucune valeur et ne réalise aucune interprétation.")
     if not st.session_state.data.get("valeurs"):
-        st.info("Commencez par indiquer le nombre de valeurs dans la page 1.")
-        return
-    for idx, val in enumerate(st.session_state.data["valeurs"]):
-        with st.expander(f"Valeur {idx+1} : {val.get('nom','')}", expanded=idx == 0):
+        st.info("Commencez par indiquer le nombre de valeurs dans la page 1, ou ajoutez directement une première valeur ci-dessous.")
+
+    cadd, cinfo = st.columns([0.22, 0.78])
+    with cadd:
+        if st.button("+ Ajouter une valeur", type="primary"):
+            st.session_state.data["valeurs"].append(make_empty_value(len(st.session_state.data.get("valeurs", []))))
+            update_timestamp()
+            st.rerun()
+    with cinfo:
+        st.caption("Vous pouvez ajouter ou supprimer une valeur directement ici, sans revenir à l'identification du bénéficiaire.")
+
+    values = st.session_state.data.get("valeurs", [])
+    for idx, val in enumerate(list(values)):
+        titre = val.get('nom','') or f"Valeur {idx+1}"
+        with st.expander(f"Valeur {idx+1} : {titre}", expanded=idx == 0):
+            top1, top2 = st.columns([0.82, 0.18])
+            with top2:
+                if st.button("Supprimer cette valeur", key=f"delete_value_{idx}"):
+                    st.session_state[f"confirm_delete_{idx}"] = True
+            if st.session_state.get(f"confirm_delete_{idx}"):
+                st.warning(f"Confirmer la suppression de la valeur : {titre} ?")
+                cyes, cno = st.columns(2)
+                with cyes:
+                    if st.button("Oui, supprimer", key=f"delete_yes_{idx}"):
+                        delete_value_at(idx)
+                        st.session_state.pop(f"confirm_delete_{idx}", None)
+                        st.rerun()
+                with cno:
+                    if st.button("Annuler", key=f"delete_no_{idx}"):
+                        st.session_state.pop(f"confirm_delete_{idx}", None)
+                        st.rerun()
+
             c1, c2, c3 = st.columns([0.55, 0.18, 0.27])
             with c1:
                 val["nom"] = st.text_input("Nom de la valeur", value=val.get("nom", ""), key=f"nom_{idx}")
@@ -559,6 +693,7 @@ def page_valeurs():
                 val["couleur"] = st.color_picker("Couleur", value=val.get("couleur", DEFAULT_COLORS[idx % len(DEFAULT_COLORS)]), key=f"col_{idx}")
             with c3:
                 st.metric("Moyenne actuelle", f"{moyenne_valeur(val):g}/10")
+                st.caption(appreciation_label(moyenne_valeur(val)))
 
             st.markdown("---")
             for d_idx, dom in enumerate(val.get("domaines", [])):
@@ -584,7 +719,6 @@ def page_valeurs():
                 st.write("")
     update_timestamp()
 
-
 def page_roue():
     st.markdown("## 4. Roue des valeurs")
     fig = create_wheel_figure(st.session_state.data, small=True)
@@ -600,6 +734,124 @@ def page_roue():
         pdf_bytes = create_pdf_bytes(st.session_state.data)
         st.download_button("Télécharger le PDF", data=pdf_bytes, file_name=f"{base}.pdf", mime="application/pdf")
 
+
+
+def create_energy_wheel_figure(data, small=True):
+    ensure_energy_state()
+    selected = data.get("valeurs_energies", {}).get("selected", [])
+    entries = data.get("valeurs_energies", {}).get("entries", {})
+    source_values = data.get("valeurs", [])
+    energy_values = []
+    for idx in selected:
+        try:
+            idx = int(idx)
+        except Exception:
+            continue
+        if 0 <= idx < len(source_values):
+            val = deepcopy(source_values[idx])
+            entry = entries.get(str(idx), {})
+            val["nom"] = val.get("nom", f"Valeur {idx+1}")
+            val["domaines"] = [{"domaine": "Valeur énergie", "periode": "", "exemple": "", "cote": float(entry.get("score_revise", moyenne_valeur(source_values[idx])))}]
+            energy_values.append(val)
+    tmp = deepcopy(data)
+    tmp["valeurs"] = energy_values
+    fig = create_wheel_figure(tmp, small=small)
+    fig.axes[0].set_title("Roue des valeurs énergie", fontsize=13, fontweight="bold", color="#2D3142", pad=14)
+    return fig
+
+
+def page_valeurs_energies():
+    ensure_energy_state()
+    data = st.session_state.data
+    ve = data["valeurs_energies"]
+    st.markdown("## 5. Valeurs énergies")
+    st.markdown(
+        """
+        <div class='energy-box'>
+        <strong>Finalité du travail</strong><br>
+        Cette étape permet d'identifier les trois valeurs qui peuvent devenir les principales sources d'énergie pour atteindre un objectif ou réussir un projet. Il ne s'agit pas forcément des trois valeurs les mieux cotées : il s'agit des valeurs les plus porteuses, motivantes et mobilisatrices pour la personne.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    if not ve.get("access_granted"):
+        st.info("Cet espace complémentaire est activé uniquement lorsque le consultant le propose dans le cadre de l'accompagnement.")
+        code = st.text_input("Code consultant", type="password")
+        if st.button("Déverrouiller l'espace Valeurs énergies", type="primary"):
+            if code == ENERGY_ACCESS_CODE:
+                ve["access_granted"] = True
+                ve["created_at"] = ve.get("created_at") or datetime.now().isoformat(timespec="seconds")
+                ve["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                update_timestamp()
+                st.success("Espace Valeurs énergies activé.")
+                st.rerun()
+            else:
+                st.error("Code non valide.")
+        return
+
+    values = data.get("valeurs", [])
+    if not values:
+        st.warning("Aucune valeur n'est encore renseignée dans l'onglet Valeurs et domaines de vie.")
+        return
+
+    st.markdown("### Sélection des valeurs énergie")
+    st.write("Choisissez jusqu'à trois valeurs qui seront les plus porteuses pour l'objectif ou le projet travaillé.")
+    options = list(range(len(values)))
+    def fmt(i):
+        return f"{values[i].get('nom', f'Valeur {i+1}')} — moyenne actuelle {moyenne_valeur(values[i]):g}/10"
+    current = [int(i) for i in ve.get("selected", []) if str(i).isdigit() and int(i) < len(values)]
+    selected = st.multiselect("Valeurs énergie retenues", options=options, default=current[:3], format_func=fmt, max_selections=3)
+    ve["selected"] = selected
+    ve.setdefault("entries", {})
+    for idx in selected:
+        key = str(idx)
+        ve["entries"].setdefault(key, {"score_initial": moyenne_valeur(values[idx]), "score_revise": moyenne_valeur(values[idx]), "actions": ["", "", "", "", ""], "maintien": ["", "", "", "", ""], "commentaire": ""})
+
+    st.markdown("---")
+    for idx in selected:
+        val = values[idx]
+        key = str(idx)
+        entry = ve["entries"][key]
+        st.markdown(f"### {val.get('nom', f'Valeur {idx+1}')}")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Cotation initiale", f"{moyenne_valeur(val):g}/10")
+        with c2:
+            entry["score_revise"] = st.slider("Cotation revisitée", 0, 10, int(round(float(entry.get("score_revise", moyenne_valeur(val))))), key=f"energy_score_{idx}")
+        with c3:
+            st.metric("Écart", f"{float(entry['score_revise']) - moyenne_valeur(val):+g}")
+        entry["score_initial"] = moyenne_valeur(val)
+        entry["commentaire"] = st.text_area("Ce qui rend cette valeur porteuse d'énergie pour le projet", value=entry.get("commentaire", ""), key=f"energy_comment_{idx}", height=80)
+
+        if float(entry.get("score_revise", 0)) < 10:
+            st.write("Définissez 3 à 5 actions concrètes et rapides pour vivre davantage cette valeur. L'objectif est de transformer la valeur en comportements observables.")
+            actions = entry.get("actions", ["", "", "", "", ""])
+            while len(actions) < 5:
+                actions.append("")
+            for a in range(5):
+                actions[a] = st.text_input(f"Action concrète {a+1}", value=actions[a], key=f"energy_action_{idx}_{a}")
+            entry["actions"] = actions
+        else:
+            st.write("Cette valeur est ressentie à 10/10. Indiquez les comportements déjà présents qui permettent de la maintenir dans la durée.")
+            maintien = entry.get("maintien", ["", "", "", "", ""])
+            while len(maintien) < 5:
+                maintien.append("")
+            for a in range(5):
+                maintien[a] = st.text_input(f"Point d'appui à conserver {a+1}", value=maintien[a], key=f"energy_maintien_{idx}_{a}")
+            entry["maintien"] = maintien
+        st.write("")
+
+    # Retire les entrées de valeurs non sélectionnées, sans effacer si l'utilisateur revient plus tard via JSON tant que l'onglet reste actif.
+    ve["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    update_timestamp()
+
+    if selected:
+        st.markdown("### Seconde roue : valeurs énergies")
+        fig = create_energy_wheel_figure(data, small=True)
+        st.pyplot(fig, use_container_width=False)
+        plt.close(fig)
 
 def page_export():
     st.markdown("## 5. Export / Import")
@@ -649,6 +901,8 @@ def main():
         page_valeurs()
     elif st.session_state.page.startswith("4"):
         page_roue()
+    elif st.session_state.page.startswith("5"):
+        page_valeurs_energies()
     else:
         page_export()
 

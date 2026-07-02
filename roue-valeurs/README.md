@@ -31,3 +31,8 @@ Remplacer le contenu du dépôt GitHub de l'application par les fichiers de cett
 Commit conseillé :
 
 `V2.2 - Ajout code d'accès et transmission JSON consultant`
+
+## V2.3
+- Correction lisibilite des boutons Clarte360.
+- Ajout / suppression de valeurs directement depuis l'onglet Valeurs et domaines de vie.
+- Ajout de l'espace consultant Valeurs energies, verrouille par code consultant, avec selection de 3 valeurs porteuses, cotation revisitee, actions ou points d'appui, seconde roue et export JSON/PDF.
