@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.6.0-standard-clarte360"
+APP_VERSION = "1.6.1-standard-clarte360"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
@@ -31,6 +31,26 @@ DEFAULT_XLSX = BASE_DIR / "data" / "moteurs_professionnels_curseurs_v0_1.xlsx"
 LOGO_PATH = BASE_DIR / "assets" / "site_icon.png"
 FINAL_EMAIL_TO = "contact@clarte360.com"
 DEFAULT_SESSION_LIMIT_MINUTES = 15
+
+###############################################################################
+# CLARTE360
+# MODULE : Informations institutionnelles
+# ROLE   : Coordonnees, mentions legales, contact et pied de page PDF
+# VERSION: 1.6.1
+###############################################################################
+CLARTE360_LEGAL = {
+    "raison_sociale": "Clarté360",
+    "forme": "SAS",
+    "adresse": "60 rue François 1er",
+    "code_postal_ville": "75008 Paris",
+    "telephone": "01 89 48 08 25",
+    "email": "contact@clarte360.com",
+    "web": "www.clarte360.com",
+    "rcs": "102349834",
+    "siret": "10234983400014",
+    "naf": "8559 A",
+    "tva": "FR88102349834",
+}
 
 st.set_page_config(
     page_title=APP_FULL_NAME,
@@ -89,15 +109,22 @@ MOTEUR_FALLBACK = {
 RGPD_TEXT = f"""
 ### Protection des données personnelles (RGPD)
 
-Cette application Clarté360 fonctionne sans base de données serveur. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
+Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
 
 Le fichier JSON constitue le seul support de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, le nom de votre accompagnateur si l'application le prévoit, les dates et heures de connexion, la durée des sessions, vos données saisies dans l'application, commentaires, exemples, cotations, résultats, historique des connexions, code d'accès généré, historique des régénérations, consentement RGPD, version de l'application et informations techniques disponibles.
 
 Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur. Si vous le transmettez à votre accompagnateur, celui-ci l'utilise exclusivement dans le cadre du bilan de compétences ou de l'accompagnement Clarté360.
 
 Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : {RGPD_TEXT_VERSION}.
-"""
 
+### Nature des résultats
+
+Les résultats fournis par les applications Clarté360 constituent des supports d'aide à la réflexion et à l'accompagnement. Ils ne constituent ni un diagnostic psychologique, ni un avis médical, ni une décision d'orientation automatique. Leur interprétation s'inscrit dans un dialogue avec le bénéficiaire et, lorsque cela est prévu, avec un professionnel de l'accompagnement.
+
+### Propriété intellectuelle
+
+Les applications, outils, questionnaires, méthodes, graphiques, rapports et contenus proposés par Clarté360 constituent des créations originales protégées. Toute reproduction, adaptation, diffusion ou réutilisation, totale ou partielle, sans autorisation écrite préalable de Clarté360, est interdite.
+"""
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -301,6 +328,53 @@ def total_session_seconds() -> int:
     return int(sum(int(s.get("duree_active_secondes", s.get("duree_secondes", 0)) or 0) for s in st.session_state.get("session_history", [])))
 
 
+def format_duration(seconds: int) -> str:
+    """Retourne une duree lisible pour un humain et reutilisable par le support."""
+    seconds = max(0, int(seconds or 0))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h} h {m:02d} min {s:02d} s"
+    if m:
+        return f"{m} min {s:02d} s"
+    return f"{s} s"
+
+
+def technical_context() -> dict:
+    """Contexte technique transmis au support Clarte360.
+
+    Streamlit ne donne pas directement acces au navigateur, a l'OS ou a la
+    resolution sans composant specialise. Les champs sont conserves afin de
+    preparer la migration VPS et un futur module de collecte explicite.
+    """
+    return {
+        "application": APP_FULL_NAME,
+        "app_version": APP_VERSION,
+        "session_id": st.session_state.get("session_id", ""),
+        "passation_id": st.session_state.get("passation_id", ""),
+        "runtime_session_id": st.session_state.get("current_runtime_session_id", ""),
+        "date_heure": now_iso(),
+        "temps_session_secondes": int((_current_session_record() or {}).get("duree_active_secondes", 0) or 0),
+        "temps_total_secondes": total_session_seconds(),
+        "navigateur": "non disponible dans Streamlit sans composant dedie",
+        "systeme_exploitation": "non disponible dans Streamlit sans composant dedie",
+        "langue": "fr",
+        "resolution_ecran": "non disponible dans Streamlit sans composant dedie",
+    }
+
+
+def legal_footer_text(short: bool = False) -> str:
+    """Texte institutionnel officiel Clarte360 pour interface et rapports."""
+    l = CLARTE360_LEGAL
+    if short:
+        return f"{l['raison_sociale']} • {l['adresse']} • {l['code_postal_ville']} • {l['telephone']} • {l['email']} • {l['web']}"
+    return (
+        f"{l['raison_sociale']} – {l['adresse']} – {l['code_postal_ville']} – TEL. : {l['telephone']} – "
+        f"EMAIL : {l['email']} – WEB : {l['web']}\n"
+        f"RCS : {l['rcs']} – SIRET : {l['siret']} – NAF : {l['naf']} – Id CEE : {l['tva']}"
+    )
+
+
 def check_session_limit():
     if not st.session_state.get("test_started") or st.session_state.get("session_expired"):
         return
@@ -442,6 +516,7 @@ def build_payload(active: pd.DataFrame, dims: pd.DataFrame, params: pd.DataFrame
         "sessions": st.session_state.get("session_history", []),
         "temps_total_cumule_secondes": total_session_seconds(),
         "temps_total_cumule_minutes": round(total_session_seconds() / 60, 2),
+        "temps_total_cumule_lisible": format_duration(total_session_seconds()),
         "rgpd_acceptance": st.session_state.get("rgpd_acceptance", {}),
         "access_history": st.session_state.get("access_history", {}),
         "notice": "Outil déclaratif d’exploration. Ne constitue pas un test psychométrique ni un diagnostic.",
@@ -500,9 +575,24 @@ def create_radar_chart(scores_df: pd.DataFrame) -> BytesIO:
     return bio
 
 
+def draw_pdf_footer(canvas, doc):
+    """Dessine le pied de page institutionnel Clarte360 sur chaque page PDF."""
+    canvas.saveState()
+    width, height = doc.pagesize
+    canvas.setStrokeColor(colors.HexColor("#CCCCCC"))
+    canvas.setLineWidth(0.3)
+    canvas.line(1.5 * cm, 1.05 * cm, width - 1.5 * cm, 1.05 * cm)
+    canvas.setFillColor(colors.HexColor("#666666"))
+    canvas.setFont("Helvetica", 6.8)
+    text = legal_footer_text(short=True)
+    canvas.drawCentredString(width / 2, 0.68 * cm, text)
+    canvas.drawCentredString(width / 2, 0.42 * cm, f"SIRET {CLARTE360_LEGAL['siret']} • RCS {CLARTE360_LEGAL['rcs']} • TVA {CLARTE360_LEGAL['tva']}")
+    canvas.restoreState()
+
+
 def create_pdf(scores_df: pd.DataFrame, payload: dict) -> bytes:
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.2*cm, bottomMargin=1.2*cm)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.2*cm, bottomMargin=1.8*cm)
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("TitleClarte", parent=styles["Title"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=18, spaceAfter=10)
     h_style = ParagraphStyle("HClarte", parent=styles["Heading2"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=13, spaceBefore=8, spaceAfter=6)
@@ -533,7 +623,7 @@ def create_pdf(scores_df: pd.DataFrame, payload: dict) -> bytes:
     story.append(Paragraph(f"Les réponses font apparaître prioritairement les moteurs suivants : <b>{top_txt}</b>. Cette lecture doit être discutée et contextualisée pendant l’entretien.", normal))
     story.append(Paragraph("Confidentialité", h_style))
     story.append(Paragraph("Le fichier JSON appartient exclusivement au bénéficiaire. Il peut être conservé, supprimé ou transmis à l'accompagnateur dans le cadre de l'accompagnement.", normal))
-    doc.build(story)
+    doc.build(story, onFirstPage=draw_pdf_footer, onLaterPages=draw_pdf_footer)
     buffer.seek(0)
     return buffer.read()
 
@@ -567,8 +657,92 @@ def display_header():
 
 def rgpd_page():
     display_header()
-    st.markdown(RGPD_TEXT)
-    st.info("Le consentement RGPD est demandé avant la génération du code d'accès et avant toute nouvelle passation.")
+    st.subheader("Informations légales et protection des données")
+
+    tab_rgpd, tab_mentions, tab_contact = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
+
+    with tab_rgpd:
+        st.markdown(RGPD_TEXT)
+        st.info("Le consentement RGPD est demandé avant la génération du code d'accès et avant toute nouvelle passation.")
+
+    with tab_mentions:
+        l = CLARTE360_LEGAL
+        st.markdown(f"""
+        ### {l['raison_sociale']} {l['forme']}
+
+        **Adresse :** {l['adresse']} – {l['code_postal_ville']}  
+        **Téléphone :** {l['telephone']}  
+        **E-mail :** {l['email']}  
+        **Site internet :** {l['web']}  
+
+        **RCS :** {l['rcs']}  
+        **SIRET :** {l['siret']}  
+        **Code NAF :** {l['naf']}  
+        **TVA intracommunautaire :** {l['tva']}
+        """)
+        st.markdown("""
+        ### Propriété intellectuelle
+        Les applications, outils, questionnaires, méthodes, graphiques, rapports et contenus proposés par Clarté360 constituent des créations originales protégées. Toute reproduction, adaptation, diffusion ou réutilisation, totale ou partielle, sans autorisation écrite préalable de Clarté360, est interdite.
+
+        ### Responsabilité
+        Les résultats proposés constituent des supports de réflexion et d'échange. Ils ne remplacent pas un accompagnement professionnel lorsque celui-ci est prévu et ne constituent ni un diagnostic psychologique, ni un avis médical.
+        """)
+
+    with tab_contact:
+        contact_form()
+
+
+def contact_form():
+    """Formulaire de contact support commun au socle Clarte360."""
+    ben = st.session_state.get("beneficiaire") or st.session_state.get("pending_beneficiaire") or {}
+    st.markdown("""
+    ### Contacter Clarté360
+    Une question, une suggestion ou un problème technique ?  
+    Clarté360 vous répondra par e-mail ou, si vous laissez un numéro de téléphone, par téléphone lorsque cela facilite le traitement de votre demande.
+    """)
+    with st.form("contact_clarte360_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            prenom = st.text_input("Prénom *", value=ben.get("prenom", ""))
+        with col2:
+            nom = st.text_input("Nom *", value=ben.get("nom", ""))
+        email = st.text_input("Adresse e-mail *", value=ben.get("email", ""))
+        telephone = st.text_input("Téléphone (facultatif, si vous souhaitez pouvoir être rappelé)")
+        objet = st.text_input("Objet *", value=f"Demande depuis {APP_FULL_NAME}")
+        message = st.text_area("Message *", height=160)
+        consent = st.checkbox(
+            "J'accepte que Clarté360 utilise les informations transmises uniquement pour traiter ma demande. Si je renseigne un numéro de téléphone, j'accepte de pouvoir être contacté par téléphone lorsque cela est utile pour résoudre ma demande."
+        )
+        submitted = st.form_submit_button("📩 Envoyer mon message", type="primary")
+    if submitted:
+        if not prenom.strip() or not nom.strip() or not email.strip() or "@" not in email or not objet.strip() or not message.strip():
+            st.error("Merci de renseigner les champs obligatoires : prénom, nom, e-mail, objet et message.")
+            return
+        if not consent:
+            st.error("Le consentement est nécessaire pour transmettre votre demande à Clarté360.")
+            return
+        tech = technical_context()
+        body = (
+            "Demande envoyée depuis une application Clarté360.\n\n"
+            f"Application : {APP_FULL_NAME}\n"
+            f"Version : {APP_VERSION}\n"
+            f"Prénom : {prenom.strip()}\n"
+            f"Nom : {nom.strip()}\n"
+            f"Email : {email.strip()}\n"
+            f"Téléphone : {telephone.strip() or 'non renseigné'}\n"
+            f"Objet : {objet.strip()}\n\n"
+            "Message :\n"
+            f"{message.strip()}\n\n"
+            "Consentement support : accepté.\n\n"
+            "Informations techniques :\n"
+            + json.dumps(tech, ensure_ascii=False, indent=2)
+        )
+        ok, msg = send_email(f"Clarté360 - Support - {APP_NAME}", body, to_email=FINAL_EMAIL_TO)
+        if ok:
+            st.success("Votre message a été transmis à Clarté360.")
+        else:
+            st.error("Le message n'a pas pu être envoyé automatiquement : " + msg)
+
 
 
 def welcome_screen():
@@ -625,7 +799,7 @@ def sidebar_progress(active, dims, params):
         if st.sidebar.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
             prepare_sidebar_json(active, dims, params, "sauvegarde_manuelle_reprise", "moteurs_sauvegarde", close_session=False)
             st.rerun()
-        if st.sidebar.button("🚪 Quitter et préparer mon JSON", type="primary", use_container_width=True):
+        if st.sidebar.button("🚪 Quitter et télécharger mon JSON", type="primary", use_container_width=True):
             prepare_sidebar_json(active, dims, params, "sortie_utilisateur_par_bouton", "moteurs_sortie", close_session=True)
             st.rerun()
         if st.session_state.get("exit_json_ready"):
@@ -639,9 +813,10 @@ def sidebar_progress(active, dims, params):
             )
             st.sidebar.caption("Conservez ce JSON : il est nécessaire pour reprendre votre travail et il contient le temps réellement enregistré.")
     st.sidebar.markdown("---")
-    if st.sidebar.button("Protection des données personnelles (RGPD)"):
+    if st.sidebar.button("RGPD et mentions légales", use_container_width=True):
         st.session_state.show_rgpd_page = True
         st.rerun()
+    st.sidebar.caption("Clarté360 · contact@clarte360.com")
 
 
 def identification_screen(active, dims, params):
@@ -821,8 +996,8 @@ def results_screen(active, dims, params):
 
 def exit_prepared_screen():
     display_header()
-    st.success("Votre JSON de sortie est prêt.")
-    st.markdown("Téléchargez le fichier dans la colonne de gauche. Il permettra de reprendre l'application avec le temps de session correctement conservé.")
+    st.success("Votre JSON de sortie est prêt à être téléchargé.")
+    st.markdown("Téléchargez le fichier dans la colonne de gauche. Il permettra de reprendre l'application et de conserver correctement l'historique de temps.")
     st.info("Après téléchargement, vous pouvez fermer l'onglet du navigateur.")
 
 

@@ -1,43 +1,43 @@
-# Clarté360 – Moteurs professionnels
+# Clarté360 - Moteurs professionnels
 
-Application Streamlit bénéficiaire utilisant des curseurs à 11 positions entre deux propositions positives.
+Application Streamlit propriétaire Clarté360 destinée à explorer les moteurs professionnels déclarés d'un bénéficiaire.
 
-## Fonctionnement
-- Identification obligatoire : prénom, nom, email.
-- Code d'accès obligatoire envoyé au bénéficiaire par email.
-- Notification envoyée à contact@clarte360.com au démarrage.
-- 60 curseurs affichés dans un ordre aléatoire.
-- Sauvegarde intermédiaire JSON téléchargeable.
-- Reprise possible depuis le JSON intermédiaire.
-- JSON final envoyé automatiquement à Clarté360 à la fin.
-- Rapport PDF et JSON téléchargeables par le bénéficiaire.
-- Lecture vocale de la situation + proposition gauche + proposition droite.
+## Version
 
-## Secrets Streamlit
-Dans Streamlit Cloud > Settings > Secrets, coller :
+`1.6.1-standard-clarte360`
 
-```toml
-[email]
-smtp_server = "ssl0.ovh.net"
-smtp_port = 465
-smtp_user = "contact@clarte360.com"
-smtp_password = "TON_MOT_DE_PASSE_ROUNDCUBE"
-from_email = "contact@clarte360.com"
-to_email = "contact@clarte360.com"
+Cette version est une référence candidate pour le socle commun Clarté360 :
 
-[security]
-code_expiration_minutes = 15
-```
+- RGPD et mentions légales intégrés ;
+- formulaire de contact Clarté360 ;
+- notification par e-mail ;
+- gestion du JSON bénéficiaire ;
+- historique des sessions ;
+- comptabilisation du temps actif ;
+- sortie officielle par téléchargement JSON ;
+- alerte navigateur avant fermeture sans sauvegarde ;
+- pied de page institutionnel dans les PDF ;
+- compatibilité Streamlit Cloud et préparation VPS.
 
-## Modifier le questionnaire
-Modifier uniquement `data/moteurs_professionnels_curseurs_v0_1.xlsx`, puis commit/push sur GitHub.
+## Déploiement
 
+1. Déposer le contenu du ZIP dans GitHub.
+2. Vérifier `requirements.txt`.
+3. Définir les secrets Streamlit SMTP.
+4. Lancer l'application sur Streamlit Cloud.
 
-## Version 1.3.0
+## Secrets attendus
 
-- Refonte de la zone de positionnement.
-- Curseur placé entre les deux propositions.
-- Suppression de toute valeur numérique visible.
-- Renforcement de la charte graphique Clarté360 (#008080).
-- Nouvelle consigne : positionnement au plus près de la proposition qui ressemble le plus au bénéficiaire.
-- Boutons vocaux simplifiés : Écouter / Arrêter.
+Voir `.streamlit/secrets.example.toml`.
+
+## Tests obligatoires avant validation
+
+- Nouvelle session et réception du code bénéficiaire.
+- Notification administrateur à `contact@clarte360.com`.
+- Validation du code et démarrage réel de session.
+- Sauvegarde JSON manuelle.
+- Sortie par bouton JSON.
+- Reprise depuis JSON.
+- Timeout automatique à 15 minutes.
+- Formulaire de contact.
+- Génération PDF avec pied de page Clarté360.
