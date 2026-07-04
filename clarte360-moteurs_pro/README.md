@@ -4,7 +4,7 @@ Application Streamlit propriétaire Clarté360 destinée à explorer les moteurs
 
 ## Version
 
-`1.6.2-standard-clarte360`
+`1.6.3-reference-clarte360`
 
 Cette version est une référence candidate pour le socle commun Clarté360 :
 

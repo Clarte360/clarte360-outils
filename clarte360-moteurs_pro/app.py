@@ -13,13 +13,17 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:
+    st_autorefresh = None
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.6.2-standard-clarte360"
+APP_VERSION = "1.6.3-reference-clarte360"
 SOCLE_CLARTE360_VERSION = "1.0"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
@@ -243,6 +247,7 @@ def init_runtime_session(reason="nouvelle_session"):
     st.session_state.current_runtime_session_id = current_id
     st.session_state.session_started_at = now
     st.session_state.session_last_activity = now
+    st.session_state.session_last_user_activity = now
     st.session_state.session_last_heartbeat = now
     st.session_state.session_expired = False
     st.session_state.exit_json_ready = False
@@ -252,6 +257,7 @@ def init_runtime_session(reason="nouvelle_session"):
         "debut": now,
         "validation_code_at": st.session_state.get("code_verified_at", now),
         "derniere_activite": now,
+        "derniere_activite_utilisateur": now,
         "dernier_battement": now,
         "fin": None,
         "duree_secondes": 0,
@@ -276,15 +282,23 @@ def _current_session_record():
 
 
 def update_runtime_activity(event: str = "heartbeat"):
-    """Met à jour le temps actif de la session courante.
+    """Met a jour le temps de presence et, si necessaire, l'activite utilisateur.
 
-    Le delta ajouté est plafonné à 30 secondes pour éviter de comptabiliser une
-    longue absence liée à une fermeture brutale, une veille, ou une suspension du navigateur.
+    Distinction importante du Socle Clarte360 :
+    - un heartbeat/auto-refresh maintient le compteur de presence et permet au
+      timeout de se declencher meme sans clic ;
+    - seule une action utilisateur explicite met a jour
+      `derniere_activite_utilisateur`.
+
+    Le delta ajoute au temps de presence est plafonne a 30 secondes pour eviter
+    de comptabiliser une longue absence liee a une fermeture brutale, une veille
+    ou une suspension du navigateur.
     """
     sess = _current_session_record()
     if not sess or sess.get("fin"):
         return
     now_dt = datetime.now()
+    now_txt = now_dt.isoformat(timespec="seconds")
     last_raw = st.session_state.get("session_last_heartbeat") or sess.get("dernier_battement") or sess.get("debut")
     try:
         last_dt = datetime.fromisoformat(last_raw)
@@ -295,12 +309,20 @@ def update_runtime_activity(event: str = "heartbeat"):
     current_duration = int(sess.get("duree_active_secondes", sess.get("duree_secondes", 0)) or 0)
     sess["duree_active_secondes"] = current_duration + delta
     sess["duree_secondes"] = sess["duree_active_secondes"]
-    sess["derniere_activite"] = now_dt.isoformat(timespec="seconds")
-    sess["dernier_battement"] = sess["derniere_activite"]
-    sess["dernier_evenement"] = event
-    st.session_state.session_last_activity = sess["derniere_activite"]
-    st.session_state.session_last_heartbeat = sess["derniere_activite"]
+    sess["dernier_battement"] = now_txt
+    st.session_state.session_last_heartbeat = now_txt
 
+    # Activite utilisateur reelle : validations, sauvegardes, sortie, contact, etc.
+    if event and event != "heartbeat":
+        sess["derniere_activite"] = now_txt
+        sess["derniere_activite_utilisateur"] = now_txt
+        sess["dernier_evenement"] = event
+        st.session_state.session_last_activity = now_txt
+        st.session_state.session_last_user_activity = now_txt
+    else:
+        sess.setdefault("derniere_activite", sess.get("debut", now_txt))
+        sess.setdefault("derniere_activite_utilisateur", sess.get("derniere_activite", sess.get("debut", now_txt)))
+        sess["dernier_evenement"] = sess.get("dernier_evenement") or "heartbeat"
 
 def record_save_event(kind: str):
     update_runtime_activity(kind)
@@ -377,32 +399,68 @@ def legal_footer_text(short: bool = False) -> str:
     )
 
 
+def _seconds_since_user_activity(sess: dict) -> int:
+    last_user_raw = (
+        st.session_state.get("session_last_user_activity")
+        or sess.get("derniere_activite_utilisateur")
+        or sess.get("derniere_activite")
+        or sess.get("debut")
+    )
+    try:
+        last_user_dt = datetime.fromisoformat(last_user_raw)
+    except Exception:
+        last_user_dt = datetime.now()
+    return max(0, int((datetime.now() - last_user_dt).total_seconds()))
+
+
 def check_session_limit():
+    """Ferme la session apres 15 minutes sans activite utilisateur reelle.
+
+    Le controle est appele par un auto-refresh navigateur. Il ne depend donc
+    pas d'un clic utilisateur. Les heartbeats comptent le temps de presence,
+    mais ne reinitialisent pas l'inactivite.
+    """
     if not st.session_state.get("test_started") or st.session_state.get("session_expired"):
         return
-    update_runtime_activity()
+    update_runtime_activity("heartbeat")
     limit_seconds = get_session_limit_minutes() * 60
     current = next((s for s in st.session_state.get("session_history", []) if s.get("session_uid") == st.session_state.get("current_runtime_session_id")), None)
-    if current and int(current.get("duree_active_secondes", current.get("duree_secondes", 0)) or 0) >= limit_seconds:
-        close_runtime_session("expiration_duree_session")
+    if current and _seconds_since_user_activity(current) >= limit_seconds:
+        close_runtime_session("timeout_inactivite")
         st.session_state.session_expired = True
         st.rerun()
 
 
 def timeout_watchdog():
-    """Rerun automatique côté Streamlit pour appliquer la limite de session même sans clic utilisateur."""
+    """Rerun automatique pour appliquer le timeout meme sans clic utilisateur.
+
+    Priorite : streamlit-autorefresh, plus fiable sur Streamlit Cloud.
+    Fallback : st.fragment si disponible.
+    Dernier recours : petite boucle JavaScript qui force un rechargement.
+    """
     if not st.session_state.get("test_started") or st.session_state.get("session_expired"):
         return
-    if not hasattr(st, "fragment"):
+    if st_autorefresh is not None:
+        st_autorefresh(interval=10_000, key="clarte360_timeout_watchdog")
         return
-
-    @st.fragment(run_every="10s")
-    def _watchdog_fragment():
-        if st.session_state.get("test_started") and not st.session_state.get("session_expired"):
-            check_session_limit()
-
-    _watchdog_fragment()
-
+    if hasattr(st, "fragment"):
+        @st.fragment(run_every="10s")
+        def _watchdog_fragment():
+            if st.session_state.get("test_started") and not st.session_state.get("session_expired"):
+                check_session_limit()
+        _watchdog_fragment()
+        return
+    components.html(
+        """
+        <script>
+        if (!window.parent.__clarte360TimeoutWatchdogInstalled) {
+            window.parent.__clarte360TimeoutWatchdogInstalled = true;
+            setInterval(function(){ window.parent.location.reload(); }, 10000);
+        }
+        </script>
+        """,
+        height=0,
+    )
 
 def start_new_session(active: pd.DataFrame, nom: str, prenom: str, email: str, consultant: str = ""):
     st.session_state.passation_root_id = str(uuid.uuid4())
