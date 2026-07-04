@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.5.0-standard-clarte360"
+APP_VERSION = "1.6.0-standard-clarte360"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
@@ -204,55 +204,101 @@ def get_session_limit_minutes() -> int:
 
 
 def init_runtime_session(reason="nouvelle_session"):
+    """Crée une session de travail mesurable à partir de l'entrée réelle dans l'app.
+
+    Le temps est comptabilisé par battements réguliers Streamlit et non par simple
+    soustraction début/fin. Cela évite de compter plusieurs heures si le navigateur
+    est fermé ou si l'ordinateur se met en veille sans repasser proprement par l'app.
+    """
     current_id = str(uuid.uuid4())
+    now = now_iso()
     st.session_state.current_runtime_session_id = current_id
-    st.session_state.session_started_at = now_iso()
-    st.session_state.session_last_activity = now_iso()
+    st.session_state.session_started_at = now
+    st.session_state.session_last_activity = now
+    st.session_state.session_last_heartbeat = now
     st.session_state.session_expired = False
+    st.session_state.exit_json_ready = False
     history = st.session_state.get("session_history", [])
     history.append({
         "session_uid": current_id,
-        "debut": st.session_state.session_started_at,
-        "derniere_activite": st.session_state.session_last_activity,
+        "debut": now,
+        "validation_code_at": st.session_state.get("code_verified_at", now),
+        "derniere_activite": now,
+        "dernier_battement": now,
         "fin": None,
         "duree_secondes": 0,
+        "duree_active_secondes": 0,
         "motif_fermeture": None,
         "version_application": APP_VERSION,
         "fuseau_horaire": "local_navigateur_non_disponible_streamlit",
         "motif_ouverture": reason,
+        "sauvegardes": [],
     })
     st.session_state.session_history = history
 
 
-def update_runtime_activity():
-    if not st.session_state.get("current_runtime_session_id"):
+def _current_session_record():
+    sid = st.session_state.get("current_runtime_session_id")
+    if not sid:
+        return None
+    for sess in st.session_state.get("session_history", []):
+        if sess.get("session_uid") == sid:
+            return sess
+    return None
+
+
+def update_runtime_activity(event: str = "heartbeat"):
+    """Met à jour le temps actif de la session courante.
+
+    Le delta ajouté est plafonné à 30 secondes pour éviter de comptabiliser une
+    longue absence liée à une fermeture brutale, une veille, ou une suspension du navigateur.
+    """
+    sess = _current_session_record()
+    if not sess or sess.get("fin"):
         return
-    started = datetime.fromisoformat(st.session_state.session_started_at)
-    duration = max(0, int((datetime.now() - started).total_seconds()))
-    st.session_state.session_last_activity = now_iso()
-    for sess in st.session_state.session_history:
-        if sess.get("session_uid") == st.session_state.current_runtime_session_id:
-            sess["derniere_activite"] = st.session_state.session_last_activity
-            sess["duree_secondes"] = duration
-            break
+    now_dt = datetime.now()
+    last_raw = st.session_state.get("session_last_heartbeat") or sess.get("dernier_battement") or sess.get("debut")
+    try:
+        last_dt = datetime.fromisoformat(last_raw)
+    except Exception:
+        last_dt = now_dt
+    delta = max(0, int((now_dt - last_dt).total_seconds()))
+    delta = min(delta, 30)
+    current_duration = int(sess.get("duree_active_secondes", sess.get("duree_secondes", 0)) or 0)
+    sess["duree_active_secondes"] = current_duration + delta
+    sess["duree_secondes"] = sess["duree_active_secondes"]
+    sess["derniere_activite"] = now_dt.isoformat(timespec="seconds")
+    sess["dernier_battement"] = sess["derniere_activite"]
+    sess["dernier_evenement"] = event
+    st.session_state.session_last_activity = sess["derniere_activite"]
+    st.session_state.session_last_heartbeat = sess["derniere_activite"]
+
+
+def record_save_event(kind: str):
+    update_runtime_activity(kind)
+    sess = _current_session_record()
+    if not sess:
+        return
+    saves = sess.get("sauvegardes", [])
+    saves.append({"type": kind, "date_heure": now_iso(), "duree_active_secondes": int(sess.get("duree_active_secondes") or 0)})
+    sess["sauvegardes"] = saves
 
 
 def close_runtime_session(reason: str):
-    if not st.session_state.get("current_runtime_session_id"):
+    sess = _current_session_record()
+    if not sess:
         return
-    started = datetime.fromisoformat(st.session_state.session_started_at)
-    duration = max(0, int((datetime.now() - started).total_seconds()))
-    for sess in st.session_state.session_history:
-        if sess.get("session_uid") == st.session_state.current_runtime_session_id:
-            sess["derniere_activite"] = now_iso()
-            sess["fin"] = now_iso()
-            sess["duree_secondes"] = duration
-            sess["motif_fermeture"] = reason
-            break
+    update_runtime_activity(reason)
+    sess = _current_session_record()
+    if sess:
+        now = now_iso()
+        sess["derniere_activite"] = now
+        sess["fin"] = now
+        sess["motif_fermeture"] = reason
 
 
 def total_session_seconds() -> int:
-    return int(sum(int(s.get("duree_secondes") or 0) for s in st.session_state.get("session_history", [])))
+    return int(sum(int(s.get("duree_active_secondes", s.get("duree_secondes", 0)) or 0) for s in st.session_state.get("session_history", [])))
 
 
 def check_session_limit():
@@ -261,7 +307,7 @@ def check_session_limit():
     update_runtime_activity()
     limit_seconds = get_session_limit_minutes() * 60
     current = next((s for s in st.session_state.get("session_history", []) if s.get("session_uid") == st.session_state.get("current_runtime_session_id")), None)
-    if current and int(current.get("duree_secondes") or 0) >= limit_seconds:
+    if current and int(current.get("duree_active_secondes", current.get("duree_secondes", 0)) or 0) >= limit_seconds:
         close_runtime_session("expiration_duree_session")
         st.session_state.session_expired = True
         st.rerun()
@@ -317,6 +363,7 @@ def restore_from_progress(payload: dict):
     st.session_state.test_started = True
     st.session_state.final_email_sent = bool(payload.get("final_email_sent", False))
     st.session_state.code_verified = True
+    st.session_state.code_verified_at = now_iso()
     st.session_state.rgpd_acceptance = payload.get("rgpd_acceptance", payload.get("rgpd_consent", {}))
     st.session_state.access_history = payload.get("access_history", {})
     st.session_state.session_history = previous_sessions if isinstance(previous_sessions, list) else []
@@ -385,6 +432,7 @@ def build_payload(active: pd.DataFrame, dims: pd.DataFrame, params: pd.DataFrame
         "passation_id": st.session_state.get("passation_id", ""),
         "beneficiaire": st.session_state.get("beneficiaire", {}),
         "started_at": st.session_state.get("started_at", ""),
+        "code_verified_at": st.session_state.get("code_verified_at", ""),
         "completed_at": now_iso() if completed else None,
         "questionnaire_source": DEFAULT_XLSX.name,
         "cursor_order_displayed": st.session_state.get("cursor_order", []),
@@ -393,6 +441,7 @@ def build_payload(active: pd.DataFrame, dims: pd.DataFrame, params: pd.DataFrame
         "score_details": score_details,
         "sessions": st.session_state.get("session_history", []),
         "temps_total_cumule_secondes": total_session_seconds(),
+        "temps_total_cumule_minutes": round(total_session_seconds() / 60, 2),
         "rgpd_acceptance": st.session_state.get("rgpd_acceptance", {}),
         "access_history": st.session_state.get("access_history", {}),
         "notice": "Outil déclaratif d’exploration. Ne constitue pas un test psychométrique ni un diagnostic.",
@@ -555,19 +604,40 @@ def import_json_screen():
         st.rerun()
 
 
+def prepare_sidebar_json(active, dims, params, reason: str, filename_prefix: str, close_session: bool = False):
+    if close_session:
+        close_runtime_session(reason)
+        st.session_state.exit_mode = "quit"
+    else:
+        record_save_event(reason)
+        st.session_state.exit_mode = "save"
+    payload = build_payload(active, dims, params, completed=False)
+    st.session_state.exit_json_bytes = payload_bytes(payload)
+    st.session_state.exit_json_filename = make_filename(filename_prefix, "json")
+    st.session_state.exit_json_ready = True
+
+
 def sidebar_progress(active, dims, params):
     st.sidebar.markdown("### Session")
     if st.session_state.get("test_started"):
-        update_runtime_activity()
-        current_seconds = 0
-        for sess in st.session_state.get("session_history", []):
-            if sess.get("session_uid") == st.session_state.get("current_runtime_session_id"):
-                current_seconds = int(sess.get("duree_secondes") or 0)
-        st.sidebar.caption(f"Session actuelle : {current_seconds // 60} min")
-        st.sidebar.caption(f"Temps cumulé JSON : {total_session_seconds() // 60} min")
-        payload = build_payload(active, dims, params, completed=False)
-        st.sidebar.download_button("💾 Sauvegarder ma progression", data=payload_bytes(payload), file_name=make_filename("moteurs_sauvegarde", "json"), mime="application/json")
-        st.sidebar.caption("Ce fichier permet de reprendre plus tard exactement là où vous en étiez.")
+        update_runtime_activity("affichage_sidebar")
+        st.sidebar.markdown("Votre progression est enregistrée dans votre fichier JSON.")
+        if st.sidebar.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
+            prepare_sidebar_json(active, dims, params, "sauvegarde_manuelle_reprise", "moteurs_sauvegarde", close_session=False)
+            st.rerun()
+        if st.sidebar.button("🚪 Quitter et préparer mon JSON", type="primary", use_container_width=True):
+            prepare_sidebar_json(active, dims, params, "sortie_utilisateur_par_bouton", "moteurs_sortie", close_session=True)
+            st.rerun()
+        if st.session_state.get("exit_json_ready"):
+            st.sidebar.download_button(
+                "⬇️ Télécharger le JSON préparé",
+                data=st.session_state.get("exit_json_bytes", b""),
+                file_name=st.session_state.get("exit_json_filename", make_filename("moteurs_sortie", "json")),
+                mime="application/json",
+                use_container_width=True,
+                on_click=mark_json_downloaded,
+            )
+            st.sidebar.caption("Conservez ce JSON : il est nécessaire pour reprendre votre travail et il contient le temps réellement enregistré.")
     st.sidebar.markdown("---")
     if st.sidebar.button("Protection des données personnelles (RGPD)"):
         st.session_state.show_rgpd_page = True
@@ -621,6 +691,11 @@ def identification_screen(active, dims, params):
                     st.error("Le code a expiré. Merci de demander un nouveau code.")
                 elif code_in.strip() == st.session_state.get("access_code"):
                     b = st.session_state.pending_beneficiaire
+                    validation_now = now_iso()
+                    st.session_state.code_verified_at = validation_now
+                    history = st.session_state.get("access_history", {})
+                    history["validation_code"] = {"date_heure": validation_now, "code_valide": True, "version_application": APP_VERSION}
+                    st.session_state.access_history = history
                     start_new_session(active, b["nom"], b["prenom"], b["email"], b.get("consultant", ""))
                     st.session_state.code_verified = True
                     st.rerun()
@@ -704,10 +779,16 @@ def questionnaire_screen(active, dims, params):
     if st.button("Valider et passer à la suite", type="primary", use_container_width=True):
         st.session_state.positions[cid] = int(pos)
         st.session_state.current_index += 1
+        record_save_event("validation_question")
+        st.session_state.exit_json_ready = False
+        st.session_state.json_downloaded = False
         st.rerun()
 
 
 def results_screen(active, dims, params):
+    if not st.session_state.get("result_session_closed"):
+        close_runtime_session("questionnaire_termine")
+        st.session_state.result_session_closed = True
     payload = build_payload(active, dims, params, completed=True)
     scores_df = pd.DataFrame(payload["scores"])
     st.progress(1.0)
@@ -733,17 +814,53 @@ def results_screen(active, dims, params):
             st.warning("Le JSON final n'a pas pu être envoyé automatiquement : " + msg)
     c1, c2 = st.columns(2)
     with c1:
-        st.download_button("Télécharger mon JSON", data=json_data, file_name=json_filename, mime="application/json")
+        st.download_button("Télécharger mon JSON", data=json_data, file_name=json_filename, mime="application/json", on_click=mark_json_downloaded)
     with c2:
         st.download_button("Télécharger mon rapport PDF", data=pdf_data, file_name=pdf_filename, mime="application/pdf")
+
+
+def exit_prepared_screen():
+    display_header()
+    st.success("Votre JSON de sortie est prêt.")
+    st.markdown("Téléchargez le fichier dans la colonne de gauche. Il permettra de reprendre l'application avec le temps de session correctement conservé.")
+    st.info("Après téléchargement, vous pouvez fermer l'onglet du navigateur.")
 
 
 def expired_screen(active, dims, params):
     display_header()
     st.warning("La durée maximale de cette session est atteinte. Votre progression a été sauvegardée dans le JSON ci-dessous.")
     st.markdown("Téléchargez ce JSON : il permettra de reprendre le travail lors de la prochaine connexion. Une nouvelle session sera créée et le compteur de temps repartira à zéro, tout en conservant l'historique.")
+    if not st.session_state.get("expiration_json_saved"):
+        record_save_event("sauvegarde_automatique_expiration")
+        st.session_state.expiration_json_saved = True
     payload = build_payload(active, dims, params, completed=False)
-    st.download_button("Télécharger mon JSON de reprise", data=payload_bytes(payload), file_name=make_filename("moteurs_reprise_session_expiree", "json"), mime="application/json", type="primary")
+    st.download_button("Télécharger mon JSON de reprise", data=payload_bytes(payload), file_name=make_filename("moteurs_reprise_session_expiree", "json"), mime="application/json", type="primary", on_click=mark_json_downloaded)
+
+
+def mark_json_downloaded():
+    st.session_state.json_downloaded = True
+
+
+def install_beforeunload_warning():
+    """Alerte navigateur informative si l'utilisateur ferme sans passer par le JSON.
+
+    Les navigateurs ne permettent pas de bloquer définitivement la croix de fermeture.
+    Cette alerte est donc une sécurité complémentaire, pas une garantie absolue.
+    """
+    if st.session_state.get("test_started") and not st.session_state.get("json_downloaded"):
+        components.html(
+            """
+            <script>
+            window.parent.onbeforeunload = function (e) {
+                const message = "Avant de quitter, utilisez le bouton Clarté360 : Quitter et préparer mon JSON.";
+                e.preventDefault();
+                e.returnValue = message;
+                return message;
+            };
+            </script>
+            """,
+            height=0,
+        )
 
 
 def main():
@@ -759,6 +876,7 @@ def main():
         st.stop()
     active = get_active_cursors(curseurs)
     sidebar_progress(active, dims, params)
+    install_beforeunload_warning()
     st.sidebar.caption(f"App v{APP_VERSION} · Questionnaire {get_param(params, 'version_questionnaire', '0.1')}")
     if st.sidebar.button("Réinitialiser la session"):
         reset_all()
@@ -772,6 +890,9 @@ def main():
         expired_screen(active, dims, params)
         return
     if st.session_state.get("test_started"):
+        if st.session_state.get("exit_json_ready") and st.session_state.get("exit_mode") == "quit":
+            exit_prepared_screen()
+            return
         timeout_watchdog()
         check_session_limit()
         questionnaire_screen(active, dims, params)
