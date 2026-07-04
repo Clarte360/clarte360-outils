@@ -3,5 +3,3 @@ pandas
 openpyxl
 matplotlib
 reportlab
-
-streamlit-autorefresh>=1.0.1

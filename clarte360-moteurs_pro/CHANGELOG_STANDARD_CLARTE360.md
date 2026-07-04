@@ -48,9 +48,3 @@ Version candidate **Socle Clarté360 1.0**.
 - Présence de l'identifiant support dans le mail reçu.
 - Conservation du formulaire dans l'onglet Informations légales et RGPD.
 - Absence de régression sur JSON, timeout 15 min, reprise JSON et PDF.
-
-## v1.6.3-reference-clarte360
-- Correction majeure du timeout : ajout d'un watchdog autonome par `streamlit-autorefresh`.
-- Distinction entre heartbeat technique et activité utilisateur réelle.
-- Fermeture automatique après 15 minutes sans activité utilisateur avec motif `timeout_inactivite`.
-- Version proposée comme référence du Socle Clarté360 1.0 après test.
