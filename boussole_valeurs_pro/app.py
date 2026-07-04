@@ -18,7 +18,7 @@ import pandas as pd
 import streamlit as st
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "V1.2"
+APP_VERSION = "V1.3"
 BRAND_COLOR = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
@@ -171,14 +171,24 @@ def mark_current_session_closed(reason: str = ""):
 
 
 def beneficiary_has_timed_out() -> bool:
+    """Vérifie la limite de session sur la SESSION COURANTE uniquement.
+
+    Important : lors d'une reprise depuis un JSON, les dates historiques
+    access.started_at / access.verified_at peuvent appartenir à une ancienne
+    utilisation. Elles ne doivent donc pas provoquer une expiration immédiate.
+    Le calcul des 15 minutes repart du démarrage de la session active.
+    """
     data = st.session_state.get("data")
     if not isinstance(data, dict):
         return False
-    access = data.setdefault("access", {})
-    start = parse_iso(access.get("started_at", "")) or parse_iso(access.get("verified_at", ""))
-    if not start:
-        return False
-    return datetime.now() - start >= timedelta(minutes=BENEFICIARY_TIMEOUT_MINUTES)
+    sid = st.session_state.get("active_session_id", "")
+    for sess in data.get("access", {}).get("sessions", []):
+        if sess.get("session_id") == sid:
+            start = parse_iso(sess.get("started_at", ""))
+            if not start:
+                return False
+            return datetime.now() - start >= timedelta(minutes=BENEFICIARY_TIMEOUT_MINUTES)
+    return False
 
 
 def timeout_screen():
@@ -324,10 +334,14 @@ def ensure_access_state():
 
 
 def record_import_event(data: dict):
+    # Une reprise JSON doit ouvrir une nouvelle session de travail.
+    # On ne réutilise pas la session précédente, sinon le timeout peut être
+    # calculé à partir d'une ancienne date et bloquer immédiatement l'utilisateur.
+    st.session_state.active_session_id = str(uuid.uuid4())
     ensure_runtime_tracking(data)
     access = data.setdefault("access", {})
     access.setdefault("import_events", [])
-    access["import_events"].append({"event": "json_imported", "at": now_iso(), "client_network": get_client_network(), "app_version": APP_VERSION})
+    access["import_events"].append({"event": "json_imported", "at": now_iso(), "client_network": get_client_network(), "app_version": APP_VERSION, "new_session_id": st.session_state.active_session_id})
     data["updated_at"] = now_iso()
 
 
@@ -497,6 +511,8 @@ def access_gate() -> bool:
                         "code_request_events": st.session_state.access_request_events,
                         "timeout_minutes": BENEFICIARY_TIMEOUT_MINUTES,
                     })
+                    # La validation du code ouvre la première vraie session de travail bénéficiaire.
+                    st.session_state.active_session_id = str(uuid.uuid4())
                     ensure_runtime_tracking(data)
                     st.session_state.data = data
                     st.rerun()

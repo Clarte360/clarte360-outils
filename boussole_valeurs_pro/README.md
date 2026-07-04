@@ -1,8 +1,8 @@
-# Clarté360 - Boussole des valeurs professionnelles V1.2
+# Clarté360 - Boussole des valeurs professionnelles V1.3
 
 Application Streamlit Clarté360 dédiée à la construction d'une roue des valeurs orientée bilan de compétences.
 
-## V1.2 - Standard d'entrée Clarté360
+## V1.3 - Standard d'entrée Clarté360
 
 - Premier écran de reprise : import d'une sauvegarde JSON ou nouvelle session.
 - Reprise directe si le JSON contient déjà un code généré/validé.
