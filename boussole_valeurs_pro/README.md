@@ -1,25 +1,25 @@
-# Clarté360 - Boussole des valeurs professionnelles
+# Clarté360 - Boussole des valeurs professionnelles V1.2
 
-Application Streamlit dérivée de la Roue des valeurs Clarté360, adaptée au bilan de compétences.
+Application Streamlit Clarté360 dédiée à la construction d'une roue des valeurs orientée bilan de compétences.
 
-## Finalité
+## V1.2 - Standard d'entrée Clarté360
 
-L'outil ne recherche pas les valeurs à la place de l'accompagnateur et ne réalise aucune interprétation automatique.
-Il sert de support d'entretien pour construire la roue des valeurs du bénéficiaire à partir de valeurs déjà repérées pendant l'accompagnement.
+- Premier écran de reprise : import d'une sauvegarde JSON ou nouvelle session.
+- Reprise directe si le JSON contient déjà un code généré/validé.
+- Onglet RGPD et consentement obligatoire à la première connexion.
+- Le mail de code rappelle le consentement, l'absence de stockage serveur Clarté360 et l'usage exclusif dans l'accompagnement.
+- Le JSON trace : consentement, génération/régénération de code, sessions, durées, pages consultées, import JSON, informations techniques disponibles dont IP si Streamlit la fournit.
+- Session bénéficiaire limitée à 15 minutes avec écran de sauvegarde JSON.
+- Module Valeurs Énergie conservé avec code consultant : CLAENER360.
 
-## Adaptation bilan de compétences
+## Principe pédagogique
 
-La validation de chaque valeur se fait sur deux points d'appui :
+L'application ne recherche pas les valeurs à la place de l'accompagnateur. Elle sert à valider et coter les valeurs déjà repérées en entretien, à partir de deux points d'appui :
 
-1. Travail / expérience professionnelle
-2. Engagements personnels / vie hors travail
+1. Vie professionnelle.
+2. Engagements personnels / vie hors travail.
 
-Pour chaque valeur, le bénéficiaire renseigne des exemples concrets, datés ou situés dans le temps. La cotation reste liée à la qualité des exemples : sans exemple concret, la cote reste faible.
-
-## Valeurs énergies
-
-L'espace Valeurs énergies est conservé comme module optionnel, accessible uniquement par code consultant.
-Code par défaut : `CLAENER360`
+Le seul livrable attendu est la roue des valeurs, et éventuellement la roue des valeurs énergie si le consultant active ce module.
 
 ## Installation locale
 
@@ -28,23 +28,6 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Secrets Streamlit pour l'envoi email
+## Secrets Streamlit
 
-Créer `.streamlit/secrets.toml` avec :
-
-```toml
-[email]
-smtp_server = "smtp.example.com"
-smtp_port = "587"
-smtp_user = "user@example.com"
-smtp_password = "mot_de_passe"
-from_email = "contact@clarte360.com"
-to_email = "contact@clarte360.com"
-```
-
-## Fichiers importants
-
-- `app.py` : application principale
-- `requirements.txt` : dépendances
-- `assets/logo_clarte360.png` : logo
-- `.streamlit/config.toml` : configuration Streamlit
+Prévoir la section `[email]` dans les Secrets Streamlit pour l'envoi du code et la transmission éventuelle du JSON au consultant.

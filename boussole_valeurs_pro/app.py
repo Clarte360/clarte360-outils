@@ -3,10 +3,11 @@ import io
 import json
 import math
 import secrets
+import uuid
 import smtplib
 import string
 from copy import deepcopy
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -17,13 +18,14 @@ import pandas as pd
 import streamlit as st
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "V1.0"
+APP_VERSION = "V1.2"
 BRAND_COLOR = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
 DOMAINES = ["Travail / expérience professionnelle", "Engagements personnels / vie hors travail"]
 FINAL_EMAIL_TO = "contact@clarte360.com"
 ENERGY_ACCESS_CODE = "CLAENER360"
+BENEFICIARY_TIMEOUT_MINUTES = 15
 DEFAULT_COLORS = [
     "#008080", "#F2C94C", "#EB5757", "#2F80ED", "#9B51E0", "#27AE60",
     "#F2994A", "#56CCF2", "#BB6BD9", "#219653", "#F67280", "#6C5CE7",
@@ -53,6 +55,154 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def parse_iso(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def get_client_network() -> dict:
+    """Récupère les informations techniques disponibles côté Streamlit.
+    L'adresse IP réelle dépend de l'hébergement et des en-têtes transmis par le proxy.
+    """
+    headers = {}
+    try:
+        headers = dict(st.context.headers)
+    except Exception:
+        headers = {}
+    def h(name):
+        for k, v in headers.items():
+            if str(k).lower() == name.lower():
+                return str(v)
+        return ""
+    forwarded = h("x-forwarded-for")
+    ip = forwarded.split(",")[0].strip() if forwarded else (h("x-real-ip") or h("cf-connecting-ip") or "")
+    return {
+        "ip": ip,
+        "ip_source": "x-forwarded-for/x-real-ip/cf-connecting-ip" if ip else "non disponible via l'environnement Streamlit",
+        "user_agent": h("user-agent"),
+        "headers_available": bool(headers),
+    }
+
+
+def ensure_runtime_tracking(data: dict):
+    data.setdefault("access", {})
+    access = data["access"]
+    access.setdefault("timeout_minutes", BENEFICIARY_TIMEOUT_MINUTES)
+    access.setdefault("code_generated", False)
+    access.setdefault("code_sent", False)
+    access.setdefault("code_sent_at", "")
+    access.setdefault("code_regenerated_count", 0)
+    access.setdefault("code_verified", False)
+    access.setdefault("verified_at", "")
+    access.setdefault("timed_out", False)
+    access.setdefault("timed_out_at", "")
+    access.setdefault("closed_at", "")
+    access.setdefault("sessions", [])
+    if "active_session_id" not in st.session_state:
+        st.session_state.active_session_id = str(uuid.uuid4())
+    sid = st.session_state.active_session_id
+    network = get_client_network()
+    existing = None
+    for sess in access["sessions"]:
+        if sess.get("session_id") == sid:
+            existing = sess
+            break
+    if existing is None:
+        existing = {
+            "session_id": sid,
+            "started_at": now_iso(),
+            "last_seen_at": now_iso(),
+            "ended_at": "",
+            "duration_seconds": 0,
+            "client_network": network,
+            "page_history": [],
+        }
+        access["sessions"].append(existing)
+    else:
+        existing["last_seen_at"] = now_iso()
+        if not existing.get("client_network", {}).get("ip") and network.get("ip"):
+            existing["client_network"] = network
+    start = parse_iso(existing.get("started_at", ""))
+    if start:
+        existing["duration_seconds"] = int((datetime.now() - start).total_seconds())
+
+
+def log_page_visit(page_name: str):
+    data = st.session_state.get("data")
+    if not isinstance(data, dict):
+        return
+    ensure_runtime_tracking(data)
+    sid = st.session_state.get("active_session_id", "")
+    sessions = data.get("access", {}).get("sessions", [])
+    for sess in sessions:
+        if sess.get("session_id") == sid:
+            hist = sess.setdefault("page_history", [])
+            if not hist or hist[-1].get("page") != page_name:
+                hist.append({"page": page_name, "entered_at": now_iso()})
+            else:
+                hist[-1]["last_seen_at"] = now_iso()
+            break
+
+
+def mark_current_session_closed(reason: str = ""):
+    data = st.session_state.get("data")
+    if not isinstance(data, dict):
+        return
+    access = data.setdefault("access", {})
+    sid = st.session_state.get("active_session_id", "")
+    for sess in access.get("sessions", []):
+        if sess.get("session_id") == sid:
+            sess["ended_at"] = now_iso()
+            if reason:
+                sess["end_reason"] = reason
+            start = parse_iso(sess.get("started_at", ""))
+            if start:
+                sess["duration_seconds"] = int((datetime.now() - start).total_seconds())
+            break
+    access["closed_at"] = access.get("closed_at") or now_iso()
+
+
+def beneficiary_has_timed_out() -> bool:
+    data = st.session_state.get("data")
+    if not isinstance(data, dict):
+        return False
+    access = data.setdefault("access", {})
+    start = parse_iso(access.get("started_at", "")) or parse_iso(access.get("verified_at", ""))
+    if not start:
+        return False
+    return datetime.now() - start >= timedelta(minutes=BENEFICIARY_TIMEOUT_MINUTES)
+
+
+def timeout_screen():
+    data = st.session_state.data
+    ensure_runtime_tracking(data)
+    access = data.setdefault("access", {})
+    access["timed_out"] = True
+    access["timed_out_at"] = access.get("timed_out_at") or now_iso()
+    mark_current_session_closed("timeout_15_minutes")
+    data["updated_at"] = now_iso()
+    base = export_basename(data)
+    json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    header()
+    st.error("La session bénéficiaire est terminée : la durée d'utilisation de 15 minutes est atteinte.")
+    st.markdown(
+        """
+        <div class='warn-box'>
+        Pour conserver votre travail, téléchargez le fichier JSON ci-dessous. Ce fichier permet à votre consultant de justifier le temps passé sur l'outil et de reprendre les éléments saisis. La reprise ou la poursuite de l'exercice se fait uniquement avec votre consultant.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.download_button("Télécharger automatiquement le JSON de session", json_bytes, file_name=f"{base}_session_15min.json", mime="application/json", type="primary")
+    st.caption("Selon le navigateur, un clic peut rester nécessaire pour autoriser le téléchargement du fichier.")
 
 def get_email_config() -> dict | None:
     """Lit la configuration SMTP Streamlit Secrets au format déjà utilisé par Clarté360."""
@@ -119,7 +269,9 @@ def send_access_code_email(beneficiaire: dict, access_code: str) -> tuple[bool, 
         f"Nom : {nom}\n"
         f"Email : {email}\n"
         f"Code généré : {access_code}\n"
-        f"Date/heure : {datetime.now().isoformat(timespec='seconds')}\n"
+        f"Date/heure : {datetime.now().isoformat(timespec='seconds')}\n\n"
+        "Consentement RGPD : le bénéficiaire a confirmé avoir lu les informations relatives aux données conservées dans le JSON et a consenti à leur utilisation dans le cadre exclusif de son accompagnement.\n"
+        "Rappel : aucune donnée n'est conservée sur un serveur Clarté360 ; le JSON reste sous le contrôle du bénéficiaire et, s'il est communiqué à l'accompagnateur, il sert uniquement au travail d'accompagnement.\n"
     )
     ok_admin, msg_admin = send_email(admin_to, subject_admin, body_admin)
 
@@ -128,9 +280,8 @@ def send_access_code_email(beneficiaire: dict, access_code: str) -> tuple[bool, 
         f"Bonjour {prenom},\n\n"
         "Voici votre code d'accès pour démarrer l'outil Clarté360 - Boussole des valeurs professionnelles :\n\n"
         f"{access_code}\n\n"
-        "Ce code permet de sécuriser le démarrage de votre passation.\n\n"
-        "Vos réponses seront utilisées uniquement dans le cadre de votre accompagnement. "
-        "Le fichier JSON pourra être transmis à votre consultant Clarté360 afin de préparer la restitution.\n\n"
+        "Lors de cette demande, vous avez confirmé avoir lu les informations relatives à la protection de vos données et donné votre consentement à leur utilisation dans le cadre exclusif de votre accompagnement.\n\n"
+        "Aucune donnée n'est conservée sur un serveur Clarté360. Vos informations sont enregistrées uniquement dans le fichier JSON que vous conservez. Si vous transmettez ce fichier à votre accompagnateur, il sera utilisé uniquement dans le cadre de votre bilan de compétences ou de votre accompagnement professionnel.\n\n"
         "Cordialement,\nClarté360\n"
     )
     ok_user, msg_user = send_email(email, subject_user, body_user)
@@ -163,29 +314,114 @@ def ensure_access_state():
         "code_verified": False,
         "pending_beneficiaire": None,
         "final_json_sent": False,
+        "access_request_events": [],
+        "welcome_done": False,
+        "new_session_requested": False,
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
 
+
+def record_import_event(data: dict):
+    ensure_runtime_tracking(data)
+    access = data.setdefault("access", {})
+    access.setdefault("import_events", [])
+    access["import_events"].append({"event": "json_imported", "at": now_iso(), "client_network": get_client_network(), "app_version": APP_VERSION})
+    data["updated_at"] = now_iso()
+
+
+def welcome_screen() -> bool:
+    """Retourne True quand l'utilisateur a choisi d'importer un JSON ou de démarrer une nouvelle session."""
+    if st.session_state.get("welcome_done"):
+        return True
+    header()
+    st.markdown("## Bienvenue")
+    st.markdown(
+        """
+        <div class='privacy-box'>
+        <strong>Bonjour, avez-vous une sauvegarde JSON de votre dernière utilisation de l'application<br>
+        “Boussole des valeurs professionnelles” ?</strong><br><br>
+        Le fichier JSON permet de reprendre votre travail, de conserver les traces de connexion déjà enregistrées
+        et d'éviter de demander un nouveau code si un code avait déjà été généré lors de votre précédente utilisation.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.write("")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### Oui, j'ai mon fichier JSON")
+        uploaded = st.file_uploader("Importer ma sauvegarde JSON", type=["json"], key="welcome_json_upload")
+        if uploaded is not None:
+            try:
+                loaded = json.loads(uploaded.getvalue().decode("utf-8"))
+                if not isinstance(loaded, dict):
+                    raise ValueError("Format JSON invalide")
+                st.session_state.data = loaded
+                record_import_event(st.session_state.data)
+                # Si un code avait déjà été généré dans ce JSON, on redonne accès directement.
+                access = st.session_state.data.setdefault("access", {})
+                if access.get("code_generated") or access.get("code_sent") or access.get("code_verified"):
+                    st.session_state.code_verified = True
+                    access["code_verified"] = True
+                    access.setdefault("verified_at", now_iso())
+                st.session_state.welcome_done = True
+                st.session_state.new_session_requested = False
+                st.success("Sauvegarde JSON chargée. Votre session va reprendre.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Impossible de lire ce fichier JSON : {exc}")
+    with c2:
+        st.markdown("### Non, je commence une nouvelle session")
+        st.write("Cliquez ici si vous n'avez pas encore de sauvegarde JSON, ou si vous souhaitez repartir de zéro.")
+        if st.button("Continuer", type="primary"):
+            st.session_state.data = empty_state()
+            st.session_state.welcome_done = True
+            st.session_state.new_session_requested = True
+            st.rerun()
+    return False
+
+
+def rgpd_information_block():
+    st.markdown("### Protection des données personnelles")
+    st.markdown(
+        """
+        <div class='privacy-box'>
+        Cette application Clarté360 fonctionne avec un fichier JSON de sauvegarde qui vous appartient.
+        <br><br>
+        <strong>Le JSON peut contenir les types d'informations suivants :</strong><br>
+        • votre identité et votre adresse e-mail ;<br>
+        • le nom de l'accompagnateur ;<br>
+        • les dates et heures de connexion ;<br>
+        • les durées d'utilisation et les pages consultées ;<br>
+        • les codes générés ou régénérés ;<br>
+        • le fait que vous avez donné votre consentement ;<br>
+        • les valeurs que vous saisissez, les exemples vécus, les périodes et les cotations ;<br>
+        • les éventuels éléments du module Valeurs Énergie ;<br>
+        • des informations techniques de connexion, notamment l'adresse IP si l'environnement Streamlit la rend disponible.
+        <br><br>
+        <strong>Clarté360 ne conserve pas ces données sur un serveur Clarté360.</strong><br>
+        Le fichier JSON reste sous votre contrôle : vous pouvez le conserver, le supprimer ou le transmettre à votre accompagnateur.
+        Lorsque ce fichier est communiqué à l'accompagnateur, il est utilisé uniquement dans le cadre de votre bilan de compétences
+        ou de votre accompagnement professionnel. Il n'est pas utilisé à des fins commerciales.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def access_gate() -> bool:
     """Retourne True lorsque le code est validé."""
     ensure_access_state()
+    if not welcome_screen():
+        return False
     if st.session_state.get("code_verified"):
         return True
 
     header()
     st.markdown("## Accès bénéficiaire")
     st.write("Cet outil n'est pas un test psychométrique. Il sert de support d'exploration et d'échange avec votre consultant Clarté360.")
-    st.markdown(
-        """
-        <div class='privacy-box'>
-        🔒 <strong>Confidentialité et transmission</strong><br>
-        Vos réponses restent sous votre contrôle. Le fichier JSON final pourra être transmis à votre consultant Clarté360 afin de préparer l'analyse et la restitution. Aucune donnée n'est exploitée hors du cadre de votre accompagnement.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    rgpd_information_block()
     st.write("")
 
     if not st.session_state.get("code_sent"):
@@ -197,7 +433,7 @@ def access_gate() -> bool:
             with c2:
                 email = st.text_input("Adresse email *")
                 consultant = st.text_input("Consultant", value="Clarté360")
-            consent = st.checkbox("Je comprends que mes réponses seront utilisées uniquement dans le cadre de mon accompagnement et que le JSON pourra être transmis à mon consultant.")
+            consent = st.checkbox("J'ai lu les informations RGPD ci-dessus et je consens à l'utilisation de ces données dans le cadre exclusif de mon accompagnement. Je comprends qu'aucune donnée n'est conservée sur un serveur Clarté360 et que le fichier JSON reste sous mon contrôle.")
             submit = st.form_submit_button("Recevoir / générer mon code d'accès", type="primary")
         if submit:
             if not prenom.strip() or not nom.strip() or not email.strip():
@@ -205,11 +441,15 @@ def access_gate() -> bool:
             elif "@" not in email or "." not in email:
                 st.error("Merci de renseigner une adresse email valide.")
             elif not consent:
-                st.error("Merci de confirmer la compréhension de l'utilisation des données.")
+                st.error("Merci de confirmer votre consentement pour poursuivre.")
             else:
                 beneficiaire_tmp = {"prenom": prenom.strip(), "nom": nom.strip(), "email": email.strip(), "consultant": consultant.strip()}
                 code = generate_access_code()
+                event = {"event": "code_generated", "at": now_iso(), "beneficiaire": beneficiaire_tmp, "client_network": get_client_network(), "rgpd_consent_given": True, "rgpd_consent_at": now_iso(), "rgpd_consent_text_version": "RGPD-Clarte360-V1"}
+                st.session_state.access_request_events.append(event)
                 ok, msg = send_access_code_email(beneficiaire_tmp, code)
+                event["email_sent"] = bool(ok)
+                event["email_message"] = msg
                 st.session_state.pending_beneficiaire = beneficiaire_tmp
                 st.session_state.access_code = code
                 st.session_state.code_sent = ok
@@ -238,25 +478,82 @@ def access_gate() -> bool:
                         "consultant": b.get("consultant", "Clarté360"),
                         "date_realisation": date.today().isoformat(),
                     })
+                    consent_event = st.session_state.access_request_events[0] if st.session_state.access_request_events else {}
+                    data["rgpd"].update({
+                        "consent_given": True,
+                        "consent_at": consent_event.get("rgpd_consent_at", now_iso()),
+                        "consent_text_version": consent_event.get("rgpd_consent_text_version", "RGPD-Clarte360-V1"),
+                        "no_server_storage_acknowledged": True,
+                        "json_owner_acknowledged": True,
+                        "consultant_use_only_acknowledged": True,
+                    })
+                    data["access"].update({
+                        "code_verified": True,
+                        "verified_at": now_iso(),
+                        "code_generated": True,
+                        "code_sent": True,
+                        "code_sent_at": st.session_state.access_request_events[-1].get("at", "") if st.session_state.access_request_events else "",
+                        "code_regenerated_count": max(0, len(st.session_state.access_request_events) - 1),
+                        "code_request_events": st.session_state.access_request_events,
+                        "timeout_minutes": BENEFICIARY_TIMEOUT_MINUTES,
+                    })
+                    ensure_runtime_tracking(data)
                     st.session_state.data = data
                     st.rerun()
                 else:
                     st.error("Code incorrect.")
         with c2:
-            if st.button("Modifier les informations"):
-                for k in ["access_code", "code_sent", "code_verified", "pending_beneficiaire"]:
-                    st.session_state.pop(k, None)
-                st.rerun()
+            regen_col, edit_col = st.columns(2)
+            with regen_col:
+                if st.button("Je n'ai pas reçu le code : générer un nouveau code"):
+                    code = generate_access_code()
+                    st.session_state.access_code = code
+                    event = {"event": "code_regenerated", "at": now_iso(), "beneficiaire": b, "client_network": get_client_network()}
+                    st.session_state.access_request_events.append(event)
+                    ok, msg = send_access_code_email(b, code)
+                    event["email_sent"] = bool(ok)
+                    event["email_message"] = msg
+                    if ok:
+                        st.success("Un nouveau code vient d'être envoyé.")
+                    else:
+                        st.warning("Le nouveau code n'a pas pu être envoyé par email. Mode test affiché ci-dessous.")
+                        st.info(f"Mode test : nouveau code généré = {code}")
+            with edit_col:
+                if st.button("Modifier les informations"):
+                    for k in ["access_code", "code_sent", "code_verified", "pending_beneficiaire", "access_request_events"]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
     return False
 
 
 def empty_state():
     return {
         "version": APP_VERSION,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
         "beneficiaire": {"prenom": "", "nom": "", "email": "", "consultant": "Clarté360", "date_realisation": date.today().isoformat()},
-        "access": {"started_at": datetime.now().isoformat(timespec="seconds"), "code_verified": False},
+        "rgpd": {
+            "consent_given": False,
+            "consent_at": "",
+            "consent_text_version": "RGPD-Clarte360-V1",
+            "no_server_storage_acknowledged": False,
+            "json_owner_acknowledged": False,
+            "consultant_use_only_acknowledged": False,
+        },
+        "access": {
+            "started_at": now_iso(),
+            "code_verified": False,
+            "verified_at": "",
+            "code_generated": False,
+            "code_sent": False,
+            "code_sent_at": "",
+            "code_regenerated_count": 0,
+            "timeout_minutes": BENEFICIARY_TIMEOUT_MINUTES,
+            "timed_out": False,
+            "timed_out_at": "",
+            "closed_at": "",
+            "sessions": [],
+        },
         "valeurs": [],
         "valeurs_energies": {"access_granted": False, "selected": [], "entries": {}, "created_at": "", "updated_at": ""},
     }
@@ -265,6 +562,7 @@ def empty_state():
 def ensure_state():
     if "data" not in st.session_state:
         st.session_state.data = empty_state()
+    ensure_runtime_tracking(st.session_state.data)
     ensure_energy_state()
     if "page" not in st.session_state:
         st.session_state.page = "1. Bénéficiaire"
@@ -331,7 +629,7 @@ def appreciation_label(score: float) -> str:
 
 
 def update_timestamp():
-    st.session_state.data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    st.session_state.data["updated_at"] = now_iso()
 
 
 def header():
@@ -570,7 +868,7 @@ def add_default_values(nb):
 
 def sidebar():
     st.sidebar.markdown("## Navigation")
-    pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et points d'appui", "4. Boussole des valeurs professionnelles", "5. Valeurs énergies", "6. Export / Rapports"]
+    pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et points d'appui", "4. Boussole des valeurs professionnelles", "5. Valeurs énergies", "6. Export / Rapports", "7. RGPD"]
     st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
     st.sidebar.markdown("---")
     uploaded = st.sidebar.file_uploader("Ouvrir un questionnaire JSON", type=["json"])
@@ -633,7 +931,7 @@ def page_consignes():
     st.markdown(
         """
         <div class='rule-box'>
-        Cette boussole n'a pas pour objectif de suggérer des valeurs ou d'interpréter le profil de la personne. Elle aide uniquement à vérifier dans quelle mesure les valeurs déjà identifiées sont réellement incarnées dans les points d'appui.
+        Cette boussole n'a pas pour objectif de suggérer des valeurs ou d'interpréter le profil de la personne. Elle aide uniquement à vérifier dans quelle mesure les valeurs déjà identifiées sont réellement incarnées dans les deux points d'appui.
         </div>
         """,
         unsafe_allow_html=True,
@@ -643,23 +941,46 @@ def page_consignes():
     st.write("Une valeur est un principe profond qui donne du sens à vos choix, à vos comportements et à vos réactions. Elle ne se déclare pas seulement : elle se reconnaît à travers des situations concrètes vécues.")
     st.markdown("### Cotation")
     st.write("La cotation indique dans quelle mesure cette valeur est réellement vécue dans les deux points d'appui proposés. Plus les exemples sont précis, datés, répétés et significatifs, plus la cotation peut être élevée. Sans exemple concret, la cotation doit rester faible.")
+    st.markdown("### Durée de session")
+    st.markdown(
+        f"""
+        <div class='warn-box'>
+        La session bénéficiaire est limitée à <strong>{BENEFICIARY_TIMEOUT_MINUTES} minutes</strong>. À l'issue de ce délai, l'écran se verrouille et le fichier JSON de session doit être téléchargé. Ce fichier permet de conserver les réponses et de tracer le temps passé dans le cadre de l'accompagnement.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown("### Règle centrale")
-    st.write("Pour chaque valeur, le bénéficiaire doit décrire une action ou une réaction concrète, précise et située dans le temps dans chacun des deux points d'appui.")
+    st.write("Pour chaque valeur, le bénéficiaire doit décrire une action ou une réaction concrète, précise et située dans le temps dans chacun des deux points d'appui : vie professionnelle et engagements personnels / vie hors travail.")
     st.markdown(
         """
-        Exemples recevables :
-        - "Le 15 février, je suis sorti de la pièce lorsque j'ai vu une personne boire au-delà des limites, car la sobriété est une valeur importante pour moi."
-        - "En mars 2026, j'ai refusé une mission qui ne respectait pas mon équilibre de vie."
-        - "La semaine dernière, j'ai consacré deux heures à aider mon fils à préparer son exposé."
+        #### Exemples recevables, rattachés à une valeur
 
-        Exemples trop généraux :
-        - "Je suis quelqu'un d'autonome."
-        - "La famille est importante pour moi."
-        - "Je respecte les autres."
+        **Valeur : Honnêteté**
+        - Vie professionnelle : « En février 2026, j'ai refusé de valider un document car je n'avais pas encore vérifié les chiffres demandés. »
+        - Engagements personnels / vie hors travail : « La semaine dernière, la boulangère m'a rendu trop de monnaie ; je lui ai signalé l'erreur immédiatement. »
+
+        **Valeur : Entraide**
+        - Vie professionnelle : « Mardi dernier, j'ai terminé la préparation d'une salle à la place d'une collègue qui devait partir en urgence. »
+        - Engagements personnels / vie hors travail : « Le week-end dernier, j'ai aidé un voisin âgé à porter ses courses jusqu'à son appartement. »
+
+        **Valeur : Rigueur**
+        - Vie professionnelle : « En mars 2026, j'ai repris mon contrôle de matériel ligne par ligne parce qu'il manquait une signature sur la fiche de suivi. »
+        - Engagements personnels / vie hors travail : « Avant mon départ en vacances, j'ai préparé une liste précise des papiers, clés et médicaments pour éviter les oublis. »
+
+        **Valeur : Liberté**
+        - Vie professionnelle : « En avril 2026, j'ai demandé à organiser différemment ma tournée afin de travailler plus efficacement. »
+        - Engagements personnels / vie hors travail : « Le mois dernier, j'ai choisi seul une activité du dimanche pour prendre un vrai temps à moi. »
+
+        #### Exemples trop généraux
+        - « Je suis quelqu'un d'honnête. »
+        - « J'aime aider les autres. »
+        - « La rigueur est importante pour moi. »
+        - « J'aime être libre. »
+        - « La famille compte beaucoup pour moi. »
         """
     )
     st.markdown("<div class='warn-box'>Si aucune action ou réaction concrète n'est identifiable dans un point d'appui, la valeur peut rester importante pour la personne, mais elle n'est pas réellement mise en œuvre dans ce contexte. La cote doit alors être faible, possiblement égale à 0.</div>", unsafe_allow_html=True)
-
 
 def page_valeurs():
     st.markdown("## 3. Valeurs et points d'appui")
@@ -936,12 +1257,46 @@ def page_export():
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+
+def page_rgpd():
+    st.markdown("## 7. RGPD et traçabilité")
+    rgpd_information_block()
+    data = st.session_state.data
+    rgpd = data.get("rgpd", {})
+    st.markdown("### Consentement enregistré dans le JSON")
+    if rgpd.get("consent_given"):
+        st.success(f"Consentement donné le : {rgpd.get('consent_at','')}")
+    else:
+        st.warning("Aucun consentement RGPD n'est enregistré dans ce JSON.")
+    st.markdown("### Traçabilité enregistrée")
+    st.write("Le JSON conserve notamment les générations de code, les reprises de session, les pages consultées et les durées de connexion. Ces informations servent à documenter l'utilisation de l'outil dans le cadre de l'accompagnement.")
+    sessions = data.get("access", {}).get("sessions", [])
+    if sessions:
+        rows = []
+        for s in sessions:
+            rows.append({
+                "Début": s.get("started_at", ""),
+                "Dernière activité": s.get("last_seen_at", ""),
+                "Fin": s.get("ended_at", ""),
+                "Durée (min)": round(float(s.get("duration_seconds", 0))/60, 2),
+                "IP": s.get("client_network", {}).get("ip", ""),
+                "Fin raison": s.get("end_reason", ""),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucune session n'est encore enregistrée.")
+
 def main():
     ensure_state()
     ensure_access_state()
     if not access_gate():
         return
+    ensure_runtime_tracking(st.session_state.data)
+    if beneficiary_has_timed_out():
+        timeout_screen()
+        return
     sidebar()
+    log_page_visit(st.session_state.page)
     header()
     if st.session_state.page.startswith("1"):
         page_beneficiaire()
@@ -953,8 +1308,10 @@ def main():
         page_roue()
     elif st.session_state.page.startswith("5"):
         page_valeurs_energies()
-    else:
+    elif st.session_state.page.startswith("6"):
         page_export()
+    else:
+        page_rgpd()
 
 
 if __name__ == "__main__":
