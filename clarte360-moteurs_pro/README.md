@@ -4,7 +4,7 @@ Application Streamlit propriétaire Clarté360 destinée à explorer les moteurs
 
 ## Version
 
-`1.6.1-standard-clarte360`
+`1.6.2-standard-clarte360`
 
 Cette version est une référence candidate pour le socle commun Clarté360 :
 
@@ -41,3 +41,7 @@ Voir `.streamlit/secrets.example.toml`.
 - Timeout automatique à 15 minutes.
 - Formulaire de contact.
 - Génération PDF avec pied de page Clarté360.
+
+## Socle Clarté360 1.0
+
+Cette version introduit le socle commun Clarté360 : gestion des sessions, JSON, RGPD, mentions légales, formulaire d'assistance permanent, pied de page PDF, préparation Streamlit Cloud et migration VPS future.

@@ -19,7 +19,8 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.6.1-standard-clarte360"
+APP_VERSION = "1.6.2-standard-clarte360"
+SOCLE_CLARTE360_VERSION = "1.0"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
@@ -36,7 +37,7 @@ DEFAULT_SESSION_LIMIT_MINUTES = 15
 # CLARTE360
 # MODULE : Informations institutionnelles
 # ROLE   : Coordonnees, mentions legales, contact et pied de page PDF
-# VERSION: 1.6.1
+# VERSION: 1.6.2
 ###############################################################################
 CLARTE360_LEGAL = {
     "raison_sociale": "Clarté360",
@@ -350,6 +351,7 @@ def technical_context() -> dict:
     return {
         "application": APP_FULL_NAME,
         "app_version": APP_VERSION,
+        "socle_clarte360_version": SOCLE_CLARTE360_VERSION,
         "session_id": st.session_state.get("session_id", ""),
         "passation_id": st.session_state.get("passation_id", ""),
         "runtime_session_id": st.session_state.get("current_runtime_session_id", ""),
@@ -500,6 +502,7 @@ def build_payload(active: pd.DataFrame, dims: pd.DataFrame, params: pd.DataFrame
         "outil": get_param(params, "outil_code", "clarte360_moteurs_professionnels"),
         "outil_nom": get_param(params, "outil_nom", APP_FULL_NAME),
         "app_version": APP_VERSION,
+        "socle_clarte360_version": SOCLE_CLARTE360_VERSION,
         "version_questionnaire": get_param(params, "version_questionnaire", "0.1"),
         "passation_root_id": st.session_state.get("passation_root_id", st.session_state.get("session_id", "")),
         "session_id": st.session_state.get("session_id", ""),
@@ -692,13 +695,22 @@ def rgpd_page():
         contact_form()
 
 
+def contact_page():
+    """Page d'assistance permanente accessible pendant l'utilisation."""
+    display_header()
+    st.subheader("Contacter Clarté360")
+    contact_form()
+
+
 def contact_form():
     """Formulaire de contact support commun au socle Clarte360."""
     ben = st.session_state.get("beneficiaire") or st.session_state.get("pending_beneficiaire") or {}
     st.markdown("""
     ### Contacter Clarté360
-    Une question, une suggestion ou un problème technique ?  
-    Clarté360 vous répondra par e-mail ou, si vous laissez un numéro de téléphone, par téléphone lorsque cela facilite le traitement de votre demande.
+    **Vous avez besoin de contacter Clarté360 ?**  
+    Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d'une suggestion d'amélioration concernant cette application.  
+    Pour toute question relative à votre bilan de compétences ou à l'interprétation des exercices, nous vous invitons à vous rapprocher de votre consultant ou accompagnateur.  
+    Nous vous répondrons par e-mail et, si vous renseignez votre numéro de téléphone, nous pourrons vous rappeler lorsque cela facilitera le traitement de votre demande.
     """)
     with st.form("contact_clarte360_form"):
         col1, col2 = st.columns(2)
@@ -722,10 +734,13 @@ def contact_form():
             st.error("Le consentement est nécessaire pour transmettre votre demande à Clarté360.")
             return
         tech = technical_context()
+        support_id = f"SUP-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8].upper()}"
         body = (
             "Demande envoyée depuis une application Clarté360.\n\n"
+            f"Identifiant support : {support_id}\n"
             f"Application : {APP_FULL_NAME}\n"
             f"Version : {APP_VERSION}\n"
+            f"Socle Clarté360 : {SOCLE_CLARTE360_VERSION}\n"
             f"Prénom : {prenom.strip()}\n"
             f"Nom : {nom.strip()}\n"
             f"Email : {email.strip()}\n"
@@ -737,9 +752,9 @@ def contact_form():
             "Informations techniques :\n"
             + json.dumps(tech, ensure_ascii=False, indent=2)
         )
-        ok, msg = send_email(f"Clarté360 - Support - {APP_NAME}", body, to_email=FINAL_EMAIL_TO)
+        ok, msg = send_email(f"Clarté360 - Support {support_id} - {APP_NAME}", body, to_email=FINAL_EMAIL_TO)
         if ok:
-            st.success("Votre message a été transmis à Clarté360.")
+            st.success(f"Votre demande a bien été transmise à Clarté360. Référence : {support_id}")
         else:
             st.error("Le message n'a pas pu être envoyé automatiquement : " + msg)
 
@@ -813,6 +828,9 @@ def sidebar_progress(active, dims, params):
             )
             st.sidebar.caption("Conservez ce JSON : il est nécessaire pour reprendre votre travail et il contient le temps réellement enregistré.")
     st.sidebar.markdown("---")
+    if st.sidebar.button("💬 Contacter Clarté360", use_container_width=True):
+        st.session_state.show_contact_page = True
+        st.rerun()
     if st.sidebar.button("RGPD et mentions légales", use_container_width=True):
         st.session_state.show_rgpd_page = True
         st.rerun()
@@ -1052,9 +1070,15 @@ def main():
     active = get_active_cursors(curseurs)
     sidebar_progress(active, dims, params)
     install_beforeunload_warning()
-    st.sidebar.caption(f"App v{APP_VERSION} · Questionnaire {get_param(params, 'version_questionnaire', '0.1')}")
+    st.sidebar.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION} · Questionnaire {get_param(params, 'version_questionnaire', '0.1')}")
     if st.sidebar.button("Réinitialiser la session"):
         reset_all()
+    if st.session_state.get("show_contact_page"):
+        contact_page()
+        if st.button("Retour à l'application"):
+            st.session_state.show_contact_page = False
+            st.rerun()
+        return
     if st.session_state.get("show_rgpd_page"):
         rgpd_page()
         if st.button("Retour"):

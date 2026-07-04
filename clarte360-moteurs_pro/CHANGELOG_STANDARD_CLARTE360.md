@@ -27,3 +27,24 @@ Version de référence candidate pour le socle Clarté360.
 - Déconnexion automatique 15 minutes.
 - Affichage du pied de page dans le PDF.
 - Reprise depuis JSON et conservation de l'historique de session.
+
+## v1.6.2-standard-clarte360 - 04/07/2026
+
+Version candidate **Socle Clarté360 1.0**.
+
+### Harmonisations ajoutées
+- Ajout de la constante `SOCLE_CLARTE360_VERSION = "1.0"`.
+- Ajout de la version du socle dans le JSON, le contexte technique et la barre latérale.
+- Ajout d'un bouton permanent **💬 Contacter Clarté360** dans la barre latérale.
+- Le formulaire d'assistance est désormais accessible pendant l'utilisation de l'application, sans passer par la rubrique RGPD.
+- Conservation du même formulaire dans **Informations légales et RGPD**.
+- Clarification du rôle du formulaire : questions administratives, problèmes techniques et suggestions, sans aide à l'interprétation des questions ou exercices.
+- Ajout d'un identifiant support unique `SUP-...` dans chaque demande envoyée à Clarté360.
+- Ajout de l'identifiant support dans l'objet du mail et dans le message de confirmation affiché à l'utilisateur.
+
+### Points à tester
+- Bouton permanent de contact depuis la barre latérale pendant une passation.
+- Envoi SMTP réel de la demande d'assistance.
+- Présence de l'identifiant support dans le mail reçu.
+- Conservation du formulaire dans l'onglet Informations légales et RGPD.
+- Absence de régression sur JSON, timeout 15 min, reprise JSON et PDF.
