@@ -3,7 +3,6 @@ import random
 import re
 import smtplib
 import uuid
-from copy import deepcopy
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from io import BytesIO
@@ -19,10 +18,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.4.0-standard-clarte360"
-APP_NAME = "Moteurs professionnels"
-APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
-RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
+APP_VERSION = "1.3.0"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -30,10 +26,9 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_XLSX = BASE_DIR / "data" / "moteurs_professionnels_curseurs_v0_1.xlsx"
 LOGO_PATH = BASE_DIR / "assets" / "site_icon.png"
 FINAL_EMAIL_TO = "contact@clarte360.com"
-DEFAULT_SESSION_LIMIT_MINUTES = 90
 
 st.set_page_config(
-    page_title=APP_FULL_NAME,
+    page_title="Clarté360 - Moteurs professionnels",
     page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🟢",
     layout="centered",
 )
@@ -53,15 +48,26 @@ div.stButton > button[kind="primary"]:hover {{ background-color: #006f6f; border
 .slider-instruction {{ color: {DARK_TEXT}; font-weight: 600; font-size: 1rem; margin: .8rem 0 .4rem 0; }}
 .positioning-row {{ margin-top: .6rem; margin-bottom: 1.2rem; }}
 .slider-card-left, .slider-card-right {{
-    border-left: 7px solid {OFFICIAL_TEAL}; padding: 1.15rem 1.25rem; background: #f8fbfb;
-    border-radius: .95rem; min-height: 135px; height: 135px; display: flex; align-items: center;
-    justify-content: flex-start; box-shadow: 0 3px 16px rgba(0,128,128,.10);
-    border-top: 1px solid #d9eeee; border-right: 1px solid #d9eeee; border-bottom: 1px solid #d9eeee;
+    border-left: 7px solid {OFFICIAL_TEAL};
+    padding: 1.15rem 1.25rem;
+    background: #f8fbfb;
+    border-radius: .95rem;
+    min-height: 135px;
+    height: 135px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    box-shadow: 0 3px 16px rgba(0,128,128,.10);
+    border-top: 1px solid #d9eeee;
+    border-right: 1px solid #d9eeee;
+    border-bottom: 1px solid #d9eeee;
 }}
 .slider-card-right {{ border-left-color: #7fb8b8; }}
 .slider-card-left b, .slider-card-right b {{ font-size: 1.08rem; line-height: 1.35; }}
+.slider-spacer {{ height: 36px; }}
 .connector-label {{ text-align:center; color:{OFFICIAL_TEAL}; font-size:.85rem; font-weight:700; margin-bottom:.15rem; }}
 .small-muted {{ color:#666; font-size:.9rem; }}
+/* Curseur Clarté360 : aucune valeur numérique visible pour le bénéficiaire */
 div[data-testid="stSlider"] label {{ display: none !important; }}
 div[data-testid="stSlider"] [data-testid="stTickBar"],
 div[data-testid="stSlider"] [data-testid="stTickBarMin"],
@@ -73,7 +79,12 @@ div[data-testid="stSlider"] p {{ display: none !important; }}
 div[data-testid="stSlider"] {{ padding-top: 0 !important; }}
 div[data-testid="stSlider"] [data-baseweb="slider"] {{ padding-top: 0 !important; padding-bottom: 0 !important; }}
 div[data-testid="stSlider"] [data-baseweb="slider"] > div {{ background: #dfeaea !important; height: 10px !important; }}
-div[data-testid="stSlider"] div[role="slider"] {{ background-color: {OFFICIAL_TEAL} !important; border: 3px solid white !important; box-shadow: 0 0 0 3px rgba(0,128,128,.25) !important; }}
+div[data-testid="stSlider"] div[role="slider"] {{
+    background-color: {OFFICIAL_TEAL} !important;
+    border: 3px solid white !important;
+    box-shadow: 0 0 0 3px rgba(0,128,128,.25) !important;
+}}
+/* cible large pour neutraliser la couleur rouge native Streamlit */
 div[data-testid="stSlider"] div[style*="background"] {{ accent-color: {OFFICIAL_TEAL} !important; }}
 .stSlider * {{ accent-color: {OFFICIAL_TEAL} !important; }}
 </style>
@@ -82,25 +93,17 @@ div[data-testid="stSlider"] div[style*="background"] {{ accent-color: {OFFICIAL_
 REQUIRED_CURSOR_COLUMNS = ["ID", "Situation / consigne", "Proposition gauche", "Proposition droite", "Moteur gauche", "Moteur droite", "Position défaut", "Statut", "Version"]
 
 MOTEUR_FALLBACK = {
-    "MP1": "Accomplir", "MP2": "Comprendre", "MP3": "Construire", "MP4": "Transmettre", "MP5": "Être utile",
-    "MP6": "Influencer", "MP7": "Innover", "MP8": "Coopérer", "MP9": "Progresser", "MP10": "Contribuer",
+    "MP1": "Accomplir",
+    "MP2": "Comprendre",
+    "MP3": "Construire",
+    "MP4": "Transmettre",
+    "MP5": "Être utile",
+    "MP6": "Influencer",
+    "MP7": "Innover",
+    "MP8": "Coopérer",
+    "MP9": "Progresser",
+    "MP10": "Contribuer",
 }
-
-RGPD_TEXT = f"""
-### Protection des données personnelles (RGPD)
-
-Cette application Clarté360 fonctionne sans base de données serveur. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
-
-Le fichier JSON constitue le seul support de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, le nom de votre accompagnateur si l'application le prévoit, les dates et heures de connexion, la durée des sessions, vos données saisies dans l'application, commentaires, exemples, cotations, résultats, historique des connexions, code d'accès généré, historique des régénérations, consentement RGPD, version de l'application et informations techniques disponibles.
-
-Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur. Si vous le transmettez à votre accompagnateur, celui-ci l'utilise exclusivement dans le cadre du bilan de compétences ou de l'accompagnement Clarté360.
-
-Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : {RGPD_TEXT_VERSION}.
-"""
-
-
-def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
 
 
 def sanitize_filename(value: str) -> str:
@@ -188,7 +191,8 @@ def send_email(subject: str, body: str, to_email: str | None = None, attachments
         for filename, content, mime in attachments or []:
             maintype, subtype = mime.split("/", 1)
             msg.add_attachment(content, maintype=maintype, subtype=subtype, filename=filename)
-        with smtplib.SMTP_SSL(e["smtp_server"], int(e["smtp_port"]), timeout=25) as server:
+        port = int(e["smtp_port"])
+        with smtplib.SMTP_SSL(e["smtp_server"], port, timeout=25) as server:
             server.login(e["smtp_user"], e["smtp_password"])
             server.send_message(msg)
         return True, "Email envoyé."
@@ -196,79 +200,7 @@ def send_email(subject: str, body: str, to_email: str | None = None, attachments
         return False, f"Erreur email : {exc}"
 
 
-def get_session_limit_minutes() -> int:
-    try:
-        return int(st.secrets.get("security", {}).get("session_limit_minutes", DEFAULT_SESSION_LIMIT_MINUTES))
-    except Exception:
-        return DEFAULT_SESSION_LIMIT_MINUTES
-
-
-def init_runtime_session(reason="nouvelle_session"):
-    current_id = str(uuid.uuid4())
-    st.session_state.current_runtime_session_id = current_id
-    st.session_state.session_started_at = now_iso()
-    st.session_state.session_last_activity = now_iso()
-    st.session_state.session_expired = False
-    history = st.session_state.get("session_history", [])
-    history.append({
-        "session_uid": current_id,
-        "debut": st.session_state.session_started_at,
-        "derniere_activite": st.session_state.session_last_activity,
-        "fin": None,
-        "duree_secondes": 0,
-        "motif_fermeture": None,
-        "version_application": APP_VERSION,
-        "fuseau_horaire": "local_navigateur_non_disponible_streamlit",
-        "motif_ouverture": reason,
-    })
-    st.session_state.session_history = history
-
-
-def update_runtime_activity():
-    if not st.session_state.get("current_runtime_session_id"):
-        return
-    started = datetime.fromisoformat(st.session_state.session_started_at)
-    duration = max(0, int((datetime.now() - started).total_seconds()))
-    st.session_state.session_last_activity = now_iso()
-    for sess in st.session_state.session_history:
-        if sess.get("session_uid") == st.session_state.current_runtime_session_id:
-            sess["derniere_activite"] = st.session_state.session_last_activity
-            sess["duree_secondes"] = duration
-            break
-
-
-def close_runtime_session(reason: str):
-    if not st.session_state.get("current_runtime_session_id"):
-        return
-    started = datetime.fromisoformat(st.session_state.session_started_at)
-    duration = max(0, int((datetime.now() - started).total_seconds()))
-    for sess in st.session_state.session_history:
-        if sess.get("session_uid") == st.session_state.current_runtime_session_id:
-            sess["derniere_activite"] = now_iso()
-            sess["fin"] = now_iso()
-            sess["duree_secondes"] = duration
-            sess["motif_fermeture"] = reason
-            break
-
-
-def total_session_seconds() -> int:
-    return int(sum(int(s.get("duree_secondes") or 0) for s in st.session_state.get("session_history", [])))
-
-
-def check_session_limit():
-    if not st.session_state.get("test_started") or st.session_state.get("session_expired"):
-        return
-    update_runtime_activity()
-    limit_seconds = get_session_limit_minutes() * 60
-    current = next((s for s in st.session_state.get("session_history", []) if s.get("session_uid") == st.session_state.get("current_runtime_session_id")), None)
-    if current and int(current.get("duree_secondes") or 0) >= limit_seconds:
-        close_runtime_session("expiration_duree_session")
-        st.session_state.session_expired = True
-        st.rerun()
-
-
-def start_new_session(active: pd.DataFrame, nom: str, prenom: str, email: str, consultant: str = ""):
-    st.session_state.passation_root_id = str(uuid.uuid4())
+def start_new_session(active: pd.DataFrame, nom: str, prenom: str, email: str):
     st.session_state.session_id = str(uuid.uuid4())
     st.session_state.passation_id = f"CL360-MP-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{st.session_state.session_id[:8].upper()}"
     ids = active["ID"].tolist()
@@ -276,19 +208,15 @@ def start_new_session(active: pd.DataFrame, nom: str, prenom: str, email: str, c
     st.session_state.cursor_order = ids
     st.session_state.positions = {}
     st.session_state.current_index = 0
-    st.session_state.started_at = now_iso()
-    st.session_state.beneficiaire = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip(), "consultant": consultant.strip()}
+    st.session_state.started_at = datetime.now().isoformat(timespec="seconds")
+    st.session_state.beneficiaire = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip()}
     st.session_state.test_started = True
     st.session_state.final_email_sent = False
-    st.session_state.session_history = []
-    init_runtime_session("premiere_connexion")
 
 
 def restore_from_progress(payload: dict):
-    previous_sessions = deepcopy(payload.get("sessions", payload.get("session_history", [])))
-    st.session_state.passation_root_id = payload.get("passation_root_id", payload.get("session_id", str(uuid.uuid4())))
-    st.session_state.session_id = str(uuid.uuid4())
-    st.session_state.passation_id = payload.get("passation_id", st.session_state.passation_root_id)
+    st.session_state.session_id = payload.get("session_id", str(uuid.uuid4()))
+    st.session_state.passation_id = payload.get("passation_id", st.session_state.session_id)
     st.session_state.cursor_order = payload.get("cursor_order_displayed", payload.get("cursor_order", []))
     st.session_state.positions = {str(k): int(v) for k, v in payload.get("positions", {}).items()}
     first_unanswered = None
@@ -297,20 +225,17 @@ def restore_from_progress(payload: dict):
             first_unanswered = i
             break
     st.session_state.current_index = first_unanswered if first_unanswered is not None else len(st.session_state.cursor_order)
-    st.session_state.started_at = payload.get("started_at", now_iso())
+    st.session_state.started_at = payload.get("started_at", datetime.now().isoformat(timespec="seconds"))
     st.session_state.beneficiaire = payload.get("beneficiaire", {})
     st.session_state.test_started = True
     st.session_state.final_email_sent = bool(payload.get("final_email_sent", False))
     st.session_state.code_verified = True
-    st.session_state.rgpd_acceptance = payload.get("rgpd_acceptance", payload.get("rgpd_consent", {}))
-    st.session_state.access_history = payload.get("access_history", {})
-    st.session_state.session_history = previous_sessions if isinstance(previous_sessions, list) else []
-    init_runtime_session("reprise_depuis_json")
 
 
 def reset_all():
     for key in list(st.session_state.keys()):
-        st.session_state.pop(key, None)
+        if key not in []:
+            st.session_state.pop(key, None)
     st.rerun()
 
 
@@ -337,7 +262,17 @@ def compute_results(active: pd.DataFrame, dims: pd.DataFrame, positions: dict):
         scores[right] += right_pts
         max_scores[left] += 100
         max_scores[right] += 100
-        details.append({"cursor_id": cid, "position": pos, "situation": row["Situation / consigne"], "proposition_gauche": row["Proposition gauche"], "proposition_droite": row["Proposition droite"], "moteur_gauche": left, "moteur_droite": right, "points_gauche": left_pts, "points_droite": right_pts})
+        details.append({
+            "cursor_id": cid,
+            "position": pos,
+            "situation": row["Situation / consigne"],
+            "proposition_gauche": row["Proposition gauche"],
+            "proposition_droite": row["Proposition droite"],
+            "moteur_gauche": left,
+            "moteur_droite": right,
+            "points_gauche": left_pts,
+            "points_droite": right_pts,
+        })
     rows = []
     for code, label in labels.items():
         maxv = max_scores.get(code, 0) or 1
@@ -358,30 +293,24 @@ def interpretation_level(pct: float) -> str:
 
 
 def build_payload(active: pd.DataFrame, dims: pd.DataFrame, params: pd.DataFrame, completed=False) -> dict:
-    update_runtime_activity()
     scores_df, score_details = compute_results(active, dims, st.session_state.get("positions", {}))
     payload = {
         "outil": get_param(params, "outil_code", "clarte360_moteurs_professionnels"),
-        "outil_nom": get_param(params, "outil_nom", APP_FULL_NAME),
+        "outil_nom": get_param(params, "outil_nom", "Clarté360 – Moteurs professionnels"),
         "app_version": APP_VERSION,
         "version_questionnaire": get_param(params, "version_questionnaire", "0.1"),
-        "passation_root_id": st.session_state.get("passation_root_id", st.session_state.get("session_id", "")),
         "session_id": st.session_state.get("session_id", ""),
         "passation_id": st.session_state.get("passation_id", ""),
         "beneficiaire": st.session_state.get("beneficiaire", {}),
         "started_at": st.session_state.get("started_at", ""),
-        "completed_at": now_iso() if completed else None,
+        "completed_at": datetime.now().isoformat(timespec="seconds") if completed else None,
         "questionnaire_source": DEFAULT_XLSX.name,
         "cursor_order_displayed": st.session_state.get("cursor_order", []),
         "positions": st.session_state.get("positions", {}),
         "scores": scores_df.to_dict(orient="records"),
         "score_details": score_details,
-        "sessions": st.session_state.get("session_history", []),
-        "temps_total_cumule_secondes": total_session_seconds(),
-        "rgpd_acceptance": st.session_state.get("rgpd_acceptance", {}),
-        "access_history": st.session_state.get("access_history", {}),
         "notice": "Outil déclaratif d’exploration. Ne constitue pas un test psychométrique ni un diagnostic.",
-        "rgpd": "Aucune donnée n’est enregistrée sur un serveur Clarté360. Le JSON appartient exclusivement au bénéficiaire.",
+        "rgpd": "Aucune donnée n’est enregistrée sur un serveur par l’application. Le JSON appartient au bénéficiaire. Le JSON final peut être transmis à Clarté360 pour préparation de la restitution.",
     }
     return payload
 
@@ -446,7 +375,7 @@ def create_pdf(scores_df: pd.DataFrame, payload: dict) -> bytes:
     story = []
     if LOGO_PATH.exists():
         story.append(Image(str(LOGO_PATH), width=1.6*cm, height=1.6*cm))
-    story.append(Paragraph(APP_FULL_NAME, title_style))
+    story.append(Paragraph("Clarté360 – Moteurs professionnels", title_style))
     ben = payload.get("beneficiaire", {})
     story.append(Paragraph(f"Bénéficiaire : <b>{ben.get('prenom','')} {ben.get('nom','')}</b>", normal))
     story.append(Paragraph(f"Date : {datetime.now().strftime('%d/%m/%Y %H:%M')}", normal))
@@ -457,18 +386,26 @@ def create_pdf(scores_df: pd.DataFrame, payload: dict) -> bytes:
     story.append(Paragraph("Résultats", h_style))
     data = [["Moteur", "Score", "Lecture"]] + [[r["Moteur"], f"{r['Pourcentage']:.1f} %", r["Lecture"]] for _, r in scores_df.iterrows()]
     table = Table(data, colWidths=[7*cm, 3*cm, 6*cm])
-    table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.HexColor(OFFICIAL_TEAL)), ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#CCCCCC")), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"), ("VALIGN", (0,0), (-1,-1), "TOP")]))
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor(OFFICIAL_TEAL)),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#CCCCCC")),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+    ]))
     story.append(table)
     story.append(Spacer(1, 0.3*cm))
-    story.append(Image(create_bar_chart(scores_df), width=16*cm, height=9*cm))
+    bar = create_bar_chart(scores_df)
+    radar = create_radar_chart(scores_df)
+    story.append(Image(bar, width=16*cm, height=9*cm))
     story.append(Spacer(1, 0.2*cm))
-    story.append(Image(create_radar_chart(scores_df), width=13*cm, height=13*cm))
+    story.append(Image(radar, width=13*cm, height=13*cm))
     top = scores_df.head(3)
     story.append(Paragraph("Première lecture", h_style))
     top_txt = ", ".join([f"{r['Moteur']} ({r['Pourcentage']:.0f} %)" for _, r in top.iterrows()])
     story.append(Paragraph(f"Les réponses font apparaître prioritairement les moteurs suivants : <b>{top_txt}</b>. Cette lecture doit être discutée et contextualisée pendant l’entretien.", normal))
     story.append(Paragraph("Confidentialité", h_style))
-    story.append(Paragraph("Le fichier JSON appartient exclusivement au bénéficiaire. Il peut être conservé, supprimé ou transmis à l'accompagnateur dans le cadre de l'accompagnement.", normal))
+    story.append(Paragraph("Le fichier JSON appartient au bénéficiaire. Dans le cadre de l’accompagnement, il peut être transmis à Clarté360 afin de préparer l’analyse et la restitution.", normal))
     doc.build(story)
     buffer.seek(0)
     return buffer.read()
@@ -497,66 +434,25 @@ def display_header():
         if LOGO_PATH.exists():
             st.image(str(LOGO_PATH), width=80)
     with c2:
-        st.markdown(f"# <span class='clarte-title-accent'>{APP_FULL_NAME}</span>", unsafe_allow_html=True)
+        st.markdown("# <span class='clarte-title-accent'>Clarté360 – Moteurs professionnels</span>", unsafe_allow_html=True)
         st.caption("Outil propriétaire d’exploration des sources d’énergie professionnelle")
 
 
-def rgpd_page():
-    display_header()
-    st.markdown(RGPD_TEXT)
-    st.info("Le consentement RGPD est demandé avant la génération du code d'accès et avant toute nouvelle passation.")
-
-
-def welcome_screen():
-    display_header()
-    st.markdown(f"### Bienvenue dans l'application Clarté360 – {APP_NAME}")
-    st.markdown("Avez-vous conservé le fichier JSON de votre dernière utilisation de cette application ?")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Oui → Importer mon fichier JSON", type="primary", use_container_width=True):
-            st.session_state.welcome_choice = "import"
-            st.rerun()
-    with c2:
-        if st.button("Non → Commencer une nouvelle session", use_container_width=True):
-            st.session_state.welcome_choice = "new"
-            st.rerun()
-
-
-def import_json_screen():
-    display_header()
-    st.subheader("Reprise d'une session")
-    st.markdown("Importez le JSON conservé lors de votre dernière utilisation. Une nouvelle session de connexion sera créée et le compteur de temps de cette nouvelle session repartira à zéro.")
-    up = st.file_uploader("Importer mon fichier JSON", type=["json"])
-    if up is not None:
-        try:
-            payload = json.load(up)
-            restore_from_progress(payload)
-            st.success("JSON chargé. Votre progression a été reprise.")
-            st.rerun()
-        except Exception as exc:
-            st.error(f"JSON non valide : {exc}")
-    if st.button("Retour à l'accueil"):
-        st.session_state.pop("welcome_choice", None)
-        st.rerun()
-
-
 def sidebar_progress(active, dims, params):
-    st.sidebar.markdown("### Session")
+    st.sidebar.markdown("### Interrompre / reprendre")
     if st.session_state.get("test_started"):
-        update_runtime_activity()
-        current_seconds = 0
-        for sess in st.session_state.get("session_history", []):
-            if sess.get("session_uid") == st.session_state.get("current_runtime_session_id"):
-                current_seconds = int(sess.get("duree_secondes") or 0)
-        st.sidebar.caption(f"Session actuelle : {current_seconds // 60} min")
-        st.sidebar.caption(f"Temps cumulé JSON : {total_session_seconds() // 60} min")
         payload = build_payload(active, dims, params, completed=False)
         st.sidebar.download_button("💾 Sauvegarder ma progression", data=payload_bytes(payload), file_name=make_filename("moteurs_sauvegarde", "json"), mime="application/json")
         st.sidebar.caption("Ce fichier permet de reprendre plus tard exactement là où vous en étiez.")
-    st.sidebar.markdown("---")
-    if st.sidebar.button("Protection des données personnelles (RGPD)"):
-        st.session_state.show_rgpd_page = True
-        st.rerun()
+    up = st.sidebar.file_uploader("Reprendre depuis un JSON de sauvegarde", type=["json"])
+    if up is not None and st.sidebar.button("Reprendre le questionnaire"):
+        try:
+            payload = json.load(up)
+            restore_from_progress(payload)
+            st.sidebar.success("Reprise chargée.")
+            st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"JSON non valide : {exc}")
 
 
 def identification_screen(active, dims, params):
@@ -576,65 +472,57 @@ def identification_screen(active, dims, params):
     with st.expander("Voir les moteurs explorés"):
         for _, r in dims.iterrows():
             st.markdown(f"**{r.get('Moteur professionnel','')}** — {r.get('Définition bénéficiaire','')}")
-    with st.expander("Protection des données personnelles (RGPD)", expanded=True):
-        st.markdown(RGPD_TEXT)
+    st.markdown("""
+    <div class="clarte-box">
+    <b>Confidentialité et maîtrise de vos données</b><br>
+    Aucune donnée n’est enregistrée durablement sur un serveur par l’application. Le JSON final est généré à la fin et transmis à Clarté360 pour permettre la préparation de votre restitution. Vous pouvez également le télécharger avec votre rapport PDF.
+    </div>
+    """, unsafe_allow_html=True)
     st.subheader("Identification")
     with st.form("identification"):
         prenom = st.text_input("Prénom *")
         nom = st.text_input("Nom *")
         email = st.text_input("Adresse email *")
-        consultant = st.text_input("Consultant / accompagnateur", value="")
-        consent = st.checkbox("J'ai lu et j'accepte les conditions RGPD de cette application Clarté360.")
         submitted = st.form_submit_button("Recevoir mon code d’accès", type="primary")
     if submitted:
         if not prenom.strip() or not nom.strip() or not email.strip() or "@" not in email:
             st.error("Merci de renseigner prénom, nom et une adresse email valide.")
-        elif not consent:
-            st.error("Le consentement RGPD est obligatoire avant toute utilisation.")
         else:
-            st.session_state.rgpd_acceptance = {"consentement": True, "date": datetime.now().strftime("%Y-%m-%d"), "heure": datetime.now().strftime("%H:%M:%S"), "version_texte": RGPD_TEXT_VERSION}
-            st.session_state.pending_beneficiaire = {"prenom": prenom.strip(), "nom": nom.strip(), "email": email.strip(), "consultant": consultant.strip()}
-            issue_access_code(email.strip(), prenom.strip(), is_regeneration=False)
+            code = generate_code()
+            st.session_state.pending_beneficiaire = {"prenom": prenom.strip(), "nom": nom.strip(), "email": email.strip()}
+            st.session_state.access_code = code
+            minutes = int(st.secrets.get("security", {}).get("code_expiration_minutes", 15)) if "security" in st.secrets else 15
+            st.session_state.code_expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat(timespec="seconds")
+            subject_user = "Votre code d'accès Clarté360 – Moteurs professionnels"
+            body_user = f"Bonjour {prenom},\n\nVotre code d'accès au questionnaire Clarté360 – Moteurs professionnels est : {code}\n\nCe code est valable {minutes} minutes.\n\nClarté360"
+            ok_user, msg_user = send_email(subject_user, body_user, to_email=email.strip())
+            subject_admin = "Nouvelle passation prévue – Moteurs professionnels"
+            body_admin = f"{prenom} {nom} ({email}) a demandé un code pour réaliser l'outil Clarté360 – Moteurs professionnels.\nDate : {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+            ok_admin, msg_admin = send_email(subject_admin, body_admin)
+            st.session_state.code_sent = ok_user
+            if ok_user:
+                st.success("Un code d’accès vient de vous être envoyé par email.")
+                if ok_admin:
+                    st.info("Clarté360 a été informé du démarrage prochain de la passation.")
+                else:
+                    st.warning("Le code est parti, mais la notification administrateur n'a pas pu être envoyée : " + msg_admin)
+            else:
+                st.error("Impossible d’envoyer le code : " + msg_user)
+                st.info("Vérifiez les Secrets Streamlit / SMTP OVH.")
     if st.session_state.get("access_code"):
         st.subheader("Code d’accès")
         code_in = st.text_input("Saisissez le code reçu par email", max_chars=6)
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Valider le code et commencer", type="primary"):
-                exp = datetime.fromisoformat(st.session_state.get("code_expires_at"))
-                if datetime.now() > exp:
-                    st.error("Le code a expiré. Merci de demander un nouveau code.")
-                elif code_in.strip() == st.session_state.get("access_code"):
-                    b = st.session_state.pending_beneficiaire
-                    start_new_session(active, b["nom"], b["prenom"], b["email"], b.get("consultant", ""))
-                    st.session_state.code_verified = True
-                    st.rerun()
-                else:
-                    st.error("Code incorrect.")
-        with c2:
-            if st.button("Je n'ai pas reçu mon code → Générer un nouveau code"):
+        if st.button("Valider le code et commencer", type="primary"):
+            exp = datetime.fromisoformat(st.session_state.get("code_expires_at"))
+            if datetime.now() > exp:
+                st.error("Le code a expiré. Merci de demander un nouveau code.")
+            elif code_in.strip() == st.session_state.get("access_code"):
                 b = st.session_state.pending_beneficiaire
-                issue_access_code(b["email"], b["prenom"], is_regeneration=True)
-
-
-def issue_access_code(email: str, prenom: str, is_regeneration: bool):
-    code = generate_code()
-    minutes = int(st.secrets.get("security", {}).get("code_expiration_minutes", 15)) if "security" in st.secrets else 15
-    st.session_state.access_code = code
-    st.session_state.code_expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat(timespec="seconds")
-    history = st.session_state.get("access_history", {"generations": [], "nombre_regenerations": 0})
-    if is_regeneration:
-        history["nombre_regenerations"] = int(history.get("nombre_regenerations", 0)) + 1
-    history["generations"].append({"date": datetime.now().strftime("%Y-%m-%d"), "heure": datetime.now().strftime("%H:%M:%S"), "generation": "regeneration" if is_regeneration else "initiale", "envoi": "email", "version_application": APP_VERSION})
-    st.session_state.access_history = history
-    subject_user = f"Votre code d'accès {APP_FULL_NAME}"
-    body_user = f"Bonjour {prenom},\n\nVotre code d'accès au questionnaire {APP_FULL_NAME} est : {code}\n\nCe code est valable {minutes} minutes.\n\nRappel RGPD : aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application. Le fichier JSON appartient exclusivement au bénéficiaire. Les données sont utilisées uniquement dans le cadre de l'accompagnement ou du bilan de compétences, avec votre consentement.\n\nClarté360"
-    ok_user, msg_user = send_email(subject_user, body_user, to_email=email)
-    if ok_user:
-        st.success("Un code d’accès vient de vous être envoyé par email.")
-    else:
-        st.error("Impossible d’envoyer le code : " + msg_user)
-        st.info("Vérifiez les Secrets Streamlit / SMTP OVH.")
+                start_new_session(active, b["nom"], b["prenom"], b["email"])
+                st.session_state.code_verified = True
+                st.rerun()
+            else:
+                st.error("Code incorrect.")
 
 
 def questionnaire_screen(active, dims, params):
@@ -646,7 +534,7 @@ def questionnaire_screen(active, dims, params):
         return
     cid = st.session_state.cursor_order[idx]
     row = active.set_index("ID").loc[cid]
-    st.progress(idx / total)
+    st.progress((idx) / total)
     st.markdown(f"<div class='question-title'>Question {idx + 1} / {total}</div>", unsafe_allow_html=True)
     situation = str(row["Situation / consigne"])
     left = str(row["Proposition gauche"])
@@ -656,6 +544,7 @@ def questionnaire_screen(active, dims, params):
     speak_button(speak_text, f"speak_{cid}")
     st.markdown("<div class='slider-instruction'>Positionnez le curseur au plus près de la proposition qui vous ressemble le plus aujourd'hui. Si les deux propositions vous correspondent autant l'une que l'autre, laissez-le naturellement au milieu.</div>", unsafe_allow_html=True)
     default_pos = int(st.session_state.positions.get(cid, int(row.get("Position défaut", 5))))
+    st.markdown("<div class='positioning-row'>", unsafe_allow_html=True)
     col1, col_slider, col2 = st.columns([3.2, 4.8, 3.2], vertical_alignment="center")
     with col1:
         st.markdown(f"<div class='slider-card-left'><b>{left}</b></div>", unsafe_allow_html=True)
@@ -664,10 +553,14 @@ def questionnaire_screen(active, dims, params):
         pos = st.slider("Positionnement", min_value=0, max_value=10, value=default_pos, step=1, key=f"slider_{cid}", label_visibility="collapsed")
     with col2:
         st.markdown(f"<div class='slider-card-right'><b>{right}</b></div>", unsafe_allow_html=True)
-    if st.button("Valider et passer à la suite", type="primary", use_container_width=True):
-        st.session_state.positions[cid] = int(pos)
-        st.session_state.current_index += 1
-        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+    cprev, cnext = st.columns([1, 2])
+    # Pas de retour arrière volontairement : passation en sens unique.
+    with cnext:
+        if st.button("Valider et passer à la suite", type="primary", use_container_width=True):
+            st.session_state.positions[cid] = int(pos)
+            st.session_state.current_index += 1
+            st.rerun()
 
 
 def results_screen(active, dims, params):
@@ -678,8 +571,10 @@ def results_screen(active, dims, params):
     st.subheader("Première lecture de vos moteurs professionnels")
     st.caption("Ces résultats sont déclaratifs et servent de support d’échange avec votre consultant Clarté360.")
     st.dataframe(scores_df[["Moteur", "Pourcentage", "Lecture"]], hide_index=True, use_container_width=True)
-    st.image(create_bar_chart(scores_df), caption="Scores par moteur")
-    st.image(create_radar_chart(scores_df), caption="Radar des moteurs")
+    bar = create_bar_chart(scores_df)
+    radar = create_radar_chart(scores_df)
+    st.image(bar, caption="Scores par moteur")
+    st.image(radar, caption="Radar des moteurs")
     top = scores_df.sort_values("Pourcentage", ascending=False).head(3)
     st.markdown("### Synthèse courte")
     st.markdown("Vos réponses mettent principalement en avant : " + ", ".join([f"**{r['Moteur']}** ({r['Pourcentage']:.0f} %)" for _, r in top.iterrows()]) + ".")
@@ -688,7 +583,11 @@ def results_screen(active, dims, params):
     json_filename = make_filename("moteurs_professionnels", "json")
     pdf_filename = make_filename("rapport_moteurs_professionnels", "pdf")
     if not st.session_state.get("final_email_sent"):
-        ok, msg = send_email(subject=f"JSON final – Moteurs professionnels – {payload.get('passation_id')}", body=f"Questionnaire terminé pour {payload['beneficiaire'].get('prenom','')} {payload['beneficiaire'].get('nom','')}.\nID : {payload.get('passation_id')}", attachments=[(json_filename, json_data, "application/json")])
+        ok, msg = send_email(
+            subject=f"JSON final – Moteurs professionnels – {payload.get('passation_id')}",
+            body=f"Questionnaire terminé pour {payload['beneficiaire'].get('prenom','')} {payload['beneficiaire'].get('nom','')}.\nID : {payload.get('passation_id')}",
+            attachments=[(json_filename, json_data, "application/json")],
+        )
         if ok:
             st.session_state.final_email_sent = True
             st.info("Le JSON final a été transmis à Clarté360.")
@@ -699,14 +598,6 @@ def results_screen(active, dims, params):
         st.download_button("Télécharger mon JSON", data=json_data, file_name=json_filename, mime="application/json")
     with c2:
         st.download_button("Télécharger mon rapport PDF", data=pdf_data, file_name=pdf_filename, mime="application/pdf")
-
-
-def expired_screen(active, dims, params):
-    display_header()
-    st.warning("La durée maximale de cette session est atteinte. Votre progression a été sauvegardée dans le JSON ci-dessous.")
-    st.markdown("Téléchargez ce JSON : il permettra de reprendre le travail lors de la prochaine connexion. Une nouvelle session sera créée et le compteur de temps repartira à zéro, tout en conservant l'historique.")
-    payload = build_payload(active, dims, params, completed=False)
-    st.download_button("Télécharger mon JSON de reprise", data=payload_bytes(payload), file_name=make_filename("moteurs_reprise_session_expiree", "json"), mime="application/json", type="primary")
 
 
 def main():
@@ -722,29 +613,14 @@ def main():
         st.stop()
     active = get_active_cursors(curseurs)
     sidebar_progress(active, dims, params)
+    st.sidebar.markdown("---")
     st.sidebar.caption(f"App v{APP_VERSION} · Questionnaire {get_param(params, 'version_questionnaire', '0.1')}")
     if st.sidebar.button("Réinitialiser la session"):
         reset_all()
-    if st.session_state.get("show_rgpd_page"):
-        rgpd_page()
-        if st.button("Retour"):
-            st.session_state.show_rgpd_page = False
-            st.rerun()
-        return
-    if st.session_state.get("session_expired"):
-        expired_screen(active, dims, params)
-        return
-    if st.session_state.get("test_started"):
-        check_session_limit()
-        questionnaire_screen(active, dims, params)
-        return
-    choice = st.session_state.get("welcome_choice")
-    if choice == "import":
-        import_json_screen()
-    elif choice == "new":
+    if not st.session_state.get("test_started"):
         identification_screen(active, dims, params)
     else:
-        welcome_screen()
+        questionnaire_screen(active, dims, params)
 
 
 if __name__ == "__main__":
