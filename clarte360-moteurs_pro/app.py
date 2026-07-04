@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.4.0-standard-clarte360"
+APP_VERSION = "1.5.0-standard-clarte360"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
@@ -30,7 +30,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_XLSX = BASE_DIR / "data" / "moteurs_professionnels_curseurs_v0_1.xlsx"
 LOGO_PATH = BASE_DIR / "assets" / "site_icon.png"
 FINAL_EMAIL_TO = "contact@clarte360.com"
-DEFAULT_SESSION_LIMIT_MINUTES = 90
+DEFAULT_SESSION_LIMIT_MINUTES = 15
 
 st.set_page_config(
     page_title=APP_FULL_NAME,
@@ -265,6 +265,21 @@ def check_session_limit():
         close_runtime_session("expiration_duree_session")
         st.session_state.session_expired = True
         st.rerun()
+
+
+def timeout_watchdog():
+    """Rerun automatique côté Streamlit pour appliquer la limite de session même sans clic utilisateur."""
+    if not st.session_state.get("test_started") or st.session_state.get("session_expired"):
+        return
+    if not hasattr(st, "fragment"):
+        return
+
+    @st.fragment(run_every="10s")
+    def _watchdog_fragment():
+        if st.session_state.get("test_started") and not st.session_state.get("session_expired"):
+            check_session_limit()
+
+    _watchdog_fragment()
 
 
 def start_new_session(active: pd.DataFrame, nom: str, prenom: str, email: str, consultant: str = ""):
@@ -629,9 +644,31 @@ def issue_access_code(email: str, prenom: str, is_regeneration: bool):
     st.session_state.access_history = history
     subject_user = f"Votre code d'accès {APP_FULL_NAME}"
     body_user = f"Bonjour {prenom},\n\nVotre code d'accès au questionnaire {APP_FULL_NAME} est : {code}\n\nCe code est valable {minutes} minutes.\n\nRappel RGPD : aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application. Le fichier JSON appartient exclusivement au bénéficiaire. Les données sont utilisées uniquement dans le cadre de l'accompagnement ou du bilan de compétences, avec votre consentement.\n\nClarté360"
+    pending = st.session_state.get("pending_beneficiaire", {}) or {}
+    subject_admin = f"Clarté360 - Nouveau code d'accès {APP_NAME}"
+    body_admin = (
+        f"Une personne vient de demander un code d'accès pour réaliser l'outil {APP_FULL_NAME}.\n\n"
+        f"Prénom : {pending.get('prenom', prenom)}\n"
+        f"Nom : {pending.get('nom', '')}\n"
+        f"Email : {email}\n"
+        f"Consultant / accompagnateur : {pending.get('consultant', '')}\n"
+        f"Code généré : {code}\n"
+        f"Type de génération : {'régénération' if is_regeneration else 'initiale'}\n"
+        f"Date/heure : {datetime.now().isoformat(timespec='seconds')}\n"
+        f"Version application : {APP_VERSION}\n\n"
+        "Consentement RGPD : le bénéficiaire a confirmé avoir lu les informations relatives aux données conservées dans le JSON et a consenti à leur utilisation dans le cadre exclusif de son accompagnement.\n"
+        "Rappel : aucune donnée n'est conservée durablement sur un serveur Clarté360 par l'application ; le JSON reste sous le contrôle du bénéficiaire.\n"
+    )
+    ok_admin, msg_admin = send_email(subject_admin, body_admin)
+
     ok_user, msg_user = send_email(subject_user, body_user, to_email=email)
+    history["generations"][-1]["envoi_beneficiaire"] = "ok" if ok_user else msg_user
+    history["generations"][-1]["notification_admin"] = "ok" if ok_admin else msg_admin
+    st.session_state.access_history = history
     if ok_user:
         st.success("Un code d’accès vient de vous être envoyé par email.")
+        if not ok_admin:
+            st.warning("Le code a été envoyé au bénéficiaire, mais la notification à contact@clarte360.com n'a pas abouti : " + msg_admin)
     else:
         st.error("Impossible d’envoyer le code : " + msg_user)
         st.info("Vérifiez les Secrets Streamlit / SMTP OVH.")
@@ -735,6 +772,7 @@ def main():
         expired_screen(active, dims, params)
         return
     if st.session_state.get("test_started"):
+        timeout_watchdog()
         check_session_limit()
         questionnaire_screen(active, dims, params)
         return
