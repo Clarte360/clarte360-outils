@@ -16,9 +16,17 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import Wedge
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:
+    st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "V1.3"
+APP_VERSION = "V1.4-socle-clarte360"
+SOCLE_CLARTE360_VERSION = "1.7"
+RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
@@ -26,6 +34,18 @@ DOMAINES = ["Travail / expérience professionnelle", "Engagements personnels / v
 FINAL_EMAIL_TO = "contact@clarte360.com"
 ENERGY_ACCESS_CODE = "CLAENER360"
 BENEFICIARY_TIMEOUT_MINUTES = 15
+CLARTE360_LEGAL = {
+    "raison_sociale": "Clarté360",
+    "adresse": "60 rue François 1er",
+    "code_postal_ville": "75008 Paris",
+    "telephone": "01 89 48 08 25",
+    "email": "contact@clarte360.com",
+    "web": "www.clarte360.com",
+    "rcs": "102349834",
+    "siret": "10234983400014",
+    "naf": "8559 A",
+    "tva": "FR88102349834",
+}
 DEFAULT_COLORS = [
     "#008080", "#F2C94C", "#EB5757", "#2F80ED", "#9B51E0", "#27AE60",
     "#F2994A", "#56CCF2", "#BB6BD9", "#219653", "#F67280", "#6C5CE7",
@@ -92,7 +112,13 @@ def get_client_network() -> dict:
     }
 
 
-def ensure_runtime_tracking(data: dict):
+def ensure_runtime_tracking(data: dict, user_activity: bool = True):
+    data.setdefault("version", APP_VERSION)
+    data.setdefault("version_application", APP_VERSION)
+    data.setdefault("version_socle_clarte360", SOCLE_CLARTE360_VERSION)
+    data.setdefault("outil", "boussole_valeurs_pro")
+    data.setdefault("nom_outil", "Boussole des valeurs professionnelles")
+    data.setdefault("passation_root_id", data.get("passation_id") or str(uuid.uuid4()))
     data.setdefault("access", {})
     access = data["access"]
     access.setdefault("timeout_minutes", BENEFICIARY_TIMEOUT_MINUTES)
@@ -106,10 +132,12 @@ def ensure_runtime_tracking(data: dict):
     access.setdefault("timed_out_at", "")
     access.setdefault("closed_at", "")
     access.setdefault("sessions", [])
+    access.setdefault("sauvegardes", [])
     if "active_session_id" not in st.session_state:
         st.session_state.active_session_id = str(uuid.uuid4())
     sid = st.session_state.active_session_id
     network = get_client_network()
+    now = now_iso()
     existing = None
     for sess in access["sessions"]:
         if sess.get("session_id") == sid:
@@ -118,28 +146,62 @@ def ensure_runtime_tracking(data: dict):
     if existing is None:
         existing = {
             "session_id": sid,
-            "started_at": now_iso(),
-            "last_seen_at": now_iso(),
+            "motif_ouverture": st.session_state.get("session_open_reason", "premiere_connexion"),
+            "started_at": now,
+            "validation_code_at": access.get("verified_at", ""),
+            "last_activity_at": now,
+            "last_seen_at": now,
+            "dernier_battement_technique": now,
             "ended_at": "",
             "duration_seconds": 0,
+            "active_duration_seconds": 0,
+            "app_version": APP_VERSION,
+            "socle_version": SOCLE_CLARTE360_VERSION,
             "client_network": network,
             "page_history": [],
+            "sauvegardes_associees": [],
         }
         access["sessions"].append(existing)
     else:
-        existing["last_seen_at"] = now_iso()
+        existing["dernier_battement_technique"] = now
+        existing["last_seen_at"] = now
+        if user_activity:
+            existing["last_activity_at"] = now
         if not existing.get("client_network", {}).get("ip") and network.get("ip"):
             existing["client_network"] = network
-    start = parse_iso(existing.get("started_at", ""))
-    if start:
-        existing["duration_seconds"] = int((datetime.now() - start).total_seconds())
+    start_dt = parse_iso(existing.get("started_at", ""))
+    if start_dt:
+        existing["duration_seconds"] = int((datetime.now() - start_dt).total_seconds())
+    last_activity = parse_iso(existing.get("last_activity_at", "")) or start_dt
+    if last_activity:
+        existing["active_duration_seconds"] = int((last_activity - start_dt).total_seconds()) if start_dt else existing.get("duration_seconds",0)
+    access["temps_total_cumule_secondes"] = total_session_seconds(data)
+    access["nombre_sessions"] = len(access.get("sessions", []))
+
+
+def total_session_seconds(data: dict | None = None) -> int:
+    if data is None:
+        data = st.session_state.get("data", {})
+    return int(sum(int(s.get("duration_seconds", 0) or 0) for s in data.get("access", {}).get("sessions", [])))
+
+
+def record_save_event(data: dict, motif: str):
+    ensure_runtime_tracking(data, user_activity=False)
+    access = data.setdefault("access", {})
+    event = {"at": now_iso(), "motif": motif, "session_id": st.session_state.get("active_session_id", ""), "app_version": APP_VERSION}
+    access.setdefault("sauvegardes", []).append(event)
+    for sess in access.get("sessions", []):
+        if sess.get("session_id") == event["session_id"]:
+            sess.setdefault("sauvegardes_associees", []).append(event)
+            break
+    data["updated_at"] = now_iso()
 
 
 def log_page_visit(page_name: str):
     data = st.session_state.get("data")
     if not isinstance(data, dict):
         return
-    ensure_runtime_tracking(data)
+    ensure_runtime_tracking(data, user_activity=True)
     sid = st.session_state.get("active_session_id", "")
     sessions = data.get("access", {}).get("sessions", [])
     for sess in sessions:
@@ -163,56 +225,82 @@ def mark_current_session_closed(reason: str = ""):
             sess["ended_at"] = now_iso()
             if reason:
                 sess["end_reason"] = reason
+                sess["motif_fermeture"] = reason
             start = parse_iso(sess.get("started_at", ""))
             if start:
                 sess["duration_seconds"] = int((datetime.now() - start).total_seconds())
             break
     access["closed_at"] = access.get("closed_at") or now_iso()
+    access["temps_total_cumule_secondes"] = total_session_seconds(data)
 
 
-def beneficiary_has_timed_out() -> bool:
-    """Vérifie la limite de session sur la SESSION COURANTE uniquement.
-
-    Important : lors d'une reprise depuis un JSON, les dates historiques
-    access.started_at / access.verified_at peuvent appartenir à une ancienne
-    utilisation. Elles ne doivent donc pas provoquer une expiration immédiate.
-    Le calcul des 15 minutes repart du démarrage de la session active.
-    """
-    data = st.session_state.get("data")
-    if not isinstance(data, dict):
-        return False
+def _current_session(data: dict | None = None):
+    if data is None:
+        data = st.session_state.get("data", {})
     sid = st.session_state.get("active_session_id", "")
     for sess in data.get("access", {}).get("sessions", []):
         if sess.get("session_id") == sid:
-            start = parse_iso(sess.get("started_at", ""))
-            if not start:
-                return False
-            return datetime.now() - start >= timedelta(minutes=BENEFICIARY_TIMEOUT_MINUTES)
-    return False
+            return sess
+    return None
+
+
+def beneficiary_has_timed_out() -> bool:
+    """Timeout Socle 1.7 : 15 minutes sans activité réelle, pas 15 minutes de durée totale."""
+    data = st.session_state.get("data")
+    if not isinstance(data, dict):
+        return False
+    sess = _current_session(data)
+    if not sess:
+        return False
+    last_activity = parse_iso(sess.get("last_activity_at", "")) or parse_iso(sess.get("started_at", ""))
+    if not last_activity:
+        return False
+    inactive_seconds = int((datetime.now() - last_activity).total_seconds())
+    sess["inactivite_secondes"] = inactive_seconds
+    return inactive_seconds >= BENEFICIARY_TIMEOUT_MINUTES * 60
+
+
+def timeout_watchdog():
+    """Force une vérification automatique du timeout sans clic utilisateur, comme le socle 1.7."""
+    if not st.session_state.get("code_verified") or not isinstance(st.session_state.get("data"), dict):
+        return False
+    auto_rerun = False
+    if st_autorefresh is not None:
+        count = st_autorefresh(interval=10000, key="clarte360_boussole_timeout_watchdog")
+        previous = st.session_state.get("_watchdog_count")
+        st.session_state["_watchdog_count"] = count
+        auto_rerun = previous is not None and count != previous
+    elif hasattr(st, "fragment"):
+        @st.fragment(run_every="10s")
+        def _watchdog_fragment():
+            if beneficiary_has_timed_out():
+                st.rerun()
+        _watchdog_fragment()
+    else:
+        components.html("""<script>setTimeout(function(){try{window.parent.location.reload();}catch(e){window.location.reload();}},10000);</script>""", height=0)
+    return auto_rerun
 
 
 def timeout_screen():
     data = st.session_state.data
-    ensure_runtime_tracking(data)
+    ensure_runtime_tracking(data, user_activity=False)
     access = data.setdefault("access", {})
     access["timed_out"] = True
     access["timed_out_at"] = access.get("timed_out_at") or now_iso()
-    mark_current_session_closed("timeout_15_minutes")
+    mark_current_session_closed("timeout_inactivite")
+    record_save_event(data, "timeout_inactivite")
     data["updated_at"] = now_iso()
     base = export_basename(data)
     json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     header()
-    st.error("La session bénéficiaire est terminée : la durée d'utilisation de 15 minutes est atteinte.")
-    st.markdown(
-        """
+    st.error("Votre session est fermée après 15 minutes sans activité.")
+    st.markdown("""
         <div class='warn-box'>
-        Pour conserver votre travail, téléchargez le fichier JSON ci-dessous. Ce fichier permet à votre consultant de justifier le temps passé sur l'outil et de reprendre les éléments saisis. La reprise ou la poursuite de l'exercice se fait uniquement avec votre consultant.
+        Votre travail a été préparé en sauvegarde JSON. Téléchargez le fichier ci-dessous avant de fermer l'onglet. Une reprise ultérieure créera une nouvelle session et conservera l'historique.
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.download_button("Télécharger automatiquement le JSON de session", json_bytes, file_name=f"{base}_session_15min.json", mime="application/json", type="primary")
-    st.caption("Selon le navigateur, un clic peut rester nécessaire pour autoriser le téléchargement du fichier.")
+        """, unsafe_allow_html=True)
+    st.download_button("Télécharger mon JSON de sauvegarde", json_bytes, file_name=f"{base}_timeout_inactivite.json", mime="application/json", type="primary")
+    st.caption("Le navigateur peut exiger un clic pour autoriser le téléchargement du fichier.")
 
 def get_email_config() -> dict | None:
     """Lit la configuration SMTP Streamlit Secrets au format déjà utilisé par Clarté360."""
@@ -338,6 +426,7 @@ def record_import_event(data: dict):
     # On ne réutilise pas la session précédente, sinon le timeout peut être
     # calculé à partir d'une ancienne date et bloquer immédiatement l'utilisateur.
     st.session_state.active_session_id = str(uuid.uuid4())
+    st.session_state.session_open_reason = "reprise_depuis_json"
     ensure_runtime_tracking(data)
     access = data.setdefault("access", {})
     access.setdefault("import_events", [])
@@ -459,7 +548,7 @@ def access_gate() -> bool:
             else:
                 beneficiaire_tmp = {"prenom": prenom.strip(), "nom": nom.strip(), "email": email.strip(), "consultant": consultant.strip()}
                 code = generate_access_code()
-                event = {"event": "code_generated", "at": now_iso(), "beneficiaire": beneficiaire_tmp, "client_network": get_client_network(), "rgpd_consent_given": True, "rgpd_consent_at": now_iso(), "rgpd_consent_text_version": "RGPD-Clarte360-V1"}
+                event = {"event": "code_generated", "at": now_iso(), "beneficiaire": beneficiaire_tmp, "client_network": get_client_network(), "rgpd_consent_given": True, "rgpd_consent_at": now_iso(), "rgpd_consent_text_version": RGPD_TEXT_VERSION}
                 st.session_state.access_request_events.append(event)
                 ok, msg = send_access_code_email(beneficiaire_tmp, code)
                 event["email_sent"] = bool(ok)
@@ -496,7 +585,7 @@ def access_gate() -> bool:
                     data["rgpd"].update({
                         "consent_given": True,
                         "consent_at": consent_event.get("rgpd_consent_at", now_iso()),
-                        "consent_text_version": consent_event.get("rgpd_consent_text_version", "RGPD-Clarte360-V1"),
+                        "consent_text_version": consent_event.get("rgpd_consent_text_version", RGPD_TEXT_VERSION),
                         "no_server_storage_acknowledged": True,
                         "json_owner_acknowledged": True,
                         "consultant_use_only_acknowledged": True,
@@ -513,6 +602,7 @@ def access_gate() -> bool:
                     })
                     # La validation du code ouvre la première vraie session de travail bénéficiaire.
                     st.session_state.active_session_id = str(uuid.uuid4())
+                    st.session_state.session_open_reason = "premiere_connexion"
                     ensure_runtime_tracking(data)
                     st.session_state.data = data
                     st.rerun()
@@ -545,13 +635,18 @@ def access_gate() -> bool:
 def empty_state():
     return {
         "version": APP_VERSION,
+        "version_application": APP_VERSION,
+        "version_socle_clarte360": SOCLE_CLARTE360_VERSION,
+        "outil": "boussole_valeurs_pro",
+        "nom_outil": "Boussole des valeurs professionnelles",
+        "passation_root_id": str(uuid.uuid4()),
         "created_at": now_iso(),
         "updated_at": now_iso(),
         "beneficiaire": {"prenom": "", "nom": "", "email": "", "consultant": "Clarté360", "date_realisation": date.today().isoformat()},
         "rgpd": {
             "consent_given": False,
             "consent_at": "",
-            "consent_text_version": "RGPD-Clarte360-V1",
+            "consent_text_version": RGPD_TEXT_VERSION,
             "no_server_storage_acknowledged": False,
             "json_owner_acknowledged": False,
             "consultant_use_only_acknowledged": False,
@@ -569,6 +664,7 @@ def empty_state():
             "timed_out_at": "",
             "closed_at": "",
             "sessions": [],
+            "sauvegardes": [],
         },
         "valeurs": [],
         "valeurs_energies": {"access_granted": False, "selected": [], "entries": {}, "created_at": "", "updated_at": ""},
@@ -773,11 +869,21 @@ def fig_to_png_bytes(fig):
     return buf.getvalue()
 
 
+
+def add_clarte360_pdf_footer(fig):
+    footer = "Clarté360 - 60 rue François 1er - 75008 Paris - 01 89 48 08 25 - contact@clarte360.com - www.clarte360.com - SIRET 10234983400014"
+    try:
+        fig.text(0.5, 0.012, footer, ha="center", va="bottom", fontsize=6.5, color="#666666")
+    except Exception:
+        pass
+    return fig
+
 def create_pdf_bytes(data, include_values=True, include_energy=True):
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
         if include_values:
             fig = create_wheel_figure(data, small=False)
+            add_clarte360_pdf_footer(fig)
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
@@ -792,6 +898,7 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
             y = 0.86
             for val in data.get("valeurs", []):
                 if y < 0.12:
+                    add_clarte360_pdf_footer(fig2)
                     pdf.savefig(fig2, bbox_inches="tight")
                     plt.close(fig2)
                     fig2, ax = plt.subplots(figsize=(8.27, 11.69))
@@ -815,6 +922,7 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
                         ax.text(0.05, y, line, fontsize=8.5, va="top")
                         y -= 0.018
                     y -= 0.006
+            add_clarte360_pdf_footer(fig2)
             pdf.savefig(fig2, bbox_inches="tight")
             plt.close(fig2)
 
@@ -836,6 +944,7 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
                 val = data["valeurs"][idx]
                 entry = ve.get("entries", {}).get(str(idx), {})
                 if y < 0.18:
+                    add_clarte360_pdf_footer(fig3)
                     pdf.savefig(fig3, bbox_inches="tight")
                     plt.close(fig3)
                     fig3, ax3 = plt.subplots(figsize=(8.27, 11.69))
@@ -855,9 +964,11 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
                     ax3.text(0.07, y, f"• {str(item)[:180]}", fontsize=8.8, va="top")
                     y -= 0.02
                 y -= 0.015
+            add_clarte360_pdf_footer(fig3)
             pdf.savefig(fig3, bbox_inches="tight")
             plt.close(fig3)
             fig4 = create_energy_wheel_figure(data, small=False)
+            add_clarte360_pdf_footer(fig4)
             pdf.savefig(fig4, bbox_inches="tight")
             plt.close(fig4)
         if not include_values and not (ve.get("access_granted") and ve.get("selected")):
@@ -865,6 +976,7 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
             ax_empty.axis("off")
             ax_empty.text(0.03, 0.97, "Clarté360 - Valeurs énergies", fontsize=16, fontweight="bold", color=BRAND_COLOR, va="top")
             ax_empty.text(0.03, 0.92, "Aucune valeur énergie n'a été renseignée. Cet espace est optionnel.", fontsize=11, va="top")
+            add_clarte360_pdf_footer(fig_empty)
             pdf.savefig(fig_empty, bbox_inches="tight")
             plt.close(fig_empty)
     buf.seek(0)
@@ -882,21 +994,89 @@ def add_default_values(nb):
     update_timestamp()
 
 
+
+def legal_information_block():
+    st.markdown("### Informations légales et protection des données")
+    st.markdown(f"""
+    <div class='privacy-box'>
+    <strong>{CLARTE360_LEGAL['raison_sociale']}</strong><br>
+    {CLARTE360_LEGAL['adresse']} – {CLARTE360_LEGAL['code_postal_ville']}<br>
+    Tél. : {CLARTE360_LEGAL['telephone']} – E-mail : {CLARTE360_LEGAL['email']} – Web : {CLARTE360_LEGAL['web']}<br>
+    RCS : {CLARTE360_LEGAL['rcs']} – SIRET : {CLARTE360_LEGAL['siret']} – NAF : {CLARTE360_LEGAL['naf']} – TVA intracommunautaire : {CLARTE360_LEGAL['tva']}<br><br>
+    Le fichier JSON appartient au bénéficiaire. Aucune donnée n'est stockée sur les serveurs Clarté360. Les contenus, graphismes, textes, logiques pédagogiques et rapports relèvent de la propriété intellectuelle de Clarté360. L'application constitue un support d'accompagnement et ne remplace pas l'analyse du consultant.
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def contact_form_sidebar():
+    with st.sidebar.expander("Contacter Clarté360"):
+        st.caption("Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d’une suggestion concernant cette application. Pour toute question relative à l’interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.")
+        ben = st.session_state.get("data", {}).get("beneficiaire", {}) if isinstance(st.session_state.get("data"), dict) else {}
+        nom = st.text_input("Nom", value=ben.get("nom", ""), key="contact_nom")
+        prenom = st.text_input("Prénom", value=ben.get("prenom", ""), key="contact_prenom")
+        email = st.text_input("E-mail", value=ben.get("email", ""), key="contact_email")
+        tel = st.text_input("Téléphone facultatif", value="", key="contact_tel")
+        objet = st.text_input("Objet", value="", key="contact_objet")
+        msg = st.text_area("Message", value="", key="contact_message")
+        consent = st.checkbox("J’accepte que ces informations soient utilisées pour traiter ma demande.", key="contact_consent")
+        if st.button("Envoyer à Clarté360", key="contact_send"):
+            if not consent or not email or not msg:
+                st.error("Merci de renseigner au minimum l'e-mail, le message et le consentement.")
+            else:
+                data = st.session_state.get("data", {})
+                sess = _current_session(data) if isinstance(data, dict) else {}
+                body = f"""Demande depuis l'application Clarté360.
+
+Nom : {nom}
+Prénom : {prenom}
+E-mail : {email}
+Téléphone : {tel}
+Objet : {objet}
+
+Message :
+{msg}
+
+Application : {APP_TITLE}
+Version application : {APP_VERSION}
+Version socle : {SOCLE_CLARTE360_VERSION}
+Date/heure : {now_iso()}
+Identifiant session : {st.session_state.get('active_session_id','')}
+Temps session : {(sess or {}).get('duration_seconds','')} secondes
+Temps cumulé : {total_session_seconds(data) if isinstance(data, dict) else ''} secondes
+Client : {get_client_network()}
+"""
+                ok, info = send_email(FINAL_EMAIL_TO, f"Clarté360 - Contact Boussole - {objet or nom}", body)
+                if ok:
+                    st.success("Message envoyé à Clarté360.")
+                else:
+                    st.error("L'envoi automatique n'a pas pu être effectué.")
+                    st.caption(info)
+
 def sidebar():
     st.sidebar.markdown("## Navigation")
     pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et points d'appui", "4. Boussole des valeurs professionnelles", "5. Valeurs énergies", "6. Export / Rapports", "7. RGPD"]
     st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
     st.sidebar.markdown("---")
+    contact_form_sidebar()
+    st.sidebar.markdown("---")
+    if isinstance(st.session_state.get("data"), dict):
+        base = export_basename(st.session_state.data)
+        json_bytes = json.dumps(st.session_state.data, ensure_ascii=False, indent=2).encode("utf-8")
+        st.sidebar.download_button("Quitter et télécharger mon JSON", json_bytes, file_name=f"{base}.json", mime="application/json", type="primary")
     uploaded = st.sidebar.file_uploader("Ouvrir un questionnaire JSON", type=["json"])
     if uploaded is not None:
         try:
             loaded = json.loads(uploaded.getvalue().decode("utf-8"))
             st.session_state.data = loaded
-            st.sidebar.success("Questionnaire chargé.")
+            record_import_event(st.session_state.data)
+            st.sidebar.success("Questionnaire chargé avec nouvelle session.")
+            st.rerun()
         except Exception as exc:
             st.sidebar.error(f"Impossible de lire ce JSON : {exc}")
     if st.sidebar.button("Nouveau questionnaire vierge"):
         st.session_state.data = empty_state()
+        st.session_state.active_session_id = str(uuid.uuid4())
+        st.session_state.session_open_reason = "nouvelle_session_volontaire"
         st.session_state.page = "1. Bénéficiaire"
         st.rerun()
 
@@ -1277,6 +1457,7 @@ def page_export():
 def page_rgpd():
     st.markdown("## 7. RGPD et traçabilité")
     rgpd_information_block()
+    legal_information_block()
     data = st.session_state.data
     rgpd = data.get("rgpd", {})
     st.markdown("### Consentement enregistré dans le JSON")
@@ -1307,7 +1488,8 @@ def main():
     ensure_access_state()
     if not access_gate():
         return
-    ensure_runtime_tracking(st.session_state.data)
+    auto_rerun = timeout_watchdog()
+    ensure_runtime_tracking(st.session_state.data, user_activity=not auto_rerun)
     if beneficiary_has_timed_out():
         timeout_screen()
         return
@@ -1328,6 +1510,7 @@ def main():
         page_export()
     else:
         page_rgpd()
+
 
 
 if __name__ == "__main__":

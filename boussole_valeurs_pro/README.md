@@ -1,27 +1,14 @@
-# Clarté360 - Boussole des valeurs professionnelles V1.3
+# Clarté360 - Boussole des valeurs professionnelles
 
-Application Streamlit Clarté360 dédiée à la construction d'une roue des valeurs orientée bilan de compétences.
+Application Streamlit propriétaire Clarté360 destinée à l'exploration des valeurs professionnelles dans le cadre du bilan de compétences, du coaching professionnel et de l'accompagnement des transitions.
 
-## V1.3 - Standard d'entrée Clarté360
+## Version
 
-- Premier écran de reprise : import d'une sauvegarde JSON ou nouvelle session.
-- Reprise directe si le JSON contient déjà un code généré/validé.
-- Onglet RGPD et consentement obligatoire à la première connexion.
-- Le mail de code rappelle le consentement, l'absence de stockage serveur Clarté360 et l'usage exclusif dans l'accompagnement.
-- Le JSON trace : consentement, génération/régénération de code, sessions, durées, pages consultées, import JSON, informations techniques disponibles dont IP si Streamlit la fournit.
-- Session bénéficiaire limitée à 15 minutes avec écran de sauvegarde JSON.
-- Module Valeurs Énergie conservé avec code consultant : CLAENER360.
+- Application : V1.4-socle-clarte360
+- Socle Clarté360 : v1.7
+- Référence socle : Moteurs professionnels v1.7.0 référence
 
-## Principe pédagogique
-
-L'application ne recherche pas les valeurs à la place de l'accompagnateur. Elle sert à valider et coter les valeurs déjà repérées en entretien, à partir de deux points d'appui :
-
-1. Vie professionnelle.
-2. Engagements personnels / vie hors travail.
-
-Le seul livrable attendu est la roue des valeurs, et éventuellement la roue des valeurs énergie si le consultant active ce module.
-
-## Installation locale
+## Lancement local
 
 ```bash
 pip install -r requirements.txt
@@ -30,4 +17,22 @@ streamlit run app.py
 
 ## Secrets Streamlit
 
-Prévoir la section `[email]` dans les Secrets Streamlit pour l'envoi du code et la transmission éventuelle du JSON au consultant.
+Copier `.streamlit/secrets.example.toml` vers `.streamlit/secrets.toml` puis renseigner les accès SMTP réels.
+
+## Points clés du socle
+
+- Accueil JSON / nouvelle session.
+- Identification bénéficiaire.
+- Consentement RGPD obligatoire.
+- Code d'accès par e-mail.
+- JSON comme mémoire principale du bénéficiaire.
+- Reprise JSON avec nouvelle session sans écrasement de l'historique.
+- Timeout automatique après 15 minutes sans activité réelle.
+- Bouton `Quitter et télécharger mon JSON`.
+- Formulaire permanent `Contacter Clarté360`.
+- Mentions légales et coordonnées officielles Clarté360.
+- Exports JSON, CSV, PNG et PDF.
+
+## Données
+
+Aucune donnée n'est stockée sur un serveur Clarté360. Le fichier JSON appartient au bénéficiaire et constitue le support de sauvegarde et de reprise.
