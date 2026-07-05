@@ -24,7 +24,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "V1.5-socle-clarte360"
+APP_VERSION = "1.6-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "1.7"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
@@ -437,6 +437,7 @@ def ensure_access_state():
         "access_request_events": [],
         "welcome_done": False,
         "new_session_requested": False,
+        "welcome_choice": None,
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -457,54 +458,60 @@ def record_import_event(data: dict):
 
 
 def welcome_screen() -> bool:
-    """Retourne True quand l'utilisateur a choisi d'importer un JSON ou de démarrer une nouvelle session."""
+    """Écran d’accueil standard Clarté360, aligné sur Moteurs Professionnels v1.7.0."""
     if st.session_state.get("welcome_done"):
         return True
+    choice = st.session_state.get("welcome_choice")
+    if choice == "import":
+        return import_json_screen()
+    if choice == "new":
+        st.session_state.data = empty_state()
+        st.session_state.welcome_done = True
+        st.session_state.new_session_requested = True
+        st.rerun()
+
     header()
-    st.markdown("## Bienvenue")
-    st.markdown(
-        """
-        <div class='privacy-box'>
-        <strong>Bonjour, avez-vous une sauvegarde JSON de votre dernière utilisation de l'application<br>
-        “Boussole des valeurs professionnelles” ?</strong><br><br>
-        Le fichier JSON permet de reprendre votre travail, de conserver les traces de connexion déjà enregistrées
-        et d'éviter de demander un nouveau code si un code avait déjà été généré lors de votre précédente utilisation.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.write("")
+    st.markdown(f"### Bienvenue dans l'application Clarté360 – Boussole des valeurs professionnelles")
+    st.markdown("Avez-vous conservé le fichier JSON de votre dernière utilisation de cette application ?")
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("### Oui, j'ai mon fichier JSON")
-        uploaded = st.file_uploader("Importer ma sauvegarde JSON", type=["json"], key="welcome_json_upload")
-        if uploaded is not None:
-            try:
-                loaded = json.loads(uploaded.getvalue().decode("utf-8"))
-                if not isinstance(loaded, dict):
-                    raise ValueError("Format JSON invalide")
-                st.session_state.data = loaded
-                record_import_event(st.session_state.data)
-                # Si un code avait déjà été généré dans ce JSON, on redonne accès directement.
-                access = st.session_state.data.setdefault("access", {})
-                if access.get("code_generated") or access.get("code_sent") or access.get("code_verified"):
-                    st.session_state.code_verified = True
-                    access["code_verified"] = True
-                    access.setdefault("verified_at", now_iso())
-                st.session_state.welcome_done = True
-                st.session_state.new_session_requested = False
-                st.success("Sauvegarde JSON chargée. Votre session va reprendre.")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Impossible de lire ce fichier JSON : {exc}")
-    with c2:
-        st.markdown("### Non, je commence une nouvelle session")
-        st.write("Cliquez ici si vous n'avez pas encore de sauvegarde JSON, ou si vous souhaitez repartir de zéro.")
-        if st.button("Continuer", type="primary"):
-            st.session_state.data = empty_state()
-            st.session_state.welcome_done = True
-            st.session_state.new_session_requested = True
+        if st.button("Oui → Importer mon fichier JSON", type="primary", use_container_width=True):
+            st.session_state.welcome_choice = "import"
             st.rerun()
+    with c2:
+        if st.button("Non → Commencer une nouvelle session", use_container_width=True):
+            st.session_state.welcome_choice = "new"
+            st.rerun()
+    return False
+
+
+def import_json_screen() -> bool:
+    """Écran de reprise JSON standard, sans import masqué en barre latérale."""
+    header()
+    st.subheader("Reprise d'une session")
+    st.markdown("Importez le JSON conservé lors de votre dernière utilisation. Une nouvelle session de connexion sera créée et le compteur de temps de cette nouvelle session repartira à zéro.")
+    uploaded = st.file_uploader("Importer mon fichier JSON", type=["json"], key="welcome_json_upload_standard")
+    if uploaded is not None:
+        try:
+            loaded = json.loads(uploaded.getvalue().decode("utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("Format JSON invalide")
+            st.session_state.data = loaded
+            record_import_event(st.session_state.data)
+            access = st.session_state.data.setdefault("access", {})
+            if access.get("code_generated") or access.get("code_sent") or access.get("code_verified"):
+                st.session_state.code_verified = True
+                access["code_verified"] = True
+                access.setdefault("verified_at", now_iso())
+            st.session_state.welcome_done = True
+            st.session_state.new_session_requested = False
+            st.success("JSON chargé. Votre progression a été reprise.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"JSON non valide : {exc}")
+    if st.button("Retour à l'accueil"):
+        st.session_state.pop("welcome_choice", None)
+        st.rerun()
     return False
 
 
@@ -1145,10 +1152,13 @@ def prepare_sidebar_json(close_session: bool = False, reason: str = "sauvegarde_
 
 
 def sidebar():
+    """Barre latérale socle Clarté360 alignée sur Moteurs Professionnels v1.7.0.
+    Les éléments métier de navigation restent uniquement lorsque la session est active.
+    """
     st.sidebar.markdown("### Session")
     st.sidebar.markdown("---")
-    if isinstance(st.session_state.get("data"), dict):
-        st.sidebar.caption("Votre progression est enregistrée dans votre fichier JSON.")
+    if isinstance(st.session_state.get("data"), dict) and st.session_state.get("code_verified"):
+        st.sidebar.markdown("Votre progression est enregistrée dans votre fichier JSON.")
         if st.sidebar.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
             prepare_sidebar_json(False, "sauvegarde_manuelle_reprise")
             st.rerun()
@@ -1175,31 +1185,19 @@ def sidebar():
         st.session_state.show_contact_page = False
         st.rerun()
     st.sidebar.caption("Clarté360 · contact@clarte360.com")
-    st.sidebar.caption(f"App {APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION}")
+    st.sidebar.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION} · Questionnaire Boussole")
     if st.sidebar.button("Réinitialiser la session"):
-        for key in ["data", "code_verified", "welcome_done", "code_sent", "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page"]:
+        for key in ["data", "code_verified", "welcome_done", "welcome_choice", "code_sent", "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page", "exit_json_ready", "exit_json_bytes", "exit_json_filename"]:
             st.session_state.pop(key, None)
         st.rerun()
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### Navigation")
-    pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et points d'appui", "4. Boussole des valeurs professionnelles", "5. Valeurs énergies", "6. Export / Rapports", "7. RGPD"]
-    st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
-    uploaded = st.sidebar.file_uploader("Ouvrir un questionnaire JSON", type=["json"])
-    if uploaded is not None:
-        try:
-            loaded = json.loads(uploaded.getvalue().decode("utf-8"))
-            st.session_state.data = loaded
-            record_import_event(st.session_state.data)
-            st.sidebar.success("Questionnaire chargé avec nouvelle session.")
-            st.rerun()
-        except Exception as exc:
-            st.sidebar.error(f"Impossible de lire ce JSON : {exc}")
-    if st.sidebar.button("Nouveau questionnaire vierge"):
-        st.session_state.data = empty_state()
-        st.session_state.active_session_id = str(uuid.uuid4())
-        st.session_state.session_open_reason = "nouvelle_session_volontaire"
-        st.session_state.page = "1. Bénéficiaire"
-        st.rerun()
+
+    if isinstance(st.session_state.get("data"), dict) and st.session_state.get("code_verified"):
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### Navigation")
+        pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et points d'appui", "4. Boussole des valeurs professionnelles", "5. Valeurs énergies", "6. Export / Rapports", "7. RGPD"]
+        if st.session_state.get("page") not in pages:
+            st.session_state.page = pages[0]
+        st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
 
 
 def page_beneficiaire():
@@ -1607,14 +1605,6 @@ def page_traceability_rgpd():
 def main():
     ensure_state()
     ensure_access_state()
-    if not access_gate():
-        return
-    auto_rerun = timeout_watchdog()
-    ensure_runtime_tracking(st.session_state.data, user_activity=not auto_rerun)
-    install_beforeunload_warning()
-    if beneficiary_has_timed_out():
-        timeout_screen()
-        return
     sidebar()
     if st.session_state.get("show_contact_page"):
         contact_page()
@@ -1627,6 +1617,14 @@ def main():
         if st.button("Retour à l'application"):
             st.session_state.show_rgpd_page = False
             st.rerun()
+        return
+    if not access_gate():
+        return
+    auto_rerun = timeout_watchdog()
+    ensure_runtime_tracking(st.session_state.data, user_activity=not auto_rerun)
+    install_beforeunload_warning()
+    if beneficiary_has_timed_out():
+        timeout_screen()
         return
     log_page_visit(st.session_state.page)
     header()

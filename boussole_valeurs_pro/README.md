@@ -1,38 +1,28 @@
 # Clarté360 - Boussole des valeurs professionnelles
 
-Application Streamlit propriétaire Clarté360 destinée à l'exploration des valeurs professionnelles dans le cadre du bilan de compétences, du coaching professionnel et de l'accompagnement des transitions.
+Application Streamlit propriétaire Clarté360.
 
-## Version
+Version : v1.6-socle-clarte360  
+Socle : Clarté360 1.7, standardisé sur Moteurs Professionnels v1.7.0 référence.
 
-- Application : V1.4-socle-clarte360
-- Socle Clarté360 : v1.7
-- Référence socle : Moteurs professionnels v1.7.0 référence
+## Fonctionnalités socle
+- Accueil standard avec choix JSON / nouvelle session.
+- Reprise JSON avec création d'une nouvelle session.
+- Identification bénéficiaire et code d'accès par e-mail.
+- RGPD obligatoire.
+- Mentions légales Clarté360.
+- Formulaire Contacter Clarté360.
+- Sauvegarde JSON.
+- Boutons de sortie et de reprise JSON.
+- Protection avant fermeture navigateur.
+- Timeout 15 minutes avec motif `timeout_inactivite`.
 
-## Lancement local
+## Déploiement
+Installer les dépendances :
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Secrets Streamlit
-
-Copier `.streamlit/secrets.example.toml` vers `.streamlit/secrets.toml` puis renseigner les accès SMTP réels.
-
-## Points clés du socle
-
-- Accueil JSON / nouvelle session.
-- Identification bénéficiaire.
-- Consentement RGPD obligatoire.
-- Code d'accès par e-mail.
-- JSON comme mémoire principale du bénéficiaire.
-- Reprise JSON avec nouvelle session sans écrasement de l'historique.
-- Timeout automatique après 15 minutes sans activité réelle.
-- Bouton `Quitter et télécharger mon JSON`.
-- Formulaire permanent `Contacter Clarté360`.
-- Mentions légales et coordonnées officielles Clarté360.
-- Exports JSON, CSV, PNG et PDF.
-
-## Données
-
-Aucune donnée n'est stockée sur un serveur Clarté360. Le fichier JSON appartient au bénéficiaire et constitue le support de sauvegarde et de reprise.
+Configurer les secrets SMTP dans `.streamlit/secrets.toml` ou variables d'environnement.
