@@ -13,13 +13,17 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:
+    st_autorefresh = None
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.10.0-socle-clarte360"
+APP_VERSION = "1.10.1-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Préférences professionnelles"
 APP_FULL_NAME = "Clarté360 – Préférences professionnelles"
@@ -186,6 +190,8 @@ def start_new_session(active_questions: pd.DataFrame, nom: str, prenom: str, ema
     st.session_state.beneficiaire = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip()}
     st.session_state.test_started = True
     st.session_state.email_sent = False
+    st.session_state.session_elapsed_seconds = 0
+    init_runtime_session("premiere_connexion")
 
 
 def restore_from_progress(payload: dict):
@@ -213,6 +219,11 @@ def restore_from_progress(payload: dict):
     st.session_state.passation_id = payload.get("passation_id", payload.get("session_id", str(uuid.uuid4())))
     st.session_state.test_started = True
     st.session_state.email_sent = bool(payload.get("email_sent", False))
+    old_history = payload.get("temps", {}).get("session_history", payload.get("session_history", []))
+    if old_history:
+        st.session_state.session_history = old_history
+    st.session_state.save_history = payload.get("temps", {}).get("save_history", payload.get("save_history", []))
+    init_runtime_session("reprise_json")
 
 
 def reset_all():
@@ -441,6 +452,8 @@ def base_export_payload(completed: bool) -> dict:
         "notice": "Outil déclaratif d’exploration. Ne constitue pas un test psychométrique ni un diagnostic.",
         "rgpd": rgpd_payload(),
         "temps": session_meta(),
+        "session_history": st.session_state.get("session_history", []),
+        "save_history": st.session_state.get("save_history", []),
         "code_access_history": st.session_state.get("code_history", []),
         "notice_rgpd": "Aucune donnée n’est enregistrée durablement sur un serveur Clarté360. Le JSON appartient au bénéficiaire.",
     }
@@ -735,10 +748,13 @@ def update_runtime_session():
     st.session_state.session_last_activity = now_iso()
     if st.session_state.get("session_history"):
         st.session_state.session_history[-1]["derniere_activite"] = now_iso()
+        st.session_state.session_history[-1]["dernier_battement_technique"] = now_iso()
         st.session_state.session_history[-1]["duree_secondes"] = int(st.session_state.get("session_elapsed_seconds", 0))
+        st.session_state.session_history[-1]["motif_ouverture"] = st.session_state.session_history[-1].get("raison", "")
     limit = get_session_limit_minutes() * 60
-    if int(st.session_state.get("session_elapsed_seconds", 0)) >= limit:
+    if int(st.session_state.get("session_elapsed_seconds", 0)) >= limit and not st.session_state.get("session_expired"):
         st.session_state.session_expired = True
+        close_runtime_session("timeout_inactivite")
 
 def formatted_elapsed(seconds: int | None = None) -> str:
     seconds = int(seconds if seconds is not None else st.session_state.get("session_elapsed_seconds", 0))
@@ -747,6 +763,49 @@ def formatted_elapsed(seconds: int | None = None) -> str:
     if h:
         return f"{h}h {m:02d}min"
     return f"{m}min {s:02d}s"
+
+
+def record_save_event(kind: str):
+    """Enregistre une sauvegarde dans la traçabilité JSON, sans bloquer l'application."""
+    event = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "heure": datetime.now().strftime("%H:%M:%S"),
+        "horodatage": now_iso(),
+        "type": kind,
+        "session_uid": st.session_state.get("current_runtime_session_id", ""),
+        "passation_id": st.session_state.get("passation_id", ""),
+        "questions_repondues": len(st.session_state.get("answers", {})),
+    }
+    hist = st.session_state.get("save_history", [])
+    hist.append(event)
+    st.session_state.save_history = hist
+
+
+def close_runtime_session(reason: str):
+    """Ferme proprement la session en cours et trace le motif de fermeture."""
+    now_txt = now_iso()
+    st.session_state.session_closed = True
+    st.session_state.session_close_reason = reason
+    st.session_state.session_closed_at = now_txt
+    hist = st.session_state.get("session_history", [])
+    if hist:
+        hist[-1]["fin"] = now_txt
+        hist[-1]["motif_fermeture"] = reason
+        hist[-1]["duree_secondes"] = int(st.session_state.get("session_elapsed_seconds", 0))
+        hist[-1]["derniere_activite"] = st.session_state.get("session_last_activity", now_txt)
+    st.session_state.session_history = hist
+    record_save_event(reason)
+
+
+def prepare_runtime_json(reason: str, close_session: bool = False) -> bytes:
+    if close_session:
+        close_runtime_session(reason)
+    else:
+        record_save_event(reason)
+    payload = build_progress_json()
+    payload["session_close_reason"] = st.session_state.get("session_close_reason", "")
+    payload["session_closed_at"] = st.session_state.get("session_closed_at", "")
+    return json_download_bytes(payload)
 
 def legal_footer_text() -> str:
     return (f"{CLARTE360_LEGAL['raison_sociale']} - {CLARTE360_LEGAL['adresse']} - "
@@ -765,20 +824,45 @@ def session_meta() -> dict:
         "session_limit_minutes": get_session_limit_minutes(),
         "session_expired": bool(st.session_state.get("session_expired", False)),
         "session_history": st.session_state.get("session_history", []),
+        "save_history": st.session_state.get("save_history", []),
+        "temps_cumule_secondes": int(st.session_state.get("session_elapsed_seconds", 0)),
+        "temps_cumule_humain": formatted_elapsed(),
+        "session_close_reason": st.session_state.get("session_close_reason", ""),
+        "session_closed_at": st.session_state.get("session_closed_at", ""),
     }
 
 def rgpd_payload() -> dict:
-    return st.session_state.get("rgpd", {
+    rgpd = st.session_state.get("rgpd", {
         "accepted": False,
         "accepted_at": "",
         "text_version": RGPD_TEXT_VERSION,
     })
+    rgpd = dict(rgpd)
+    rgpd["tracabilite"] = session_meta()
+    rgpd["historique_codes"] = st.session_state.get("code_history", [])
+    rgpd["rappel"] = "Le JSON appartient exclusivement au bénéficiaire et constitue le support de reprise et de traçabilité."
+    return rgpd
 
 def render_rgpd_mentions_contact():
     st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Informations légales et protection des données</h2>", unsafe_allow_html=True)
     tabs = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
     with tabs[0]:
         st.markdown(RGPD_TEXT)
+        st.markdown("### Traçabilité de la session")
+        rgpd = st.session_state.get("rgpd", {})
+        if rgpd.get("accepted"):
+            st.success(f"Consentement RGPD enregistré le : {rgpd.get('accepted_at','')} — version : {rgpd.get('text_version','')}")
+        else:
+            st.warning("Aucun consentement RGPD n'est encore enregistré dans le JSON.")
+        st.write(f"Identifiant de passation : {st.session_state.get('passation_id','')}")
+        st.write(f"Identifiant de session : {st.session_state.get('current_runtime_session_id','')}")
+        st.write(f"Temps cumulé enregistré : {formatted_elapsed()}")
+        st.write(f"Nombre de sessions tracées : {len(st.session_state.get('session_history', []))}")
+        st.write(f"Nombre de sauvegardes tracées : {len(st.session_state.get('save_history', []))}")
+        if st.session_state.get("session_history"):
+            st.json(st.session_state.get("session_history"), expanded=False)
+        if st.session_state.get("save_history"):
+            st.json(st.session_state.get("save_history"), expanded=False)
     with tabs[1]:
         st.markdown(f"""
         **{CLARTE360_LEGAL['raison_sociale']} {CLARTE360_LEGAL['forme']}**  
@@ -833,7 +917,9 @@ Socle : {SOCLE_CLARTE360_VERSION}
 Date : {now_iso()}
 Session : {st.session_state.get('current_runtime_session_id','')}
 Temps session : {formatted_elapsed()}
+Temps cumulé : {formatted_elapsed()}
 Passation : {st.session_state.get('passation_id','')}
+Navigateur / OS / langue / résolution : non disponible côté serveur Streamlit dans cette version
 """
             ok, msg = send_email(FINAL_EMAIL_TO, f"Clarté360 - Contact - {objet}", body)
             if ok:
@@ -847,37 +933,52 @@ def render_sidebar_common(active_questions=None):
         if LOGO_PATH.exists():
             st.image(str(LOGO_PATH), width=86)
         st.markdown(f"### {APP_NAME}")
-        st.caption(f"Version application : {APP_VERSION}")
-        st.caption(f"Socle Clarté360 : {SOCLE_CLARTE360_VERSION}")
-        st.caption(f"Temps de session : {formatted_elapsed()}")
+
         if st.session_state.get("test_started") and active_questions is not None:
+            st.markdown("### Navigation")
+            total = len(st.session_state.get("question_order", []))
+            answered = len(st.session_state.get("answers", {}))
+            if total and answered >= total:
+                st.markdown("**Résultats / rapport**")
+            elif total:
+                st.markdown(f"**Questionnaire : {min(answered + 1, total)} / {total}**")
+            st.caption("Le fichier JSON conserve votre progression et la traçabilité de session.")
             st.markdown("---")
-            st.markdown("### Sauvegarde / sortie")
-            progress_payload = build_progress_json()
-            st.download_button(
-                "Préparer mon JSON pour reprendre plus tard",
-                data=json_download_bytes(progress_payload),
-                file_name=f"clarte360_preferences_sauvegarde_{current_name_part()}_{timestamp_part()}.json",
-                mime="application/json",
-                key="sidebar_prepare_json",
-            )
-            st.download_button(
-                "Quitter et télécharger mon JSON",
-                data=json_download_bytes(progress_payload),
-                file_name=f"clarte360_preferences_sortie_{current_name_part()}_{timestamp_part()}.json",
-                mime="application/json",
-                key="sidebar_exit_json",
-            )
-            if st.button("Réinitialiser la session"):
-                reset_all()
+            st.markdown("### Session")
+            if st.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
+                st.session_state.prepared_json_bytes = prepare_runtime_json("sauvegarde_manuelle_reprise", close_session=False)
+                st.session_state.prepared_json_name = f"clarte360_preferences_sauvegarde_{current_name_part()}_{timestamp_part()}.json"
+                st.rerun()
+            if st.button("🚪 Quitter et télécharger mon JSON", type="primary", use_container_width=True):
+                st.session_state.prepared_json_bytes = prepare_runtime_json("sortie_utilisateur_par_bouton", close_session=True)
+                st.session_state.prepared_json_name = f"clarte360_preferences_sortie_{current_name_part()}_{timestamp_part()}.json"
+                st.rerun()
+            if st.session_state.get("prepared_json_bytes"):
+                st.download_button(
+                    "⬇️ Télécharger le JSON préparé",
+                    data=st.session_state.prepared_json_bytes,
+                    file_name=st.session_state.get("prepared_json_name", "clarte360_preferences_sauvegarde.json"),
+                    mime="application/json",
+                    use_container_width=True,
+                )
+                st.caption("Conservez ce JSON : il permet de reprendre votre travail et contient la traçabilité enregistrée.")
+        else:
+            st.markdown("### Session")
+            st.caption("Démarrez une session ou importez un JSON pour reprendre votre travail.")
+
         st.markdown("---")
-        if st.button("RGPD et mentions légales"):
-            st.session_state.page = "legal"
-            st.rerun()
-        if st.button("Contacter Clarté360"):
+        if st.button("💬 Contacter Clarté360", use_container_width=True):
             st.session_state.show_contact_sidebar = not st.session_state.get("show_contact_sidebar", False)
         if st.session_state.get("show_contact_sidebar"):
             render_contact_form(context="sidebar")
+        if st.button("RGPD et mentions légales", use_container_width=True):
+            st.session_state.page = "legal"
+            st.rerun()
+
+        st.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION} · Questionnaire {questionnaire_checksum()}")
+        if not st.session_state.get("test_started"):
+            if st.button("Réinitialiser la session", use_container_width=True):
+                reset_all()
 
 def render_landing(active_questions):
     render_header()
@@ -928,7 +1029,7 @@ def accept_rgpd_if_needed():
     accept = st.checkbox("J'ai lu et j'accepte les conditions d'utilisation et de protection des données.")
     if st.button("Valider le consentement", type="primary"):
         if accept:
-            st.session_state.rgpd = {"accepted": True, "accepted_at": now_iso(), "text_version": RGPD_TEXT_VERSION}
+            st.session_state.rgpd = {"accepted": True, "accepted_at": now_iso(), "text_version": RGPD_TEXT_VERSION, "date": datetime.now().strftime("%Y-%m-%d"), "heure": datetime.now().strftime("%H:%M:%S"), "version_texte": RGPD_TEXT_VERSION}
             st.rerun()
         else:
             st.error("Le consentement est nécessaire pour utiliser l'application.")
@@ -941,6 +1042,8 @@ validation_errors = validate_questionnaire(questions_df)
 
 # Socle visuel et protection navigateur
 inject_beforeunload_guard()
+if st_autorefresh is not None:
+    st_autorefresh(interval=10_000, key="clarte360_preferences_timeout_watchdog")
 update_runtime_session()
 
 if validation_errors:
@@ -1092,10 +1195,13 @@ if answered < total:
     if st.button("Valider la réponse", type="primary", disabled=selected_label is None):
         selected_opt = next(opt for opt, label in labels.items() if label == selected_label)
         st.session_state.answers[qid] = selected_opt
+        record_save_event("validation_question")
         st.session_state.current_index = min(st.session_state.current_index + 1, total)
         st.rerun()
 else:
     st.success("Questionnaire terminé.")
+    if st.session_state.get("session_close_reason") != "questionnaire_termine":
+        close_runtime_session("questionnaire_termine")
     results, score_details = compute_results(active_questions, st.session_state.answers)
     interpretation = build_user_interpretation(results, beneficiaire)
     st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Première lecture bénéficiaire</h2>", unsafe_allow_html=True)

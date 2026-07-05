@@ -1,16 +1,31 @@
-# CHANGELOG STANDARD CLARTE360
+# CHANGELOG STANDARD CLARTÉ360
 
-## v1.10.0-socle-clarte360 - Préférences professionnelles
+## v1.10.1-socle-clarte360 — Correction socle Préférences professionnelles
 
-Mise à niveau de l'application sœur de Clarté360 - Moteurs professionnels v1.8.0.
+Corrections réalisées après audit de conformité au Prompt officiel Clarté360 v3.0 et au socle validé Moteurs v1.8.
 
-- Alignement de l'écran d'accueil : Importer mon fichier JSON / Commencer une nouvelle session.
-- Ajout du socle Clarté360 v1.8 : version de socle, session, temps, timeout, RGPD, mentions légales, contact.
-- Ajout du bouton permanent Contacter Clarté360.
-- Ajout de la page Informations légales et protection des données avec onglets.
-- Ajout du consentement RGPD obligatoire horodaté.
-- Renforcement du JSON : version socle, RGPD, historique des codes, temps de session, historique session.
-- Ajout des boutons standards : Préparer mon JSON pour reprendre plus tard, Quitter et télécharger mon JSON, Réinitialiser la session.
-- Ajout de la protection navigateur beforeunload.
-- Harmonisation du PDF : pied de page légal Clarté360.
-- Conservation intégrale de la logique métier : 60 questions, 10 dimensions, scores, interprétations, graphiques.
+### Barre latérale
+- Suppression de l'affichage permanent du temps de session dans la barre latérale.
+- Suppression du bouton « Réinitialiser la session » dès l'entrée dans le cœur métier.
+- Réorganisation de la barre latérale : navigation métier, session, préparation JSON, sortie JSON, contact, RGPD, versions.
+- Conservation du bouton « Réinitialiser la session » uniquement avant entrée dans le cœur de l'application.
+
+### JSON / sauvegarde / sortie
+- Mise en place d'une préparation JSON intermédiaire avant téléchargement.
+- Le bouton « Préparer mon JSON pour reprendre plus tard » trace une sauvegarde sans fermer la session.
+- Le bouton « Quitter et télécharger mon JSON » ferme proprement la session avec motif `sortie_utilisateur_par_bouton`.
+- Ajout de l'historique des sauvegardes dans le JSON.
+- Ajout de la fermeture de session, du motif de fermeture et de l'horodatage.
+
+### Traçabilité / RGPD
+- Ajout d'un bloc de traçabilité visible dans la page « RGPD et mentions légales ».
+- Affichage du consentement, de l'identifiant de passation, de l'identifiant de session, du temps cumulé, de l'historique des sessions et de l'historique des sauvegardes.
+- Enrichissement de la section RGPD du JSON avec la traçabilité de session.
+
+### Temps / timeout
+- Ajout de `streamlit-autorefresh` aux dépendances.
+- Ajout du watchdog Streamlit pour permettre le déclenchement automatique du contrôle de timeout.
+- Enregistrement du motif `timeout_inactivite` lors d'une expiration de session.
+
+### Logique métier
+- Aucune modification des questions, réponses, dimensions, scores, calculs, graphiques métier ou interprétations.

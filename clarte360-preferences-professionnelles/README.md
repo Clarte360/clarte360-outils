@@ -1,27 +1,44 @@
-# Clarté360 - Préférences professionnelles
+# Clarté360 — Préférences professionnelles
 
-Application Streamlit propriétaire Clarté360 destinée à explorer les préférences professionnelles déclarées dans le cadre du bilan de compétences, du coaching professionnel et de l'accompagnement des transitions.
+Version : 1.10.1-socle-clarte360  
+Socle Clarté360 : 1.8
 
-## Version
+Application Streamlit propriétaire Clarté360 destinée à l'exploration des préférences professionnelles dans le cadre du bilan de compétences, du coaching professionnel et de l'accompagnement des transitions.
 
-- Application : `1.10.0-socle-clarte360`
-- Socle Clarté360 : `1.8`
-- Application sœur de référence : `Clarté360 - Moteurs professionnels v1.8.0`
+## Contenu
+
+- `app.py` : application Streamlit complète.
+- `data/questions_preferences_professionnelles_v1.xlsx` : questionnaire source.
+- `data/questions_preferences_professionnelles_v1.json` : données questionnaire.
+- `assets/site_icon.png` : logo / icône Clarté360.
+- `.streamlit/secrets.example.toml` : modèle de configuration SMTP.
+- `requirements.txt` : dépendances Streamlit Cloud.
+
+## Points harmonisés avec le socle Clarté360
+
+- écran d'accueil avec import JSON ou nouvelle session ;
+- consentement RGPD obligatoire ;
+- code d'accès par e-mail ;
+- notification administrateur non bloquante ;
+- barre latérale conforme à la logique socle : navigation métier, session, JSON, contact, RGPD, versions ;
+- suppression de l'affichage du temps de session dans la barre latérale ;
+- suppression de la réinitialisation dans le cœur de l'application ;
+- sauvegarde JSON de reprise ;
+- sortie JSON avec fermeture propre de session ;
+- traçabilité RGPD / sessions / sauvegardes ;
+- protection navigateur `beforeunload` ;
+- watchdog timeout via `streamlit-autorefresh` ;
+- rapport PDF institutionnel avec logo et coordonnées Clarté360.
 
 ## Logique métier conservée
 
-- 60 questions actives
-- 10 dimensions de préférences professionnelles
-- Calculs et interprétations d'origine conservés
-- Génération JSON final et rapport PDF
+Aucune modification n'a été apportée aux 60 questions, aux 10 dimensions, aux réponses, aux scores, aux calculs, aux graphiques métier ou à la philosophie pédagogique de l'outil.
 
-## Socle intégré
+## Tests restant à valider après déploiement
 
-- Écran d'accueil commun : import JSON / nouvelle session
-- RGPD obligatoire horodaté
-- Mentions légales Clarté360
-- Formulaire de contact Clarté360
-- JSON de reprise et JSON final enrichis
-- Gestion du temps et timeout
-- Protection navigateur contre fermeture accidentelle
-- Boutons de session harmonisés
+- envoi SMTP réel avec les secrets Streamlit ;
+- réception du code bénéficiaire ;
+- notification administrateur ;
+- formulaire contact ;
+- test réel d'attente de 15 minutes pour confirmer l'écran de timeout sans clic utilisateur ;
+- alerte navigateur avant fermeture selon navigateur utilisé.
