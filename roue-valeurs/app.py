@@ -19,7 +19,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 APP_TITLE = "Clarté360 - Roue des valeurs"
-APP_VERSION = "V2.6 - Socle Clarté360"
+APP_VERSION = "V2.7 - Socle Clarté360"
 SOCLE_CLARTE360_VERSION = "3.0 / alignement Boussole v1.8.2"
 BENEFICIARY_TIMEOUT_MINUTES = 15
 BRAND_COLOR = "#008080"
@@ -1030,7 +1030,7 @@ def mark_json_downloaded():
 
 
 def install_beforeunload_warning():
-    if isinstance(st.session_state.get("data"), dict) and st.session_state.get("code_verified") and not st.session_state.get("json_downloaded"):
+    if isinstance(st.session_state.get("data"), dict) and not st.session_state.get("json_downloaded"):
         components.html("""
         <script>
         window.parent.onbeforeunload = function (e) {
