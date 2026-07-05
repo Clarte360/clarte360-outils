@@ -17,17 +17,20 @@ from typing import Any
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "3.2"
+APP_VERSION = "3.3.0"
 BRAND = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
 TOOL_NAME = "LigneDeVie"
+APP_DISPLAY_NAME = "Clarté360 - Ligne de vie"
+SOCLE_VERSION = "Clarté360 socle v1.8.2"
 FINAL_EMAIL_TO = "contact@clarte360.com"
 
 st.set_page_config(page_title="Clarté360 - Ligne de vie", page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else None, layout="wide")
@@ -101,6 +104,15 @@ def init_state() -> None:
         "projection_years": 0,
         "events": [],
         "remontees": {},
+        "root_passage_id": str(uuid.uuid4()),
+        "session_id": str(uuid.uuid4()),
+        "session_started_at": datetime.now().isoformat(timespec="seconds"),
+        "session_last_activity": datetime.now().isoformat(timespec="seconds"),
+        "rgpd_consent": False,
+        "rgpd_consent_at": "",
+        "rgpd_text_version": "RGPD-Clarte360-2026-07",
+        "institutional_page": None,
+        "consultant": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -109,9 +121,10 @@ def init_state() -> None:
 
 def load_payload(payload: dict[str, Any]) -> None:
     b = payload.get("beneficiaire", {})
-    st.session_state.first_name = b.get("prenom", "")
-    st.session_state.last_name = b.get("nom", "")
+    st.session_state.first_name = b.get("prenom", b.get("first_name", ""))
+    st.session_state.last_name = b.get("nom", b.get("last_name", ""))
     st.session_state.email = b.get("email", st.session_state.get("email", ""))
+    st.session_state.consultant = payload.get("consultant", st.session_state.get("consultant", ""))
     st.session_state.code_verified = True
     bd = b.get("date_naissance")
     st.session_state.birthdate = date.fromisoformat(bd) if bd else None
@@ -121,16 +134,34 @@ def load_payload(payload: dict[str, Any]) -> None:
     for e in st.session_state.events:
         e.setdefault("id", str(uuid.uuid4()))
     st.session_state.remontees = payload.get("remontees", {})
+    st.session_state.root_passage_id = payload.get("identifiant_racine_passation", payload.get("session", {}).get("root_passage_id", st.session_state.get("root_passage_id", str(uuid.uuid4()))))
+    st.session_state.session_id = str(uuid.uuid4())
+    rgpd = payload.get("rgpd", {})
+    st.session_state.rgpd_consent = bool(rgpd.get("consentement", payload.get("rgpd_consent", False)))
+    st.session_state.rgpd_consent_at = rgpd.get("date_consentement", payload.get("rgpd_consent_at", ""))
 
 
 def build_payload() -> dict[str, Any]:
     return {
-        "outil": "Clarté360 - Ligne de vie",
-        "version": APP_VERSION,
+        "outil": TOOL_NAME,
+        "nom_outil": APP_DISPLAY_NAME,
+        "version_application": APP_VERSION,
+        "version_socle_clarte360": SOCLE_VERSION,
+        "identifiant_racine_passation": st.session_state.get("root_passage_id", ""),
+        "identifiant_session": st.session_state.get("session_id", ""),
         "date_export": datetime.now().isoformat(timespec="seconds"),
         "session": {
             "code_acces_valide": bool(st.session_state.get("code_verified", False)),
             "json_transmis_consultant": bool(st.session_state.get("final_json_sent", False)),
+            "session_started_at": st.session_state.get("session_started_at", ""),
+            "session_last_activity": datetime.now().isoformat(timespec="seconds"),
+        },
+        "consultant": st.session_state.get("consultant", ""),
+        "rgpd": {
+            "consentement": bool(st.session_state.get("rgpd_consent", False)),
+            "date_consentement": st.session_state.get("rgpd_consent_at", ""),
+            "version_texte": st.session_state.get("rgpd_text_version", "RGPD-Clarte360-2026-07"),
+            "rappel": "Aucune donnée n'est stockée automatiquement sur les serveurs Clarté360 ; le JSON appartient au bénéficiaire.",
         },
         "beneficiaire": {
             "prenom": st.session_state.first_name,
@@ -288,15 +319,26 @@ def make_csv_bytes() -> bytes:
     return df.to_csv(index=False, sep=";").encode("utf-8-sig")
 
 
+def pdf_footer(canvas, doc):
+    canvas.saveState()
+    footer1 = "CLARTÉ360 - 60 rue François 1er - 75008 Paris - Tél. : 01 89 48 08 25 - E-mail : contact@clarte360.com - Web : www.clarte360.com"
+    footer2 = "RCS : 102349834 - SIRET : 10234983400014 - NAF : 8559A - TVA intracommunautaire : FR88102349834"
+    canvas.setFont("Helvetica", 6.5)
+    canvas.setFillColor(colors.HexColor("#666666"))
+    canvas.drawCentredString(landscape(A4)[0] / 2, 0.42 * cm, footer1)
+    canvas.drawCentredString(landscape(A4)[0] / 2, 0.22 * cm, footer2)
+    canvas.drawRightString(landscape(A4)[0] - 1.2 * cm, 0.22 * cm, f"Page {doc.page}")
+    canvas.restoreState()
+
 def make_pdf_bytes(fig_png: bytes | None = None) -> bytes:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=1.2*cm, leftMargin=1.2*cm, topMargin=0.8*cm, bottomMargin=0.8*cm)
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=1.2*cm, leftMargin=1.2*cm, topMargin=0.8*cm, bottomMargin=1.15*cm)
     styles = getSampleStyleSheet()
     styles["Title"].textColor = colors.HexColor(BRAND)
     styles["Heading2"].textColor = colors.HexColor(BRAND)
     story = []
     if LOGO_PATH.exists():
-        story.append(Image(str(LOGO_PATH), width=3.0*cm, height=1.1*cm, kind="proportional"))
+        story.append(Image(str(LOGO_PATH), width=3.8*cm, height=1.4*cm, kind="proportional"))
     story.append(Paragraph("<b>Ligne de vie</b>", styles["Title"]))
     story.append(Paragraph(f"Bénéficiaire : {st.session_state.first_name} {st.session_state.last_name}", styles["Normal"]))
     story.append(Paragraph(f"Date d'édition : {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
@@ -341,7 +383,7 @@ def make_pdf_bytes(fig_png: bytes | None = None) -> bytes:
             ]))
             story.append(rt)
             story.append(Spacer(1, 0.2*cm))
-    doc.build(story)
+    doc.build(story, onFirstPage=pdf_footer, onLaterPages=pdf_footer)
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -450,7 +492,86 @@ def get_fig_png(fig: go.Figure) -> bytes | None:
     except Exception:
         return None
 
+
+def install_beforeunload_warning() -> None:
+    components.html(
+        """
+        <script>
+        const message = "Quitter le site ? Vos modifications risquent de ne pas être enregistrées.";
+        try {
+          window.parent.onbeforeunload = function(e) { e.preventDefault(); e.returnValue = message; return message; };
+          window.onbeforeunload = function(e) { e.preventDefault(); e.returnValue = message; return message; };
+        } catch(err) {}
+        </script>
+        """,
+        height=0,
+    )
+
+
+def render_institutional_page(page: str) -> None:
+    st.markdown(f"<h1>Informations légales et protection des données</h1><div class='small-muted'>{APP_DISPLAY_NAME} - {APP_VERSION}</div>", unsafe_allow_html=True)
+    tabs = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
+    with tabs[0]:
+        st.markdown("""
+        <div class='c360-rgpd'>
+        <b>Protection des données</b><br>
+        Les informations saisies servent uniquement à réaliser votre ligne de vie et à produire vos exports. Aucun stockage automatique n'est réalisé sur les serveurs Clarté360. Le fichier JSON constitue votre sauvegarde personnelle : vous devez le télécharger et le conserver si vous souhaitez reprendre votre travail plus tard.
+        </div>
+        """, unsafe_allow_html=True)
+        consent = st.checkbox("J'ai lu et j'accepte les conditions de protection des données.", value=bool(st.session_state.get("rgpd_consent", False)))
+        if consent and not st.session_state.get("rgpd_consent", False):
+            st.session_state.rgpd_consent = True
+            st.session_state.rgpd_consent_at = datetime.now().isoformat(timespec="seconds")
+            st.success("Consentement RGPD enregistré dans votre session et dans le JSON.")
+        elif not consent:
+            st.session_state.rgpd_consent = False
+    with tabs[1]:
+        st.markdown("""
+        **Clarté360**  
+        60 rue François 1er, 75008 Paris  
+        Tél. : 01 89 48 08 25  
+        E-mail : contact@clarte360.com  
+        Web : www.clarte360.com  
+        RCS : 102349834 - SIRET : 10234983400014 - NAF : 8559A  
+        TVA intracommunautaire : FR88102349834
+
+        Les contenus, textes, exercices, rapports, interfaces et supports Clarté360 sont protégés au titre de la propriété intellectuelle. Toute reproduction ou diffusion non autorisée est interdite.
+        """)
+    with tabs[2]:
+        render_contact_form(in_page=True)
+    if st.button("Retour à l'application", type="primary"):
+        st.session_state.institutional_page = None
+        st.rerun()
+
+
+def render_contact_form(in_page: bool = False) -> None:
+    st.markdown("""
+    Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d'une suggestion concernant cette application.
+
+    Pour toute question relative à l'interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.
+    """)
+    with st.form("contact_clarte360_form"):
+        nom = st.text_input("Nom", value=st.session_state.get("last_name", ""))
+        prenom = st.text_input("Prénom", value=st.session_state.get("first_name", ""))
+        email = st.text_input("E-mail", value=st.session_state.get("email", ""))
+        telephone = st.text_input("Téléphone facultatif")
+        objet = st.text_input("Objet")
+        message = st.text_area("Message")
+        consent = st.checkbox("J'accepte que ces informations soient utilisées pour traiter ma demande.")
+        submit = st.form_submit_button("Envoyer à Clarté360", type="primary")
+    if submit:
+        if not objet.strip() or not message.strip() or not consent:
+            st.error("Merci de renseigner l'objet, le message et le consentement spécifique.")
+        else:
+            body = f"""Demande depuis {APP_DISPLAY_NAME}\nVersion application : {APP_VERSION}\nVersion socle : {SOCLE_VERSION}\nDate : {datetime.now().isoformat(timespec='seconds')}\nSession : {st.session_state.get('session_id','')}\nBénéficiaire : {prenom} {nom}\nEmail : {email}\nTéléphone : {telephone}\n\nObjet : {objet}\n\nMessage :\n{message}\n"""
+            ok, msg = send_email(FINAL_EMAIL_TO, f"Clarté360 - Contact Ligne de vie - {objet}", body)
+            if ok:
+                st.success("Message transmis à Clarté360.")
+            else:
+                st.error(msg)
+
 init_state()
+install_beforeunload_warning()
 
 if not st.session_state.get("code_verified", False):
     col_logo, col_title = st.columns([1, 6])
@@ -476,6 +597,22 @@ if not st.session_state.get("code_verified", False):
     Le JSON final peut être transmis au consultant Clarté360 afin de préparer l'accompagnement et la restitution.
     </div>
     """, unsafe_allow_html=True)
+
+    uploaded_start = st.file_uploader("Importer mon fichier JSON pour reprendre plus tard", type=["json"], key="json_start")
+    if uploaded_start is not None:
+        try:
+            load_payload(json.loads(uploaded_start.read().decode("utf-8")))
+            st.success("JSON chargé. Vous pouvez reprendre votre travail.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Impossible de lire le JSON : {exc}")
+
+    if st.button("RGPD et mentions légales"):
+        st.session_state.institutional_page = "legal"
+        st.rerun()
+    if st.session_state.get("institutional_page"):
+        render_institutional_page("legal")
+        st.stop()
 
     if not st.session_state.get("code_sent"):
         with st.form("access_code_form"):
@@ -555,6 +692,13 @@ st.markdown(
 
 with st.sidebar:
     st.header("Navigation")
+    if st.button("Informations légales et protection des données"):
+        st.session_state.institutional_page = "legal"
+        st.rerun()
+    if st.button("Contacter Clarté360"):
+        st.session_state.institutional_page = "contact"
+        st.rerun()
+    st.divider()
     uploaded = st.file_uploader("Reprendre depuis un JSON", type=["json"])
     if uploaded is not None:
         try:
@@ -563,12 +707,39 @@ with st.sidebar:
         except Exception as exc:
             st.error(f"Impossible de lire le JSON : {exc}")
     st.divider()
+    st.caption("Sauvegarde")
+    quick_json = json.dumps(build_payload(), ensure_ascii=False, indent=2).encode("utf-8")
+    st.download_button("Préparer mon JSON pour reprendre plus tard", quick_json, file_name=export_name(st.session_state.get("last_name", ""), st.session_state.get("first_name", ""), "json"), mime="application/json")
+    st.download_button("Quitter et télécharger mon JSON", quick_json, file_name=export_name(st.session_state.get("last_name", ""), st.session_state.get("first_name", ""), "json"), mime="application/json")
+    if st.button("Réinitialiser la session"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+    st.divider()
     st.caption("Étapes")
     st.write("1. Paramétrer")
     st.write("2. Ajouter les événements")
     st.write("3. Visualiser")
     st.write("4. Explorer certaines remontées")
     st.write("5. Exporter")
+
+if st.session_state.get("institutional_page") == "legal":
+    render_institutional_page("legal")
+    st.stop()
+elif st.session_state.get("institutional_page") == "contact":
+    st.markdown("# Contacter Clarté360")
+    render_contact_form(in_page=False)
+    if st.button("Retour à l'application", type="primary"):
+        st.session_state.institutional_page = None
+        st.rerun()
+    st.stop()
+
+if not st.session_state.get("rgpd_consent", False):
+    st.warning("Merci de valider le RGPD dans 'Informations légales et protection des données' avant de poursuivre.")
+    if st.button("Ouvrir RGPD et mentions légales", type="primary"):
+        st.session_state.institutional_page = "legal"
+        st.rerun()
+    st.stop()
 
 # Parameters
 st.subheader("1. Paramétrage")
@@ -578,6 +749,7 @@ with col1:
 with col2:
     st.session_state.last_name = st.text_input("Nom", value=st.session_state.last_name)
     st.session_state.email = st.text_input("Email", value=st.session_state.get("email", ""), help="Adresse utilisée pour le code d'accès et la transmission du JSON au consultant.")
+    st.session_state.consultant = st.text_input("Consultant / accompagnateur", value=st.session_state.get("consultant", ""))
 with col3:
     st.session_state.birthdate = st.date_input(
         "Date de naissance (obligatoire pour calculer les âges)",
