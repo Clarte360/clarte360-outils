@@ -19,7 +19,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 — Boucle auto-validante"
-APP_VERSION = "2.0.0-socle-clarte360"
+APP_VERSION = "2.0.1-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008b8b"
@@ -34,10 +34,12 @@ CLARTE_LEGAL = """Clarté360\n60 rue François 1er\n75008 Paris\nTél. : 01 89 4
 TYPE_CROYANCE = ["Sur soi / identité", "Sur les autres en général", "Sur le monde", "A vérifier"]
 STATUTS = ["Découverte", "Validée", "A travailler en phase 6", "Travaillée", "Archivée"]
 
-st.set_page_config(page_title=APP_TITLE, page_icon="🔁", layout="wide")
+st.set_page_config(page_title=APP_TITLE, page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🔁", layout="wide")
 
 st.markdown(f"""
 <style>
+.main .block-container{{max-width:1180px;padding-top:1.6rem}}
+h1,h2,h3{{color:{BRAND_COLOR}!important}}
 .main-title{{color:{BRAND_COLOR};font-weight:800}}.brand-box{{background:{ACCENT};border-left:6px solid {BRAND_COLOR};padding:1rem;border-radius:12px;margin:.6rem 0}}.warn-box{{background:{WARN};border-left:6px solid #f0a000;padding:1rem;border-radius:12px;margin:.6rem 0}}.mini-note{{font-size:.9rem;color:#555}}.danger{{color:#b00020;font-weight:700}}
 div.stButton>button[kind="primary"],div.stDownloadButton>button[kind="primary"]{{background-color:{BRAND_COLOR}!important;border-color:{BRAND_COLOR}!important;color:white!important}}
 div.stButton>button:hover,div.stDownloadButton>button:hover{{border-color:#006f6f!important;color:white!important}}
@@ -82,6 +84,7 @@ def init_state():
     st.session_state.setdefault("pending_code", "")
     st.session_state.setdefault("selected_croyance_id", None)
     st.session_state.setdefault("nav_back", "app")
+    st.session_state.setdefault("home_choice", None)
     st.session_state.setdefault("timed_out", False)
     st.session_state.setdefault("last_activity", datetime.now().timestamp())
     if not st.session_state.data.get("active_session_id"):
@@ -139,6 +142,32 @@ def timeout_watchdog():
         if elapsed > BENEFICIARY_TIMEOUT_MINUTES:
             st.session_state.timed_out=True; st.session_state.screen="timeout"; st.rerun()
 
+
+def header():
+    cols = st.columns([1, 8])
+    with cols[0]:
+        if LOGO_PATH.exists():
+            st.image(str(LOGO_PATH), width=70)
+    with cols[1]:
+        st.markdown(f"# {APP_TITLE}")
+        st.markdown(f"<div class='mini-note'>{APP_VERSION} - outil d'exploration accompagné · Socle {SOCLE_CLARTE360_VERSION}</div>", unsafe_allow_html=True)
+
+def sidebar_public():
+    st.sidebar.markdown("## Clarté360")
+    st.sidebar.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION}")
+    st.sidebar.markdown("---")
+    if st.sidebar.button("💬 Contacter Clarté360", use_container_width=True, key="public_contact"):
+        st.session_state.nav_back = st.session_state.get("screen", "home")
+        st.session_state.screen = "contact"
+        st.rerun()
+    if st.sidebar.button("RGPD et mentions légales", use_container_width=True, key="public_legal"):
+        st.session_state.nav_back = st.session_state.get("screen", "home")
+        st.session_state.screen = "legal"
+        st.rerun()
+    if st.sidebar.button("Réinitialiser la session", use_container_width=True, key="public_reset"):
+        st.session_state.clear()
+        st.rerun()
+
 def legal_page():
     st.markdown("## Informations légales et protection des données")
     tabs=st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
@@ -168,49 +197,93 @@ def contact_form():
                 else: st.warning("Message préparé mais SMTP non disponible. Vérifiez les secrets Streamlit.")
 
 def sidebar():
-    st.sidebar.markdown("## Session")
-    b=st.session_state.data.get("beneficiaire",{})
-    st.sidebar.caption(f"{b.get('prenom','')} {b.get('nom','')} — App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION}")
-    st.sidebar.download_button("Préparer mon JSON pour reprendre plus tard", data=json_bytes(), file_name=safe_name("clarte360_boucle_autovalidante", "json"), mime="application/json", use_container_width=True)
-    st.sidebar.download_button("Quitter et télécharger mon JSON", data=json_bytes(), file_name=safe_name("clarte360_boucle_autovalidante_sortie", "json"), mime="application/json", type="primary", use_container_width=True)
+    st.sidebar.markdown("## Clarté360")
+    st.sidebar.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION}")
+    if st.session_state.get("authenticated"):
+        st.sidebar.markdown("### Session")
+        b = st.session_state.data.get("beneficiaire", {})
+        st.sidebar.caption(f"{b.get('prenom','')} {b.get('nom','')}")
+        st.sidebar.caption("Votre progression est enregistrée dans votre fichier JSON.")
+        st.sidebar.download_button("💾 Préparer mon JSON pour reprendre plus tard", data=json_bytes(), file_name=safe_name("clarte360_boucle_autovalidante", "json"), mime="application/json", use_container_width=True)
+        st.sidebar.download_button("🚪 Quitter et télécharger mon JSON", data=json_bytes(), file_name=safe_name("clarte360_boucle_autovalidante_sortie", "json"), mime="application/json", type="primary", use_container_width=True)
+    st.sidebar.markdown("---")
     if st.sidebar.button("💬 Contacter Clarté360", use_container_width=True): st.session_state.nav_back="app"; st.session_state.screen="contact"; st.rerun()
     if st.sidebar.button("RGPD et mentions légales", use_container_width=True): st.session_state.nav_back="app"; st.session_state.screen="legal"; st.rerun()
     if st.sidebar.button("Réinitialiser la session", use_container_width=True):
-        for k in ["data","authenticated","pending_code","selected_croyance_id","timed_out"]: st.session_state.pop(k, None)
+        st.session_state.clear()
         st.rerun()
 
 def home():
-    if LOGO_PATH.exists(): st.image(str(LOGO_PATH), width=220)
-    st.markdown(f"<h1 class='main-title'>{APP_TITLE}</h1>", unsafe_allow_html=True)
-    st.caption(f"Application {APP_VERSION} · Socle Clarté360 {SOCLE_CLARTE360_VERSION}")
-    st.markdown("<div class='brand-box'>Application bénéficiaire. Vous pouvez commencer une nouvelle session ou reprendre votre travail à partir de votre JSON.</div>", unsafe_allow_html=True)
-    c1,c2=st.columns(2)
-    with c1:
-        st.subheader("Importer mon fichier JSON")
-        up=st.file_uploader("JSON de sauvegarde", type=["json"])
+    sidebar_public()
+    if st.session_state.get("home_choice") == "import":
+        header()
+        st.markdown("### Reprendre une session avec mon fichier JSON")
+        up = st.file_uploader("Importer mon fichier JSON Clarté360", type=["json"], key="home_import_json")
         if up is not None:
             try:
-                st.session_state.data=normalize_data(json.loads(up.read().decode("utf-8")))
-                st.session_state.authenticated=True; st.session_state.screen="app"; st.rerun()
-            except Exception as e: st.error(f"Import impossible : {e}")
-    with c2:
-        st.subheader("Commencer une nouvelle session")
-        with st.form("new_session"):
-            prenom=st.text_input("Prénom *"); nom=st.text_input("Nom *"); email=st.text_input("E-mail *"); tel=st.text_input("Téléphone facultatif"); consultant=st.text_input("Consultant / accompagnateur (facultatif)")
-            consent=st.checkbox("J'ai lu les informations RGPD et je consens à l'utilisation de ces données dans le cadre exclusif de mon accompagnement.")
-            submitted=st.form_submit_button("Générer mon code d'accès", type="primary")
-        if submitted:
-            if not prenom or not nom or not email or not consent: st.error("Merci de compléter prénom, nom, e-mail et consentement RGPD.")
-            else:
-                st.session_state.data=empty_data(); st.session_state.data["beneficiaire"]={"prenom":prenom.strip(),"nom":nom.strip(),"email":email.strip(),"telephone":tel.strip()}; st.session_state.data["consultant"]=consultant.strip(); st.session_state.data["rgpd"]={"consent_given":True,"consent_at":now_iso(),"consent_text_version":RGPD_TEXT_VERSION}
-                ok,msg=send_code(email.strip()); notify_admin(first=True)
-                if ok: st.success("Code envoyé par e-mail.")
-                else: st.warning("SMTP non configuré : en test local, utilisez le code affiché ci-dessous."); st.code(st.session_state.pending_code)
-                st.session_state.screen="code"
-    if st.button("RGPD et mentions légales"):
-        st.session_state.nav_back="home"; st.session_state.screen="legal"; st.rerun()
+                st.session_state.data = normalize_data(json.loads(up.read().decode("utf-8")))
+                st.session_state.authenticated = True
+                st.session_state.screen = "app"
+                st.session_state.home_choice = None
+                st.rerun()
+            except Exception as e:
+                st.error(f"Import impossible : {e}")
+        if st.button("← Retour à l'accueil"):
+            st.session_state.home_choice = None
+            st.rerun()
+        return
+
+    if st.session_state.get("home_choice") != "new":
+        header()
+        st.markdown(f"### Bienvenue dans l'application Clarté360 – Boucle auto-validante")
+        st.markdown("Avez-vous conservé le fichier JSON de votre dernière utilisation ?")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Oui → Importer mon fichier JSON", use_container_width=True):
+                st.session_state.home_choice = "import"
+                st.rerun()
+        with c2:
+            if st.button("Non → Commencer une nouvelle session", type="primary", use_container_width=True):
+                st.session_state.home_choice = "new"
+                st.rerun()
+        st.info("Le fichier JSON est la mémoire unique de votre travail. Aucune donnée n'est sauvegardée durablement par l'application sur un serveur Clarté360.")
+        return
+
+    header()
+    st.markdown("## Accès bénéficiaire")
+    st.markdown("<div class='brand-box'>Pour commencer, renseignez votre identité et votre adresse e-mail. Un code d'accès vous sera envoyé par e-mail. Le consentement RGPD est obligatoire avant toute utilisation.</div>", unsafe_allow_html=True)
+    with st.form("new_session"):
+        c1, c2 = st.columns(2)
+        with c1:
+            prenom=st.text_input("Prénom *")
+            nom=st.text_input("Nom *")
+            email=st.text_input("Adresse e-mail *")
+        with c2:
+            consultant=st.text_input("Consultant / accompagnateur", value="Clarté360")
+            tel=st.text_input("Téléphone facultatif")
+        st.markdown("### Protection des données")
+        st.markdown("Le fichier JSON reste la mémoire unique de votre travail. Aucune donnée n'est sauvegardée durablement par l'application sur un serveur Clarté360.")
+        consent=st.checkbox("J'ai lu les informations RGPD et je consens à l'utilisation de ces données dans le cadre exclusif de mon accompagnement.")
+        submitted=st.form_submit_button("Recevoir mon code d'accès", type="primary")
+    if submitted:
+        if not prenom.strip() or not nom.strip() or not email.strip() or not consent:
+            st.error("Merci de compléter prénom, nom, adresse e-mail et consentement RGPD.")
+        elif "@" not in email or "." not in email:
+            st.error("Merci de renseigner une adresse e-mail valide.")
+        else:
+            st.session_state.data=empty_data(); st.session_state.data["beneficiaire"]={"prenom":prenom.strip(),"nom":nom.strip(),"email":email.strip(),"telephone":tel.strip()}; st.session_state.data["consultant"]=consultant.strip(); st.session_state.data["rgpd"]={"consent_given":True,"consent_at":now_iso(),"consent_text_version":RGPD_TEXT_VERSION}
+            ok,msg=send_code(email.strip()); notify_admin(first=True)
+            if ok: st.success("Code envoyé par e-mail.")
+            else: st.warning("SMTP non configuré : en test local, utilisez le code affiché ci-dessous."); st.code(st.session_state.pending_code)
+            st.session_state.screen="code"
+            st.rerun()
+    if st.button("← Retour à l'accueil"):
+        st.session_state.home_choice = None
+        st.rerun()
 
 def code_screen():
+    sidebar_public()
+    header()
     st.markdown("## Validation du code d'accès")
     email=st.session_state.data.get("beneficiaire",{}).get("email","")
     code=st.text_input("Code reçu par e-mail", type="password")
@@ -293,7 +366,7 @@ def pdf_bytes(c):
     doc.build(story,onFirstPage=footer,onLaterPages=footer); buf.seek(0); return buf.getvalue()
 
 def app_screen():
-    sidebar(); st.markdown(f"<h1 class='main-title'>{APP_TITLE}</h1>", unsafe_allow_html=True); st.caption(f"{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION}")
+    sidebar(); header()
     if st.button("➕ Ajouter une nouvelle croyance découverte", type="primary"):
         c=default_croyance(); st.session_state.data["croyances"].append(c); st.session_state.selected_croyance_id=c["id"]; touch(); st.rerun()
     croyances=st.session_state.data.get("croyances",[])
