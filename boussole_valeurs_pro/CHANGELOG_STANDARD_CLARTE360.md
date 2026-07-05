@@ -1,6 +1,6 @@
 # CHANGELOG - Standardisation Clarté360
 
-## v1.6-socle-clarte360
+## v1.7-socle-clarte360
 
 Correction de standardisation stricte sur la référence **Clarté360 - Moteurs Professionnels v1.7.0**.
 

@@ -24,7 +24,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "1.6-socle-clarte360"
+APP_VERSION = "1.7-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "1.7"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
@@ -1152,12 +1152,36 @@ def prepare_sidebar_json(close_session: bool = False, reason: str = "sauvegarde_
 
 
 def sidebar():
-    """Barre latérale socle Clarté360 alignée sur Moteurs Professionnels v1.7.0.
-    Les éléments métier de navigation restent uniquement lorsque la session est active.
+    """Barre latérale socle Clarté360.
+
+    Logique retenue pour la Boussole :
+    - accueil : bloc Session + accès Contact/RGPD, sans e-mail affiché ;
+    - application active : navigation métier en haut, puis sauvegardes JSON, puis Contact/RGPD.
     """
-    st.sidebar.markdown("### Session")
-    st.sidebar.markdown("---")
-    if isinstance(st.session_state.get("data"), dict) and st.session_state.get("code_verified"):
+    data_active = isinstance(st.session_state.get("data"), dict) and st.session_state.get("code_verified")
+
+    if data_active:
+        st.sidebar.markdown("### Navigation")
+        pages = [
+            "1. Bénéficiaire",
+            "2. Consignes",
+            "3. Valeurs et points d'appui",
+            "4. Boussole des valeurs professionnelles",
+            "5. Valeurs énergies",
+            "6. Export / Rapports",
+            "7. RGPD",
+        ]
+        if st.session_state.get("page") not in pages:
+            st.session_state.page = pages[0]
+        st.session_state.page = st.sidebar.radio(
+            "",
+            pages,
+            index=pages.index(st.session_state.page),
+            label_visibility="collapsed",
+        )
+
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### Session")
         st.sidebar.markdown("Votre progression est enregistrée dans votre fichier JSON.")
         if st.sidebar.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
             prepare_sidebar_json(False, "sauvegarde_manuelle_reprise")
@@ -1175,6 +1199,9 @@ def sidebar():
                 on_click=mark_json_downloaded,
             )
             st.sidebar.caption("Conservez ce JSON : il est nécessaire pour reprendre votre travail et il contient le temps réellement enregistré.")
+    else:
+        st.sidebar.markdown("### Session")
+
     st.sidebar.markdown("---")
     if st.sidebar.button("💬 Contacter Clarté360", use_container_width=True):
         st.session_state.show_contact_page = True
@@ -1184,20 +1211,17 @@ def sidebar():
         st.session_state.show_rgpd_page = True
         st.session_state.show_contact_page = False
         st.rerun()
-    st.sidebar.caption("Clarté360 · contact@clarte360.com")
+
     st.sidebar.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION} · Questionnaire Boussole")
+
     if st.sidebar.button("Réinitialiser la session"):
-        for key in ["data", "code_verified", "welcome_done", "welcome_choice", "code_sent", "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page", "exit_json_ready", "exit_json_bytes", "exit_json_filename"]:
+        for key in [
+            "data", "code_verified", "welcome_done", "welcome_choice", "code_sent",
+            "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page",
+            "exit_json_ready", "exit_json_bytes", "exit_json_filename"
+        ]:
             st.session_state.pop(key, None)
         st.rerun()
-
-    if isinstance(st.session_state.get("data"), dict) and st.session_state.get("code_verified"):
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("### Navigation")
-        pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et points d'appui", "4. Boussole des valeurs professionnelles", "5. Valeurs énergies", "6. Export / Rapports", "7. RGPD"]
-        if st.session_state.get("page") not in pages:
-            st.session_state.page = pages[0]
-        st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
 
 
 def page_beneficiaire():

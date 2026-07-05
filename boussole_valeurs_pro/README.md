@@ -2,7 +2,7 @@
 
 Application Streamlit propriétaire Clarté360.
 
-Version : v1.6-socle-clarte360  
+Version : v1.7-socle-clarte360  
 Socle : Clarté360 1.7, standardisé sur Moteurs Professionnels v1.7.0 référence.
 
 ## Fonctionnalités socle
