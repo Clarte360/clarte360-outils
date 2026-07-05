@@ -19,7 +19,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 — Boucle auto-validante"
-APP_VERSION = "2.0.4-socle-clarte360"
+APP_VERSION = "2.0.5-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008b8b"
@@ -69,6 +69,40 @@ def make_id(prefix): return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S')}
 def safe_name(prefix, ext): return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
 def esc(x): return html.escape(str(x or ""))
 def get_client_network(): return {"hostname": socket.gethostname(), "platform": platform.platform(), "python": platform.python_version()}
+
+
+def total_duration_seconds(data):
+    """Retourne une durée cumulée robuste, même si une ancienne session contient des valeurs manquantes ou mal typées."""
+    try:
+        sessions = data.get("access", {}).get("sessions", []) if isinstance(data, dict) else []
+        total = 0
+        for sess in sessions if isinstance(sessions, list) else []:
+            if not isinstance(sess, dict):
+                continue
+            value = sess.get("duration_seconds", 0)
+            try:
+                total += int(float(value or 0))
+            except Exception:
+                continue
+        return max(total, 0)
+    except Exception:
+        return 0
+
+def format_duration(seconds):
+    """Format Clarté360 : X h Y min Z s / X min Y s / Z s."""
+    try:
+        seconds = int(float(seconds or 0))
+    except Exception:
+        seconds = 0
+    seconds = max(seconds, 0)
+    h, rem = divmod(seconds, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h} h {m} min {sec} s"
+    if m:
+        return f"{m} min {sec} s"
+    return f"{sec} s"
+
 
 def empty_data():
     return {"outil":"boucle_auto_validante","nom_outil":APP_TITLE,"version":APP_VERSION,"version_application":APP_VERSION,"socle_clarte360_version":SOCLE_CLARTE360_VERSION,"root_passation_id":make_id("pass"),"active_session_id":"","created_at":now_iso(),"updated_at":now_iso(),"beneficiaire":{"nom":"","prenom":"","email":"","telephone":""},"consultant":"","progression":{"current_tab":"Phase 3 — Découverte"},"croyances":[],"rgpd":{"consent_given":False,"consent_at":"","consent_text_version":RGPD_TEXT_VERSION},"access":{"code_access":"","code_generated_at":"","code_history":[],"admin_notifications":[],"sessions":[],"save_events":[],"timeout_minutes":BENEFICIARY_TIMEOUT_MINUTES},"technical":{"client_network":get_client_network()},"reports":[]}
@@ -219,9 +253,20 @@ def sidebar_public():
         st.session_state.nav_back = st.session_state.get("screen", "home")
         st.session_state.screen = "legal"
         st.rerun()
-    if st.sidebar.button("Réinitialiser la session", use_container_width=True, key="public_reset"):
+    can_reset = (not st.session_state.get("authenticated")) and not st.session_state.get("home_choice")
+    if can_reset and st.sidebar.button("Réinitialiser la session", use_container_width=True, key="public_reset"):
         st.session_state.clear()
         st.rerun()
+
+def _safe_dataframe(rows, columns=None):
+    if not rows:
+        return pd.DataFrame(columns=columns or [])
+    cleaned = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cleaned.append({k: row.get(k, "") for k in (columns or row.keys())})
+    return pd.DataFrame(cleaned, columns=columns) if columns else pd.DataFrame(cleaned)
 
 def render_traceability_block():
     data = st.session_state.get("data", {}) if isinstance(st.session_state.get("data"), dict) else {}
@@ -232,40 +277,51 @@ def render_traceability_block():
     save_events = access.get("save_events", []) if isinstance(access.get("save_events", []), list) else []
 
     st.markdown("### Traçabilité")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Consentement RGPD", "Oui" if rgpd.get("consent_given") else "Non")
-    c2.metric("Sessions enregistrées", len(sessions))
-    c3.metric("Temps cumulé", format_duration(total_duration_seconds(data)))
+    st.write(f"Temps cumulé enregistré : **{format_duration(total_duration_seconds(data))}**")
 
+    consent_at = rgpd.get("consent_at", "") or "Non enregistré"
+    consent_version = rgpd.get("consent_text_version", RGPD_TEXT_VERSION)
     if rgpd.get("consent_given"):
-        st.success(f"Consentement enregistré le {rgpd.get('consent_at', 'date non disponible')} — version {rgpd.get('consent_text_version', RGPD_TEXT_VERSION)}")
+        st.success(f"Consentement RGPD : oui — {consent_at} — {consent_version}")
     else:
-        st.info("Aucun consentement RGPD validé dans la session active.")
+        st.info("Consentement RGPD : non enregistré dans la session active.")
 
     if sessions:
-        st.markdown("#### Historique des sessions")
-        st.dataframe(pd.DataFrame(sessions), use_container_width=True, hide_index=True)
+        cols = ["session_id", "started_at", "last_activity_at", "last_seen_at", "ended_at", "duration_seconds"]
+        df = _safe_dataframe(sessions, cols)
+        if not df.empty and "duration_seconds" in df:
+            df["duration"] = df["duration_seconds"].apply(format_duration)
+            df = df.drop(columns=["duration_seconds"])
+        st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.caption("Aucun historique de session disponible pour le moment.")
+        st.caption("Aucune session enregistrée pour le moment.")
 
     if code_history:
         st.markdown("#### Historique des codes d'accès")
-        safe_rows = []
+        rows = []
         for row in code_history:
             if isinstance(row, dict):
-                safe_rows.append({
-                    "date": row.get("at", ""),
+                rows.append({
+                    "date": row.get("at", row.get("generated_at", "")),
                     "e-mail": row.get("email", ""),
                     "statut": row.get("status", ""),
                     "expiration": row.get("expires_at", ""),
-                    "message": row.get("smtp_message", ""),
                 })
-        if safe_rows:
-            st.dataframe(pd.DataFrame(safe_rows), use_container_width=True, hide_index=True)
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     if save_events:
         st.markdown("#### Sauvegardes JSON")
-        st.dataframe(pd.DataFrame(save_events), use_container_width=True, hide_index=True)
+        rows = []
+        for row in save_events:
+            if isinstance(row, dict):
+                rows.append({
+                    "date": row.get("at", ""),
+                    "type": row.get("type", row.get("event", "")),
+                    "statut": row.get("status", ""),
+                })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def legal_page():
@@ -355,7 +411,7 @@ def sidebar():
     st.sidebar.markdown("---")
     if st.sidebar.button("💬 Contacter Clarté360", use_container_width=True): st.session_state.nav_back="app"; st.session_state.screen="contact"; st.rerun()
     if st.sidebar.button("RGPD et mentions légales", use_container_width=True): st.session_state.nav_back="app"; st.session_state.screen="legal"; st.rerun()
-    if st.sidebar.button("Réinitialiser la session", use_container_width=True):
+    if (not st.session_state.get("authenticated")) and st.sidebar.button("Réinitialiser la session", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
