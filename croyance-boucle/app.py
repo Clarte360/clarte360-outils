@@ -19,7 +19,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 — Boucle auto-validante"
-APP_VERSION = "2.0.3-socle-clarte360"
+APP_VERSION = "2.0.4-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008b8b"
@@ -223,6 +223,51 @@ def sidebar_public():
         st.session_state.clear()
         st.rerun()
 
+def render_traceability_block():
+    data = st.session_state.get("data", {}) if isinstance(st.session_state.get("data"), dict) else {}
+    rgpd = data.get("rgpd", {}) if isinstance(data.get("rgpd", {}), dict) else {}
+    access = data.get("access", {}) if isinstance(data.get("access", {}), dict) else {}
+    sessions = access.get("sessions", []) if isinstance(access.get("sessions", []), list) else []
+    code_history = access.get("code_history", []) if isinstance(access.get("code_history", []), list) else []
+    save_events = access.get("save_events", []) if isinstance(access.get("save_events", []), list) else []
+
+    st.markdown("### Traçabilité")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Consentement RGPD", "Oui" if rgpd.get("consent_given") else "Non")
+    c2.metric("Sessions enregistrées", len(sessions))
+    c3.metric("Temps cumulé", format_duration(total_duration_seconds(data)))
+
+    if rgpd.get("consent_given"):
+        st.success(f"Consentement enregistré le {rgpd.get('consent_at', 'date non disponible')} — version {rgpd.get('consent_text_version', RGPD_TEXT_VERSION)}")
+    else:
+        st.info("Aucun consentement RGPD validé dans la session active.")
+
+    if sessions:
+        st.markdown("#### Historique des sessions")
+        st.dataframe(pd.DataFrame(sessions), use_container_width=True, hide_index=True)
+    else:
+        st.caption("Aucun historique de session disponible pour le moment.")
+
+    if code_history:
+        st.markdown("#### Historique des codes d'accès")
+        safe_rows = []
+        for row in code_history:
+            if isinstance(row, dict):
+                safe_rows.append({
+                    "date": row.get("at", ""),
+                    "e-mail": row.get("email", ""),
+                    "statut": row.get("status", ""),
+                    "expiration": row.get("expires_at", ""),
+                    "message": row.get("smtp_message", ""),
+                })
+        if safe_rows:
+            st.dataframe(pd.DataFrame(safe_rows), use_container_width=True, hide_index=True)
+
+    if save_events:
+        st.markdown("#### Sauvegardes JSON")
+        st.dataframe(pd.DataFrame(save_events), use_container_width=True, hide_index=True)
+
+
 def legal_page():
     sidebar_public()
     header()
@@ -233,16 +278,13 @@ def legal_page():
     tabs=st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
     with tabs[0]:
         st.markdown(RGPD_TEXT)
-        rgpd=st.session_state.data.get("rgpd",{})
-        st.markdown("### Traçabilité")
-        st.json({"rgpd": rgpd, "session": st.session_state.data.get("access",{}).get("sessions", [])})
-        if rgpd.get("consent_given"):
-            st.success(f"Consentement enregistré le {rgpd.get('consent_at')} — version {rgpd.get('consent_text_version')}")
+        render_traceability_block()
     with tabs[1]:
         st.markdown("### Mentions légales")
-        st.text(CLARTE_LEGAL)
+        st.markdown(CLARTE_LEGAL.replace("\n", "  \n"))
         st.markdown("Les contenus, méthodes, rapports, graphiques et outils Clarté360 sont protégés par le droit de la propriété intellectuelle.")
     with tabs[2]:
+        st.markdown("### Contacter Clarté360")
         contact_form()
 
 def contact_page():
@@ -257,7 +299,7 @@ def contact_page():
 def contact_form():
     b = st.session_state.data.get("beneficiaire", {}) if isinstance(st.session_state.get("data"), dict) else {}
     st.markdown("<div class='brand-box'>Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d'une suggestion concernant cette application. Pour toute question relative à l'interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.</div>", unsafe_allow_html=True)
-    with st.form("contact_form"):
+    with st.form("contact_form", clear_on_submit=False):
         c1, c2 = st.columns(2)
         with c1:
             nom = st.text_input("Nom", value=b.get("nom", ""))

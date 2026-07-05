@@ -22,3 +22,9 @@
 ## v2.0.0-socle-clarte360
 - Transformation en application bénéficiaire.
 - Suppression du fonctionnement accompagnateur et des codes utilisateurs historiques.
+
+## v2.0.4-socle-clarte360
+- Reprise de la présentation RGPD / Traçabilité sur le fonctionnement validé des applications Clarté360 de référence.
+- Suppression définitive de l'affichage du JSON brut dans la page bénéficiaire.
+- Ajout d'une traçabilité lisible : métriques, consentement, historique des sessions, historique des codes et sauvegardes JSON.
+- Maintien du formulaire Contact dans le socle institutionnel sans redirection erronée.
