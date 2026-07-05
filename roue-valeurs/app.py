@@ -19,7 +19,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 APP_TITLE = "Clarté360 - Roue des valeurs"
-APP_VERSION = "V2.5 - Socle Clarté360"
+APP_VERSION = "V2.6 - Socle Clarté360"
 SOCLE_CLARTE360_VERSION = "3.0 / alignement Boussole v1.8.2"
 BENEFICIARY_TIMEOUT_MINUTES = 15
 BRAND_COLOR = "#008080"
@@ -519,6 +519,9 @@ def rgpd_page():
         legal_mentions_block()
     with tab_contact:
         contact_form_main()
+    if st.session_state.get("code_verified") and st.button("Retour à l'application", key="rgpd_bottom_back"):
+        st.session_state.show_rgpd_page = False
+        st.rerun()
 
 
 def contact_page():
@@ -528,6 +531,9 @@ def contact_page():
         st.rerun()
     st.subheader("Contacter Clarté360")
     contact_form_main()
+    if st.session_state.get("code_verified") and st.button("Retour à l'application", key="contact_bottom_back"):
+        st.session_state.show_contact_page = False
+        st.rerun()
 
 
 def access_gate() -> bool:
@@ -1060,7 +1066,17 @@ def sidebar():
         pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et domaines", "4. Roue des valeurs", "5. Valeurs énergies", "6. Export / Rapports"]
         if st.session_state.get("page") not in pages:
             st.session_state.page = pages[0]
-        st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
+        previous_page = st.session_state.get("page", pages[0])
+        selected_page = st.sidebar.radio(
+            "",
+            pages,
+            index=pages.index(previous_page) if previous_page in pages else 0,
+            label_visibility="collapsed",
+        )
+        if selected_page != previous_page:
+            st.session_state.show_contact_page = False
+            st.session_state.show_rgpd_page = False
+        st.session_state.page = selected_page
         st.sidebar.markdown("---")
         st.sidebar.markdown("### Session")
         st.sidebar.markdown("Votre progression est enregistrée dans votre fichier JSON.")

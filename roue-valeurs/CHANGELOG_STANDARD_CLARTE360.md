@@ -14,3 +14,8 @@
 ## Préservation métier
 - Conservation de la logique Roue des valeurs : valeurs libres, 5 domaines de vie, cotations, moyenne, roue graphique.
 - Conservation de l'espace optionnel Valeurs énergies.
+
+## V2.6 - Correction navigation socle Clarte360
+- Correction du comportement de navigation depuis les pages institutionnelles Contact / RGPD.
+- Un clic sur une rubrique métier de la barre latérale ferme maintenant automatiquement Contact / RGPD et ramène l'utilisateur dans l'application, comme dans Boussole v1.8.2.
+- Ajout d'un bouton de retour bas de page sur Contact et RGPD, en complément du retour haut de page.
