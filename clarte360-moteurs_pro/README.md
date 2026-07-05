@@ -1,47 +1,24 @@
-# Clarté360 - Moteurs professionnels
+# Clarte360 - Moteurs professionnels v1.7.0 Reference
 
-Application Streamlit propriétaire Clarté360 destinée à explorer les moteurs professionnels déclarés d'un bénéficiaire.
+Application Streamlit Clarte360 destinee a l'exploration des moteurs professionnels.
 
 ## Version
+- Application : 1.7.0-reference-clarte360
+- Socle Clarte360 : 1.0
 
-`1.6.3-reference-clarte360`
+## Installation locale
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-Cette version est une référence candidate pour le socle commun Clarté360 :
+## Test prioritaire
+1. Demarrer une session.
+2. Repondre a quelques questions.
+3. Ne plus toucher a l'application pendant plus de 15 minutes.
+4. L'application doit afficher l'ecran de timeout et proposer le telechargement du JSON.
+5. Le JSON doit contenir `motif_fermeture: timeout_inactivite`.
 
-- RGPD et mentions légales intégrés ;
-- formulaire de contact Clarté360 ;
-- notification par e-mail ;
-- gestion du JSON bénéficiaire ;
-- historique des sessions ;
-- comptabilisation du temps actif ;
-- sortie officielle par téléchargement JSON ;
-- alerte navigateur avant fermeture sans sauvegarde ;
-- pied de page institutionnel dans les PDF ;
-- compatibilité Streamlit Cloud et préparation VPS.
-
-## Déploiement
-
-1. Déposer le contenu du ZIP dans GitHub.
-2. Vérifier `requirements.txt`.
-3. Définir les secrets Streamlit SMTP.
-4. Lancer l'application sur Streamlit Cloud.
-
-## Secrets attendus
-
-Voir `.streamlit/secrets.example.toml`.
-
-## Tests obligatoires avant validation
-
-- Nouvelle session et réception du code bénéficiaire.
-- Notification administrateur à `contact@clarte360.com`.
-- Validation du code et démarrage réel de session.
-- Sauvegarde JSON manuelle.
-- Sortie par bouton JSON.
-- Reprise depuis JSON.
-- Timeout automatique à 15 minutes.
-- Formulaire de contact.
-- Génération PDF avec pied de page Clarté360.
-
-## Socle Clarté360 1.0
-
-Cette version introduit le socle commun Clarté360 : gestion des sessions, JSON, RGPD, mentions légales, formulaire d'assistance permanent, pied de page PDF, préparation Streamlit Cloud et migration VPS future.
+## Notes techniques
+Le timeout utilise en priorite `streamlit-autorefresh` pour forcer un rerun regulier sur Streamlit Cloud.
+Les battements automatiques ne sont pas consideres comme une activite utilisateur.

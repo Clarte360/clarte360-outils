@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+
 try:
     from streamlit_autorefresh import st_autorefresh
 except Exception:
@@ -23,7 +24,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.6.3-reference-clarte360"
+APP_VERSION = "1.7.0-reference-clarte360"
 SOCLE_CLARTE360_VERSION = "1.0"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
@@ -41,7 +42,7 @@ DEFAULT_SESSION_LIMIT_MINUTES = 15
 # CLARTE360
 # MODULE : Informations institutionnelles
 # ROLE   : Coordonnees, mentions legales, contact et pied de page PDF
-# VERSION: 1.6.2
+# VERSION: 1.7.0
 ###############################################################################
 CLARTE360_LEGAL = {
     "raison_sociale": "Clarté360",
@@ -247,7 +248,6 @@ def init_runtime_session(reason="nouvelle_session"):
     st.session_state.current_runtime_session_id = current_id
     st.session_state.session_started_at = now
     st.session_state.session_last_activity = now
-    st.session_state.session_last_user_activity = now
     st.session_state.session_last_heartbeat = now
     st.session_state.session_expired = False
     st.session_state.exit_json_ready = False
@@ -257,7 +257,6 @@ def init_runtime_session(reason="nouvelle_session"):
         "debut": now,
         "validation_code_at": st.session_state.get("code_verified_at", now),
         "derniere_activite": now,
-        "derniere_activite_utilisateur": now,
         "dernier_battement": now,
         "fin": None,
         "duree_secondes": 0,
@@ -281,24 +280,22 @@ def _current_session_record():
     return None
 
 
-def update_runtime_activity(event: str = "heartbeat"):
-    """Met a jour le temps de presence et, si necessaire, l'activite utilisateur.
+def update_runtime_activity(event: str = "heartbeat", user_activity: bool = True):
+    """Met a jour le temps de session et, si necessaire, la derniere activite utilisateur.
 
-    Distinction importante du Socle Clarte360 :
-    - un heartbeat/auto-refresh maintient le compteur de presence et permet au
-      timeout de se declencher meme sans clic ;
-    - seule une action utilisateur explicite met a jour
-      `derniere_activite_utilisateur`.
+    Point important du Socle Clarte360 1.0 :
+    - les battements automatiques servent uniquement a recalculer le temps et a
+      declencher le timeout ;
+    - ils ne doivent jamais etre consideres comme une activite utilisateur ;
+    - seules les actions explicites du beneficiaire prolongent la session.
 
-    Le delta ajoute au temps de presence est plafonne a 30 secondes pour eviter
-    de comptabiliser une longue absence liee a une fermeture brutale, une veille
-    ou une suspension du navigateur.
+    Le delta ajoute est plafonne a 30 secondes pour eviter de comptabiliser une
+    longue absence liee a une fermeture brutale, une veille ou une suspension du navigateur.
     """
     sess = _current_session_record()
     if not sess or sess.get("fin"):
         return
     now_dt = datetime.now()
-    now_txt = now_dt.isoformat(timespec="seconds")
     last_raw = st.session_state.get("session_last_heartbeat") or sess.get("dernier_battement") or sess.get("debut")
     try:
         last_dt = datetime.fromisoformat(last_raw)
@@ -309,23 +306,22 @@ def update_runtime_activity(event: str = "heartbeat"):
     current_duration = int(sess.get("duree_active_secondes", sess.get("duree_secondes", 0)) or 0)
     sess["duree_active_secondes"] = current_duration + delta
     sess["duree_secondes"] = sess["duree_active_secondes"]
+    now_txt = now_dt.isoformat(timespec="seconds")
     sess["dernier_battement"] = now_txt
+    sess["dernier_evenement"] = event
     st.session_state.session_last_heartbeat = now_txt
-
-    # Activite utilisateur reelle : validations, sauvegardes, sortie, contact, etc.
-    if event and event != "heartbeat":
+    if user_activity:
         sess["derniere_activite"] = now_txt
-        sess["derniere_activite_utilisateur"] = now_txt
-        sess["dernier_evenement"] = event
         st.session_state.session_last_activity = now_txt
-        st.session_state.session_last_user_activity = now_txt
-    else:
-        sess.setdefault("derniere_activite", sess.get("debut", now_txt))
-        sess.setdefault("derniere_activite_utilisateur", sess.get("derniere_activite", sess.get("debut", now_txt)))
-        sess["dernier_evenement"] = sess.get("dernier_evenement") or "heartbeat"
+
+
+def update_runtime_heartbeat(event: str = "heartbeat"):
+    """Met a jour le battement technique sans prolonger l'inactivite utilisateur."""
+    update_runtime_activity(event=event, user_activity=False)
+
 
 def record_save_event(kind: str):
-    update_runtime_activity(kind)
+    update_runtime_activity(kind, user_activity=True)
     sess = _current_session_record()
     if not sess:
         return
@@ -338,11 +334,12 @@ def close_runtime_session(reason: str):
     sess = _current_session_record()
     if not sess:
         return
-    update_runtime_activity(reason)
+    update_runtime_activity(reason, user_activity=(reason != "timeout_inactivite"))
     sess = _current_session_record()
     if sess:
         now = now_iso()
-        sess["derniere_activite"] = now
+        if reason != "timeout_inactivite":
+            sess["derniere_activite"] = now
         sess["fin"] = now
         sess["motif_fermeture"] = reason
 
@@ -399,50 +396,47 @@ def legal_footer_text(short: bool = False) -> str:
     )
 
 
-def _seconds_since_user_activity(sess: dict) -> int:
-    last_user_raw = (
-        st.session_state.get("session_last_user_activity")
-        or sess.get("derniere_activite_utilisateur")
-        or sess.get("derniere_activite")
-        or sess.get("debut")
-    )
-    try:
-        last_user_dt = datetime.fromisoformat(last_user_raw)
-    except Exception:
-        last_user_dt = datetime.now()
-    return max(0, int((datetime.now() - last_user_dt).total_seconds()))
-
-
 def check_session_limit():
-    """Ferme la session apres 15 minutes sans activite utilisateur reelle.
+    """Controle l'inactivite reelle du beneficiaire.
 
-    Le controle est appele par un auto-refresh navigateur. Il ne depend donc
-    pas d'un clic utilisateur. Les heartbeats comptent le temps de presence,
-    mais ne reinitialisent pas l'inactivite.
+    La fermeture se fait apres 15 minutes sans action utilisateur explicite
+    (validation, sauvegarde, sortie). Les reruns automatiques du watchdog ne
+    reinitialisent pas ce delai.
     """
     if not st.session_state.get("test_started") or st.session_state.get("session_expired"):
         return
-    update_runtime_activity("heartbeat")
+    update_runtime_heartbeat("watchdog")
     limit_seconds = get_session_limit_minutes() * 60
-    current = next((s for s in st.session_state.get("session_history", []) if s.get("session_uid") == st.session_state.get("current_runtime_session_id")), None)
-    if current and _seconds_since_user_activity(current) >= limit_seconds:
+    current = _current_session_record()
+    last_activity_raw = st.session_state.get("session_last_activity") or (current or {}).get("derniere_activite") or (current or {}).get("debut")
+    try:
+        last_activity = datetime.fromisoformat(last_activity_raw)
+    except Exception:
+        last_activity = datetime.now()
+    inactive_seconds = int((datetime.now() - last_activity).total_seconds())
+    if inactive_seconds >= limit_seconds:
+        if current is not None:
+            current["inactivite_secondes_avant_timeout"] = inactive_seconds
         close_runtime_session("timeout_inactivite")
         st.session_state.session_expired = True
         st.rerun()
 
 
 def timeout_watchdog():
-    """Rerun automatique pour appliquer le timeout meme sans clic utilisateur.
+    """Declenche un rerun automatique pour appliquer le timeout sans clic.
 
-    Priorite : streamlit-autorefresh, plus fiable sur Streamlit Cloud.
-    Fallback : st.fragment si disponible.
-    Dernier recours : petite boucle JavaScript qui force un rechargement.
+    Ordre de preference :
+    1. streamlit-autorefresh : composant stable et compatible Streamlit Cloud ;
+    2. st.fragment(run_every=...) : secours pour les environnements recents ;
+    3. petit script JS de secours, non considere comme source de verite.
     """
     if not st.session_state.get("test_started") or st.session_state.get("session_expired"):
         return
+
     if st_autorefresh is not None:
         st_autorefresh(interval=10_000, key="clarte360_timeout_watchdog")
         return
+
     if hasattr(st, "fragment"):
         @st.fragment(run_every="10s")
         def _watchdog_fragment():
@@ -450,17 +444,16 @@ def timeout_watchdog():
                 check_session_limit()
         _watchdog_fragment()
         return
+
     components.html(
         """
         <script>
-        if (!window.parent.__clarte360TimeoutWatchdogInstalled) {
-            window.parent.__clarte360TimeoutWatchdogInstalled = true;
-            setInterval(function(){ window.parent.location.reload(); }, 10000);
-        }
+        setTimeout(function(){ try { window.parent.location.reload(); } catch(e) { window.location.reload(); } }, 10000);
         </script>
         """,
         height=0,
     )
+
 
 def start_new_session(active: pd.DataFrame, nom: str, prenom: str, email: str, consultant: str = ""):
     st.session_state.passation_root_id = str(uuid.uuid4())
@@ -554,7 +547,7 @@ def interpretation_level(pct: float) -> str:
 
 
 def build_payload(active: pd.DataFrame, dims: pd.DataFrame, params: pd.DataFrame, completed=False) -> dict:
-    update_runtime_activity()
+    update_runtime_heartbeat("construction_json")
     scores_df, score_details = compute_results(active, dims, st.session_state.get("positions", {}))
     payload = {
         "outil": get_param(params, "outil_code", "clarte360_moteurs_professionnels"),
@@ -867,7 +860,7 @@ def prepare_sidebar_json(active, dims, params, reason: str, filename_prefix: str
 def sidebar_progress(active, dims, params):
     st.sidebar.markdown("### Session")
     if st.session_state.get("test_started"):
-        update_runtime_activity("affichage_sidebar")
+        update_runtime_heartbeat("affichage_sidebar")
         st.sidebar.markdown("Votre progression est enregistrée dans votre fichier JSON.")
         if st.sidebar.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
             prepare_sidebar_json(active, dims, params, "sauvegarde_manuelle_reprise", "moteurs_sauvegarde", close_session=False)
@@ -1079,13 +1072,13 @@ def exit_prepared_screen():
 
 def expired_screen(active, dims, params):
     display_header()
-    st.warning("La durée maximale de cette session est atteinte. Votre progression a été sauvegardée dans le JSON ci-dessous.")
+    st.warning("La session a été arrêtée automatiquement après 15 minutes sans activité. Votre progression a été sauvegardée dans le JSON ci-dessous.")
     st.markdown("Téléchargez ce JSON : il permettra de reprendre le travail lors de la prochaine connexion. Une nouvelle session sera créée et le compteur de temps repartira à zéro, tout en conservant l'historique.")
     if not st.session_state.get("expiration_json_saved"):
         record_save_event("sauvegarde_automatique_expiration")
         st.session_state.expiration_json_saved = True
     payload = build_payload(active, dims, params, completed=False)
-    st.download_button("Télécharger mon JSON de reprise", data=payload_bytes(payload), file_name=make_filename("moteurs_reprise_session_expiree", "json"), mime="application/json", type="primary", on_click=mark_json_downloaded)
+    st.download_button("Télécharger mon JSON de reprise", data=payload_bytes(payload), file_name=make_filename("moteurs_reprise_timeout_inactivite", "json"), mime="application/json", type="primary", on_click=mark_json_downloaded)
 
 
 def mark_json_downloaded():
