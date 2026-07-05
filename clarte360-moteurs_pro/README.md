@@ -1,24 +1,18 @@
-# Clarte360 - Moteurs professionnels v1.7.0 Reference
+# Clarté360 - Moteurs professionnels
 
-Application Streamlit Clarte360 destinee a l'exploration des moteurs professionnels.
+Application Streamlit propriétaire Clarté360 d'exploration des sources d'énergie professionnelle.
 
-## Version
-- Application : 1.7.0-reference-clarte360
-- Socle Clarte360 : 1.0
+Version livrée : **v1.8.0-socle-clarte360**  
+Socle Clarté360 : **1.8**
 
-## Installation locale
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+Cette version conserve intégralement la logique métier de Moteurs professionnels v1.7.0 et met à jour uniquement le socle commun : barre latérale, RGPD / traçabilité, retour application, sécurité du bouton de réinitialisation et charte PDF.
 
-## Test prioritaire
-1. Demarrer une session.
-2. Repondre a quelques questions.
-3. Ne plus toucher a l'application pendant plus de 15 minutes.
-4. L'application doit afficher l'ecran de timeout et proposer le telechargement du JSON.
-5. Le JSON doit contenir `motif_fermeture: timeout_inactivite`.
+## Déploiement Streamlit Cloud
 
-## Notes techniques
-Le timeout utilise en priorite `streamlit-autorefresh` pour forcer un rerun regulier sur Streamlit Cloud.
-Les battements automatiques ne sont pas consideres comme une activite utilisateur.
+Fichier principal : `app.py`
+
+Dépendances : voir `requirements.txt`.
+
+## Secrets SMTP
+
+Configurer les secrets Streamlit selon `.streamlit/secrets.example.toml`.

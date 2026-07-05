@@ -24,8 +24,8 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.7.0-reference-clarte360"
-SOCLE_CLARTE360_VERSION = "1.0"
+APP_VERSION = "1.8.0-socle-clarte360"
+SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
@@ -653,7 +653,10 @@ def create_pdf(scores_df: pd.DataFrame, payload: dict) -> bytes:
     normal = styles["BodyText"]
     story = []
     if LOGO_PATH.exists():
-        story.append(Image(str(LOGO_PATH), width=1.6*cm, height=1.6*cm))
+        logo = Image(str(LOGO_PATH), width=1.8*cm, height=1.8*cm)
+        logo.hAlign = "CENTER"
+        story.append(logo)
+        story.append(Spacer(1, 0.12*cm))
     story.append(Paragraph(APP_FULL_NAME, title_style))
     ben = payload.get("beneficiaire", {})
     story.append(Paragraph(f"Bénéficiaire : <b>{ben.get('prenom','')} {ben.get('nom','')}</b>", normal))
@@ -711,13 +714,17 @@ def display_header():
 
 def rgpd_page():
     display_header()
+    if st.session_state.get("test_started") and st.button("← Retour à l'application", key="rgpd_top_back"):
+        st.session_state.show_rgpd_page = False
+        st.rerun()
     st.subheader("Informations légales et protection des données")
 
-    tab_rgpd, tab_mentions, tab_contact = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
+    tab_rgpd, tab_mentions, tab_contact = st.tabs(["Protection des données et traçabilité", "Mentions légales", "Nous contacter"])
 
     with tab_rgpd:
         st.markdown(RGPD_TEXT)
         st.info("Le consentement RGPD est demandé avant la génération du code d'accès et avant toute nouvelle passation.")
+        traceability_information_block()
 
     with tab_mentions:
         l = CLARTE360_LEGAL
@@ -749,6 +756,9 @@ def rgpd_page():
 def contact_page():
     """Page d'assistance permanente accessible pendant l'utilisation."""
     display_header()
+    if st.session_state.get("test_started") and st.button("← Retour à l'application", key="contact_top_back"):
+        st.session_state.show_contact_page = False
+        st.rerun()
     st.subheader("Contacter Clarté360")
     contact_form()
 
@@ -811,6 +821,56 @@ def contact_form():
 
 
 
+def traceability_information_block():
+    """Affiche la traçabilité RGPD/session sans dépendre du format interne d'une seule app."""
+    update_runtime_heartbeat("affichage_tracabilite")
+    sessions = st.session_state.get("session_history", []) or []
+    rgpd = st.session_state.get("rgpd_acceptance", {}) or {}
+
+    st.markdown("### Traçabilité de la session")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Session en cours", (st.session_state.get("current_runtime_session_id", "") or "Non ouverte")[:8])
+    with c2:
+        st.metric("Nombre de sessions", len(sessions))
+    with c3:
+        st.metric("Temps cumulé", format_duration(total_session_seconds()))
+
+    if rgpd.get("consentement"):
+        st.success(f"Consentement RGPD enregistré le : {rgpd.get('date','')} {rgpd.get('heure','')} — version : {rgpd.get('version_texte','')}")
+    else:
+        st.warning("Aucun consentement RGPD n'est encore enregistré dans le JSON.")
+
+    if sessions:
+        rows = []
+        for sess in sessions:
+            rows.append({
+                "Début": sess.get("debut", ""),
+                "Dernière activité": sess.get("derniere_activite", ""),
+                "Fin": sess.get("fin", ""),
+                "Durée": format_duration(sess.get("duree_active_secondes", sess.get("duree_secondes", 0))),
+                "Motif ouverture": sess.get("motif_ouverture", ""),
+                "Motif fermeture": sess.get("motif_fermeture", ""),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucune session n'est encore enregistrée.")
+
+    saves = []
+    for sess in sessions:
+        for save in sess.get("sauvegardes", []) or []:
+            if isinstance(save, dict):
+                saves.append({
+                    "Date / heure": save.get("date_heure", ""),
+                    "Motif": save.get("type", ""),
+                    "Session": sess.get("session_uid", "")[:8],
+                    "Durée session": format_duration(save.get("duree_active_secondes", 0)),
+                })
+    if saves:
+        st.markdown("### Sauvegardes enregistrées")
+        st.dataframe(pd.DataFrame(saves[-10:]), use_container_width=True, hide_index=True)
+
+
 def welcome_screen():
     display_header()
     st.markdown(f"### Bienvenue dans l'application Clarté360 – {APP_NAME}")
@@ -858,8 +918,27 @@ def prepare_sidebar_json(active, dims, params, reason: str, filename_prefix: str
 
 
 def sidebar_progress(active, dims, params):
-    st.sidebar.markdown("### Session")
-    if st.session_state.get("test_started"):
+    """Barre latérale socle Clarté360 v1.8.
+
+    Avant l'entrée dans le cœur de l'application : éléments institutionnels uniquement.
+    Après validation du code : navigation / état métier en haut, puis fonctions JSON et institutionnelles.
+    """
+    in_app = bool(st.session_state.get("test_started"))
+
+    if in_app:
+        st.sidebar.markdown("### Navigation")
+        total = len(st.session_state.get("cursor_order", [])) or len(active)
+        idx = min(int(st.session_state.get("current_index", 0) or 0), total)
+        if st.session_state.get("result_session_closed") or idx >= total:
+            st.sidebar.markdown("**Résultats / rapport**")
+        else:
+            st.sidebar.markdown(f"**Questionnaire : {idx + 1} / {total}**")
+        if st.sidebar.button("Revenir à l'application", use_container_width=True):
+            st.session_state.show_contact_page = False
+            st.session_state.show_rgpd_page = False
+            st.rerun()
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### Session")
         update_runtime_heartbeat("affichage_sidebar")
         st.sidebar.markdown("Votre progression est enregistrée dans votre fichier JSON.")
         if st.sidebar.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
@@ -878,14 +957,23 @@ def sidebar_progress(active, dims, params):
                 on_click=mark_json_downloaded,
             )
             st.sidebar.caption("Conservez ce JSON : il est nécessaire pour reprendre votre travail et il contient le temps réellement enregistré.")
+    else:
+        st.sidebar.markdown("### Session")
+
     st.sidebar.markdown("---")
     if st.sidebar.button("💬 Contacter Clarté360", use_container_width=True):
         st.session_state.show_contact_page = True
+        st.session_state.show_rgpd_page = False
         st.rerun()
     if st.sidebar.button("RGPD et mentions légales", use_container_width=True):
         st.session_state.show_rgpd_page = True
+        st.session_state.show_contact_page = False
         st.rerun()
-    st.sidebar.caption("Clarté360 · contact@clarte360.com")
+
+    st.sidebar.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION} · Questionnaire {get_param(params, 'version_questionnaire', '0.1')}")
+    if not in_app:
+        if st.sidebar.button("Réinitialiser la session"):
+            reset_all()
 
 
 def identification_screen(active, dims, params):
@@ -1121,18 +1209,15 @@ def main():
     active = get_active_cursors(curseurs)
     sidebar_progress(active, dims, params)
     install_beforeunload_warning()
-    st.sidebar.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION} · Questionnaire {get_param(params, 'version_questionnaire', '0.1')}")
-    if st.sidebar.button("Réinitialiser la session"):
-        reset_all()
     if st.session_state.get("show_contact_page"):
         contact_page()
-        if st.button("Retour à l'application"):
+        if not st.session_state.get("test_started") and st.button("Retour à l'application"):
             st.session_state.show_contact_page = False
             st.rerun()
         return
     if st.session_state.get("show_rgpd_page"):
         rgpd_page()
-        if st.button("Retour"):
+        if not st.session_state.get("test_started") and st.button("Retour"):
             st.session_state.show_rgpd_page = False
             st.rerun()
         return
