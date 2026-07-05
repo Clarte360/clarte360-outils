@@ -36,3 +36,8 @@ Commit conseillé :
 - Correction lisibilite des boutons Clarte360.
 - Ajout / suppression de valeurs directement depuis l'onglet Valeurs et domaines de vie.
 - Ajout de l'espace consultant Valeurs energies, verrouille par code consultant, avec selection de 3 valeurs porteuses, cotation revisitee, actions ou points d'appui, seconde roue et export JSON/PDF.
+
+
+## Version V2.5 - Socle Clarté360
+
+Cette version ajoute le socle Clarté360 récent : accueil import/nouvelle session, RGPD, mentions légales, contact, JSON enrichi, traçabilité, gestion de session, timeout et rapport PDF institutionnel avec logo première page et footer Clarté360.
