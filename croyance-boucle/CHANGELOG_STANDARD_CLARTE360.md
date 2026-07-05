@@ -1,5 +1,13 @@
 # Changelog Clarté360 — Boucle auto-validante
 
+## v2.0.3-socle-clarte360
+- Correction définitive de la page RGPD : ajout du texte RGPD manquant, suppression du NameError, traçabilité visible.
+- Harmonisation de la page Contact avec le socle visuel : logo, en-tête, retour application, formulaire en colonnes et consentement spécifique.
+- Remplacement du bouton « Modifier l'adresse e-mail » par « Je n'ai pas reçu mon code / Renvoyer un code ».
+- Renvoi du code sans quitter l'écran d'accès bénéficiaire.
+
+# Changelog Clarté360 — Boucle auto-validante
+
 ## v2.0.2-socle-clarte360
 - Correction de la navigation : le bouton **Contacter Clarté360** ouvre désormais la page Contact et non la page RGPD.
 - Alignement de la page RGPD / Mentions légales / Contact sur le comportement de l'application de référence **Roue des domaines de vie**.

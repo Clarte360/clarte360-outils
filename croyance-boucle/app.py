@@ -19,7 +19,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 — Boucle auto-validante"
-APP_VERSION = "2.0.2-socle-clarte360"
+APP_VERSION = "2.0.3-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008b8b"
@@ -31,6 +31,22 @@ ACCESS_CODE_VALIDITY_MINUTES = 15
 LOGO_PATH = Path(__file__).parent / "assets" / "logo_clarte360.png"
 
 CLARTE_LEGAL = """Clarté360\n60 rue François 1er\n75008 Paris\nTél. : 01 89 48 08 25\nE-mail : contact@clarte360.com\nWeb : www.clarte360.com\nRCS : 102349834\nSIRET : 10234983400014\nNAF : 8559A\nTVA intracommunautaire : FR88102349834"""
+
+RGPD_TEXT = f"""
+### Protection des données personnelles (RGPD)
+
+Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
+
+Le fichier JSON constitue le seul support de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, le nom de votre accompagnateur, les dates et heures de connexion, la durée des sessions, vos données saisies dans l'application, commentaires, résultats, historique des connexions, code d'accès généré, consentement RGPD, version de l'application et informations techniques disponibles.
+
+Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur.
+
+Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : {RGPD_TEXT_VERSION}.
+
+Les résultats fournis par les applications Clarté360 constituent des supports d'aide à la réflexion et à l'accompagnement. Ils ne constituent ni un diagnostic psychologique, ni un avis médical, ni une décision d'orientation automatique.
+
+Les applications, outils, questionnaires, méthodes, graphiques, rapports et contenus proposés par Clarté360 constituent des créations originales protégées. Toute reproduction, adaptation, diffusion ou réutilisation sans autorisation écrite préalable est interdite.
+"""
 
 TYPE_CROYANCE = ["Sur soi / identité", "Sur les autres en général", "Sur le monde", "A vérifier"]
 STATUTS = ["Découverte", "Validée", "A travailler en phase 6", "Travaillée", "Archivée"]
@@ -208,6 +224,7 @@ def sidebar_public():
         st.rerun()
 
 def legal_page():
+    sidebar_public()
     header()
     if st.button("← Retour à l'application", key="rgpd_back_top"):
         st.session_state.screen=st.session_state.nav_back
@@ -217,6 +234,8 @@ def legal_page():
     with tabs[0]:
         st.markdown(RGPD_TEXT)
         rgpd=st.session_state.data.get("rgpd",{})
+        st.markdown("### Traçabilité")
+        st.json({"rgpd": rgpd, "session": st.session_state.data.get("access",{}).get("sessions", [])})
         if rgpd.get("consent_given"):
             st.success(f"Consentement enregistré le {rgpd.get('consent_at')} — version {rgpd.get('consent_text_version')}")
     with tabs[1]:
@@ -227,25 +246,59 @@ def legal_page():
         contact_form()
 
 def contact_page():
+    sidebar_public()
+    header()
+    if st.button("← Retour à l'application", key="contact_back_top"):
+        st.session_state.screen = st.session_state.nav_back
+        st.rerun()
     st.markdown("## Contacter Clarté360")
     contact_form()
-    if st.button("⬅️ Revenir à l'application", type="primary", key="contact_back_main"):
-        st.session_state.screen=st.session_state.nav_back
-        st.rerun()
 
 def contact_form():
-    b=st.session_state.data.get("beneficiaire",{})
-    st.markdown("### Contacter Clarté360")
-    st.info("Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d'une suggestion concernant cette application. Pour toute question relative à l'interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.")
+    b = st.session_state.data.get("beneficiaire", {}) if isinstance(st.session_state.get("data"), dict) else {}
+    st.markdown("<div class='brand-box'>Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d'une suggestion concernant cette application. Pour toute question relative à l'interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.</div>", unsafe_allow_html=True)
     with st.form("contact_form"):
-        nom=st.text_input("Nom", value=b.get("nom","")); prenom=st.text_input("Prénom", value=b.get("prenom","")); email=st.text_input("E-mail", value=b.get("email","")); tel=st.text_input("Téléphone facultatif", value=b.get("telephone","")); objet=st.text_input("Objet"); message=st.text_area("Message", height=120); consent=st.checkbox("Je consens au traitement de ma demande par Clarté360.")
-        if st.form_submit_button("Envoyer le message", type="primary"):
-            if not email or not objet or not message or not consent: st.error("Merci de compléter l'e-mail, l'objet, le message et le consentement.")
+        c1, c2 = st.columns(2)
+        with c1:
+            nom = st.text_input("Nom", value=b.get("nom", ""))
+            prenom = st.text_input("Prénom", value=b.get("prenom", ""))
+            email = st.text_input("E-mail", value=b.get("email", ""))
+        with c2:
+            tel = st.text_input("Téléphone facultatif", value=b.get("telephone", ""))
+            objet = st.text_input("Objet")
+        message = st.text_area("Message", height=150)
+        consent = st.checkbox("Je consens au traitement de ce message pour permettre à Clarté360 de me répondre.")
+        submitted = st.form_submit_button("Envoyer à Clarté360", type="primary")
+    if submitted:
+        if not email or "@" not in email or not objet or not message:
+            st.error("Merci de renseigner au minimum un e-mail valide, un objet et un message.")
+        elif not consent:
+            st.error("Merci de confirmer le consentement spécifique au traitement de votre demande.")
+        else:
+            body = f"""Message depuis l'application Clarté360.
+
+Application : {APP_TITLE}
+Version : {APP_VERSION}
+Socle : {SOCLE_CLARTE360_VERSION}
+Date/heure : {now_iso()}
+Session : {st.session_state.data.get('active_session_id', '')}
+
+Nom : {nom}
+Prénom : {prenom}
+E-mail : {email}
+Téléphone : {tel}
+Objet : {objet}
+
+Message :
+{message}
+
+Infos techniques : {json.dumps(get_client_network(), ensure_ascii=False)}
+"""
+            ok, msg = send_mail(ADMIN_EMAIL, f"Clarté360 - Contact - {objet}", body)
+            if ok:
+                st.success("Votre message a été transmis à Clarté360.")
             else:
-                body=f"Message bénéficiaire\nApplication: {APP_TITLE}\nVersion: {APP_VERSION}\nSocle: {SOCLE_CLARTE360_VERSION}\nDate: {now_iso()}\nSession: {st.session_state.data.get('active_session_id')}\nNom: {nom}\nPrénom: {prenom}\nEmail: {email}\nTéléphone: {tel}\nObjet: {objet}\nMessage:\n{message}\nTechnique: {json.dumps(get_client_network(), ensure_ascii=False)}"
-                ok,msg=send_mail(ADMIN_EMAIL, f"Clarté360 - Contact - {objet}", body)
-                if ok: st.success("Message envoyé à Clarté360.")
-                else: st.warning("Message préparé mais SMTP non disponible. Vérifiez les secrets Streamlit.")
+                st.error(msg)
 
 def sidebar():
     st.sidebar.markdown("## Clarté360")
@@ -378,10 +431,12 @@ def home():
                 else:
                     st.error("Code incorrect.")
         with c2:
-            if st.button("Modifier l'adresse e-mail"):
-                st.session_state.code_sent = False
-                st.session_state.pending_code = ""
-                st.session_state.code_expires_at = None
+            if st.button("Je n'ai pas reçu mon code / Renvoyer un code"):
+                ok, msg = send_code(b.get("email", ""))
+                if ok:
+                    st.success("Un nouveau code vient d'être envoyé.")
+                else:
+                    st.error(msg)
                 st.rerun()
 
     if st.button("← Retour à l'accueil"):
