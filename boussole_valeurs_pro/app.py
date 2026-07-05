@@ -24,7 +24,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "V1.4-socle-clarte360"
+APP_VERSION = "V1.5-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "1.7"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
@@ -36,6 +36,7 @@ ENERGY_ACCESS_CODE = "CLAENER360"
 BENEFICIARY_TIMEOUT_MINUTES = 15
 CLARTE360_LEGAL = {
     "raison_sociale": "Clarté360",
+    "forme": "SAS",
     "adresse": "60 rue François 1er",
     "code_postal_ville": "75008 Paris",
     "telephone": "01 89 48 08 25",
@@ -46,6 +47,27 @@ CLARTE360_LEGAL = {
     "naf": "8559 A",
     "tva": "FR88102349834",
 }
+
+RGPD_TEXT = f"""
+### Protection des données personnelles (RGPD)
+
+Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
+
+Le fichier JSON constitue le seul support de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, le nom de votre accompagnateur si l'application le prévoit, les dates et heures de connexion, la durée des sessions, vos données saisies dans l'application, commentaires, exemples, cotations, résultats, historique des connexions, code d'accès généré, historique des régénérations, consentement RGPD, version de l'application et informations techniques disponibles.
+
+Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur. Si vous le transmettez à votre accompagnateur, celui-ci l'utilise exclusivement dans le cadre du bilan de compétences ou de l'accompagnement Clarté360.
+
+Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : {RGPD_TEXT_VERSION}.
+
+### Nature des résultats
+
+Les résultats fournis par les applications Clarté360 constituent des supports d'aide à la réflexion et à l'accompagnement. Ils ne constituent ni un diagnostic psychologique, ni un avis médical, ni une décision d'orientation automatique. Leur interprétation s'inscrit dans un dialogue avec le bénéficiaire et, lorsque cela est prévu, avec un professionnel de l'accompagnement.
+
+### Propriété intellectuelle
+
+Les applications, outils, questionnaires, méthodes, graphiques, rapports et contenus proposés par Clarté360 constituent des créations originales protégées. Toute reproduction, adaptation, diffusion ou réutilisation, totale ou partielle, sans autorisation écrite préalable de Clarté360, est interdite.
+"""
+
 DEFAULT_COLORS = [
     "#008080", "#F2C94C", "#EB5757", "#2F80ED", "#9B51E0", "#27AE60",
     "#F2994A", "#56CCF2", "#BB6BD9", "#219653", "#F67280", "#6C5CE7",
@@ -487,31 +509,112 @@ def welcome_screen() -> bool:
 
 
 def rgpd_information_block():
-    st.markdown("### Protection des données personnelles")
-    st.markdown(
-        """
-        <div class='privacy-box'>
-        Cette application Clarté360 fonctionne avec un fichier JSON de sauvegarde qui vous appartient.
-        <br><br>
-        <strong>Le JSON peut contenir les types d'informations suivants :</strong><br>
-        • votre identité et votre adresse e-mail ;<br>
-        • le nom de l'accompagnateur ;<br>
-        • les dates et heures de connexion ;<br>
-        • les durées d'utilisation et les pages consultées ;<br>
-        • les codes générés ou régénérés ;<br>
-        • le fait que vous avez donné votre consentement ;<br>
-        • les valeurs que vous saisissez, les exemples vécus, les périodes et les cotations ;<br>
-        • les éventuels éléments du module Valeurs Énergie ;<br>
-        • des informations techniques de connexion, notamment l'adresse IP si l'environnement Streamlit la rend disponible.
-        <br><br>
-        <strong>Clarté360 ne conserve pas ces données sur un serveur Clarté360.</strong><br>
-        Le fichier JSON reste sous votre contrôle : vous pouvez le conserver, le supprimer ou le transmettre à votre accompagnateur.
-        Lorsque ce fichier est communiqué à l'accompagnateur, il est utilisé uniquement dans le cadre de votre bilan de compétences
-        ou de votre accompagnement professionnel. Il n'est pas utilisé à des fins commerciales.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(RGPD_TEXT)
+
+
+def legal_mentions_block():
+    l = CLARTE360_LEGAL
+    st.markdown(f"""
+    ### {l['raison_sociale']} {l.get('forme', 'SAS')}
+
+    **Adresse :** {l['adresse']} – {l['code_postal_ville']}  
+    **Téléphone :** {l['telephone']}  
+    **E-mail :** {l['email']}  
+    **Site internet :** {l['web']}  
+
+    **RCS :** {l['rcs']}  
+    **SIRET :** {l['siret']}  
+    **Code NAF :** {l['naf']}  
+    **TVA intracommunautaire :** {l['tva']}
+    """)
+    st.markdown("""
+    ### Propriété intellectuelle
+    Les applications, outils, questionnaires, méthodes, graphiques, rapports et contenus proposés par Clarté360 constituent des créations originales protégées. Toute reproduction, adaptation, diffusion ou réutilisation, totale ou partielle, sans autorisation écrite préalable de Clarté360, est interdite.
+
+    ### Responsabilité
+    Les résultats proposés constituent des supports de réflexion et d'échange. Ils ne remplacent pas un accompagnement professionnel lorsque celui-ci est prévu et ne constituent ni un diagnostic psychologique, ni un avis médical.
+    """)
+
+
+def contact_form_main():
+    st.markdown("""
+    ### Contacter Clarté360
+    **Vous avez besoin de contacter Clarté360 ?**  
+    Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d'une suggestion d'amélioration concernant cette application.  
+    Pour toute question relative à votre bilan de compétences ou à l'interprétation des exercices, nous vous invitons à vous rapprocher de votre consultant ou accompagnateur.  
+    Nous vous répondrons par e-mail et, si vous renseignez votre numéro de téléphone, nous pourrons vous rappeler lorsque cela facilitera le traitement de votre demande.
+    """)
+    data = st.session_state.get("data", {}) if isinstance(st.session_state.get("data"), dict) else {}
+    ben = data.get("beneficiaire", {}) if isinstance(data, dict) else {}
+    with st.form("contact_clarte360_form_main"):
+        c1, c2 = st.columns(2)
+        with c1:
+            prenom = st.text_input("Prénom *", value=ben.get("prenom", ""))
+        with c2:
+            nom = st.text_input("Nom *", value=ben.get("nom", ""))
+        email = st.text_input("Adresse e-mail *", value=ben.get("email", ""))
+        telephone = st.text_input("Téléphone (facultatif, si vous souhaitez pouvoir être rappelé)")
+        objet = st.text_input("Objet *", value=f"Demande depuis {APP_TITLE}")
+        message = st.text_area("Message *", height=160)
+        consent = st.checkbox("J'accepte que Clarté360 utilise les informations transmises uniquement pour traiter ma demande. Si je renseigne un numéro de téléphone, j'accepte de pouvoir être contacté par téléphone lorsque cela est utile pour résoudre ma demande.")
+        submitted = st.form_submit_button("📩 Envoyer mon message", type="primary")
+    if submitted:
+        if not prenom.strip() or not nom.strip() or not email.strip() or "@" not in email or not objet.strip() or not message.strip():
+            st.error("Merci de renseigner les champs obligatoires : prénom, nom, e-mail, objet et message.")
+            return
+        if not consent:
+            st.error("Le consentement est nécessaire pour transmettre votre demande à Clarté360.")
+            return
+        sess = _current_session(data) if isinstance(data, dict) else {}
+        support_id = f"SUP-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8].upper()}"
+        body = f"""Demande envoyée depuis une application Clarté360.
+
+Identifiant support : {support_id}
+Application : {APP_TITLE}
+Version : {APP_VERSION}
+Socle Clarté360 : {SOCLE_CLARTE360_VERSION}
+Prénom : {prenom.strip()}
+Nom : {nom.strip()}
+Email : {email.strip()}
+Téléphone : {telephone.strip() or 'non renseigné'}
+Objet : {objet.strip()}
+
+Message :
+{message.strip()}
+
+Consentement support : accepté.
+Date/heure : {now_iso()}
+Identifiant session : {st.session_state.get('active_session_id','')}
+Temps session : {(sess or {}).get('duration_seconds','')} secondes
+Temps cumulé : {total_session_seconds(data) if isinstance(data, dict) else ''} secondes
+Client : {get_client_network()}
+"""
+        ok, info = send_email(FINAL_EMAIL_TO, f"Clarté360 - Support {support_id} - Boussole", body)
+        if ok:
+            st.success(f"Votre demande a bien été transmise à Clarté360. Référence : {support_id}")
+        else:
+            st.error("Le message n'a pas pu être envoyé automatiquement.")
+            st.caption(info)
+
+
+def rgpd_page():
+    header()
+    st.subheader("Informations légales et protection des données")
+    tab_rgpd, tab_mentions, tab_contact = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
+    with tab_rgpd:
+        rgpd_information_block()
+        st.info("Le consentement RGPD est demandé avant la génération du code d'accès et avant toute nouvelle passation.")
+    with tab_mentions:
+        legal_mentions_block()
+    with tab_contact:
+        contact_form_main()
+
+
+def contact_page():
+    header()
+    st.subheader("Contacter Clarté360")
+    contact_form_main()
+
 
 def access_gate() -> bool:
     """Retourne True lorsque le code est validé."""
@@ -996,73 +1099,91 @@ def add_default_values(nb):
 
 
 def legal_information_block():
-    st.markdown("### Informations légales et protection des données")
-    st.markdown(f"""
-    <div class='privacy-box'>
-    <strong>{CLARTE360_LEGAL['raison_sociale']}</strong><br>
-    {CLARTE360_LEGAL['adresse']} – {CLARTE360_LEGAL['code_postal_ville']}<br>
-    Tél. : {CLARTE360_LEGAL['telephone']} – E-mail : {CLARTE360_LEGAL['email']} – Web : {CLARTE360_LEGAL['web']}<br>
-    RCS : {CLARTE360_LEGAL['rcs']} – SIRET : {CLARTE360_LEGAL['siret']} – NAF : {CLARTE360_LEGAL['naf']} – TVA intracommunautaire : {CLARTE360_LEGAL['tva']}<br><br>
-    Le fichier JSON appartient au bénéficiaire. Aucune donnée n'est stockée sur les serveurs Clarté360. Les contenus, graphismes, textes, logiques pédagogiques et rapports relèvent de la propriété intellectuelle de Clarté360. L'application constitue un support d'accompagnement et ne remplace pas l'analyse du consultant.
-    </div>
-    """, unsafe_allow_html=True)
+    legal_mentions_block()
 
 
-def contact_form_sidebar():
-    with st.sidebar.expander("Contacter Clarté360"):
-        st.caption("Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d’une suggestion concernant cette application. Pour toute question relative à l’interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.")
-        ben = st.session_state.get("data", {}).get("beneficiaire", {}) if isinstance(st.session_state.get("data"), dict) else {}
-        nom = st.text_input("Nom", value=ben.get("nom", ""), key="contact_nom")
-        prenom = st.text_input("Prénom", value=ben.get("prenom", ""), key="contact_prenom")
-        email = st.text_input("E-mail", value=ben.get("email", ""), key="contact_email")
-        tel = st.text_input("Téléphone facultatif", value="", key="contact_tel")
-        objet = st.text_input("Objet", value="", key="contact_objet")
-        msg = st.text_area("Message", value="", key="contact_message")
-        consent = st.checkbox("J’accepte que ces informations soient utilisées pour traiter ma demande.", key="contact_consent")
-        if st.button("Envoyer à Clarté360", key="contact_send"):
-            if not consent or not email or not msg:
-                st.error("Merci de renseigner au minimum l'e-mail, le message et le consentement.")
-            else:
-                data = st.session_state.get("data", {})
-                sess = _current_session(data) if isinstance(data, dict) else {}
-                body = f"""Demande depuis l'application Clarté360.
+def mark_json_downloaded():
+    """Marque le JSON comme téléchargé afin de ne plus déclencher l'alerte navigateur."""
+    st.session_state.json_downloaded = True
 
-Nom : {nom}
-Prénom : {prenom}
-E-mail : {email}
-Téléphone : {tel}
-Objet : {objet}
 
-Message :
-{msg}
+def install_beforeunload_warning():
+    """Alerte navigateur si l'utilisateur tente de quitter sans télécharger son JSON.
 
-Application : {APP_TITLE}
-Version application : {APP_VERSION}
-Version socle : {SOCLE_CLARTE360_VERSION}
-Date/heure : {now_iso()}
-Identifiant session : {st.session_state.get('active_session_id','')}
-Temps session : {(sess or {}).get('duration_seconds','')} secondes
-Temps cumulé : {total_session_seconds(data) if isinstance(data, dict) else ''} secondes
-Client : {get_client_network()}
-"""
-                ok, info = send_email(FINAL_EMAIL_TO, f"Clarté360 - Contact Boussole - {objet or nom}", body)
-                if ok:
-                    st.success("Message envoyé à Clarté360.")
-                else:
-                    st.error("L'envoi automatique n'a pas pu être effectué.")
-                    st.caption(info)
+    Reprise du comportement du socle Clarté360 Moteurs Professionnels v1.7.0 :
+    les navigateurs affichent leur propre dialogue standard, par exemple
+    "Quitter le site ? Vos modifications risquent de ne pas être enregistrées.".
+    """
+    if isinstance(st.session_state.get("data"), dict) and not st.session_state.get("json_downloaded"):
+        components.html(
+            """
+            <script>
+            window.parent.onbeforeunload = function (e) {
+                const message = "Avant de quitter, utilisez le bouton Clarté360 : Quitter et télécharger mon JSON.";
+                e.preventDefault();
+                e.returnValue = message;
+                return message;
+            };
+            </script>
+            """,
+            height=0,
+        )
+
+def prepare_sidebar_json(close_session: bool = False, reason: str = "sauvegarde_manuelle_reprise"):
+    data = st.session_state.get("data")
+    if not isinstance(data, dict):
+        return
+    if close_session:
+        mark_current_session_closed(reason)
+    else:
+        record_save_event(data, reason)
+    base = export_basename(data)
+    st.session_state.exit_json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    st.session_state.exit_json_filename = f"{base}.json"
+    st.session_state.exit_json_ready = True
+    st.session_state.json_downloaded = False
+
 
 def sidebar():
-    st.sidebar.markdown("## Navigation")
-    pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et points d'appui", "4. Boussole des valeurs professionnelles", "5. Valeurs énergies", "6. Export / Rapports", "7. RGPD"]
-    st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
-    st.sidebar.markdown("---")
-    contact_form_sidebar()
+    st.sidebar.markdown("### Session")
     st.sidebar.markdown("---")
     if isinstance(st.session_state.get("data"), dict):
-        base = export_basename(st.session_state.data)
-        json_bytes = json.dumps(st.session_state.data, ensure_ascii=False, indent=2).encode("utf-8")
-        st.sidebar.download_button("Quitter et télécharger mon JSON", json_bytes, file_name=f"{base}.json", mime="application/json", type="primary")
+        st.sidebar.caption("Votre progression est enregistrée dans votre fichier JSON.")
+        if st.sidebar.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
+            prepare_sidebar_json(False, "sauvegarde_manuelle_reprise")
+            st.rerun()
+        if st.sidebar.button("🚪 Quitter et télécharger mon JSON", type="primary", use_container_width=True):
+            prepare_sidebar_json(True, "sortie_utilisateur_par_bouton")
+            st.rerun()
+        if st.session_state.get("exit_json_ready"):
+            st.sidebar.download_button(
+                "⬇️ Télécharger le JSON préparé",
+                data=st.session_state.get("exit_json_bytes", b""),
+                file_name=st.session_state.get("exit_json_filename", "boussole_clarte360.json"),
+                mime="application/json",
+                use_container_width=True,
+                on_click=mark_json_downloaded,
+            )
+            st.sidebar.caption("Conservez ce JSON : il est nécessaire pour reprendre votre travail et il contient le temps réellement enregistré.")
+    st.sidebar.markdown("---")
+    if st.sidebar.button("💬 Contacter Clarté360", use_container_width=True):
+        st.session_state.show_contact_page = True
+        st.session_state.show_rgpd_page = False
+        st.rerun()
+    if st.sidebar.button("RGPD et mentions légales", use_container_width=True):
+        st.session_state.show_rgpd_page = True
+        st.session_state.show_contact_page = False
+        st.rerun()
+    st.sidebar.caption("Clarté360 · contact@clarte360.com")
+    st.sidebar.caption(f"App {APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION}")
+    if st.sidebar.button("Réinitialiser la session"):
+        for key in ["data", "code_verified", "welcome_done", "code_sent", "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page"]:
+            st.session_state.pop(key, None)
+        st.rerun()
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Navigation")
+    pages = ["1. Bénéficiaire", "2. Consignes", "3. Valeurs et points d'appui", "4. Boussole des valeurs professionnelles", "5. Valeurs énergies", "6. Export / Rapports", "7. RGPD"]
+    st.session_state.page = st.sidebar.radio("", pages, index=pages.index(st.session_state.page), label_visibility="collapsed")
     uploaded = st.sidebar.file_uploader("Ouvrir un questionnaire JSON", type=["json"])
     if uploaded is not None:
         try:
@@ -1454,7 +1575,7 @@ def page_export():
 
 
 
-def page_rgpd():
+def page_traceability_rgpd():
     st.markdown("## 7. RGPD et traçabilité")
     rgpd_information_block()
     legal_information_block()
@@ -1490,10 +1611,23 @@ def main():
         return
     auto_rerun = timeout_watchdog()
     ensure_runtime_tracking(st.session_state.data, user_activity=not auto_rerun)
+    install_beforeunload_warning()
     if beneficiary_has_timed_out():
         timeout_screen()
         return
     sidebar()
+    if st.session_state.get("show_contact_page"):
+        contact_page()
+        if st.button("Retour à l'application"):
+            st.session_state.show_contact_page = False
+            st.rerun()
+        return
+    if st.session_state.get("show_rgpd_page"):
+        rgpd_page()
+        if st.button("Retour à l'application"):
+            st.session_state.show_rgpd_page = False
+            st.rerun()
+        return
     log_page_visit(st.session_state.page)
     header()
     if st.session_state.page.startswith("1"):
@@ -1509,7 +1643,7 @@ def main():
     elif st.session_state.page.startswith("6"):
         page_export()
     else:
-        page_rgpd()
+        page_traceability_rgpd()
 
 
 
