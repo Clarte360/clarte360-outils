@@ -192,6 +192,10 @@ def load_workbook_from_source(content: bytes | None, default_mtime: float) -> tu
     return questions, dimensions
 
 
+def validate_question_bank(df: pd.DataFrame) -> list[str]:
+    return validate_questionnaire(df)
+
+
 def get_active_questions(questions_df: pd.DataFrame) -> pd.DataFrame:
     active = questions_df[questions_df["Statut"].astype(str).str.lower().str.strip() == "active"].copy()
     active["ID"] = active["ID"].astype(str).str.strip()
