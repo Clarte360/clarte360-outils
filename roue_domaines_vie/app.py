@@ -25,7 +25,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage, PageBreak
 
 APP_TITLE = "Clarté360 - Roue des domaines de vie"
-APP_VERSION = "1.4.0-socle-clarte360"
+APP_VERSION = "1.4.1-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BENEFICIARY_TIMEOUT_MINUTES = 15
@@ -419,18 +419,25 @@ def safe_filename(prefix, ext):
 
 
 def pdf_footer(canvas, doc):
+    """Pied de page institutionnel Clarte360 sur toutes les pages PDF.
+
+    Le texte est volontairement decoupe en deux lignes pour eviter toute coupe
+    a gauche ou a droite sur les lecteurs PDF et lors de l'impression.
+    """
     canvas.saveState()
-    canvas.setFont("Helvetica", 7)
+    canvas.setFont("Helvetica", 6.5)
     canvas.setFillColor(colors.HexColor("#666666"))
-    footer = "CLARTÉ360 – 60 rue François 1er – 75008 Paris – Tél. : 01 89 48 08 25 – Email : contact@clarte360.com – Web : www.clarte360.com – RCS : 102349834 – SIRET : 10234983400014 – NAF : 8559 A – TVA : FR88102349834"
-    canvas.drawCentredString(A4[0] / 2, 0.8 * cm, footer[:180])
-    canvas.drawRightString(A4[0] - 1.5 * cm, 0.45 * cm, f"Page {doc.page}")
+    line_1 = "CLARTÉ360 - 60 rue François 1er - 75008 Paris - Tél. : 01 89 48 08 25 - Email : contact@clarte360.com - Web : www.clarte360.com"
+    line_2 = "RCS : 102349834 - SIRET : 10234983400014 - NAF : 8559 A - TVA : FR88102349834"
+    canvas.drawCentredString(A4[0] / 2, 0.85 * cm, line_1)
+    canvas.drawCentredString(A4[0] / 2, 0.55 * cm, line_2)
+    canvas.drawRightString(A4[0] - 1.5 * cm, 0.25 * cm, f"Page {doc.page}")
     canvas.restoreState()
 
 def build_pdf():
     data = st.session_state.data
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.8*cm)
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="TealTitle", parent=styles["Title"], textColor=colors.HexColor(BRAND_COLOR), fontSize=22, leading=26))
     styles.add(ParagraphStyle(name="TealH2", parent=styles["Heading2"], textColor=colors.HexColor(BRAND_COLOR), fontSize=15, leading=18))

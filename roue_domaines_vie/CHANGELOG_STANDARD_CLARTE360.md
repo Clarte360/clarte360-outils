@@ -1,6 +1,6 @@
 # Clarté360 - Roue des domaines de vie - mise à niveau socle
 
-Version livrée : 1.4.0-socle-clarte360
+Version livrée : 1.4.1-socle-clarte360
 Socle Clarté360 : 3.0
 
 ## Audit synthétique
@@ -28,3 +28,7 @@ C. Points sensibles
 D. Compatibilité
 - Compatible Streamlit Cloud avec secrets.example.toml.
 - Prépare la migration VPS par structuration JSON et traçabilité sessions.
+
+
+## Correctif 1.4.1
+- Correction du pied de page PDF : découpe institutionnelle en deux lignes, suppression du risque de texte tronqué sur les côtés, pagination conservée sur chaque page.
