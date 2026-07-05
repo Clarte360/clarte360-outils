@@ -1,16 +1,11 @@
-# Boussole Valeurs Pro v1.8 - Socle Clarte360 v3.0
+# Boussole des valeurs professionnelles - v1.8.1
 
-## Modifications
-- Barre laterale a deux etats : accueil institutionnel puis menu metier en premier dans le coeur de l'application.
-- Suppression du bouton "Reinitialiser la session" des que la session beneficaire est active.
-- Suppression de l'onglet RGPD du menu metier ; le bouton "RGPD et mentions legales" devient l'unique acces et affiche la tracabilite disponible.
-- Rapport PDF Boussole restructure en document professionnel : page de synthese, roue, tableau des valeurs, pages de detail. Aucune interpretation ajoutee.
-- Version application portee a 1.8 et socle a 3.0.
+Correctifs socle Clarté360 v3.0 :
 
-## Tests techniques
-- Compilation Python : OK.
+- Correction de la page RGPD / traçabilité : ajout de la fonction de formatage des durées utilisée par le bloc de traçabilité.
+- Ajout d'un bouton de retour visible en haut des pages RGPD et Contact lorsque l'utilisateur est déjà entré dans l'application.
+- Correction de la navigation latérale : un clic sur une rubrique métier ferme automatiquement la page institutionnelle RGPD ou Contact et ramène dans le cœur de l'application.
+- Conservation de la suppression du bouton Réinitialiser la session pendant la passation.
+- Conservation de la suppression de l'onglet RGPD du menu métier.
 
-## Tests manuels a realiser apres deploiement
-- SMTP reel avec Secrets Streamlit.
-- Timeout reel apres 15 minutes sans activite.
-- Verification navigateur de l'alerte de fermeture.
+Logique métier non modifiée : valeurs, points d'appui, cotations, boussole, valeurs énergies et philosophie pédagogique inchangés.
