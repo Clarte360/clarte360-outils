@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.9.2-socle-clarte360"
+APP_VERSION = "1.9.4-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BENEFICIARY_TIMEOUT_MINUTES = 15
@@ -267,7 +267,8 @@ def reset_all():
     for key in [
         "session_id", "passation_id", "question_order", "option_orders", "answers", "current_index",
         "started_at", "beneficiaire", "test_started", "email_sent", "start_email_sent",
-        "pending_beneficiaire", "access_code", "code_sent", "code_message", "code_verified"
+        "pending_beneficiaire", "access_code", "code_sent", "code_message", "code_verified",
+        "welcome_choice", "resume_json_main"
     ]:
         st.session_state.pop(key, None)
     st.rerun()
@@ -571,9 +572,19 @@ def fig_to_png_bytes(fig) -> BytesIO:
     return buf
 
 
+def pdf_footer(canvas, doc):
+    canvas.saveState()
+    canvas.setFont("Helvetica", 7)
+    canvas.setFillColor(colors.HexColor("#5f6f6f"))
+    footer = "Clarté360 - 60 rue François 1er - 75008 Paris - contact@clarte360.com - www.clarte360.com - SIRET 10234983400014"
+    canvas.drawCentredString(A4[0] / 2, 0.85 * cm, footer)
+    canvas.drawRightString(A4[0] - 1.5 * cm, 0.55 * cm, f"Page {doc.page}")
+    canvas.restoreState()
+
+
 def make_pdf(results: pd.DataFrame, interpretation: str, beneficiaire: dict) -> bytes:
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.2*cm, bottomMargin=1.2*cm)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.2*cm, bottomMargin=1.8*cm)
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("TitleTeal", parent=styles["Title"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=18, leading=22)
     h2_teal = ParagraphStyle("H2Teal", parent=styles["Heading2"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=13, leading=16)
@@ -619,9 +630,7 @@ def make_pdf(results: pd.DataFrame, interpretation: str, beneficiaire: dict) -> 
     story.append(Spacer(1, 0.35*cm))
     story.append(Paragraph("Ce document est un support d’échange. Il ne constitue ni un diagnostic, ni un test psychométrique, ni une orientation automatique.", styles["Italic"]))
     story.append(Paragraph("Document généré localement. Les données restent sous le contrôle du bénéficiaire.", styles["Italic"]))
-    story.append(Spacer(1, 0.2*cm))
-    story.append(Paragraph("Clarté360 - 60 rue François 1er - 75008 Paris - contact@clarte360.com - www.clarte360.com - SIRET 10234983400014", styles["Italic"]))
-    doc.build(story)
+    doc.build(story, onFirstPage=pdf_footer, onLaterPages=pdf_footer)
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -928,20 +937,21 @@ def render_sidebar():
                     use_container_width=True,
                     on_click=lambda: st.session_state.update({"json_downloaded": True}),
                 )
-        resume_file = st.file_uploader("Importer mon fichier JSON", type=["json"], key="resume_json")
-        if resume_file is not None and not st.session_state.get("test_started"):
-            try:
-                payload = json.loads(resume_file.getvalue().decode("utf-8"))
-                if payload.get("outil") != "clarte360_preferences_professionnelles":
-                    st.error("Ce fichier JSON ne correspond pas à cet outil.")
-                elif payload.get("completed") is True:
-                    st.error("Ce JSON correspond à un test déjà terminé. Il ne peut pas servir à reprendre une passation.")
-                else:
-                    restore_from_progress(payload)
-                    st.success("Sauvegarde chargée. Reprise du questionnaire.")
-                    st.rerun()
-            except Exception as exc:
-                st.error(f"Impossible de charger la sauvegarde : {exc}")
+        if (not st.session_state.get("test_started")) and st.session_state.get("welcome_choice") == "import":
+            resume_file = st.file_uploader("Importer mon fichier JSON", type=["json"], key="resume_json")
+            if resume_file is not None:
+                try:
+                    payload = json.loads(resume_file.getvalue().decode("utf-8"))
+                    if payload.get("outil") != "clarte360_preferences_professionnelles":
+                        st.error("Ce fichier JSON ne correspond pas à cet outil.")
+                    elif payload.get("completed") is True:
+                        st.error("Ce JSON correspond à un test déjà terminé. Il ne peut pas servir à reprendre une passation.")
+                    else:
+                        restore_from_progress(payload)
+                        st.success("Sauvegarde chargée. Reprise du questionnaire.")
+                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Impossible de charger la sauvegarde : {exc}")
         st.markdown("---")
         if st.button("💬 Contacter Clarté360", use_container_width=True):
             st.session_state.show_contact_page = True; st.session_state.show_rgpd_page = False; st.rerun()
@@ -977,6 +987,30 @@ if st.session_state.get("show_rgpd_page"):
     rgpd_page()
     if st.button("← Retour à l’application"):
         st.session_state.show_rgpd_page = False; st.rerun()
+    st.stop()
+
+if not st.session_state.get("test_started") and not st.session_state.get("code_sent") and not st.session_state.get("welcome_choice"):
+    render_header()
+    st.markdown(f"<h2 style='color:{DARK_TEXT};'>Bienvenue dans l'application Clarté360 – Préférences professionnelles</h2>", unsafe_allow_html=True)
+    st.write("Avez-vous conservé le fichier JSON de votre dernière utilisation de cette application ?")
+    col_import, col_new = st.columns(2)
+    with col_import:
+        if st.button("Oui → Importer mon fichier JSON", type="primary", use_container_width=True):
+            st.session_state.welcome_choice = "import"
+            st.rerun()
+    with col_new:
+        if st.button("Non → Commencer une nouvelle session", use_container_width=True):
+            st.session_state.welcome_choice = "new"
+            st.rerun()
+    st.stop()
+
+if not st.session_state.get("test_started") and st.session_state.get("welcome_choice") == "import":
+    render_header()
+    st.markdown(f"<h2 style='color:{DARK_TEXT};'>Reprendre avec mon fichier JSON</h2>", unsafe_allow_html=True)
+    st.info("Importez votre fichier JSON depuis la barre latérale pour reprendre votre questionnaire.")
+    if st.button("← Retour à l'accueil"):
+        st.session_state.pop("welcome_choice", None)
+        st.rerun()
     st.stop()
 
 st.markdown(
@@ -1156,12 +1190,15 @@ else:
     json_bytes = json_download_bytes(export_payload)
 
     if not st.session_state.get("email_sent"):
+        st.warning("Questionnaire terminé : le JSON final va être transmis automatiquement à Clarté360 si l'envoi sécurisé est configuré.")
         ok, message = try_send_final_json(json_bytes, final_json_name, beneficiaire)
         st.session_state.email_sent = ok
         if ok:
-            st.success(message)
+            st.success("JSON final transmis automatiquement à Clarté360. Vous pouvez également télécharger votre JSON final et votre rapport PDF ci-dessous.")
         else:
-            st.info(message)
+            st.info("Envoi automatique non confirmé : " + str(message))
+    elif st.session_state.get("email_sent"):
+        st.success("JSON final déjà transmis automatiquement à Clarté360. Vous pouvez télécharger vos fichiers ci-dessous.")
 
     export_payload = build_export_json(active_questions, results, score_details)
     json_bytes = json_download_bytes(export_payload)
