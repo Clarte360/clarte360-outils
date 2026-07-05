@@ -24,7 +24,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "3.4.0"
+APP_VERSION = "3.4.1"
 BRAND = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
@@ -110,6 +110,8 @@ def init_state() -> None:
         "rgpd_text_version": "RGPD-Clarte360-2026-07",
         "institutional_page": None,
         "consultant": "",
+        "access_sessions": [],
+        "sauvegardes": [],
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -136,6 +138,9 @@ def load_payload(payload: dict[str, Any]) -> None:
     rgpd = payload.get("rgpd", {})
     st.session_state.rgpd_consent = bool(rgpd.get("consentement", payload.get("rgpd_consent", False)))
     st.session_state.rgpd_consent_at = rgpd.get("date_consentement", payload.get("rgpd_consent_at", ""))
+    access = payload.get("access", {}) if isinstance(payload.get("access", {}), dict) else {}
+    st.session_state.access_sessions = list(access.get("sessions", []))
+    st.session_state.sauvegardes = list(access.get("sauvegardes", payload.get("sauvegardes", [])))
 
 
 def build_payload() -> dict[str, Any]:
@@ -172,6 +177,11 @@ def build_payload() -> dict[str, Any]:
         },
         "evenements": sorted(st.session_state.events, key=lambda e: (float(e.get("age", 0)), e.get("date_reference", ""))),
         "remontees": st.session_state.get("remontees", {}),
+        "access": {
+            "timeout_minutes": 15,
+            "sessions": merged_session_history(True),
+            "sauvegardes": st.session_state.get("sauvegardes", []),
+        },
     }
 
 
@@ -517,6 +527,68 @@ def format_seconds(seconds: int | float | None) -> str:
     return f"{m}min {s:02d}s"
 
 
+
+def current_session_record() -> dict[str, Any]:
+    started = st.session_state.get("session_started_at", now_iso())
+    last_activity = st.session_state.get("session_last_activity", now_iso())
+    return {
+        "session_id": st.session_state.get("session_id", ""),
+        "started_at": started,
+        "last_activity_at": last_activity,
+        "last_seen_at": now_iso(),
+        "ended_at": "",
+        "duration_seconds": total_session_seconds(),
+        "client_network": {},
+    }
+
+
+def merged_session_history(include_current: bool = True) -> list[dict[str, Any]]:
+    sessions = []
+    for sess in st.session_state.get("access_sessions", []):
+        if isinstance(sess, dict):
+            sessions.append(dict(sess))
+    if include_current and st.session_state.get("code_verified"):
+        current = current_session_record()
+        sid = current.get("session_id")
+        replaced = False
+        for i, sess in enumerate(sessions):
+            if sess.get("session_id") == sid:
+                sessions[i].update(current)
+                replaced = True
+                break
+        if not replaced:
+            sessions.append(current)
+    return sessions
+
+
+def total_tracked_seconds() -> int:
+    total = 0
+    for sess in merged_session_history(True):
+        try:
+            total += int(sess.get("duration_seconds", 0) or 0)
+        except Exception:
+            pass
+    return total
+
+
+def close_current_session(reason: str = "sortie_utilisateur") -> None:
+    now = now_iso()
+    current = current_session_record()
+    current["ended_at"] = now
+    current["close_reason"] = reason
+    sid = current.get("session_id")
+    sessions = merged_session_history(False)
+    replaced = False
+    for i, sess in enumerate(sessions):
+        if sess.get("session_id") == sid:
+            sessions[i].update(current)
+            replaced = True
+            break
+    if not replaced:
+        sessions.append(current)
+    st.session_state.access_sessions = sessions
+
+
 def header() -> None:
     col_logo, col_title = st.columns([0.13, 0.87])
     with col_logo:
@@ -616,6 +688,13 @@ def rgpd_page() -> None:
     tabs = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
     with tabs[0]:
         rgpd_information_block()
+        st.markdown("### Traçabilité")
+        st.write(f"Temps cumulé enregistré : **{format_seconds(total_tracked_seconds())}**")
+        sessions = merged_session_history(True)
+        if sessions:
+            st.dataframe(pd.DataFrame(sessions), use_container_width=True)
+        else:
+            st.caption("La traçabilité sera alimentée après le démarrage d'une session.")
     with tabs[1]:
         legal_mentions_block()
     with tabs[2]:
@@ -733,6 +812,8 @@ def access_gate() -> bool:
                     st.session_state.consultant = b.get("consultant", "Clarté360")
                     st.session_state.rgpd_consent = True
                     st.session_state.rgpd_consent_at = now_iso()
+                    st.session_state.session_started_at = now_iso()
+                    st.session_state.session_last_activity = now_iso()
                     st.session_state.page = "1. Bénéficiaire"
                     st.rerun()
                 else:
@@ -755,8 +836,11 @@ def mark_json_downloaded():
 
 
 def prepare_sidebar_json(close_session: bool = False, reason: str = "sauvegarde_manuelle_reprise"):
+    if close_session:
+        close_current_session(reason)
+    sauvegarde = {"date": now_iso(), "motif": reason, "close_session": bool(close_session), "session_id": st.session_state.get("session_id", "")}
+    st.session_state.setdefault("sauvegardes", []).append(sauvegarde)
     payload = build_payload()
-    payload.setdefault("sauvegardes", []).append({"date": now_iso(), "motif": reason, "close_session": bool(close_session)})
     base_name = export_name(st.session_state.get("last_name", ""), st.session_state.get("first_name", ""), "json")
     st.session_state.exit_json_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     st.session_state.exit_json_filename = base_name
@@ -851,6 +935,7 @@ def timeout_check() -> bool:
 
 
 def timeout_screen() -> None:
+    close_current_session("timeout_inactivite")
     header()
     st.warning("Votre session semble inactive depuis plus de 15 minutes. Préparez et téléchargez votre JSON avant de quitter ou reprenez votre travail.")
     if st.button("Préparer mon JSON maintenant", type="primary"):

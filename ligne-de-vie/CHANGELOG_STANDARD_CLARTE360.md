@@ -10,3 +10,10 @@
 - Maintien de la logique métier Ligne de vie : événements, axe chronologique, remontées, CSV, PDF, PNG, JSON.
 - Maintien du pied de page PDF institutionnel centré sur toutes les pages.
 - Ajout d'un comportement d'alerte de sortie et d'un écran timeout.
+
+
+## v3.4.1 - Correction traçabilité RGPD
+- Ajout de la section Traçabilité dans l’onglet Protection des données, alignée sur Roue des domaines de vie.
+- Historique des sessions intégré au JSON dans access.sessions.
+- Temps cumulé affiché dans la page RGPD et conservé lors des imports JSON.
+- Fermeture de session tracée lors du téléchargement JSON de sortie et du timeout.
