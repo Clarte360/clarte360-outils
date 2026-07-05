@@ -1,3 +1,3 @@
-# Clarté360 — Boucle auto-validante
+# Clarté360 — Boucle auto-validante v2.0.0
 
-V1.1 : phase 3 simplifiée, vraie boucle visuelle, respect du code couleur Clarté360.
+Application transformée en application bénéficiaire Clarté360 : suppression des codes accompagnateurs, suppression de la logique multi-bénéficiaires, JSON individuel, écran d'accueil, RGPD, contact, timeout, protection fermeture navigateur et rapport PDF institutionnel.
