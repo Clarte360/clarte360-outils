@@ -1,6 +1,6 @@
 import json, secrets, smtplib, socket, platform, html
 from copy import deepcopy
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from email.message import EmailMessage
 from io import BytesIO
 from pathlib import Path
@@ -19,7 +19,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 — Boucle auto-validante"
-APP_VERSION = "2.0.1-socle-clarte360"
+APP_VERSION = "2.0.2-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008b8b"
@@ -27,6 +27,7 @@ ACCENT = "#e7f5f4"
 WARN = "#fff4e6"
 ADMIN_EMAIL = "contact@clarte360.com"
 BENEFICIARY_TIMEOUT_MINUTES = 15
+ACCESS_CODE_VALIDITY_MINUTES = 15
 LOGO_PATH = Path(__file__).parent / "assets" / "logo_clarte360.png"
 
 CLARTE_LEGAL = """Clarté360\n60 rue François 1er\n75008 Paris\nTél. : 01 89 48 08 25\nE-mail : contact@clarte360.com\nWeb : www.clarte360.com\nRCS : 102349834\nSIRET : 10234983400014\nNAF : 8559A\nTVA intracommunautaire : FR88102349834"""
@@ -82,6 +83,8 @@ def init_state():
     st.session_state.setdefault("screen", "home")
     st.session_state.setdefault("authenticated", False)
     st.session_state.setdefault("pending_code", "")
+    st.session_state.setdefault("code_sent", False)
+    st.session_state.setdefault("code_expires_at", None)
     st.session_state.setdefault("selected_croyance_id", None)
     st.session_state.setdefault("nav_back", "app")
     st.session_state.setdefault("home_choice", None)
@@ -97,33 +100,69 @@ def touch():
 def json_bytes():
     touch(); return json.dumps(st.session_state.data, ensure_ascii=False, indent=2).encode("utf-8")
 
-def send_mail(to, subject, body):
-    cfg = st.secrets.get("smtp", {}) if hasattr(st, "secrets") else {}
-    if not cfg: return False, "SMTP non configuré"
+def get_email_config():
+    """Lit la configuration SMTP Streamlit Secrets au format validé par les apps de référence : [email]."""
     try:
-        msg=EmailMessage(); msg["From"]=cfg.get("from_email", cfg.get("username", ADMIN_EMAIL)); msg["To"]=to; msg["Subject"]=subject; msg.set_content(body)
-        server=cfg.get("server"); port=int(cfg.get("port",587)); user=cfg.get("username"); pwd=cfg.get("password"); use_ssl=bool(cfg.get("use_ssl",False))
-        if use_ssl:
-            with smtplib.SMTP_SSL(server, port, timeout=20) as smtp:
-                if user and pwd: smtp.login(user,pwd)
+        cfg = st.secrets.get("email", {})
+        required = ["smtp_server", "smtp_port", "smtp_user", "smtp_password", "from_email", "to_email"]
+        if all(k in cfg and str(cfg[k]).strip() for k in required):
+            return {k: str(cfg[k]).strip() for k in required}
+    except Exception:
+        pass
+    # Compatibilité avec d'anciens secrets éventuels [smtp]
+    try:
+        cfg = st.secrets.get("smtp", {})
+        mapping = {
+            "smtp_server": cfg.get("server"),
+            "smtp_port": cfg.get("port", 587),
+            "smtp_user": cfg.get("username"),
+            "smtp_password": cfg.get("password"),
+            "from_email": cfg.get("from_email", cfg.get("username", ADMIN_EMAIL)),
+            "to_email": cfg.get("to_email", ADMIN_EMAIL),
+        }
+        if all(str(v or "").strip() for v in mapping.values()):
+            return {k: str(v).strip() for k, v in mapping.items()}
+    except Exception:
+        pass
+    return None
+
+def send_mail(to, subject, body):
+    cfg = get_email_config()
+    if not cfg:
+        return False, "SMTP non configuré. Aucun email n'a été envoyé."
+    try:
+        msg = EmailMessage()
+        msg["From"] = cfg["from_email"]
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.set_content(body)
+        port = int(cfg["smtp_port"])
+        if port == 465:
+            with smtplib.SMTP_SSL(cfg["smtp_server"], port, timeout=20) as smtp:
+                smtp.login(cfg["smtp_user"], cfg["smtp_password"])
                 smtp.send_message(msg)
         else:
-            with smtplib.SMTP(server, port, timeout=20) as smtp:
+            with smtplib.SMTP(cfg["smtp_server"], port, timeout=20) as smtp:
                 smtp.starttls()
-                if user and pwd: smtp.login(user,pwd)
+                smtp.login(cfg["smtp_user"], cfg["smtp_password"])
                 smtp.send_message(msg)
-        return True, "envoyé"
+        return True, "Email envoyé."
     except Exception as e:
-        return False, str(e)
+        return False, f"Erreur d'envoi email : {e}"
 
 def send_code(email):
     code = f"{secrets.randbelow(1000000):06d}"
     st.session_state.pending_code = code
-    ok, msg = send_mail(email, f"Votre code d'accès {APP_TITLE}", f"Votre code d'accès Clarté360 est : {code}\n\nConservez votre JSON : il reste votre sauvegarde principale.")
-    ev={"event":"code_generated","at":now_iso(),"email":email,"status":"sent" if ok else "not_sent","smtp_message":msg}
-    st.session_state.data["access"]["code_access"] = code
-    st.session_state.data["access"]["code_generated_at"] = ev["at"]
-    st.session_state.data["access"]["code_history"].append(ev)
+    expires_at = datetime.now() + timedelta(minutes=ACCESS_CODE_VALIDITY_MINUTES)
+    ok, msg = send_mail(email, f"Votre code d'accès Clarté360", f"Voici votre code d'accès pour démarrer l'outil Clarté360 - Boucle auto-validante :\n\n{code}\n\nCe code est valable {ACCESS_CODE_VALIDITY_MINUTES} minutes.\n\nConservez votre JSON : il reste votre sauvegarde principale.")
+    if ok:
+        ev={"event":"code_generated","at":now_iso(),"email":email,"expires_at":expires_at.isoformat(timespec="seconds"),"status":"sent","smtp_message":msg}
+        st.session_state.data["access"]["code_access"] = code
+        st.session_state.data["access"]["code_generated_at"] = ev["at"]
+        st.session_state.data["access"]["code_expires_at"] = ev["expires_at"]
+        st.session_state.data["access"]["code_history"].append(ev)
+        st.session_state.code_sent = True
+        st.session_state.code_expires_at = ev["expires_at"]
     return ok, msg
 
 def notify_admin(first=False):
@@ -169,18 +208,30 @@ def sidebar_public():
         st.rerun()
 
 def legal_page():
+    header()
+    if st.button("← Retour à l'application", key="rgpd_back_top"):
+        st.session_state.screen=st.session_state.nav_back
+        st.rerun()
     st.markdown("## Informations légales et protection des données")
     tabs=st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
     with tabs[0]:
-        st.markdown(f"""### Protection des données personnelles (RGPD)\nCette application ne conserve aucune donnée sur un serveur Clarté360. Le fichier JSON constitue le seul support de sauvegarde et reste sous le contrôle du bénéficiaire. Il peut contenir l'identité, l'e-mail, les réponses, les résultats, les dates et heures de session, les codes générés, le consentement RGPD et les informations techniques disponibles.\n\nLe consentement est obligatoire avant toute utilisation. Version du texte : **{RGPD_TEXT_VERSION}**.""")
+        st.markdown(RGPD_TEXT)
         rgpd=st.session_state.data.get("rgpd",{})
-        if rgpd.get("consent_given"): st.success(f"Consentement enregistré le {rgpd.get('consent_at')} — version {rgpd.get('consent_text_version')}")
+        if rgpd.get("consent_given"):
+            st.success(f"Consentement enregistré le {rgpd.get('consent_at')} — version {rgpd.get('consent_text_version')}")
     with tabs[1]:
+        st.markdown("### Mentions légales")
         st.text(CLARTE_LEGAL)
-        st.markdown("Propriété intellectuelle : cette application et ses contenus sont la propriété de Clarté360. L'outil constitue un support d'accompagnement et ne remplace pas le travail d'analyse réalisé avec le consultant.")
-    with tabs[2]: contact_form()
-    if st.button("⬅️ Revenir à l'application", type="primary"):
-        st.session_state.screen=st.session_state.nav_back; st.rerun()
+        st.markdown("Les contenus, méthodes, rapports, graphiques et outils Clarté360 sont protégés par le droit de la propriété intellectuelle.")
+    with tabs[2]:
+        contact_form()
+
+def contact_page():
+    st.markdown("## Contacter Clarté360")
+    contact_form()
+    if st.button("⬅️ Revenir à l'application", type="primary", key="contact_back_main"):
+        st.session_state.screen=st.session_state.nav_back
+        st.rerun()
 
 def contact_form():
     b=st.session_state.data.get("beneficiaire",{})
@@ -245,59 +296,106 @@ def home():
         with c2:
             if st.button("Non → Commencer une nouvelle session", type="primary", use_container_width=True):
                 st.session_state.home_choice = "new"
+                st.session_state.code_sent = False
+                st.session_state.pending_code = ""
+                st.session_state.code_expires_at = None
+                st.session_state.data = empty_data()
                 st.rerun()
         st.info("Le fichier JSON est la mémoire unique de votre travail. Aucune donnée n'est sauvegardée durablement par l'application sur un serveur Clarté360.")
         return
 
     header()
     st.markdown("## Accès bénéficiaire")
-    st.markdown("<div class='brand-box'>Pour commencer, renseignez votre identité et votre adresse e-mail. Un code d'accès vous sera envoyé par e-mail. Le consentement RGPD est obligatoire avant toute utilisation.</div>", unsafe_allow_html=True)
-    with st.form("new_session"):
-        c1, c2 = st.columns(2)
+    st.markdown("<div class='brand-box'>Pour commencer, renseignez votre identité et votre adresse e-mail. Un code d'accès à durée limitée vous sera envoyé par e-mail. Le consentement RGPD est obligatoire avant toute utilisation.</div>", unsafe_allow_html=True)
+
+    if not st.session_state.get("code_sent", False):
+        with st.form("new_session"):
+            c1, c2 = st.columns(2)
+            with c1:
+                prenom=st.text_input("Prénom *", value=st.session_state.data.get("beneficiaire",{}).get("prenom",""))
+                nom=st.text_input("Nom *", value=st.session_state.data.get("beneficiaire",{}).get("nom",""))
+                email=st.text_input("Adresse e-mail *", value=st.session_state.data.get("beneficiaire",{}).get("email",""))
+            with c2:
+                consultant=st.text_input("Consultant / accompagnateur", value=st.session_state.data.get("consultant") or "Clarté360")
+                tel=st.text_input("Téléphone facultatif", value=st.session_state.data.get("beneficiaire",{}).get("telephone",""))
+            st.markdown("### Protection des données")
+            st.markdown("Le fichier JSON reste la mémoire unique de votre travail. Aucune donnée n'est sauvegardée durablement par l'application sur un serveur Clarté360.")
+            consent=st.checkbox("J'ai lu les informations RGPD et je consens à l'utilisation de ces données dans le cadre exclusif de mon accompagnement.")
+            submitted=st.form_submit_button("Recevoir mon code d'accès", type="primary")
+        if submitted:
+            if not prenom.strip() or not nom.strip() or not email.strip():
+                st.error("Merci de compléter le prénom, le nom et l'adresse e-mail.")
+            elif "@" not in email or "." not in email:
+                st.error("Merci de renseigner une adresse e-mail valide.")
+            elif not consent:
+                st.error("Merci de confirmer votre consentement RGPD pour poursuivre.")
+            else:
+                st.session_state.data=empty_data()
+                st.session_state.data["beneficiaire"]={"prenom":prenom.strip(),"nom":nom.strip(),"email":email.strip(),"telephone":tel.strip()}
+                st.session_state.data["consultant"]=consultant.strip()
+                st.session_state.data["rgpd"]={"consent_given":True,"consent_at":now_iso(),"consent_text_version":RGPD_TEXT_VERSION}
+                ok,msg=send_code(email.strip())
+                notify_admin(first=True)
+                if ok:
+                    st.success("Un code d'accès vient d'être envoyé à l'adresse e-mail indiquée.")
+                    st.rerun()
+                else:
+                    st.error(msg)
+                    st.caption("Vérifiez que les Secrets Streamlit sont configurés dans la section [email], comme dans l'application Roue des domaines de vie.")
+    else:
+        b = st.session_state.data.get("beneficiaire", {})
+        st.success(f"Code envoyé à : {b.get('email','')}")
+        expires_raw = st.session_state.get("code_expires_at") or st.session_state.data.get("access",{}).get("code_expires_at")
+        expired = False
+        if expires_raw:
+            try:
+                expires_at = datetime.fromisoformat(expires_raw)
+                remaining = int((expires_at - datetime.now()).total_seconds() // 60)
+                if remaining >= 0:
+                    st.info(f"Ce code est encore valable environ {remaining + 1} minute(s).")
+                else:
+                    expired = True
+            except Exception:
+                pass
+        if expired:
+            st.error("Le code a expiré. Merci de demander un nouveau code.")
+            if st.button("Demander un nouveau code"):
+                st.session_state.code_sent = False
+                st.session_state.pending_code = ""
+                st.session_state.code_expires_at = None
+                st.rerun()
+            return
+        code=st.text_input("Saisissez le code d'accès reçu par e-mail *", max_chars=6, type="password")
+        c1,c2=st.columns([1,2])
         with c1:
-            prenom=st.text_input("Prénom *")
-            nom=st.text_input("Nom *")
-            email=st.text_input("Adresse e-mail *")
+            if st.button("Valider le code et démarrer", type="primary"):
+                if code and code == st.session_state.data.get("access",{}).get("code_access"):
+                    st.session_state.authenticated=True
+                    st.session_state.screen="app"
+                    st.session_state.data.setdefault("access",{})["code_verified"] = True
+                    st.session_state.data.setdefault("access",{})["verified_at"] = now_iso()
+                    st.rerun()
+                else:
+                    st.error("Code incorrect.")
         with c2:
-            consultant=st.text_input("Consultant / accompagnateur", value="Clarté360")
-            tel=st.text_input("Téléphone facultatif")
-        st.markdown("### Protection des données")
-        st.markdown("Le fichier JSON reste la mémoire unique de votre travail. Aucune donnée n'est sauvegardée durablement par l'application sur un serveur Clarté360.")
-        consent=st.checkbox("J'ai lu les informations RGPD et je consens à l'utilisation de ces données dans le cadre exclusif de mon accompagnement.")
-        submitted=st.form_submit_button("Recevoir mon code d'accès", type="primary")
-    if submitted:
-        if not prenom.strip() or not nom.strip() or not email.strip() or not consent:
-            st.error("Merci de compléter prénom, nom, adresse e-mail et consentement RGPD.")
-        elif "@" not in email or "." not in email:
-            st.error("Merci de renseigner une adresse e-mail valide.")
-        else:
-            st.session_state.data=empty_data(); st.session_state.data["beneficiaire"]={"prenom":prenom.strip(),"nom":nom.strip(),"email":email.strip(),"telephone":tel.strip()}; st.session_state.data["consultant"]=consultant.strip(); st.session_state.data["rgpd"]={"consent_given":True,"consent_at":now_iso(),"consent_text_version":RGPD_TEXT_VERSION}
-            ok,msg=send_code(email.strip()); notify_admin(first=True)
-            if ok: st.success("Code envoyé par e-mail.")
-            else: st.warning("SMTP non configuré : en test local, utilisez le code affiché ci-dessous."); st.code(st.session_state.pending_code)
-            st.session_state.screen="code"
-            st.rerun()
+            if st.button("Modifier l'adresse e-mail"):
+                st.session_state.code_sent = False
+                st.session_state.pending_code = ""
+                st.session_state.code_expires_at = None
+                st.rerun()
+
     if st.button("← Retour à l'accueil"):
         st.session_state.home_choice = None
+        st.session_state.code_sent = False
+        st.session_state.pending_code = ""
+        st.session_state.code_expires_at = None
         st.rerun()
 
 def code_screen():
-    sidebar_public()
-    header()
-    st.markdown("## Validation du code d'accès")
-    email=st.session_state.data.get("beneficiaire",{}).get("email","")
-    code=st.text_input("Code reçu par e-mail", type="password")
-    c1,c2=st.columns(2)
-    with c1:
-        if st.button("Valider", type="primary"):
-            if code and code == st.session_state.data.get("access",{}).get("code_access"):
-                st.session_state.authenticated=True; st.session_state.screen="app"; st.rerun()
-            else: st.error("Code incorrect.")
-    with c2:
-        if st.button("Je n'ai pas reçu mon code"):
-            ok,msg=send_code(email)
-            if ok: st.success("Nouveau code envoyé.")
-            else: st.warning("SMTP non configuré. Code de test affiché ci-dessous."); st.code(st.session_state.pending_code)
+    # Conservé uniquement pour compatibilité avec un ancien état de session : retour à l'écran d'accès intégré.
+    st.session_state.home_choice = "new"
+    st.session_state.screen = "home"
+    st.rerun()
 
 def default_croyance():
     return {"id":make_id("cr"),"created_at":now_iso(),"updated_at":now_iso(),"statut":"Découverte","phase_decouverte":{"date":str(date.today()),"boucle":{"croyance":"","comportement_actuel":"","resultat_actuel":"","renforcement":""},"commentaire_seance":"","concerne_tierce_personne":False},"phase_action":{"selectionnee_phase6":False,"date_travail":"","pourquoi_utile":"","resultat_souhaite":"","nouveau_comportement":"","actions":[],"suivi":""}}
@@ -390,7 +488,8 @@ def timeout_screen():
 def main():
     init_state(); install_beforeunload_warning(); timeout_watchdog()
     if st.session_state.screen == "timeout": timeout_screen()
-    elif st.session_state.screen in ["legal","contact"]: legal_page()
+    elif st.session_state.screen == "legal": legal_page()
+    elif st.session_state.screen == "contact": contact_page()
     elif st.session_state.screen == "code": code_screen()
     elif st.session_state.authenticated and st.session_state.screen == "app": app_screen()
     else: home()
