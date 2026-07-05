@@ -1,0 +1,1887 @@
+{
+  "tool": "clarte360_preferences_professionnelles",
+  "generated_at": "2026-06-29T19:21:31",
+  "source_file": "questions_preferences_professionnelles_v1.xlsx",
+  "rules": {
+    "active_questions_expected": 60,
+    "dimensions": [
+      "PP1",
+      "PP2",
+      "PP3",
+      "PP4",
+      "PP5",
+      "PP6",
+      "PP7",
+      "PP8",
+      "PP9",
+      "PP10"
+    ],
+    "questions_per_dimension": 6,
+    "score_min": 0,
+    "score_max": 3,
+    "display_order": "randomized_at_each_session",
+    "dimension_labels_visible_to_user": false
+  },
+  "questions": [
+    {
+      "id": "Q001",
+      "dimension": "PP1",
+      "dimension_label": "Autonomie",
+      "question": "Lorsque vous démarrez une nouvelle mission, qu'est-ce qui vous met le plus en confiance ?",
+      "options": [
+        {
+          "option": "A",
+          "text": "Disposer de consignes très précises avant de commencer.",
+          "score": 0.0
+        },
+        {
+          "option": "B",
+          "text": "Comprendre les grandes lignes puis demander des précisions si nécessaire.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Comprendre les objectifs puis organiser moi-même ma façon de travailler.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Découvrir progressivement en expérimentant directement sur le terrain.",
+          "score": 3.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q002",
+      "dimension": "PP1",
+      "dimension_label": "Autonomie",
+      "question": "Votre responsable vous confie un nouvel objectif sans expliquer précisément la méthode à utiliser. Votre première réaction est plutôt...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Je préfère demander une méthode détaillée.",
+          "score": 0.0
+        },
+        {
+          "option": "B",
+          "text": "Je cherche des exemples de ce qui a déjà été fait.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Je construis ma propre méthode en respectant l'objectif fixé.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "J'expérimente rapidement plusieurs approches avant d'en retenir une.",
+          "score": 3.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q003",
+      "dimension": "PP1",
+      "dimension_label": "Autonomie",
+      "question": "Vous devez organiser votre semaine de travail. Vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Suivre un planning établi à l'avance.",
+          "score": 0.0
+        },
+        {
+          "option": "B",
+          "text": "Définir moi-même un planning tout en respectant les priorités.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Ajuster régulièrement mon organisation selon les besoins.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Fonctionner de manière très souple en fonction des opportunités.",
+          "score": 3.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q004",
+      "dimension": "PP1",
+      "dimension_label": "Autonomie",
+      "question": "Vous rencontrez une difficulté inhabituelle dans votre travail. Vous avez tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Demander rapidement l'avis de votre responsable.",
+          "score": 0.0
+        },
+        {
+          "option": "B",
+          "text": "Rechercher les procédures existantes.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Réfléchir d'abord à une solution avant d'en discuter.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Tester directement une solution puis ajuster si nécessaire.",
+          "score": 3.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q005",
+      "dimension": "PP1",
+      "dimension_label": "Autonomie",
+      "question": "Parmi les propositions suivantes, quel mode de fonctionnement vous correspond le mieux ?",
+      "options": [
+        {
+          "option": "A",
+          "text": "J'apprécie que les décisions importantes soient prises par mon responsable.",
+          "score": 0.0
+        },
+        {
+          "option": "B",
+          "text": "J'aime participer aux décisions qui concernent mon travail.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "J'apprécie pouvoir prendre seul les décisions relevant de mon domaine.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Je recherche des missions où je peux décider largement de la manière d'agir.",
+          "score": 3.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q006",
+      "dimension": "PP1",
+      "dimension_label": "Autonomie",
+      "question": "Si vous pouviez choisir votre organisation idéale, vous préféreriez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Un cadre très structuré avec des procédures clairement établies.",
+          "score": 0.0
+        },
+        {
+          "option": "B",
+          "text": "Un cadre clair laissant quelques marges d'initiative.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Une grande liberté d'organisation avec des objectifs définis.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Une très forte autonomie où je définis largement ma manière de travailler.",
+          "score": 3.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q007",
+      "dimension": "PP2",
+      "dimension_label": "Organisation",
+      "question": "Vous démarrez une semaine avec plusieurs dossiers à traiter. Quelle est votre façon de procéder la plus naturelle ?",
+      "options": [
+        {
+          "option": "A",
+          "text": "J'établis un planning précis avant de commencer.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Je repère les priorités puis j'organise progressivement mon travail.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Je commence par le dossier qui me semble le plus important sur le moment.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "J'avance en fonction des demandes et des imprévus qui se présentent.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q008",
+      "dimension": "PP2",
+      "dimension_label": "Organisation",
+      "question": "Votre journée ne se déroule pas comme prévu. Plusieurs imprévus apparaissent. Vous avez tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Essayer de revenir au planning initial dès que possible.",
+          "score": 2.0
+        },
+        {
+          "option": "B",
+          "text": "Réorganiser mon planning en tenant compte des nouvelles priorités.",
+          "score": 3.0
+        },
+        {
+          "option": "C",
+          "text": "Traiter les urgences puis reprendre mon travail.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "M'adapter au fil de la journée sans chercher à suivre un planning précis.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q009",
+      "dimension": "PP2",
+      "dimension_label": "Organisation",
+      "question": "Lorsque vous devez gérer plusieurs tâches en même temps, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Les traiter une par une jusqu'à leur achèvement.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Alterner entre plusieurs tâches selon leur priorité.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Avancer sur plusieurs dossiers en parallèle.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Me laisser guider par les opportunités ou les sollicitations.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q010",
+      "dimension": "PP2",
+      "dimension_label": "Organisation",
+      "question": "Avant de commencer un nouveau projet, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Préparer une organisation détaillée.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Définir les grandes étapes puis ajuster en avançant.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Commencer rapidement et structurer progressivement.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Réunir les personnes concernées pour construire ensemble l'organisation.",
+          "score": 2.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q011",
+      "dimension": "PP2",
+      "dimension_label": "Organisation",
+      "question": "Lorsque vous terminez une journée de travail, vous avez le plus souvent le sentiment d'avoir été efficace si...",
+      "options": [
+        {
+          "option": "A",
+          "text": "J'ai respecté le planning prévu.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "J'ai traité les priorités essentielles.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "J'ai su m'adapter aux imprévus.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "J'ai fait avancer les sujets qui comptaient vraiment, même si tout n'était pas terminé.",
+          "score": 2.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q012",
+      "dimension": "PP2",
+      "dimension_label": "Organisation",
+      "question": "Parmi ces affirmations, laquelle correspond le mieux à votre manière habituelle de vous organiser ?",
+      "options": [
+        {
+          "option": "A",
+          "text": "J'apprécie les méthodes de travail bien établies.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "J'aime disposer d'un cadre tout en gardant une certaine souplesse.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Je préfère construire ma propre organisation selon les situations.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Mon organisation évolue naturellement en fonction des besoins du moment.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q013",
+      "dimension": "PP3",
+      "dimension_label": "Relations",
+      "question": "Dans un nouveau projet collectif, vous vous sentez généralement plus à l'aise lorsque...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Chacun travaille de son côté avec des points réguliers.",
+          "score": 1.0
+        },
+        {
+          "option": "B",
+          "text": "Les échanges sont fréquents et les décisions partagées.",
+          "score": 3.0
+        },
+        {
+          "option": "C",
+          "text": "Les rôles sont clairement définis dès le départ.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Je peux intervenir ponctuellement lorsque mon expertise est utile.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q014",
+      "dimension": "PP3",
+      "dimension_label": "Relations",
+      "question": "Lorsque vous avez une idée à proposer, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "La partager directement avec le groupe.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "L'écrire et l'envoyer aux personnes concernées.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "En parler d'abord à une personne de confiance.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "La garder jusqu'à ce qu'on me sollicite.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q015",
+      "dimension": "PP3",
+      "dimension_label": "Relations",
+      "question": "Pour avancer efficacement, vous avez plutôt besoin...",
+      "options": [
+        {
+          "option": "A",
+          "text": "D'échanges réguliers avec les personnes concernées.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "D'un temps seul avant de revenir vers les autres.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "D'un binôme avec qui confronter les idées.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "De limiter les échanges pour rester concentré.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q016",
+      "dimension": "PP3",
+      "dimension_label": "Relations",
+      "question": "Lorsqu'un désaccord apparaît dans une équipe, vous avez tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Favoriser un échange pour clarifier les points de vue.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Chercher une solution acceptable pour chacun.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Vous concentrer sur les faits et la tâche à réaliser.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Laisser chacun reprendre son travail pour éviter que cela prenne trop de place.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q017",
+      "dimension": "PP3",
+      "dimension_label": "Relations",
+      "question": "Dans votre travail quotidien, les relations professionnelles sont pour vous...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Un élément central de votre efficacité.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Un appui utile mais qui doit rester équilibré.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Un cadre nécessaire, sans être prioritaire.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Quelque chose que vous préférez limiter aux besoins du travail.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q018",
+      "dimension": "PP3",
+      "dimension_label": "Relations",
+      "question": "Pour réaliser une mission importante, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Travailler en équipe avec des échanges réguliers.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Travailler seul puis partager le résultat.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Avancer en binôme.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Recevoir la mission et la mener de façon indépendante.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q019",
+      "dimension": "PP4",
+      "dimension_label": "Decision",
+      "question": "Face à une décision professionnelle importante, votre premier réflexe est plutôt de...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Rassembler des informations avant de trancher.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Demander plusieurs avis pour éclairer votre choix.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Décider rapidement pour débloquer la situation.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Attendre que la situation soit plus claire.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q020",
+      "dimension": "PP4",
+      "dimension_label": "Decision",
+      "question": "Lorsque plusieurs options sont possibles, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Comparer leurs avantages et leurs limites.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Choisir celle qui paraît la plus réaliste immédiatement.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Faire valider votre choix par une personne référente.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Tester une option et ajuster ensuite.",
+          "score": 1.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q021",
+      "dimension": "PP4",
+      "dimension_label": "Decision",
+      "question": "Dans une situation incertaine, vous êtes plus à l'aise si...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Vous disposez de critères de décision précis.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Vous pouvez décider collectivement.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Vous pouvez expérimenter sans tout verrouiller.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Quelqu'un d'autre prend la décision finale.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q022",
+      "dimension": "PP4",
+      "dimension_label": "Decision",
+      "question": "Quand il faut décider vite, vous avez tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Vous appuyer sur votre expérience.",
+          "score": 2.0
+        },
+        {
+          "option": "B",
+          "text": "Rechercher malgré tout un minimum de données.",
+          "score": 3.0
+        },
+        {
+          "option": "C",
+          "text": "Suivre l'avis de la personne la plus légitime.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Reporter si la décision n'est pas suffisamment sécurisée.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q023",
+      "dimension": "PP4",
+      "dimension_label": "Decision",
+      "question": "Après avoir pris une décision, vous aimez plutôt...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Vérifier régulièrement si elle reste pertinente.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "La mettre en œuvre sans trop revenir dessus.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "La partager pour obtenir des retours.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Garder la possibilité de la modifier rapidement.",
+          "score": 2.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q024",
+      "dimension": "PP4",
+      "dimension_label": "Decision",
+      "question": "Dans votre organisation idéale, les décisions devraient être...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Fondées sur des informations claires et vérifiables.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Prises après consultation des personnes concernées.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Rapides, pour permettre l'action.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Portées par une autorité clairement identifiée.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q025",
+      "dimension": "PP5",
+      "dimension_label": "Action",
+      "question": "Lorsqu'une mission vous est confiée, vous préférez généralement...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Passer rapidement à l'action.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Analyser avant de commencer.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Préparer les étapes puis agir.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Attendre que toutes les conditions soient réunies.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q026",
+      "dimension": "PP5",
+      "dimension_label": "Action",
+      "question": "Dans votre travail, vous vous sentez le plus utile lorsque...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Vous produisez un résultat concret.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Vous clarifiez une situation avant l'action.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Vous coordonnez les actions à mener.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Vous contribuez discrètement à l'avancement global.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q027",
+      "dimension": "PP5",
+      "dimension_label": "Action",
+      "question": "Face à un problème opérationnel, vous avez tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Chercher une solution applicable rapidement.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Comprendre d'abord les causes du problème.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Mobiliser les bonnes personnes pour agir.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Attendre d'avoir une consigne claire.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q028",
+      "dimension": "PP5",
+      "dimension_label": "Action",
+      "question": "Votre rythme de travail préféré est plutôt...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Soutenu, avec des actions visibles.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Régulier, avec des étapes maîtrisées.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Alternant réflexion et action.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Variable selon les sollicitations.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q029",
+      "dimension": "PP5",
+      "dimension_label": "Action",
+      "question": "Une journée professionnelle réussie est pour vous une journée où...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Des choses concrètes ont été réalisées.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Les sujets ont été bien préparés.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Les priorités ont avancé.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Vous avez répondu aux demandes au fur et à mesure.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q030",
+      "dimension": "PP5",
+      "dimension_label": "Action",
+      "question": "Dans un projet, vous préférez être associé...",
+      "options": [
+        {
+          "option": "A",
+          "text": "A la mise en œuvre concrète.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "A la phase de réflexion préalable.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Au suivi de l'avancement.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Aux ajustements ponctuels selon les besoins.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q031",
+      "dimension": "PP6",
+      "dimension_label": "Changement",
+      "question": "Quand une nouvelle méthode de travail est proposée, votre réaction la plus fréquente est...",
+      "options": [
+        {
+          "option": "A",
+          "text": "J'ai envie de l'essayer rapidement.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Je veux comprendre ce qu'elle apporte.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Je préfère voir comment les autres l'utilisent d'abord.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Je suis plus à l'aise avec les méthodes déjà connues.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q032",
+      "dimension": "PP6",
+      "dimension_label": "Changement",
+      "question": "Dans votre parcours professionnel, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Découvrir régulièrement de nouveaux sujets.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Évoluer progressivement dans un cadre connu.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Changer quand cela a du sens pour le projet.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Stabiliser ce qui fonctionne déjà.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q033",
+      "dimension": "PP6",
+      "dimension_label": "Changement",
+      "question": "Lorsqu'une organisation change, vous avez tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Chercher rapidement comment vous adapter.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Identifier ce qui va réellement changer.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Attendre de voir les effets concrets.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Regretter les repères précédents.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q034",
+      "dimension": "PP6",
+      "dimension_label": "Changement",
+      "question": "Vous vous sentez plus stimulé par...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Un environnement en mouvement.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Un environnement stable avec quelques évolutions.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Un environnement qui évolue par étapes.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Un environnement très prévisible.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q035",
+      "dimension": "PP6",
+      "dimension_label": "Changement",
+      "question": "Quand vous devez apprendre un nouvel outil, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Explorer directement ses possibilités.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Suivre une démonstration puis pratiquer.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Lire une notice ou un guide avant de commencer.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "L'utiliser seulement quand c'est indispensable.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q036",
+      "dimension": "PP6",
+      "dimension_label": "Changement",
+      "question": "Dans votre travail, la nouveauté est plutôt pour vous...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Une source d'énergie.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Une occasion d'apprendre si elle est utile.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Un effort à fournir.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Une source possible d'inconfort.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q037",
+      "dimension": "PP7",
+      "dimension_label": "Environnement",
+      "question": "Vous êtes généralement plus efficace dans un environnement...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Calme et peu interrompu.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Vivant, avec des échanges réguliers.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Structuré, avec des repères clairs.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Mobile, avec des situations variées.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q038",
+      "dimension": "PP7",
+      "dimension_label": "Environnement",
+      "question": "Pour vous concentrer sur une tâche importante, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Un espace où vous pouvez travailler sans interruption.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Un lieu où vous pouvez solliciter facilement les autres.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Un cadre organisé avec les ressources disponibles.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Changer de lieu selon votre énergie du moment.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q039",
+      "dimension": "PP7",
+      "dimension_label": "Environnement",
+      "question": "Le cadre matériel de travail idéal pour vous est plutôt...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Simple, stable et fonctionnel.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Ouvert et propice aux échanges.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Bien équipé et organisé.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Flexible, adaptable selon les missions.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q040",
+      "dimension": "PP7",
+      "dimension_label": "Environnement",
+      "question": "Lorsque l'environnement est bruyant ou agité, vous avez tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Perdre en efficacité.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Vous adapter si les échanges sont utiles.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Chercher à réorganiser votre espace.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Y trouver parfois de l'énergie.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q041",
+      "dimension": "PP7",
+      "dimension_label": "Environnement",
+      "question": "Dans une semaine idéale, vous préféreriez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Avoir des temps clairement réservés au travail de fond.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Alterner des temps seuls et des temps collectifs.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Être principalement au contact des autres.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Changer régulièrement de contexte.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q042",
+      "dimension": "PP7",
+      "dimension_label": "Environnement",
+      "question": "Vous vous sentez le plus à l'aise lorsque votre environnement de travail...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Vous permet de rester concentré.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Vous donne accès rapidement aux personnes utiles.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Est bien organisé et prévisible.",
+          "score": 2.0
+        },
+        {
+          "option": "D",
+          "text": "Vous offre de la variété et du mouvement.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q043",
+      "dimension": "PP8",
+      "dimension_label": "Apprentissage",
+      "question": "Lorsque vous devez apprendre quelque chose de nouveau, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Essayer directement en situation.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Observer quelqu'un faire avant de reproduire.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Lire ou suivre une explication structurée.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Avancer avec l'aide régulière d'une personne ressource.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q044",
+      "dimension": "PP8",
+      "dimension_label": "Apprentissage",
+      "question": "Pour progresser dans votre travail, ce qui vous aide le plus est...",
+      "options": [
+        {
+          "option": "A",
+          "text": "La pratique répétée.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Les retours d'expérience.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Une formation structurée.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "L'accompagnement pas à pas.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q045",
+      "dimension": "PP8",
+      "dimension_label": "Apprentissage",
+      "question": "Lorsque vous ne comprenez pas immédiatement une méthode, vous avez tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Tester plusieurs façons de faire.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Demander un exemple concret.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Revenir aux consignes ou au support.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Attendre une explication complémentaire.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q046",
+      "dimension": "PP8",
+      "dimension_label": "Apprentissage",
+      "question": "Vous retenez mieux une information lorsque...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Vous l'utilisez concrètement.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Vous l'expliquez ou l'échangez avec quelqu'un.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Elle est présentée de manière claire et ordonnée.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Elle est répétée plusieurs fois par un formateur ou un collègue.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q047",
+      "dimension": "PP8",
+      "dimension_label": "Apprentissage",
+      "question": "Dans un nouveau poste, vous préférez apprendre...",
+      "options": [
+        {
+          "option": "A",
+          "text": "En réalisant rapidement des tâches réelles.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "En observant puis en pratiquant.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Avec un parcours d'intégration structuré.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Avec un référent disponible à chaque étape.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q048",
+      "dimension": "PP8",
+      "dimension_label": "Apprentissage",
+      "question": "Quand vous développez une nouvelle compétence, vous appréciez surtout...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Pouvoir expérimenter librement.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Recevoir des retours pour ajuster votre pratique.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Disposer d'un cadre clair d'apprentissage.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Être accompagné jusqu'à vous sentir sécurisé.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q049",
+      "dimension": "PP9",
+      "dimension_label": "Contribution",
+      "question": "Dans une équipe, vous avez le sentiment d'apporter le plus de valeur lorsque...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Vous résolvez un problème concret.",
+          "score": 2.0
+        },
+        {
+          "option": "B",
+          "text": "Vous apportez une idée nouvelle.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Vous aidez les autres à avancer.",
+          "score": 3.0
+        },
+        {
+          "option": "D",
+          "text": "Vous sécurisez l'organisation du travail.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q050",
+      "dimension": "PP9",
+      "dimension_label": "Contribution",
+      "question": "Vous préférez contribuer à un projet en...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Prenant en charge une partie opérationnelle.",
+          "score": 2.0
+        },
+        {
+          "option": "B",
+          "text": "Proposant des améliorations.",
+          "score": 1.0
+        },
+        {
+          "option": "C",
+          "text": "Accompagnant les personnes impliquées.",
+          "score": 3.0
+        },
+        {
+          "option": "D",
+          "text": "Garantissant que les étapes soient respectées.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q051",
+      "dimension": "PP9",
+      "dimension_label": "Contribution",
+      "question": "Quand un collègue rencontre une difficulté, vous avez plutôt tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "L'aider à comprendre et à progresser.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Lui proposer une solution pratique.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Lui suggérer une autre façon de voir le problème.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "L'orienter vers la procédure ou la bonne personne.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q052",
+      "dimension": "PP9",
+      "dimension_label": "Contribution",
+      "question": "Votre contribution idéale serait plutôt reconnue pour...",
+      "options": [
+        {
+          "option": "A",
+          "text": "L'aide apportée aux autres.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Les résultats concrets obtenus.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Les idées ou solutions proposées.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "La fiabilité et la régularité de votre travail.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q053",
+      "dimension": "PP9",
+      "dimension_label": "Contribution",
+      "question": "Dans un projet, ce qui vous donne le plus le sentiment d'être utile est...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Faire progresser les personnes ou le collectif.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Faire avancer concrètement les tâches.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Faire émerger de nouvelles possibilités.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Maintenir un fonctionnement fiable.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q054",
+      "dimension": "PP9",
+      "dimension_label": "Contribution",
+      "question": "Lorsque vous partagez votre expérience, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Accompagner la personne pour qu'elle trouve sa manière de faire.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Montrer concrètement comment procéder.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Proposer des pistes différentes.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Transmettre les règles et points de vigilance.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q055",
+      "dimension": "PP10",
+      "dimension_label": "Responsabilites",
+      "question": "Dans un projet, vous êtes plus à l'aise lorsque...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Vous pilotez une partie clairement définie.",
+          "score": 2.0
+        },
+        {
+          "option": "B",
+          "text": "Vous contribuez sans avoir à coordonner les autres.",
+          "score": 0.0
+        },
+        {
+          "option": "C",
+          "text": "Vous coordonnez l'ensemble des actions.",
+          "score": 3.0
+        },
+        {
+          "option": "D",
+          "text": "Vous êtes consulté sur certains choix importants.",
+          "score": 1.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q056",
+      "dimension": "PP10",
+      "dimension_label": "Responsabilites",
+      "question": "Lorsque l'on vous confie davantage de responsabilités, vous ressentez plutôt...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Une stimulation positive.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Un intérêt si le périmètre est clair.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Une prudence avant d'accepter.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Une préférence pour rester sur votre rôle actuel.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q057",
+      "dimension": "PP10",
+      "dimension_label": "Responsabilites",
+      "question": "Dans une équipe, vous préférez généralement...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Être responsable de l'organisation globale.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Être responsable de votre propre périmètre.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Apporter votre contribution sans responsabilité formelle.",
+          "score": 0.0
+        },
+        {
+          "option": "D",
+          "text": "Conseiller ou influencer sans piloter directement.",
+          "score": 1.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q058",
+      "dimension": "PP10",
+      "dimension_label": "Responsabilites",
+      "question": "Quand une décision doit être portée devant d'autres personnes, vous préférez...",
+      "options": [
+        {
+          "option": "A",
+          "text": "La présenter et l'assumer.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "La porter si elle concerne votre domaine.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Contribuer à sa préparation sans être en première ligne.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Laisser une personne plus légitime la porter.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q059",
+      "dimension": "PP10",
+      "dimension_label": "Responsabilites",
+      "question": "Votre niveau de responsabilité idéal serait plutôt...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Un rôle de pilotage large.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Un rôle autonome sur un domaine précis.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Un rôle d'appui ou d'expertise sans management.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Un rôle centré sur l'exécution de missions définies.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    },
+    {
+      "id": "Q060",
+      "dimension": "PP10",
+      "dimension_label": "Responsabilites",
+      "question": "Lorsqu'un projet prend du retard, vous avez plutôt tendance à...",
+      "options": [
+        {
+          "option": "A",
+          "text": "Prendre les choses en main pour relancer l'avancement.",
+          "score": 3.0
+        },
+        {
+          "option": "B",
+          "text": "Réorganiser votre périmètre de travail.",
+          "score": 2.0
+        },
+        {
+          "option": "C",
+          "text": "Alerter et proposer votre aide.",
+          "score": 1.0
+        },
+        {
+          "option": "D",
+          "text": "Attendre les consignes de la personne responsable.",
+          "score": 0.0
+        }
+      ],
+      "max_question": 3.0,
+      "status": "active",
+      "version": "V1.0"
+    }
+  ]
+}

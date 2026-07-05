@@ -25,7 +25,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "1.8.1-socle-clarte360"
+APP_VERSION = "1.8-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
@@ -207,23 +207,6 @@ def total_session_seconds(data: dict | None = None) -> int:
         data = st.session_state.get("data", {})
     return int(sum(int(s.get("duration_seconds", 0) or 0) for s in data.get("access", {}).get("sessions", [])))
 
-
-
-def format_seconds(seconds: float | int | None) -> str:
-    """Formate une durée en secondes pour affichage utilisateur."""
-    try:
-        total = int(float(seconds or 0))
-    except (TypeError, ValueError):
-        total = 0
-    if total < 0:
-        total = 0
-    hours, remainder = divmod(total, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return f"{hours} h {minutes:02d} min"
-    if minutes:
-        return f"{minutes} min {secs:02d} s"
-    return f"{secs} s"
 
 def record_save_event(data: dict, motif: str):
     ensure_runtime_tracking(data, user_activity=False)
@@ -680,9 +663,6 @@ def traceability_information_block():
 
 def rgpd_page():
     header()
-    if st.session_state.get("code_verified") and st.button("← Retour à l'application", key="rgpd_top_back"):
-        st.session_state.show_rgpd_page = False
-        st.rerun()
     st.subheader("Informations légales et protection des données")
     tab_rgpd, tab_mentions, tab_contact = st.tabs(["Protection des données et traçabilité", "Mentions légales", "Nous contacter"])
     with tab_rgpd:
@@ -697,9 +677,6 @@ def rgpd_page():
 
 def contact_page():
     header()
-    if st.session_state.get("code_verified") and st.button("← Retour à l'application", key="contact_top_back"):
-        st.session_state.show_contact_page = False
-        st.rerun()
     st.subheader("Contacter Clarté360")
     contact_form_main()
 
@@ -1336,17 +1313,12 @@ def sidebar():
         ]
         if st.session_state.get("page") not in pages:
             st.session_state.page = pages[0]
-        previous_page = st.session_state.get("page", pages[0])
-        selected_page = st.sidebar.radio(
+        st.session_state.page = st.sidebar.radio(
             "",
             pages,
-            index=pages.index(previous_page) if previous_page in pages else 0,
+            index=pages.index(st.session_state.page),
             label_visibility="collapsed",
         )
-        if selected_page != previous_page:
-            st.session_state.show_contact_page = False
-            st.session_state.show_rgpd_page = False
-        st.session_state.page = selected_page
 
         st.sidebar.markdown("---")
         st.sidebar.markdown("### Session")
