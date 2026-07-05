@@ -1,4 +1,4 @@
 __pycache__/
 *.pyc
 .streamlit/secrets.toml
-exports/
+.DS_Store

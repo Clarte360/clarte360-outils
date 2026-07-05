@@ -1,42 +1,35 @@
-# Clarté360 - Préférences professionnelles
+# Clarté360 - Compétences & Projets
 
-Version 1.9.0 - online avec code d'accès obligatoire.
+Application Streamlit propriétaire Clarté360 destinée au bilan de compétences.
 
-## Fonctionnement
+Version application : 1.3.0  
+Socle : Clarté360 Socle v1.8
 
-1. Le bénéficiaire renseigne prénom, nom et email.
-2. L'application envoie un code d'accès au bénéficiaire.
-3. L'application envoie aussi une notification à contact@clarte360.com indiquant que cette personne va réaliser le test Préférences professionnelles.
-4. Le questionnaire ne démarre qu'après saisie du code correct.
-5. À la question 60, le JSON final est généré.
-6. Le JSON final est envoyé automatiquement à Clarté360 si les Secrets SMTP sont configurés.
-7. Le bénéficiaire peut télécharger son JSON final et son rapport PDF.
+## Lancement local
 
-## Secrets Streamlit Cloud
-
-Dans Streamlit Cloud > Settings > Secrets, renseigner :
-
-```toml
-[email]
-smtp_server = "ssl0.ovh.net"
-smtp_port = 465
-smtp_user = "contact@clarte360.com"
-smtp_password = "VOTRE_MOT_DE_PASSE"
-from_email = "contact@clarte360.com"
-to_email = "contact@clarte360.com"
+```bash
+pip install -r requirements.txt
+streamlit run app.py
 ```
 
-Ne jamais mettre le vrai mot de passe dans GitHub.
+## Secrets Streamlit
 
-## Questionnaire
+Copier `.streamlit/secrets.example.toml` vers `.streamlit/secrets.toml` en local et renseigner les paramètres SMTP.
+Ne jamais déposer le fichier `secrets.toml` dans GitHub.
 
-Le questionnaire est piloté par :
+## Données nécessaires
 
-- `data/questions_preferences_professionnelles_v1.xlsx`
-- `data/questions_preferences_professionnelles_v1.json`
+Les fichiers suivants doivent rester dans `/data` :
 
-Le bénéficiaire ne peut pas modifier le questionnaire.
+- `RefRomeXml.zip`
+- `rome_riasec_clarte360.xlsx`
+- `site_icon.png`
 
-## Reprise
+## Standard Clarté360
 
-Le bénéficiaire peut interrompre la passation et télécharger un JSON de sauvegarde. À la reprise, l'ordre initial des questions est conservé et l'application reprend à la première question non répondue.
+Cette version intègre le socle commun Clarté360 : accueil JSON/nouvelle session, RGPD, contact, mentions légales, gestion des sessions, temps cumulé, timeout, JSON de reprise et rapport PDF institutionnel.
+
+
+## Contrôle timeout
+
+Version 1.3.1 : le timeout automatique de 15 minutes distingue l’activité réelle du bénéficiaire et le rafraîchissement technique Streamlit.
