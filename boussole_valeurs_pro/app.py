@@ -10,6 +10,7 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
+import textwrap
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
@@ -24,8 +25,8 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "1.7-socle-clarte360"
-SOCLE_CLARTE360_VERSION = "1.7"
+APP_VERSION = "1.8-socle-clarte360"
+SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
@@ -604,13 +605,70 @@ Client : {get_client_network()}
             st.caption(info)
 
 
+def traceability_information_block():
+    data = st.session_state.get("data")
+    if not isinstance(data, dict):
+        st.info("Aucune traçabilité de session n'est encore disponible. La session n'a pas encore été ouverte.")
+        return
+
+    ensure_runtime_tracking(data, user_activity=False)
+    rgpd = data.get("rgpd", {})
+    access = data.get("access", {})
+    sessions = access.get("sessions", [])
+    saves = data.get("sauvegardes", []) or data.get("saves", []) or access.get("sauvegardes", [])
+
+    st.markdown("### Traçabilité de la session")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Session en cours", st.session_state.get("active_session_id", "")[:8] or "Non ouverte")
+    with c2:
+        st.metric("Nombre de sessions", len(sessions))
+    with c3:
+        st.metric("Temps cumulé", format_seconds(total_session_seconds(data)))
+
+    if rgpd.get("consent_given"):
+        st.success(f"Consentement RGPD enregistré le : {rgpd.get('consent_at','')} — version : {rgpd.get('consent_text_version','')}")
+    else:
+        st.warning("Aucun consentement RGPD n'est encore enregistré dans le JSON.")
+
+    if sessions:
+        rows = []
+        for s in sessions:
+            rows.append({
+                "Début": s.get("started_at", ""),
+                "Dernière activité": s.get("last_seen_at", ""),
+                "Fin": s.get("ended_at", ""),
+                "Durée": format_seconds(float(s.get("duration_seconds", 0) or 0)),
+                "Motif de fermeture": s.get("end_reason", ""),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucune session n'est encore enregistrée.")
+
+    if saves:
+        st.markdown("### Sauvegardes enregistrées")
+        save_rows = []
+        for item in saves[-10:]:
+            if isinstance(item, dict):
+                save_rows.append({
+                    "Date / heure": item.get("at", item.get("date", "")),
+                    "Motif": item.get("reason", item.get("motif", "")),
+                    "Session": item.get("session_id", ""),
+                })
+        if save_rows:
+            st.dataframe(pd.DataFrame(save_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Aucune sauvegarde détaillée à afficher.")
+
+
 def rgpd_page():
     header()
     st.subheader("Informations légales et protection des données")
-    tab_rgpd, tab_mentions, tab_contact = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
+    tab_rgpd, tab_mentions, tab_contact = st.tabs(["Protection des données et traçabilité", "Mentions légales", "Nous contacter"])
     with tab_rgpd:
         rgpd_information_block()
         st.info("Le consentement RGPD est demandé avant la génération du code d'accès et avant toute nouvelle passation.")
+        traceability_information_block()
     with tab_mentions:
         legal_mentions_block()
     with tab_contact:
@@ -988,50 +1046,129 @@ def add_clarte360_pdf_footer(fig):
         pass
     return fig
 
+def draw_pdf_header(fig, title: str, subtitle: str = ""):
+    fig.text(0.05, 0.975, "Clarté360", ha="left", va="top", fontsize=10, color=BRAND_COLOR, fontweight="bold")
+    fig.text(0.05, 0.948, title, ha="left", va="top", fontsize=16, color=BRAND_COLOR, fontweight="bold")
+    if subtitle:
+        fig.text(0.05, 0.925, subtitle, ha="left", va="top", fontsize=10, color="#333333")
+
+
+def wrap_text_for_pdf(text: str, width: int = 95) -> list[str]:
+    if not str(text).strip():
+        return [""]
+    lines = []
+    for paragraph in str(text).splitlines() or [str(text)]:
+        lines.extend(textwrap.wrap(paragraph, width=width) or [""])
+    return lines
+
+
+def create_values_summary_table(data: dict):
+    rows = []
+    for val in data.get("valeurs", []):
+        rows.append([val.get("nom", ""), f"{moyenne_valeur(val):g}/10"])
+    return rows
+
+
 def create_pdf_bytes(data, include_values=True, include_energy=True):
+    """Génère un PDF professionnel, sans interprétation.
+
+    La Boussole restitue fidèlement les valeurs, cotations et exemples saisis.
+    Aucune analyse, conclusion ou conseil n'est ajouté automatiquement.
+    """
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
+        b = data.get("beneficiaire", {})
+        beneficiaire = f"{b.get('prenom','')} {b.get('nom','')}".strip()
+        date_real = b.get("date_realisation", "")
+
         if include_values:
-            fig = create_wheel_figure(data, small=False)
+            # Page 1 : présentation professionnelle + roue + tableau synthétique
+            fig = plt.figure(figsize=(8.27, 11.69))
+            draw_pdf_header(fig, "Boussole des valeurs professionnelles", f"Bénéficiaire : {beneficiaire}   |   Date : {date_real}")
+            fig.text(
+                0.05, 0.885,
+                "Précaution de lecture",
+                ha="left", va="top", fontsize=11, color=BRAND_COLOR, fontweight="bold",
+            )
+            fig.text(
+                0.05, 0.865,
+                "Cet outil restitue les valeurs, cotations et exemples saisis par le bénéficiaire. Il ne constitue ni un test psychométrique, ni un diagnostic, ni une interprétation automatique. Le document sert de support d'échange avec le consultant.",
+                ha="left", va="top", fontsize=8.7, color="#333333", wrap=True,
+            )
+
+            # Roue insérée dans la page
+            wheel_fig = create_wheel_figure(data, small=False)
+            wheel_buf = io.BytesIO()
+            wheel_fig.savefig(wheel_buf, format="png", dpi=220, bbox_inches="tight", facecolor="white")
+            plt.close(wheel_fig)
+            wheel_buf.seek(0)
+            img = plt.imread(wheel_buf)
+            ax_img = fig.add_axes([0.10, 0.33, 0.80, 0.48])
+            ax_img.imshow(img)
+            ax_img.axis("off")
+
+            # Tableau synthétique
+            ax_tbl = fig.add_axes([0.12, 0.12, 0.76, 0.18])
+            ax_tbl.axis("off")
+            summary_rows = create_values_summary_table(data)
+            if summary_rows:
+                table = ax_tbl.table(
+                    cellText=summary_rows,
+                    colLabels=["Valeur", "Cotation moyenne"],
+                    loc="center",
+                    cellLoc="left",
+                    colLoc="left",
+                )
+                table.auto_set_font_size(False)
+                table.set_fontsize(8.5)
+                table.scale(1, 1.25)
+                for (row, col), cell in table.get_celld().items():
+                    if row == 0:
+                        cell.set_text_props(weight="bold", color="white")
+                        cell.set_facecolor(BRAND_COLOR)
+                    else:
+                        cell.set_facecolor("#F7F7F7" if row % 2 == 0 else "white")
             add_clarte360_pdf_footer(fig)
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
 
-        rows = build_rows(data)
-        if include_values and rows:
+            # Pages détail : restitution brute structurée, sans interprétation
             fig2, ax = plt.subplots(figsize=(8.27, 11.69))
             ax.axis("off")
-            b = data["beneficiaire"]
-            ax.text(0.03, 0.97, "Clarté360 - Boussole des valeurs professionnelles", fontsize=16, fontweight="bold", color=BRAND_COLOR, va="top")
-            ax.text(0.03, 0.935, f"Bénéficiaire : {b.get('prenom','')} {b.get('nom','')}", fontsize=11, va="top")
-            ax.text(0.03, 0.91, f"Date de réalisation : {b.get('date_realisation','')}", fontsize=11, va="top")
-            y = 0.86
+            draw_pdf_header(fig2, "Détail des valeurs et points d'appui", f"Bénéficiaire : {beneficiaire}")
+            y = 0.88
             for val in data.get("valeurs", []):
-                if y < 0.12:
+                if y < 0.17:
                     add_clarte360_pdf_footer(fig2)
                     pdf.savefig(fig2, bbox_inches="tight")
                     plt.close(fig2)
                     fig2, ax = plt.subplots(figsize=(8.27, 11.69))
                     ax.axis("off")
-                    y = 0.96
-                ax.text(0.03, y, f"{val.get('nom','')} - moyenne : {moyenne_valeur(val):g}/10", fontsize=12, fontweight="bold", color=BRAND_COLOR, va="top")
-                y -= 0.028
-                for d in val.get("domaines", []):
-                    txt = f"• {d.get('domaine','')} | cote {d.get('cote',0)}/10 | {d.get('periode','')} | {d.get('exemple','')}"
-                    wrapped = []
-                    line = ""
-                    for word in txt.split():
-                        if len(line) + len(word) > 105:
-                            wrapped.append(line)
-                            line = word
-                        else:
-                            line = (line + " " + word).strip()
-                    if line:
-                        wrapped.append(line)
-                    for line in wrapped[:4]:
-                        ax.text(0.05, y, line, fontsize=8.5, va="top")
+                    draw_pdf_header(fig2, "Détail des valeurs et points d'appui", f"Bénéficiaire : {beneficiaire}")
+                    y = 0.88
+                ax.text(0.05, y, f"{val.get('nom','')} — moyenne : {moyenne_valeur(val):g}/10", fontsize=12, fontweight="bold", color=BRAND_COLOR, va="top")
+                y -= 0.030
+                definition = val.get("definition", "")
+                if definition:
+                    for line in wrap_text_for_pdf(f"Définition personnelle : {definition}", 92)[:3]:
+                        ax.text(0.065, y, line, fontsize=8.8, color="#333333", va="top")
                         y -= 0.018
+                    y -= 0.004
+                for d in val.get("domaines", []):
+                    ax.text(0.065, y, f"Point d'appui : {d.get('domaine','')} — cote {d.get('cote',0)}/10", fontsize=9.2, fontweight="bold", va="top")
+                    y -= 0.020
+                    if d.get("periode", ""):
+                        for line in wrap_text_for_pdf(f"Période ou contexte : {d.get('periode','')}", 94)[:3]:
+                            ax.text(0.08, y, line, fontsize=8.4, va="top")
+                            y -= 0.017
+                    if d.get("exemple", ""):
+                        for line in wrap_text_for_pdf(f"Action, réaction ou exemple : {d.get('exemple','')}", 94)[:5]:
+                            ax.text(0.08, y, line, fontsize=8.4, va="top")
+                            y -= 0.017
                     y -= 0.006
+                y -= 0.010
+            fig2.text(0.05, 0.065, "Confidentialité", fontsize=10, color=BRAND_COLOR, fontweight="bold")
+            fig2.text(0.05, 0.048, "Le fichier JSON appartient exclusivement au bénéficiaire. Il peut être conservé, supprimé ou transmis au consultant dans le cadre de l'accompagnement.", fontsize=7.8, color="#444444")
             add_clarte360_pdf_footer(fig2)
             pdf.savefig(fig2, bbox_inches="tight")
             plt.close(fig2)
@@ -1041,9 +1178,9 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
         if include_energy and ve.get("access_granted") and ve.get("selected"):
             fig3, ax3 = plt.subplots(figsize=(8.27, 11.69))
             ax3.axis("off")
-            ax3.text(0.03, 0.97, "Clarté360 - Valeurs énergies", fontsize=16, fontweight="bold", color=BRAND_COLOR, va="top")
-            ax3.text(0.03, 0.935, "Les valeurs énergie sont les valeurs retenues comme sources principales de mobilisation pour l'objectif ou le projet travaillé.", fontsize=10, va="top", wrap=True)
-            y = 0.89
+            draw_pdf_header(fig3, "Valeurs énergies", f"Bénéficiaire : {beneficiaire}")
+            ax3.text(0.05, 0.885, "Restitution des valeurs retenues comme sources de mobilisation pour l'objectif ou le projet travaillé.", fontsize=9, va="top", wrap=True)
+            y = 0.84
             for raw_idx in ve.get("selected", []):
                 try:
                     idx = int(raw_idx)
@@ -1059,39 +1196,43 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
                     plt.close(fig3)
                     fig3, ax3 = plt.subplots(figsize=(8.27, 11.69))
                     ax3.axis("off")
-                    y = 0.96
-                ax3.text(0.03, y, f"{val.get('nom','')} - initial : {entry.get('score_initial', moyenne_valeur(val))}/10 - revisité : {entry.get('score_revise', moyenne_valeur(val))}/10", fontsize=12, fontweight="bold", color=BRAND_COLOR, va="top")
-                y -= 0.03
+                    draw_pdf_header(fig3, "Valeurs énergies", f"Bénéficiaire : {beneficiaire}")
+                    y = 0.88
+                ax3.text(0.05, y, f"{val.get('nom','')} — initial : {entry.get('score_initial', moyenne_valeur(val))}/10 — revisité : {entry.get('score_revise', moyenne_valeur(val))}/10", fontsize=11, fontweight="bold", color=BRAND_COLOR, va="top")
+                y -= 0.026
                 comment = entry.get("commentaire", "")
                 if comment:
-                    ax3.text(0.05, y, f"Énergie pour le projet : {comment[:190]}", fontsize=9, va="top")
-                    y -= 0.035
+                    for line in wrap_text_for_pdf(f"Énergie pour le projet : {comment}", 92)[:4]:
+                        ax3.text(0.07, y, line, fontsize=8.4, va="top")
+                        y -= 0.017
                 items = entry.get("maintien", []) if float(entry.get("score_revise", 0)) >= 10 else entry.get("actions", [])
                 label = "Points d'appui à conserver" if float(entry.get("score_revise", 0)) >= 10 else "Actions à mettre en œuvre"
-                ax3.text(0.05, y, label, fontsize=9.5, fontweight="bold", va="top")
-                y -= 0.022
+                ax3.text(0.07, y, label, fontsize=9, fontweight="bold", va="top")
+                y -= 0.020
                 for item in [x for x in items if str(x).strip()]:
-                    ax3.text(0.07, y, f"• {str(item)[:180]}", fontsize=8.8, va="top")
-                    y -= 0.02
-                y -= 0.015
+                    for line in wrap_text_for_pdf(f"• {item}", 88)[:2]:
+                        ax3.text(0.09, y, line, fontsize=8.2, va="top")
+                        y -= 0.016
+                y -= 0.012
             add_clarte360_pdf_footer(fig3)
             pdf.savefig(fig3, bbox_inches="tight")
             plt.close(fig3)
+
             fig4 = create_energy_wheel_figure(data, small=False)
             add_clarte360_pdf_footer(fig4)
             pdf.savefig(fig4, bbox_inches="tight")
             plt.close(fig4)
+
         if not include_values and not (ve.get("access_granted") and ve.get("selected")):
             fig_empty, ax_empty = plt.subplots(figsize=(8.27, 11.69))
             ax_empty.axis("off")
-            ax_empty.text(0.03, 0.97, "Clarté360 - Valeurs énergies", fontsize=16, fontweight="bold", color=BRAND_COLOR, va="top")
-            ax_empty.text(0.03, 0.92, "Aucune valeur énergie n'a été renseignée. Cet espace est optionnel.", fontsize=11, va="top")
+            draw_pdf_header(fig_empty, "Valeurs énergies", f"Bénéficiaire : {beneficiaire}")
+            ax_empty.text(0.05, 0.88, "Aucune valeur énergie n'a été renseignée. Cet espace est optionnel.", fontsize=10, va="top")
             add_clarte360_pdf_footer(fig_empty)
             pdf.savefig(fig_empty, bbox_inches="tight")
             plt.close(fig_empty)
     buf.seek(0)
     return buf.getvalue()
-
 
 def add_default_values(nb):
     data = st.session_state.data
@@ -1169,7 +1310,6 @@ def sidebar():
             "4. Boussole des valeurs professionnelles",
             "5. Valeurs énergies",
             "6. Export / Rapports",
-            "7. RGPD",
         ]
         if st.session_state.get("page") not in pages:
             st.session_state.page = pages[0]
@@ -1214,14 +1354,18 @@ def sidebar():
 
     st.sidebar.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION} · Questionnaire Boussole")
 
-    if st.sidebar.button("Réinitialiser la session"):
-        for key in [
-            "data", "code_verified", "welcome_done", "welcome_choice", "code_sent",
-            "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page",
-            "exit_json_ready", "exit_json_bytes", "exit_json_filename"
-        ]:
-            st.session_state.pop(key, None)
-        st.rerun()
+    # Sécurité : le bouton de réinitialisation n'est disponible qu'avant l'entrée
+    # dans le cœur de l'application. Une fois le travail commencé, la sortie doit
+    # passer par les boutons JSON pour éviter toute perte accidentelle.
+    if not data_active:
+        if st.sidebar.button("Réinitialiser la session"):
+            for key in [
+                "data", "code_verified", "welcome_done", "welcome_choice", "code_sent",
+                "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page",
+                "exit_json_ready", "exit_json_bytes", "exit_json_filename"
+            ]:
+                st.session_state.pop(key, None)
+            st.rerun()
 
 
 def page_beneficiaire():
@@ -1665,7 +1809,7 @@ def main():
     elif st.session_state.page.startswith("6"):
         page_export()
     else:
-        page_traceability_rgpd()
+        page_export()
 
 
 
