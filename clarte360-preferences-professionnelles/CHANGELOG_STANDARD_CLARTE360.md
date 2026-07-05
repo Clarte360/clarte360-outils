@@ -1,25 +1,11 @@
-# Clarté360 - Préférences professionnelles v1.9.1-socle-clarte360
+# CHANGELOG STANDARD CLARTE360
 
-Mise à niveau socle Clarté360 v3.0 alignée sur Moteurs professionnels v1.8.0 / Boussole valeurs pro v1.8.2.
+## v1.9.2-socle-clarte360 - 2026-07-05
+- Correction bloquante : réintégration du chargement du questionnaire actif avant le démarrage après validation du code d'accès.
+- Alignement RGPD sur le socle Moteurs Professionnels v1.8 : consentement unique avant code, texte RGPD complet, onglet "Protection des données et traçabilité".
+- Ajout de l'affichage de traçabilité : session en cours, nombre de sessions, temps cumulé, historique des sessions, consentement RGPD avec date, heure et version du texte.
+- JSON renforcé : conservation simultanée de `rgpd` et `rgpd_acceptance` pour compatibilité socle Clarté360.
+- Aucune modification métier : questions, scores, dimensions, interprétations et logique de calcul inchangés.
 
-## Points intégrés
-- Version application : 1.9.1-socle-clarte360.
-- Version socle : 3.0.
-- Barre latérale standard : JSON de reprise, quitter et télécharger JSON, contact Clarté360, RGPD et mentions légales, réinitialisation avant démarrage.
-- Page institutionnelle : Protection des données / Mentions légales / Nous contacter.
-- Consentement RGPD obligatoire avant génération du code d'accès.
-- Historique de génération et régénération du code dans le JSON.
-- Bouton "Je n’ai pas reçu mon code".
-- Traçabilité : sessions, temps cumulé, sauvegardes, informations techniques disponibles.
-- Protection navigateur beforeunload.
-- Timeout bénéficiaire 15 minutes avec téléchargement du JSON de reprise.
-- Structure JSON enrichie : version application, version socle, passation root id, identifiant session, RGPD, access, temps cumulé.
-- Rapport PDF harmonisé : logo centré et pied de page institutionnel Clarté360.
-- Erreur SMTP administrateur non bloquante.
-
-## Non modifié
-- Questionnaire métier.
-- Calculs de score.
-- Ordre de tirage des questions et options.
-- Interprétation des résultats.
-- Exports JSON/PDF métier.
+## v1.9.1-socle-clarte360 - 2026-07-05
+- Harmonisation initiale socle Clarté360 : JSON, contact, RGPD, timeout, PDF institutionnel.

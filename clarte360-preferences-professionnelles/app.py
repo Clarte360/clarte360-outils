@@ -19,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.9.1-socle-clarte360"
+APP_VERSION = "1.9.2-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BENEFICIARY_TIMEOUT_MINUTES = 15
@@ -45,6 +45,26 @@ CLARTE360_LEGAL = {
     "naf": "8559 A",
     "tva": "FR88102349834",
 }
+
+RGPD_TEXT = f"""
+### Protection des données personnelles (RGPD)
+
+Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
+
+Le fichier JSON constitue le seul support de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, les dates et heures de connexion, la durée des sessions, vos réponses, vos résultats, l'historique des connexions, le code d'accès généré, l'historique des régénérations, le consentement RGPD, la version de l'application et les informations techniques disponibles.
+
+Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur. Si vous le transmettez à votre accompagnateur, celui-ci l'utilise exclusivement dans le cadre du bilan de compétences ou de l'accompagnement Clarté360.
+
+Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : {RGPD_TEXT_VERSION}.
+
+### Nature des résultats
+
+Les résultats fournis par les applications Clarté360 constituent des supports d'aide à la réflexion et à l'accompagnement. Ils ne constituent ni un diagnostic psychologique, ni un avis médical, ni une décision d'orientation automatique. Leur interprétation s'inscrit dans un dialogue avec le bénéficiaire et, lorsque cela est prévu, avec un professionnel de l'accompagnement.
+
+### Propriété intellectuelle
+
+Les applications, outils, questionnaires, méthodes, graphiques, rapports et contenus proposés par Clarté360 constituent des créations originales protégées. Toute reproduction, adaptation, diffusion ou réutilisation, totale ou partielle, sans autorisation écrite préalable de Clarté360, est interdite.
+"""
 
 
 st.set_page_config(
@@ -184,6 +204,11 @@ def get_active_questions(questions_df: pd.DataFrame) -> pd.DataFrame:
 def start_new_session(active_questions: pd.DataFrame, nom: str, prenom: str, email: str = ""):
     st.session_state.session_id = str(uuid.uuid4())
     st.session_state.passation_id = f"CL360-PP-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{st.session_state.session_id[:8].upper()}"
+    if not st.session_state.get("rgpd_acceptance"):
+        at = st.session_state.get("rgpd_consent_at") or now_iso()
+        dt = parse_iso(at) or datetime.now()
+        st.session_state.rgpd_acceptance = {"consentement": True, "date": dt.strftime("%Y-%m-%d"), "heure": dt.strftime("%H:%M:%S"), "version_texte": RGPD_TEXT_VERSION}
+    st.session_state.rgpd_consent_given = True
     ids = active_questions["ID"].tolist()
     random.shuffle(ids)
     st.session_state.question_order = ids
@@ -460,11 +485,12 @@ def base_export_payload(completed: bool) -> dict:
         "answers": st.session_state.get("answers", {}),
         "notice": "Outil déclaratif d’exploration. Ne constitue pas un test psychométrique ni un diagnostic.",
         "rgpd": {
-            "consent_given": bool(st.session_state.get("rgpd_consent_given", False)),
+            "consent_given": bool(st.session_state.get("rgpd_consent_given", False) or st.session_state.get("rgpd_acceptance", {}).get("consentement", False)),
             "consent_at": st.session_state.get("rgpd_consent_at", ""),
             "text_version": RGPD_TEXT_VERSION,
-            "rappel": "Aucune donnée n’est enregistrée sur un serveur par l’application locale. Le JSON appartient au bénéficiaire.",
+            "rappel": "Aucune donnée n’est enregistrée durablement sur un serveur Clarté360 par l’application. Le JSON appartient exclusivement au bénéficiaire.",
         },
+        "rgpd_acceptance": st.session_state.get("rgpd_acceptance", {}),
         "access": st.session_state.get("access", {}),
         "historique_sessions": st.session_state.get("access", {}).get("sessions", []),
         "temps_cumule_secondes": st.session_state.get("access", {}).get("temps_total_cumule_secondes", 0),
@@ -778,16 +804,42 @@ def install_beforeunload_warning():
 
 
 def rgpd_information_block():
-    st.markdown(f"""
-    <div class='clarte-box'>
-    <b>Protection des données personnelles (RGPD)</b><br>
-    Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.<br><br>
-    Le fichier JSON constitue le support principal de conservation de votre travail. Il appartient au bénéficiaire et peut contenir l'identité, l'e-mail, les réponses, les résultats, les dates et heures, l'historique de session, les sauvegardes, le consentement RGPD et les informations techniques disponibles.<br><br>
-    Les résultats sont des supports d'aide à la réflexion et à l'accompagnement. Ils ne constituent ni un diagnostic psychologique, ni un avis médical, ni une décision d'orientation automatique.<br><br>
-    Version du texte accepté : <b>{RGPD_TEXT_VERSION}</b>.
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(RGPD_TEXT)
 
+
+def traceability_information_block():
+    """Affiche la traçabilité RGPD/session selon le socle Moteurs v1.8."""
+    ensure_access_tracking(user_activity=False)
+    access = st.session_state.get("access", {}) or {}
+    sessions = access.get("sessions", []) or []
+    rgpd = st.session_state.get("rgpd_acceptance", {}) or {}
+
+    st.markdown("### Traçabilité de la session")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        sid = st.session_state.get("active_session_id", st.session_state.get("session_id", "")) or "Non ouverte"
+        st.metric("Session en cours", str(sid)[:8])
+    with c2:
+        st.metric("Nombre de sessions", len(sessions))
+    with c3:
+        st.metric("Temps cumulé", format_seconds(access.get("temps_total_cumule_secondes", 0)))
+
+    if rgpd.get("consentement"):
+        st.success(f"Consentement RGPD enregistré le : {rgpd.get('date','')} {rgpd.get('heure','')} — version : {rgpd.get('version_texte','')}")
+    else:
+        st.warning("Aucun consentement RGPD n'est encore enregistré dans le JSON.")
+
+    if sessions:
+        rows = []
+        for sess in sessions:
+            rows.append({
+                "Début": sess.get("started_at", ""),
+                "Dernière activité": sess.get("last_activity_at", sess.get("last_seen_at", "")),
+                "Fin": sess.get("ended_at", ""),
+                "Durée": format_seconds(sess.get("duration_seconds", 0)),
+                "Motif": sess.get("end_reason", ""),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 def legal_mentions_block():
     l = CLARTE360_LEGAL
@@ -832,11 +884,11 @@ def contact_form_main():
 def rgpd_page():
     render_header()
     st.subheader("Informations légales et protection des données")
-    tab1, tab2, tab3 = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
+    tab1, tab2, tab3 = st.tabs(["Protection des données et traçabilité", "Mentions légales", "Nous contacter"])
     with tab1:
         rgpd_information_block()
-        if st.session_state.get("rgpd_consent_given"):
-            st.success(f"Consentement enregistré le {st.session_state.get('rgpd_consent_at','')} - version {RGPD_TEXT_VERSION}")
+        st.info("Le consentement RGPD est demandé avant la génération du code d'accès et avant toute nouvelle passation.")
+        traceability_information_block()
     with tab2:
         legal_mentions_block()
     with tab3:
@@ -895,6 +947,19 @@ def render_sidebar():
         if not st.session_state.get("test_started") and st.button("Réinitialiser la session", use_container_width=True):
             reset_all()
 
+try:
+    questions_df, dimensions_df = load_workbook_from_source(None, DEFAULT_XLSX.stat().st_mtime if DEFAULT_XLSX.exists() else 0)
+    active_questions = get_active_questions(questions_df)
+    validation_errors = validate_question_bank(active_questions)
+    if validation_errors:
+        st.error("Le questionnaire Préférences professionnelles n'est pas conforme à la structure attendue.")
+        for err in validation_errors:
+            st.error(err)
+        st.stop()
+except Exception as exc:
+    st.error(f"Impossible de charger les questions Préférences professionnelles : {exc}")
+    st.stop()
+
 render_sidebar()
 
 if st.session_state.get("show_contact_page"):
@@ -949,8 +1014,10 @@ if not st.session_state.get("test_started"):
             with col2:
                 nom = st.text_input("Nom *")
             email = st.text_input("Adresse email *")
-            consent = st.checkbox("Je comprends que cet outil est un support d’exploration et non un test psychométrique.")
-            rgpd_consent = st.checkbox("J'accepte les conditions RGPD et je comprends que mon JSON m'appartient.")
+            with st.expander("Protection des données personnelles (RGPD)", expanded=True):
+                st.markdown(RGPD_TEXT)
+            consent = st.checkbox("J'ai lu et j'accepte les conditions RGPD de cette application Clarté360.")
+            rgpd_consent = True
             send_code = st.form_submit_button("Recevoir mon code d'accès", type="primary")
 
         if send_code:
@@ -958,8 +1025,8 @@ if not st.session_state.get("test_started"):
                 st.error("Merci de renseigner le prénom, le nom et l'adresse email.")
             elif "@" not in email or "." not in email:
                 st.error("Merci de renseigner une adresse email valide.")
-            elif not consent or not rgpd_consent:
-                st.error("Merci de confirmer la compréhension du cadre d’utilisation et le consentement RGPD.")
+            elif not consent:
+                st.error("Le consentement RGPD est obligatoire avant toute utilisation.")
             else:
                 beneficiaire_tmp = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip()}
                 code = generate_access_code()
@@ -967,6 +1034,7 @@ if not st.session_state.get("test_started"):
                 st.session_state.pending_beneficiaire = beneficiaire_tmp
                 st.session_state.rgpd_consent_given = True
                 st.session_state.rgpd_consent_at = now_iso()
+                st.session_state.rgpd_acceptance = {"consentement": True, "date": datetime.now().strftime("%Y-%m-%d"), "heure": datetime.now().strftime("%H:%M:%S"), "version_texte": RGPD_TEXT_VERSION}
                 ensure_access_tracking(user_activity=True)
                 st.session_state.access.setdefault("code_history", []).append({"at": now_iso(), "email": email.strip(), "status": "generated", "app_version": APP_VERSION})
                 st.session_state.access_code = code
