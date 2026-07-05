@@ -1,1614 +1,1127 @@
-# -*- coding: utf-8 -*-
-"""
-Clarté360 – Analyse des compétences transférables et faisabilité du projet professionnel V1.1
-Analyse des compétences transférables et aide à la décision projet professionnel.
-
-Sources locales attendues dans /data :
-- RefRomeXml.zip
-- rome_riasec_clarte360.xlsx
-- site_icon.png (optionnel)
-"""
-from __future__ import annotations
-
-import base64
-import hashlib
-import io
 import json
-import os
+import hashlib
 import random
 import re
 import smtplib
-import string
-import time
 import uuid
-import zipfile
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from email.message import EmailMessage
+from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
-import xml.etree.ElementTree as ET
+import streamlit.components.v1 as components
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import cm
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-try:
-    from streamlit_autorefresh import st_autorefresh
-except Exception:
-    st_autorefresh = None
+APP_VERSION = "1.10.0-socle-clarte360"
+SOCLE_CLARTE360_VERSION = "1.8"
+APP_NAME = "Préférences professionnelles"
+APP_FULL_NAME = "Clarté360 – Préférences professionnelles"
+RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
+OFFICIAL_TEAL = "#008080"
+LIGHT_TEAL = "#E6F4F4"
+DARK_TEXT = "#243A3A"
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_XLSX = BASE_DIR / "data" / "questions_preferences_professionnelles_v1.xlsx"
+LOGO_PATH = BASE_DIR / "assets" / "site_icon.png"
+RANDOMIZE_OPTIONS = True
+FINAL_EMAIL_TO = "contact@clarte360.com"
 
-try:
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
-    REPORTLAB_OK = True
-except Exception:
-    REPORTLAB_OK = False
+st.set_page_config(
+    page_title="Clarté360 - Préférences professionnelles",
+    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🟢",
+    layout="centered",
+)
 
-APP_VERSION = "1.3.1"
-SOCLE_VERSION = "Clarté360 Socle v1.8"
-QUESTIONNAIRE_VERSION = "Compétences & Projets v1.3.1"
-APP_NAME = "Clarté360 – Analyse des compétences transférables et faisabilité du projet professionnel"
-DATA_DIR = Path(__file__).parent / "data"
-ROME_ZIP = DATA_DIR / "RefRomeXml.zip"
-RIASEC_XLSX = DATA_DIR / "rome_riasec_clarte360.xlsx"
-ICON = DATA_DIR / "site_icon.png"
-ASSETS_DIR = Path(__file__).parent / "assets"
-LOGO = ASSETS_DIR / "logo_clarte360.png"
-if not LOGO.exists():
-    LOGO = ICON
+st.markdown(
+    f"""
+    <style>
+    :root {{ --clarte-teal: {OFFICIAL_TEAL}; }}
+    .stProgress > div > div > div > div {{ background-color: {OFFICIAL_TEAL}; }}
+    .clarte-box {{
+        border-left: 6px solid {OFFICIAL_TEAL};
+        background: {LIGHT_TEAL};
+        padding: 1rem 1.1rem;
+        border-radius: 0.55rem;
+        margin: 1rem 0;
+        color: {DARK_TEXT};
+    }}
+    .objectif-box {{
+        border: 1px solid #cfe6e6;
+        background: #f8fbfb;
+        padding: 1.2rem 1.4rem;
+        border-radius: 0.9rem;
+        margin: 1rem 0 1.6rem 0;
+        color: {DARK_TEXT};
+    }}
+    .clarte-card {{
+        border: 1px solid #d9eeee;
+        border-radius: 0.8rem;
+        padding: 1rem;
+        background: #ffffff;
+        box-shadow: 0 1px 8px rgba(0, 128, 128, 0.08);
+        margin-bottom: 1rem;
+    }}
+    .small-muted {{ color: #666; font-size: 0.9rem; }}
+    h1, h2, h3 {{ color: {OFFICIAL_TEAL}; }}
+    div.stButton > button[kind="primary"] {{ background-color: {OFFICIAL_TEAL}; border-color: {OFFICIAL_TEAL}; }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-CLARTE_TEAL = "#008B86"
-CLARTE_TEAL_DARK = "#006C68"
-CLARTE_YELLOW = "#FFE478"
-CLARTE_DARK = "#2B2D3A"
-CLARTE_BG = "#F7FAFA"
-CLARTE_RED = "#FF4B4B"
-CLARTE_LEGAL = {
-    "nom": "Clarté360",
-    "adresse": "60 rue François 1er, 75008 Paris",
+DIMENSION_LABELS = {
+    "PP1": "Autonomie",
+    "PP2": "Organisation",
+    "PP3": "Relations",
+    "PP4": "Décision",
+    "PP5": "Action",
+    "PP6": "Changement",
+    "PP7": "Environnement",
+    "PP8": "Apprentissage",
+    "PP9": "Contribution",
+    "PP10": "Responsabilités",
+}
+
+DIMENSION_DESCRIPTIONS = {
+    "Autonomie": "Préférence pour une marge de manœuvre dans la manière d'organiser et de réaliser son travail.",
+    "Organisation": "Préférence concernant la planification, la priorisation et la structuration du travail.",
+    "Relations": "Préférence concernant la place des échanges, de la coopération et du collectif dans le travail.",
+    "Décision": "Préférence concernant la manière de choisir, d'arbitrer et d'avancer lorsqu'une décision est nécessaire.",
+    "Action": "Préférence concernant le passage à l'action, le rythme et le caractère concret des activités.",
+    "Changement": "Préférence concernant la nouveauté, l'évolution des méthodes, l'adaptation et les situations peu routinières.",
+    "Environnement": "Préférence concernant les conditions matérielles, le niveau de calme, la variété et le cadre de travail.",
+    "Apprentissage": "Préférence concernant la manière d'apprendre, de progresser et de s'approprier de nouvelles méthodes.",
+    "Contribution": "Préférence concernant la façon d'apporter sa valeur à une équipe, un projet ou une organisation.",
+    "Responsabilités": "Préférence concernant le niveau d'implication, de pilotage, d'arbitrage ou d'influence souhaité.",
+}
+
+REQUIRED_QUESTION_COLUMNS = [
+    "ID", "Dimension", "Libelle dimension", "Question",
+    "Reponse A", "Score A", "Reponse B", "Score B", "Reponse C", "Score C", "Reponse D", "Score D",
+    "Max question", "Statut", "Version"
+]
+
+
+def sanitize_filename(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9àâäéèêëîïôöùûüçñ\- ]+", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+", "_", value)
+    return value or "beneficiaire"
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def validate_questionnaire(df: pd.DataFrame) -> list[str]:
+    errors = []
+    missing = [c for c in REQUIRED_QUESTION_COLUMNS if c not in df.columns]
+    if missing:
+        errors.append("Colonnes manquantes : " + ", ".join(missing))
+        return errors
+    ids = df["ID"].astype(str).str.strip()
+    if ids.duplicated().any():
+        errors.append("Des ID de questions sont en doublon.")
+    active = df[df["Statut"].astype(str).str.lower().str.strip() == "active"]
+    if len(active) != 60:
+        errors.append(f"Le questionnaire doit contenir exactement 60 questions actives. Actuellement : {len(active)}.")
+    for col in ["Score A", "Score B", "Score C", "Score D", "Max question"]:
+        converted = pd.to_numeric(df[col], errors="coerce")
+        if converted.isna().any():
+            errors.append(f"La colonne {col} contient des valeurs non numériques.")
+    for col in ["Question", "Reponse A", "Reponse B", "Reponse C", "Reponse D"]:
+        if df[col].astype(str).str.strip().eq("").any():
+            errors.append(f"La colonne {col} contient au moins une cellule vide.")
+    dim_counts = active.groupby("Dimension").size().to_dict()
+    for dim in DIMENSION_LABELS:
+        if dim_counts.get(dim, 0) != 6:
+            errors.append(f"La dimension {dim} doit contenir 6 questions actives. Actuellement : {dim_counts.get(dim, 0)}.")
+    return errors
+
+
+@st.cache_data(show_spinner=False)
+def load_workbook_from_source(content: bytes | None, default_mtime: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+    source = BytesIO(content) if content else DEFAULT_XLSX
+    questions = normalize_columns(pd.read_excel(source, sheet_name="Questions"))
+    if content:
+        source.seek(0)
+    dimensions = normalize_columns(pd.read_excel(source, sheet_name="Dimensions"))
+    return questions, dimensions
+
+
+def get_active_questions(questions_df: pd.DataFrame) -> pd.DataFrame:
+    active = questions_df[questions_df["Statut"].astype(str).str.lower().str.strip() == "active"].copy()
+    active["ID"] = active["ID"].astype(str).str.strip()
+    active["Dimension"] = active["Dimension"].astype(str).str.strip()
+    for col in ["Score A", "Score B", "Score C", "Score D", "Max question"]:
+        active[col] = pd.to_numeric(active[col], errors="coerce").fillna(0).astype(float)
+    return active
+
+
+def start_new_session(active_questions: pd.DataFrame, nom: str, prenom: str, email: str = ""):
+    st.session_state.session_id = str(uuid.uuid4())
+    st.session_state.passation_id = f"CL360-PP-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{st.session_state.session_id[:8].upper()}"
+    ids = active_questions["ID"].tolist()
+    random.shuffle(ids)
+    st.session_state.question_order = ids
+    option_orders = {}
+    for qid in ids:
+        opts = ["A", "B", "C", "D"]
+        if RANDOMIZE_OPTIONS:
+            random.shuffle(opts)
+        option_orders[qid] = opts
+    st.session_state.option_orders = option_orders
+    st.session_state.answers = {}
+    st.session_state.current_index = 0
+    st.session_state.started_at = datetime.now().isoformat(timespec="seconds")
+    st.session_state.beneficiaire = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip()}
+    st.session_state.test_started = True
+    st.session_state.email_sent = False
+
+
+def restore_from_progress(payload: dict):
+    st.session_state.session_id = payload.get("session_id", str(uuid.uuid4()))
+    st.session_state.question_order = payload.get("question_order_displayed", payload.get("question_order", []))
+    st.session_state.option_orders = payload.get("option_orders_displayed", payload.get("option_orders", {}))
+    answers_payload = payload.get("answers", {})
+    answers = {}
+    for qid, val in answers_payload.items():
+        if isinstance(val, dict):
+            answers[qid] = val.get("selected_option") or val.get("selected")
+        else:
+            answers[qid] = val
+    st.session_state.answers = {str(k): str(v) for k, v in answers.items() if v}
+    # Reprise robuste : on reprend toujours à la première question non répondue,
+    # en conservant l'ordre initial du questionnaire sauvegardé.
+    first_unanswered = None
+    for i, qid in enumerate(st.session_state.question_order):
+        if qid not in st.session_state.answers:
+            first_unanswered = i
+            break
+    st.session_state.current_index = first_unanswered if first_unanswered is not None else len(st.session_state.question_order)
+    st.session_state.started_at = payload.get("started_at", datetime.now().isoformat(timespec="seconds"))
+    st.session_state.beneficiaire = payload.get("beneficiaire", {})
+    st.session_state.passation_id = payload.get("passation_id", payload.get("session_id", str(uuid.uuid4())))
+    st.session_state.test_started = True
+    st.session_state.email_sent = bool(payload.get("email_sent", False))
+
+
+def reset_all():
+    for key in [
+        "session_id", "passation_id", "question_order", "option_orders", "answers", "current_index",
+        "started_at", "beneficiaire", "test_started", "email_sent", "start_email_sent",
+        "pending_beneficiaire", "access_code", "code_sent", "code_message", "code_verified"
+    ]:
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
+def interpretation_level(pct: float) -> str:
+    if pct < 25:
+        return "Préférence peu marquée"
+    if pct < 50:
+        return "Préférence modérée"
+    if pct < 75:
+        return "Préférence nette"
+    return "Préférence forte"
+
+
+def compute_results(active_questions: pd.DataFrame, answers: dict) -> tuple[pd.DataFrame, dict]:
+    scores = {dim: 0.0 for dim in DIMENSION_LABELS}
+    max_scores = {dim: 0.0 for dim in DIMENSION_LABELS}
+    rows = []
+    by_id = active_questions.set_index("ID")
+    for qid, row in by_id.iterrows():
+        dim = str(row["Dimension"]).strip()
+        max_scores[dim] = max_scores.get(dim, 0.0) + float(row.get("Max question", 3))
+        selected = answers.get(qid)
+        if selected:
+            val = float(row.get(f"Score {selected}", 0))
+            scores[dim] = scores.get(dim, 0.0) + val
+            rows.append({
+                "question_id": qid,
+                "dimension": dim,
+                "selected": selected,
+                "score": val,
+                "max": float(row.get("Max question", 3)),
+            })
+    result_rows = []
+    for dim, label in DIMENSION_LABELS.items():
+        max_val = max_scores.get(dim, 0.0) or 1.0
+        pct = round(scores.get(dim, 0.0) / max_val * 100, 1)
+        result_rows.append({
+            "Code": dim,
+            "Dimension": label,
+            "Score": scores.get(dim, 0.0),
+            "Score max": max_scores.get(dim, 0.0),
+            "Pourcentage": pct,
+            "Lecture": interpretation_level(pct),
+        })
+    return pd.DataFrame(result_rows), {"detail_scores": rows}
+
+
+def build_user_interpretation(results: pd.DataFrame, beneficiaire: dict) -> str:
+    top = results.sort_values("Pourcentage", ascending=False).head(3)
+    low = results.sort_values("Pourcentage", ascending=True).head(2)
+    top_txt = ", ".join([f"{r.Dimension.lower()} ({r.Pourcentage:.0f} %)" for r in top.itertuples()])
+    low_txt = ", ".join([f"{r.Dimension.lower()} ({r.Pourcentage:.0f} %)" for r in low.itertuples()])
+    prenom = beneficiaire.get("prenom", "")
+    intro = f"{prenom}, vos réponses" if prenom else "Vos réponses"
+    return (
+        f"{intro} ne définissent pas une personnalité. Elles mettent en évidence des préférences professionnelles "
+        "déclarées à un moment donné. Elles servent de support à l’échange avec votre consultant Clarté360.\n\n"
+        f"Les préférences les plus marquées apparaissent autour de : {top_txt}. "
+        f"Les préférences les moins marquées concernent davantage : {low_txt}. "
+        "Ces éléments ne constituent pas une orientation automatique : ils ouvrent des pistes de réflexion sur les conditions "
+        "dans lesquelles vous vous sentez le plus à l’aise pour travailler."
+    )
+
+
+
+def questionnaire_checksum() -> str:
+    try:
+        return hashlib.sha256(DEFAULT_XLSX.read_bytes()).hexdigest()[:16]
+    except Exception:
+        return "indisponible"
+
+
+def get_email_config() -> dict | None:
+    """Lit la configuration SMTP depuis Streamlit Secrets.
+
+    Aucun mot de passe ne doit être stocké dans GitHub.
+    En production Streamlit Cloud, les valeurs sont à renseigner dans Settings > Secrets.
+    """
+    try:
+        cfg = st.secrets.get("email", {})
+        required = ["smtp_server", "smtp_port", "smtp_user", "smtp_password", "from_email", "to_email"]
+        if not cfg or any(not str(cfg.get(k, "")).strip() for k in required):
+            return None
+        return {k: cfg.get(k) for k in required}
+    except Exception:
+        return None
+
+
+def send_email(to_email: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> tuple[bool, str]:
+    cfg = get_email_config()
+    if cfg is None:
+        return False, "SMTP non configuré. Aucun email n'a été envoyé."
+
+    try:
+        msg = EmailMessage()
+        msg["From"] = cfg["from_email"]
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg.set_content(body)
+        if attachment is not None and attachment_name:
+            msg.add_attachment(attachment, maintype="application", subtype="json", filename=attachment_name)
+
+        port = int(cfg["smtp_port"])
+        server = str(cfg["smtp_server"])
+        user = str(cfg["smtp_user"])
+        password = str(cfg["smtp_password"])
+
+        if port == 465:
+            with smtplib.SMTP_SSL(server, port, timeout=20) as smtp:
+                smtp.login(user, password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(server, port, timeout=20) as smtp:
+                smtp.starttls()
+                smtp.login(user, password)
+                smtp.send_message(msg)
+        return True, "Email envoyé."
+    except Exception as exc:
+        return False, f"Erreur d'envoi email : {exc}"
+
+
+def generate_access_code() -> str:
+    return f"{random.randint(100000, 999999)}"
+
+
+def send_access_code_email(beneficiaire: dict, access_code: str) -> tuple[bool, str]:
+    """Envoie le code au bénéficiaire ET une notification à Clarté360.
+
+    Le démarrage du questionnaire est bloqué si l'un des deux envois échoue.
+    Cela garantit que Clarté360 est informé qu'une personne va réaliser le test.
+    """
+    cfg = get_email_config()
+    if cfg is None:
+        return False, "SMTP non configuré : impossible d'envoyer le code d'accès. Configurez les Secrets Streamlit."
+
+    prenom = beneficiaire.get("prenom", "")
+    nom = beneficiaire.get("nom", "")
+    email = beneficiaire.get("email", "")
+    admin_to = cfg.get("to_email", FINAL_EMAIL_TO) if cfg else FINAL_EMAIL_TO
+    now_txt = datetime.now().isoformat(timespec="seconds")
+
+    # 1) Notification Clarté360 : une personne va faire le test.
+    subject_admin = "Clarté360 - Nouveau code d'accès Préférences professionnelles"
+    body_admin = (
+        "Une personne vient de demander un code d'accès pour réaliser l'outil Clarté360 - Préférences professionnelles.\n\n"
+        f"Bénéficiaire : {prenom} {nom}\n"
+        f"Email : {email}\n"
+        f"Date de demande : {now_txt}\n\n"
+        "Information : le JSON final sera transmis automatiquement à Clarté360 lorsque la question 60 sera validée.\n\n"
+        "Message automatique Clarté360."
+    )
+    ok_admin, msg_admin = send_email(admin_to, subject_admin, body_admin)
+    # L'échec de la notification administrateur ne bloque jamais l'application.
+
+    # 2) Code d'accès au bénéficiaire.
+    subject_user = "Votre code d'accès Clarté360"
+    body_user = (
+        f"Bonjour {prenom},\n\n"
+        "Voici votre code d'accès pour démarrer le questionnaire Clarté360 - Préférences professionnelles :\n\n"
+        f"{access_code}\n\n"
+        "Ce code permet de sécuriser le démarrage de votre passation.\n\n"
+        "À la fin du questionnaire, vous pourrez télécharger votre rapport PDF et votre fichier JSON.\n\n"
+        "Clarté360"
+    )
+    ok_user, msg_user = send_email(email, subject_user, body_user)
+    if not ok_user:
+        return False, "Code bénéficiaire non envoyé : " + msg_user
+
+    if ok_admin:
+        return True, "Code envoyé au bénéficiaire et notification transmise à Clarté360."
+    return True, "Code envoyé au bénéficiaire. Notification Clarté360 non bloquante : " + msg_admin
+
+def send_start_notification(beneficiaire: dict, passation_id: str) -> tuple[bool, str]:
+    """Notification interne optionnelle au démarrage de la passation.
+
+    En local ou sans Streamlit Secrets, la fonction retourne un message non bloquant.
+    """
+    prenom = beneficiaire.get("prenom", "")
+    nom = beneficiaire.get("nom", "")
+    email = beneficiaire.get("email", "")
+    subject_admin = "Clarté360 - Nouvelle passation démarrée"
+    body_admin = (
+        "Une nouvelle passation vient de démarrer pour l'outil Préférences professionnelles.\n\n"
+        f"Bénéficiaire : {prenom} {nom}\n"
+        f"Email : {email}\n"
+        f"ID passation : {passation_id}\n"
+        f"Date : {datetime.now().isoformat(timespec='seconds')}\n\n"
+        "Le JSON final sera transmis automatiquement à la fin si l'envoi SMTP est configuré."
+    )
+    return send_email(FINAL_EMAIL_TO, subject_admin, body_admin)
+
+
+def base_export_payload(completed: bool) -> dict:
+    beneficiaire = st.session_state.get("beneficiaire", {})
+    return {
+        "outil": "clarte360_preferences_professionnelles",
+        "nom_outil": APP_FULL_NAME,
+        "app_version": APP_VERSION,
+        "version_socle_clarte360": SOCLE_CLARTE360_VERSION,
+        "session_id": st.session_state.get("session_id", ""),
+        "passation_id": st.session_state.get("passation_id", st.session_state.get("session_id", "")),
+        "beneficiaire": {
+            "nom": beneficiaire.get("nom", ""),
+            "prenom": beneficiaire.get("prenom", ""),
+            "email": beneficiaire.get("email", ""),
+            "consultant": beneficiaire.get("consultant", ""),
+        },
+        "started_at": st.session_state.get("started_at", ""),
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "completed": completed,
+        "current_index": st.session_state.get("current_index", 0),
+        "questionnaire_source": "questions_preferences_professionnelles_v1.xlsx",
+        "questionnaire_checksum": questionnaire_checksum(),
+        "question_order_displayed": st.session_state.get("question_order", []),
+        "option_orders_displayed": st.session_state.get("option_orders", {}),
+        "answers": st.session_state.get("answers", {}),
+        "notice": "Outil déclaratif d’exploration. Ne constitue pas un test psychométrique ni un diagnostic.",
+        "rgpd": rgpd_payload(),
+        "temps": session_meta(),
+        "code_access_history": st.session_state.get("code_history", []),
+        "notice_rgpd": "Aucune donnée n’est enregistrée durablement sur un serveur Clarté360. Le JSON appartient au bénéficiaire.",
+    }
+
+
+def build_progress_json() -> dict:
+    payload = base_export_payload(completed=False)
+    payload["type_export"] = "sauvegarde_intermediaire"
+    return payload
+
+
+def build_export_json(active_questions: pd.DataFrame, results: pd.DataFrame, score_details: dict) -> dict:
+    by_id = active_questions.set_index("ID")
+    payload = base_export_payload(completed=True)
+    payload["type_export"] = "resultats_finaux"
+    payload["completed_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["answers"] = {
+        qid: {
+            "selected_option": opt,
+            "question_text": str(by_id.loc[qid, "Question"]),
+            "answer_text": str(by_id.loc[qid, f"Reponse {opt}"]),
+            "dimension": str(by_id.loc[qid, "Dimension"]),
+            "score": float(by_id.loc[qid, f"Score {opt}"]),
+        }
+        for qid, opt in st.session_state.answers.items()
+    }
+    payload["scores"] = results.to_dict(orient="records")
+    payload["score_details"] = score_details
+    payload["email_sent"] = st.session_state.get("email_sent", False)
+    return payload
+
+
+def plot_bar_results(results: pd.DataFrame):
+    fig, ax = plt.subplots(figsize=(7.5, 4.8))
+    ordered = results.sort_values("Pourcentage", ascending=True)
+    bars = ax.barh(ordered["Dimension"], ordered["Pourcentage"], color=OFFICIAL_TEAL)
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("Pourcentage")
+    ax.set_title("Préférences professionnelles déclarées")
+    ax.grid(axis="x", alpha=0.25)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    for bar, value in zip(bars, ordered["Pourcentage"]):
+        ax.text(min(value + 1, 98), bar.get_y() + bar.get_height()/2, f"{value:.0f}%", va="center")
+    fig.tight_layout()
+    return fig
+
+
+def plot_radar_results(results: pd.DataFrame):
+    labels = results["Dimension"].tolist()
+    values = results["Pourcentage"].tolist()
+    angles = [n / float(len(labels)) * 2 * 3.141592653589793 for n in range(len(labels))]
+    values += values[:1]
+    angles += angles[:1]
+    fig = plt.figure(figsize=(6, 6))
+    ax = plt.subplot(111, polar=True)
+    ax.plot(angles, values, color=OFFICIAL_TEAL, linewidth=2)
+    ax.fill(angles, values, color=OFFICIAL_TEAL, alpha=0.18)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(labels, fontsize=8)
+    ax.set_yticks([20, 40, 60, 80, 100])
+    ax.set_yticklabels(["20", "40", "60", "80", "100"], fontsize=8)
+    ax.set_ylim(0, 100)
+    ax.set_title("Profil visuel des préférences", y=1.08)
+    fig.tight_layout()
+    return fig
+
+
+def fig_to_png_bytes(fig) -> BytesIO:
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=180, bbox_inches="tight")
+    buf.seek(0)
+    return buf
+
+
+def make_pdf(results: pd.DataFrame, interpretation: str, beneficiaire: dict) -> bytes:
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.2*cm, bottomMargin=1.2*cm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("TitleTeal", parent=styles["Title"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=18, leading=22)
+    h2_teal = ParagraphStyle("H2Teal", parent=styles["Heading2"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=13, leading=16)
+    normal = styles["BodyText"]
+    story = []
+    if LOGO_PATH.exists():
+        story.append(Image(str(LOGO_PATH), width=2.0*cm, height=2.0*cm))
+    story.append(Paragraph("Clarté360 - Préférences professionnelles", title_style))
+    nom = beneficiaire.get("nom", "")
+    prenom = beneficiaire.get("prenom", "")
+    identite = " ".join([prenom, nom]).strip()
+    story.append(Paragraph(f"Bénéficiaire : {identite}", normal))
+    story.append(Paragraph(f"Date : {datetime.now().strftime('%d/%m/%Y')}", normal))
+    story.append(Spacer(1, 0.25*cm))
+    story.append(Paragraph("Première lecture bénéficiaire", h2_teal))
+    story.append(Paragraph(interpretation.replace("\n", "<br/>"), normal))
+    story.append(Spacer(1, 0.4*cm))
+
+    bar_fig = plot_bar_results(results)
+    radar_fig = plot_radar_results(results)
+    story.append(Image(fig_to_png_bytes(bar_fig), width=17.0*cm, height=10.0*cm))
+    plt.close(bar_fig)
+    story.append(Spacer(1, 0.2*cm))
+    story.append(Image(fig_to_png_bytes(radar_fig), width=12.0*cm, height=12.0*cm))
+    plt.close(radar_fig)
+    story.append(Spacer(1, 0.3*cm))
+
+    data = [["Dimension", "Score", "Lecture"]]
+    for r in results.sort_values("Pourcentage", ascending=False).itertuples():
+        data.append([r.Dimension, f"{r.Pourcentage:.0f} %", r.Lecture])
+    table = Table(data, colWidths=[6.5*cm, 3*cm, 6*cm])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor(OFFICIAL_TEAL)),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("BACKGROUND", (0,1), (-1,-1), colors.HexColor("#F5FBFB")),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 0.35*cm))
+    story.append(Paragraph("Ce document est un support d’échange. Il ne constitue ni un diagnostic, ni un test psychométrique, ni une orientation automatique.", styles["Italic"]))
+    story.append(Paragraph("Document généré localement. Les données restent sous le contrôle du bénéficiaire.", styles["Italic"]))
+    story.append(Paragraph(legal_footer_text(), styles["Italic"]))
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def render_header():
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), width=120)
+    st.markdown(f"<h1 style='color:{OFFICIAL_TEAL}; margin-bottom:0;'>Clarté360 - Préférences professionnelles</h1>", unsafe_allow_html=True)
+    st.markdown(f"<p style='color:#4b5563; font-size:1.05rem; margin-top:0.35rem;'>Version {APP_VERSION} - outil propriétaire d’exploration des préférences professionnelles</p>", unsafe_allow_html=True)
+
+
+def build_speech_text(question_number: int, total: int, question: str, displayed_labels: list[str]) -> str:
+    """Construit le texte lu dans l'ordre exact affiche au beneficiaire.
+
+    Important : les options techniques A/B/C/D peuvent etre melangees pour la cotation.
+    La lecture vocale doit suivre l'ordre visible a l'ecran, pas l'ordre technique de la base.
+    """
+    parts = [f"Question {question_number} sur {total}.", question]
+    visible_letters = ["A", "B", "C", "D"]
+    for letter, label in zip(visible_letters, displayed_labels):
+        parts.append(f"Proposition {letter}. {label}.")
+    return " ".join(parts)
+
+
+def render_speech_button(text_to_read: str):
+    escaped = json.dumps(text_to_read, ensure_ascii=False)
+    components.html(
+        f"""
+        <div style="margin: 0.5rem 0 1rem 0;">
+          <button onclick="readClarteQuestion()" style="background:{OFFICIAL_TEAL};color:white;border:0;border-radius:8px;padding:0.55rem 0.9rem;cursor:pointer;font-size:15px;">🔊 Lire la question et les propositions</button>
+          <button onclick="window.speechSynthesis.cancel()" style="background:#eef3f3;color:#203636;border:1px solid #cbdada;border-radius:8px;padding:0.55rem 0.9rem;cursor:pointer;font-size:15px;margin-left:0.5rem;">■ Arrêter</button>
+          <span id="clarte_reading_status" style="margin-left:0.7rem;color:#586666;font-family:sans-serif;font-size:14px;"></span>
+        </div>
+        <script>
+        function readClarteQuestion() {{
+            const text = {escaped};
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'fr-FR';
+            utterance.rate = 0.95;
+            const status = document.getElementById('clarte_reading_status');
+            utterance.onstart = function() {{ if(status) status.innerText = 'Lecture en cours...'; }};
+            utterance.onend = function() {{ if(status) status.innerText = ''; }};
+            utterance.onerror = function() {{ if(status) status.innerText = 'Lecture indisponible sur ce navigateur.'; }};
+            window.speechSynthesis.speak(utterance);
+        }}
+        </script>
+        """,
+        height=64,
+    )
+
+
+def json_download_bytes(payload: dict) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def current_name_part() -> str:
+    b = st.session_state.get("beneficiaire", {})
+    return sanitize_filename(f"{b.get('prenom','')} {b.get('nom','')}")
+
+
+def timestamp_part() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def try_send_final_json(json_bytes: bytes, file_name: str, beneficiaire: dict) -> tuple[bool, str]:
+    """Envoi SMTP optionnel du JSON final. Nécessite une configuration Streamlit Secrets."""
+    subject = f"Clarté360 - JSON préférences - {beneficiaire.get('prenom','')} {beneficiaire.get('nom','')}"
+    body = (
+        "Bonjour,\n\n"
+        "Veuillez trouver ci-joint le JSON final généré par l'outil Clarté360 - Préférences professionnelles.\n\n"
+        f"Bénéficiaire : {beneficiaire.get('prenom','')} {beneficiaire.get('nom','')}\n"
+        f"Email : {beneficiaire.get('email','')}\n"
+        f"Date : {datetime.now().isoformat(timespec='seconds')}\n\n"
+        "Message automatique."
+    )
+    cfg = get_email_config()
+    destination = cfg.get("to_email", FINAL_EMAIL_TO) if cfg else FINAL_EMAIL_TO
+    ok, msg = send_email(destination, subject, body, attachment=json_bytes, attachment_name=file_name)
+    if ok:
+        return True, "JSON final transmis automatiquement à Clarté360."
+    return False, msg
+
+
+
+
+###############################################################################
+# SOCLE CLARTE360 v1.8 - composants institutionnels et session
+###############################################################################
+CLARTE360_LEGAL = {
+    "raison_sociale": "Clarté360",
+    "forme": "SAS",
+    "adresse": "60 rue François 1er",
+    "code_postal_ville": "75008 Paris",
     "telephone": "01 89 48 08 25",
     "email": "contact@clarte360.com",
     "web": "www.clarte360.com",
     "rcs": "102349834",
     "siret": "10234983400014",
-    "naf": "8559A",
+    "naf": "8559 A",
     "tva": "FR88102349834",
 }
-RGPD_TEXT_VERSION = "RGPD-Clarte360-2026-07-v1"
-TIMEOUT_SECONDS = 15 * 60
+DEFAULT_SESSION_LIMIT_MINUTES = 15
 
+RGPD_TEXT = f"""
+### Protection des données personnelles (RGPD)
 
-STATUS_OPTIONS = ["Non renseigné", "Acquis", "En cours d'acquisition", "Non acquis", "Non applicable"]
-STATUS_SCORE = {
-    "Acquis": 1.0,
-    "En cours d'acquisition": 0.5,
-    "Non acquis": 0.0,
-    "Non applicable": None,
-    "Non renseigné": None,
-}
+Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
 
-# -----------------------------
-# Utilitaires
-# -----------------------------
+Le fichier JSON constitue le support principal de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, le nom de votre accompagnateur si l'application le prévoit, les dates et heures de connexion, la durée des sessions, vos données saisies dans l'application, vos réponses, résultats, historique de connexion, code d'accès généré, historique des régénérations, consentement RGPD, version de l'application et informations techniques disponibles.
+
+Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur. Si vous le transmettez à votre accompagnateur, celui-ci l'utilise exclusivement dans le cadre du bilan de compétences ou de l'accompagnement Clarté360.
+
+Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : {RGPD_TEXT_VERSION}.
+
+### Nature des résultats
+
+Les résultats fournis par les applications Clarté360 constituent des supports d'aide à la réflexion et à l'accompagnement. Ils ne constituent ni un diagnostic psychologique, ni un avis médical, ni une décision d'orientation automatique. Leur interprétation s'inscrit dans un dialogue avec le bénéficiaire et, lorsque cela est prévu, avec un professionnel de l'accompagnement.
+
+### Propriété intellectuelle
+
+Les applications, outils, questionnaires, méthodes, graphiques, rapports et contenus proposés par Clarté360 constituent des créations originales protégées. Toute reproduction, adaptation, diffusion ou réutilisation, totale ou partielle, sans autorisation écrite préalable de Clarté360, est interdite.
+"""
 
 def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return datetime.now().isoformat(timespec="seconds")
 
-
-def clean_text(text: Optional[str]) -> str:
-    """Corrige les espaces et les mojibakes les plus fréquents du XML ROME."""
-    if text is None:
-        return ""
-    t = str(text).strip()
-    if not t:
-        return ""
-    # Certaines données ROME apparaissent en mojibake après parsing selon l'environnement.
-    if any(x in t for x in ["Ã", "Â", "Å", "Ž", "š", "œ"]):
-        for enc in ("latin1", "cp1252"):
-            try:
-                candidate = t.encode(enc, errors="ignore").decode("utf-8", errors="ignore")
-                if candidate and candidate.count("�") <= t.count("�") and candidate.count("Ã") < t.count("Ã"):
-                    t = candidate
-                    break
-            except Exception:
-                pass
-    t = t.replace("\u00a0", " ")
-    t = re.sub(r"\s+", " ", t)
-    return t
-
-
-def safe_key(*parts: str) -> str:
-    raw = "|".join(parts)
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def normalize(s: str) -> str:
-    s = clean_text(s).lower()
-    repl = str.maketrans("àâäéèêëîïôöùûüç", "aaaeeeeiioouuuc")
-    return re.sub(r"[^a-z0-9]+", " ", s.translate(repl)).strip()
-
-
-def code_matches(a: str, b: str) -> bool:
-    return normalize(a).replace(" ", "") == normalize(b).replace(" ", "")
-
-
-def make_code(length: int = 6) -> str:
-    alphabet = string.ascii_uppercase + string.digits
-    return "".join(random.choice(alphabet) for _ in range(length))
-
-
-def init_state() -> None:
-    now = now_iso()
-    defaults = {
-        "authorized": False,
-        "home_choice": "accueil",
-        "institutional_page": "",
-        "access_code": "",
-        "generated_code": "",
-        "code_history": [],
-        "beneficiaire": {},
-        "shortlist": [],
-        "analyses": {},
-        "constraints": {},
-        "cross_data": {},
-        "decision": {},
-        "created_at": now,
-        "updated_at": now,
-        "last_activity": time.time(),
-        "root_passage_id": "",
-        "session_id": "",
-        "sessions": [],
-        "session_opened_at": now,
-        "session_closed": False,
-        "timeout_triggered": False,
-        "rgpd": {
-            "consentement": False,
-            "date": "",
-            "heure": "",
-            "version": RGPD_TEXT_VERSION,
-            "texte_accepte": "",
-        },
-        "sauvegardes": [],
-        "access_history": [],
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-    if not st.session_state.root_passage_id:
-        st.session_state.root_passage_id = "C360-" + uuid.uuid4().hex[:12]
-    if not st.session_state.session_id:
-        start_session("premiere_connexion", rerun=False)
-
-
-def current_session_duration_seconds() -> int:
+def get_session_limit_minutes() -> int:
     try:
-        opened = datetime.fromisoformat(st.session_state.session_opened_at)
-        return max(0, int((datetime.now().astimezone() - opened).total_seconds()))
+        return int(st.secrets.get("security", {}).get("session_limit_minutes", DEFAULT_SESSION_LIMIT_MINUTES))
     except Exception:
-        return 0
+        return DEFAULT_SESSION_LIMIT_MINUTES
 
+def inject_beforeunload_guard():
+    components.html("""
+    <script>
+    window.parent.addEventListener('beforeunload', function (e) {
+      e.preventDefault();
+      e.returnValue = 'Quitter le site ? Vos modifications risquent de ne pas être enregistrées.';
+      return e.returnValue;
+    });
+    </script>
+    """, height=0)
 
-def total_time_seconds(include_current: bool = True) -> int:
-    total = 0
-    for sess in st.session_state.get("sessions", []):
-        total += int(sess.get("duree_secondes", 0) or 0)
-    if include_current and st.session_state.get("authorized") and not st.session_state.get("session_closed"):
-        total += current_session_duration_seconds()
-    return total
+def init_runtime_session(reason="nouvelle_session"):
+    sid = str(uuid.uuid4())
+    st.session_state.current_runtime_session_id = sid
+    st.session_state.session_started_at = now_iso()
+    st.session_state.session_last_activity = now_iso()
+    st.session_state.session_last_heartbeat = now_iso()
+    st.session_state.session_expired = False
+    st.session_state.exit_json_ready = False
+    hist = st.session_state.get("session_history", [])
+    hist.append({"session_uid": sid, "debut": now_iso(), "raison": reason, "duree_secondes": 0})
+    st.session_state.session_history = hist
 
+def update_runtime_session():
+    if not st.session_state.get("current_runtime_session_id"):
+        init_runtime_session("initialisation")
+    now = datetime.now()
+    last_iso = st.session_state.get("session_last_heartbeat") or now_iso()
+    try:
+        last = datetime.fromisoformat(last_iso)
+    except Exception:
+        last = now
+    delta = max(0, min(int((now - last).total_seconds()), 60))
+    st.session_state.session_elapsed_seconds = int(st.session_state.get("session_elapsed_seconds", 0)) + delta
+    st.session_state.session_last_heartbeat = now_iso()
+    st.session_state.session_last_activity = now_iso()
+    if st.session_state.get("session_history"):
+        st.session_state.session_history[-1]["derniere_activite"] = now_iso()
+        st.session_state.session_history[-1]["duree_secondes"] = int(st.session_state.get("session_elapsed_seconds", 0))
+    limit = get_session_limit_minutes() * 60
+    if int(st.session_state.get("session_elapsed_seconds", 0)) >= limit:
+        st.session_state.session_expired = True
 
-def format_duration(seconds: int) -> str:
-    h, rem = divmod(int(seconds), 3600)
-    m, sec = divmod(rem, 60)
+def formatted_elapsed(seconds: int | None = None) -> str:
+    seconds = int(seconds if seconds is not None else st.session_state.get("session_elapsed_seconds", 0))
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
     if h:
         return f"{h}h {m:02d}min"
-    return f"{m}min {sec:02d}s"
+    return f"{m}min {s:02d}s"
 
+def legal_footer_text() -> str:
+    return (f"{CLARTE360_LEGAL['raison_sociale']} - {CLARTE360_LEGAL['adresse']} - "
+            f"{CLARTE360_LEGAL['code_postal_ville']} - Tél. : {CLARTE360_LEGAL['telephone']} - "
+            f"E-mail : {CLARTE360_LEGAL['email']} - Web : {CLARTE360_LEGAL['web']} - "
+            f"RCS : {CLARTE360_LEGAL['rcs']} - SIRET : {CLARTE360_LEGAL['siret']} - "
+            f"NAF : {CLARTE360_LEGAL['naf']} - TVA : {CLARTE360_LEGAL['tva']}")
 
-def start_session(motif: str = "premiere_connexion", rerun: bool = False) -> None:
-    sid = "S-" + uuid.uuid4().hex[:12]
-    now = now_iso()
-    st.session_state.session_id = sid
-    st.session_state.session_opened_at = now
-    st.session_state.session_closed = False
-    st.session_state.timeout_triggered = False
-    st.session_state.last_activity = time.time()
-    st.session_state.sessions.append({
-        "session_id": sid,
-        "motif_ouverture": motif,
-        "debut": now,
-        "derniere_activite": now,
-        "dernier_battement_technique": now,
-        "fin": "",
-        "duree_secondes": 0,
-        "duree_lisible": "",
-        "motif_fermeture": "",
-        "version_application": APP_VERSION,
-        "version_socle": SOCLE_VERSION,
-    })
-    st.session_state.access_history.append({"event": motif, "at": now, "session_id": sid})
-    if rerun:
-        st.rerun()
+def session_meta() -> dict:
+    return {
+        "session_uid": st.session_state.get("current_runtime_session_id", ""),
+        "session_started_at": st.session_state.get("session_started_at", ""),
+        "session_last_activity": st.session_state.get("session_last_activity", ""),
+        "session_elapsed_seconds": int(st.session_state.get("session_elapsed_seconds", 0)),
+        "session_elapsed_human": formatted_elapsed(),
+        "session_limit_minutes": get_session_limit_minutes(),
+        "session_expired": bool(st.session_state.get("session_expired", False)),
+        "session_history": st.session_state.get("session_history", []),
+    }
 
-
-def update_current_session() -> None:
-    sid = st.session_state.get("session_id")
-    for sess in reversed(st.session_state.get("sessions", [])):
-        if sess.get("session_id") == sid and not sess.get("fin"):
-            sess["derniere_activite"] = st.session_state.updated_at
-            sess["dernier_battement_technique"] = now_iso()
-            sess["duree_secondes"] = current_session_duration_seconds()
-            sess["duree_lisible"] = format_duration(sess["duree_secondes"])
-            break
-
-
-def close_session(motif: str) -> None:
-    update_current_session()
-    sid = st.session_state.get("session_id")
-    for sess in reversed(st.session_state.get("sessions", [])):
-        if sess.get("session_id") == sid and not sess.get("fin"):
-            sess["fin"] = now_iso()
-            sess["motif_fermeture"] = motif
-            sess["duree_secondes"] = current_session_duration_seconds()
-            sess["duree_lisible"] = format_duration(sess["duree_secondes"])
-            break
-    st.session_state.session_closed = True
-    add_save_event(motif)
-
-
-def add_save_event(motif: str) -> None:
-    st.session_state.sauvegardes.append({
-        "at": now_iso(),
-        "motif": motif,
-        "session_id": st.session_state.get("session_id", ""),
-        "root_passage_id": st.session_state.get("root_passage_id", ""),
+def rgpd_payload() -> dict:
+    return st.session_state.get("rgpd", {
+        "accepted": False,
+        "accepted_at": "",
+        "text_version": RGPD_TEXT_VERSION,
     })
 
-
-
-def touch() -> None:
-    st.session_state.updated_at = now_iso()
-    st.session_state.last_activity = time.time()
-    update_current_session()
-
-
-def technical_heartbeat() -> None:
-    """Mise à jour technique sans réinitialiser le compteur d'inactivité."""
-    st.session_state.updated_at = now_iso()
-    update_current_session()
-
-
-def user_activity_signature() -> str:
-    """Signature stable des données utilisateur pour distinguer activité réelle et autorefresh."""
-    payload = {
-        "beneficiaire": st.session_state.get("beneficiaire", {}),
-        "shortlist": st.session_state.get("shortlist", []),
-        "analyses": st.session_state.get("analyses", {}),
-        "constraints": st.session_state.get("constraints", {}),
-        "cross_data": st.session_state.get("cross_data", {}),
-        "decision": st.session_state.get("decision", {}),
-        "nav": st.session_state.get("nav", ""),
-        "rgpd": st.session_state.get("rgpd", {}),
-    }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-
-
-def detect_real_activity() -> None:
-    """Ne remet à zéro le timeout que si une donnée utilisateur a réellement changé."""
-    if not st.session_state.get("authorized") or st.session_state.get("session_closed"):
-        return
-    sig = user_activity_signature()
-    previous = st.session_state.get("_last_activity_signature")
-    if previous is None:
-        st.session_state["_last_activity_signature"] = sig
-        return
-    if sig != previous:
-        st.session_state["_last_activity_signature"] = sig
-        touch()
-    else:
-        technical_heartbeat()
-
-
-def inject_browser_protection() -> None:
-    st.components.v1.html(
-        """
-        <script>
-        window.onbeforeunload = function(e) {
-          e.preventDefault();
-          e.returnValue = 'Vos modifications risquent de ne pas être enregistrées. Pensez à préparer ou télécharger votre JSON.';
-          return e.returnValue;
-        };
-        </script>
-        """,
-        height=0,
-    )
-
-
-def check_timeout() -> bool:
-    if not st.session_state.get("authorized") or st.session_state.get("session_closed"):
-        return False
-    inactive = time.time() - float(st.session_state.get("last_activity", time.time()))
-    if inactive >= TIMEOUT_SECONDS:
-        st.session_state.timeout_triggered = True
-        close_session("timeout_inactivite")
-        return True
-    return False
-
-
-def render_timeout_screen() -> None:
-    header()
-    st.error("Votre session a été fermée automatiquement après 15 minutes d'inactivité.")
-    st.info("Téléchargez votre JSON pour reprendre plus tard. Lors du prochain import, une nouvelle session sera créée sans écraser l'historique.")
-    st.download_button(
-        "Télécharger mon JSON de reprise",
-        data=make_json_download(),
-        file_name="clarte360_competences_projets_timeout.json",
-        mime="application/json",
-    )
-    if st.button("Revenir à l'écran d'accueil"):
-        st.session_state.authorized = False
-        st.session_state.home_choice = "accueil"
-        st.rerun()
-
-
-
-# -----------------------------
-# SMTP optionnel
-# -----------------------------
-
-def get_secret(name: str, default: str = "") -> str:
-    """Compatibilité ancienne et nouvelle configuration Secrets.
-    Priorité à la section [email] utilisée par les autres apps Clarté360.
-    Fallback sur les clés plates SMTP_* si une ancienne configuration existe.
-    """
-    try:
-        if "email" in st.secrets:
-            e = st.secrets.get("email", {})
-            mapping = {
-                "SMTP_HOST": "smtp_server",
-                "SMTP_PORT": "smtp_port",
-                "SMTP_USER": "smtp_user",
-                "SMTP_PASSWORD": "smtp_password",
-                "SMTP_FROM": "from_email",
-                "ADMIN_EMAIL": "to_email",
-            }
-            key = mapping.get(name, name)
-            if key in e and e.get(key):
-                return str(e.get(key))
-        return str(st.secrets.get(name, default))
-    except Exception:
-        return default
-
-
-def smtp_configured() -> bool:
-    return bool(get_secret("SMTP_HOST") and get_secret("SMTP_USER") and get_secret("SMTP_PASSWORD") and get_secret("SMTP_FROM"))
-
-
-def send_mail(to_email: str, subject: str, body: str, attachments: Optional[List[Tuple[str, bytes, str]]] = None) -> Tuple[bool, str]:
-    """Envoie un email avec la même logique que les apps Préférences/Moteurs.
-    Secrets attendus :
-    [email]
-    smtp_server, smtp_port, smtp_user, smtp_password, from_email, to_email
-    """
-    if not smtp_configured():
-        return False, "SMTP non configuré dans les Secrets Streamlit."
-    try:
-        host = get_secret("SMTP_HOST")
-        port = int(get_secret("SMTP_PORT", "465"))
-        user = get_secret("SMTP_USER")
-        pwd = get_secret("SMTP_PASSWORD")
-        sender = get_secret("SMTP_FROM", user)
-        msg = EmailMessage()
-        msg["From"] = sender
-        msg["To"] = to_email
-        msg["Subject"] = subject
-        msg.set_content(body)
-        for filename, payload, mime in attachments or []:
-            maintype, subtype = mime.split("/", 1) if "/" in mime else ("application", "octet-stream")
-            msg.add_attachment(payload, maintype=maintype, subtype=subtype, filename=filename)
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, timeout=25) as server:
-                server.login(user, pwd)
-                server.send_message(msg)
-        else:
-            with smtplib.SMTP(host, port, timeout=25) as server:
-                server.starttls()
-                server.login(user, pwd)
-                server.send_message(msg)
-        return True, "Email envoyé."
-    except Exception as e:
-        return False, f"Erreur email : {e}"
-
-# -----------------------------
-# Chargement ROME
-# -----------------------------
-
-@dataclass
-class RomeItem:
-    code_rome: str
-    intitule: str
-    definition: str
-    acces_metier: str
-    appellations: List[str]
-    competences: List[Dict[str, str]]
-    contextes: List[Dict[str, str]]
-    secteurs: List[str]
-    riasec: str = ""
-
-
-def elem_text(elem: Optional[ET.Element], path: str = "") -> str:
-    if elem is None:
-        return ""
-    target = elem.find(path) if path else elem
-    return clean_text(target.text if target is not None else "")
-
-
-def extract_items(parent: ET.Element, section: str, item_type: str) -> List[Dict[str, str]]:
-    out: List[Dict[str, str]] = []
-    sec = parent.find(section)
-    if sec is None:
-        return out
-    # Savoir-faire et savoir-être : enjeux/enjeu/items/item
-    for enjeu in sec.findall(".//enjeu"):
-        group = elem_text(enjeu, "libelle")
-        for item in enjeu.findall(".//item"):
-            lib = elem_text(item, "libelle")
-            if lib:
-                out.append({
-                    "type": item_type,
-                    "groupe": group,
-                    "libelle": lib,
-                    "code_ogr": elem_text(item, "code_ogr"),
-                    "coeur_metier": elem_text(item, "coeur_metier") or "Secondaire",
-                })
-    # Savoirs : categories/categorie/items/item
-    for cat in sec.findall(".//categorie"):
-        group = elem_text(cat, "libelle")
-        for item in cat.findall(".//item"):
-            lib = elem_text(item, "libelle")
-            if lib:
-                out.append({
-                    "type": item_type,
-                    "groupe": group,
-                    "libelle": lib,
-                    "code_ogr": elem_text(item, "code_ogr"),
-                    "coeur_metier": elem_text(item, "coeur_metier") or "Secondaire",
-                })
-    return out
-
-
-@st.cache_data(show_spinner="Chargement du référentiel ROME...")
-def load_riasec_table() -> Dict[str, str]:
-    if not RIASEC_XLSX.exists():
-        return {}
-    df = pd.read_excel(RIASEC_XLSX, sheet_name="ROME_RIASEC")
-    cols = {c.lower(): c for c in df.columns}
-    code_col = cols.get("code rome") or df.columns[0]
-    riasec_col = cols.get("riasec normalise") or cols.get("riasec fiche") or df.columns[2]
-    return {clean_text(r[code_col]).upper(): clean_text(r[riasec_col]).upper() for _, r in df.iterrows() if clean_text(r[code_col])}
-
-
-@st.cache_data(show_spinner="Lecture de RefRomeXml.zip...")
-def load_rome() -> Dict[str, Dict[str, Any]]:
-    if not ROME_ZIP.exists():
-        st.error("Fichier data/RefRomeXml.zip absent.")
-        return {}
-    riasec_map = load_riasec_table()
-    with zipfile.ZipFile(ROME_ZIP) as z:
-        fname = [n for n in z.namelist() if "fiche_emploi_metier" in n][0]
-        raw = z.read(fname)
-    root = ET.fromstring(raw)
-    data: Dict[str, Dict[str, Any]] = {}
-    for fiche in root.findall("fiche_metier"):
-        code = elem_text(fiche, "rome/code_rome").upper()
-        if not code:
-            continue
-        appellations = []
-        for a in fiche.findall(".//appellations/appellation"):
-            lib = elem_text(a, "libelle")
-            if lib:
-                appellations.append(lib)
-        comp_parent = fiche.find("competences")
-        competences: List[Dict[str, str]] = []
-        if comp_parent is not None:
-            competences.extend(extract_items(comp_parent, "savoir_faire", "Savoir-faire"))
-            competences.extend(extract_items(comp_parent, "savoir_etre_professionnel", "Savoir-être professionnel"))
-            competences.extend(extract_items(comp_parent, "savoirs", "Savoir"))
-        contextes = []
-        for tc in fiche.findall(".//contextes_travail/type_contexte"):
-            group = elem_text(tc, "libelle")
-            for item in tc.findall(".//item"):
-                lib = elem_text(item, "libelle")
-                if lib:
-                    contextes.append({"groupe": group, "libelle": lib, "code_ogr": elem_text(item, "code_ogr")})
-        secteurs = []
-        for s in fiche.findall(".//secteurs_activite/secteur_activite"):
-            lib = elem_text(s, "libelle")
-            if lib:
-                secteurs.append(lib)
-        data[code] = {
-            "code_rome": code,
-            "intitule": elem_text(fiche, "rome/intitule"),
-            "definition": elem_text(fiche, "definition"),
-            "acces_metier": elem_text(fiche, "acces_metier"),
-            "appellations": appellations,
-            "competences": competences,
-            "contextes": contextes,
-            "secteurs": sorted(list(dict.fromkeys(secteurs))),
-            "riasec": riasec_map.get(code, ""),
-            "search": normalize(" ".join([code, elem_text(fiche, "rome/intitule")] + appellations)),
-        }
-    return data
-
-
-def search_rome(query: str, rome: Dict[str, Dict[str, Any]], limit: int = 30) -> List[Dict[str, Any]]:
-    q = normalize(query)
-    if not q:
-        return []
-    tokens = q.split()
-    res = []
-    for item in rome.values():
-        score = 0
-        if item["code_rome"].lower().startswith(q.lower()):
-            score += 100
-        title_norm = normalize(item["intitule"])
-        if q in title_norm:
-            score += 80
-        if q in item["search"]:
-            score += 40
-        score += sum(8 for t in tokens if t in item["search"])
-        if score:
-            res.append((score, item))
-    res.sort(key=lambda x: (-x[0], x[1]["code_rome"]))
-    return [r[1] for r in res[:limit]]
-
-
-# -----------------------------
-# Export / import JSON et PDF
-# -----------------------------
-
-def export_state() -> Dict[str, Any]:
-    update_current_session()
-    return {
-        "outil": "competences_projets",
-        "nom_outil": APP_NAME,
-        "app": "Clarté360 Compétences & Projets",
-        "version_application": APP_VERSION,
-        "version_socle_clarte360": SOCLE_VERSION,
-        "version_questionnaire": QUESTIONNAIRE_VERSION,
-        "exported_at": now_iso(),
-        "identifiant_racine_passation": st.session_state.get("root_passage_id", ""),
-        "identifiant_session": st.session_state.get("session_id", ""),
-        "created_at": st.session_state.created_at,
-        "updated_at": st.session_state.updated_at,
-        "beneficiaire": st.session_state.beneficiaire,
-        "consultant": st.session_state.beneficiaire.get("consultant", ""),
-        "progression": {"shortlist_count": len(st.session_state.shortlist), "decision_finale": bool(st.session_state.decision.get("choix_final"))},
-        "reponses": {
-            "shortlist": st.session_state.shortlist,
-            "analyses": st.session_state.analyses,
-            "constraints": st.session_state.constraints,
-            "cross_data": st.session_state.cross_data,
-            "decision": st.session_state.decision,
-        },
-        "resultats": {"scores": {code: score_for_job(code) for code in st.session_state.shortlist}},
-        "donnees_pdf": {
-            "shortlist": st.session_state.shortlist,
-            "decision": st.session_state.decision,
-        },
-        "rgpd": st.session_state.rgpd,
-        "historique_acces": st.session_state.access_history,
-        "historique_sessions": st.session_state.sessions,
-        "sessions": st.session_state.sessions,
-        "sauvegardes": st.session_state.sauvegardes,
-        "temps_cumule_secondes": total_time_seconds(include_current=True),
-        "temps_cumule_lisible": format_duration(total_time_seconds(include_current=True)),
-        "rapports_generes": [],
-    }
-
-
-def import_state(payload: Dict[str, Any]) -> None:
-    source = payload.get("reponses", payload)
-    for k in ["beneficiaire", "shortlist", "analyses", "constraints", "cross_data", "decision", "created_at", "updated_at"]:
-        if k in source:
-            st.session_state[k] = source[k]
-        elif k in payload:
-            st.session_state[k] = payload[k]
-    st.session_state.root_passage_id = payload.get("identifiant_racine_passation") or payload.get("root_passage_id") or st.session_state.get("root_passage_id") or "C360-" + uuid.uuid4().hex[:12]
-    st.session_state.sessions = payload.get("historique_sessions") or payload.get("sessions") or st.session_state.get("sessions", [])
-    st.session_state.sauvegardes = payload.get("sauvegardes") or st.session_state.get("sauvegardes", [])
-    st.session_state.access_history = payload.get("historique_acces") or st.session_state.get("access_history", [])
-    if payload.get("rgpd"):
-        st.session_state.rgpd = payload.get("rgpd")
-    st.session_state.authorized = True
-    start_session("reprise_depuis_json", rerun=False)
-    touch()
-
-
-def make_json_download(motif: str = "telechargement_volontaire") -> bytes:
-    add_save_event(motif)
-    return json.dumps(export_state(), ensure_ascii=False, indent=2).encode("utf-8")
-
-
-
-def score_for_job(code: str) -> Dict[str, Any]:
-    analyses = st.session_state.analyses.get(code, {})
-    comp = analyses.get("competences", {})
-    vals = []
-    for v in comp.values():
-        sc = STATUS_SCORE.get(v.get("statut"))
-        if sc is not None:
-            vals.append(sc)
-    competence_score = round(sum(vals) / len(vals) * 100, 1) if vals else 0
-    constraints = st.session_state.constraints.get(code, {})
-    criteria = {
-        "Compétences": competence_score,
-        "Valeurs": float(constraints.get("valeurs", 50)),
-        "Préférences": float(constraints.get("preferences", 50)),
-        "Moteurs professionnels": float(constraints.get("moteurs", constraints.get("moteurs", 50))),
-        "RIASEC": float(constraints.get("riasec", 50)),
-        "Contraintes": float(constraints.get("contraintes", 50)),
-        "Mobilité": float(constraints.get("mobilite", 50)),
-        "Formation": float(constraints.get("formation", 50)),
-        "Marché": float(constraints.get("marche", 50)),
-    }
-    weights = {
-        "Compétences": 25,
-        "Valeurs": 10,
-        "Préférences": 10,
-        "Moteurs professionnels": 15,
-        "RIASEC": 5,
-        "Contraintes": 10,
-        "Mobilité": 5,
-        "Formation": 10,
-        "Marché": 10,
-    }
-    total = sum(criteria[k] * weights[k] for k in criteria) / sum(weights.values())
-    return {"score": round(total, 1), "criteria": criteria, "weights": weights}
-
-
-
-def comp_key(code: str, c: Dict[str, str]) -> str:
-    return safe_key(code, c.get("code_ogr", ""), c.get("type", ""), c.get("libelle", ""))
-
-
-def all_competence_rows(code: str, rome: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    item = rome.get(code, {})
-    comp_data = st.session_state.analyses.setdefault(code, {}).setdefault("competences", {})
-    rows = []
-    for c in item.get("competences", []):
-        k = comp_key(code, c)
-        current = comp_data.setdefault(k, {
-            "statut": "Non renseigné", "preuve": "", "plan": "", "commentaire": "",
-            "libelle": c.get("libelle", ""), "type": c.get("type", ""),
-            "groupe": c.get("groupe", ""), "coeur_metier": c.get("coeur_metier", ""),
-            "code_ogr": c.get("code_ogr", "")
-        })
-        rows.append({"key": k, **c, **current})
-    return rows
-
-
-def competence_stats(code: str, rome: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    rows = all_competence_rows(code, rome)
-    total = len(rows)
-    counts = {"Acquis": 0, "En cours d'acquisition": 0, "Non acquis": 0, "Non applicable": 0, "Non renseigné": 0}
-    by_family: Dict[str, Dict[str, Any]] = {}
-    for r in rows:
-        statut = r.get("statut", "Non renseigné") or "Non renseigné"
-        if statut not in counts:
-            counts[statut] = 0
-        counts[statut] += 1
-        fam = r.get("type", "Autre") or "Autre"
-        fam_row = by_family.setdefault(fam, {"Famille": fam, "Total": 0, "A": 0, "ECA": 0, "NA": 0, "NR": 0, "% acquis": 0.0})
-        fam_row["Total"] += 1
-        if statut == "Acquis": fam_row["A"] += 1
-        elif statut == "En cours d'acquisition": fam_row["ECA"] += 1
-        elif statut == "Non acquis": fam_row["NA"] += 1
-        elif statut != "Non applicable": fam_row["NR"] += 1
-    for fam_row in by_family.values():
-        fam_row["% acquis"] = round(fam_row["A"] / fam_row["Total"] * 100, 1) if fam_row["Total"] else 0
-    return {"total": total, "counts": counts, "families": list(by_family.values()), "rows": rows}
-
-
-def status_short(statut: str) -> str:
-    return {
-        "Acquis": "🟢 A",
-        "En cours d'acquisition": "🟠 ECA",
-        "Non acquis": "🔴 NA",
-        "Non applicable": "⚪ N.A.",
-        "Non renseigné": "⚫ NR",
-    }.get(statut or "Non renseigné", "⚫ NR")
-
-
-def pct_label(n: int, total: int) -> str:
-    return f"{n} / {total} ({round(n/total*100,1) if total else 0} %)"
-
-
-def appreciation(score: float) -> str:
-    if score >= 80: return "Très élevée"
-    if score >= 65: return "Élevée"
-    if score >= 50: return "À approfondir"
-    if score >= 35: return "Fragile"
-    return "Très fragile"
-
-
-def parse_clarte_json(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Extrait les éléments utiles depuis les JSON Clarté360 existants.
-    Les apps Préférences et Moteurs stockent déjà les scores sous la clé scores.
-    """
-    out = {"raw": payload, "scores": [], "top": [], "low": [], "summary": ""}
-    scores = payload.get("scores") or payload.get("resultats") or []
-    if isinstance(scores, dict):
-        scores = list(scores.values())
-    clean_scores = []
-    for r in scores if isinstance(scores, list) else []:
-        if not isinstance(r, dict):
-            continue
-        label = r.get("Dimension") or r.get("Moteur") or r.get("Valeur") or r.get("Libellé") or r.get("libelle") or r.get("Code") or "Élément"
-        pct = r.get("Pourcentage") if "Pourcentage" in r else r.get("score") if "score" in r else r.get("Score")
-        try:
-            pct = float(str(pct).replace("%", "").replace(",", "."))
-        except Exception:
-            pct = None
-        clean_scores.append({"Libellé": clean_text(label), "Pourcentage": pct, "Lecture": clean_text(r.get("Lecture", ""))})
-    clean_scores = [r for r in clean_scores if r["Pourcentage"] is not None]
-    clean_scores.sort(key=lambda x: x["Pourcentage"], reverse=True)
-    out["scores"] = clean_scores
-    out["top"] = clean_scores[:3]
-    out["low"] = sorted(clean_scores, key=lambda x: x["Pourcentage"])[:3]
-    if clean_scores:
-        out["summary"] = "Principaux résultats : " + ", ".join(f"{r['Libellé']} ({r['Pourcentage']:.0f} %)" for r in clean_scores[:3])
-    return out
-
-
-def render_import_analysis(label: str, key: str, cross: Dict[str, Any]) -> None:
-    block = cross.get(key, {}) if isinstance(cross.get(key), dict) else {}
-    parsed = block.get("parsed") or {}
-    notes = block.get("notes", "")
-    if parsed.get("scores"):
-        df = pd.DataFrame(parsed["scores"])
-        st.dataframe(df, hide_index=True, use_container_width=True)
-        chart_df = df.set_index("Libellé")[["Pourcentage"]]
-        st.bar_chart(chart_df, height=220)
-        st.caption("Ces données seront reprises dans la synthèse et croisées avec les métiers retenus. Le radar détaillé sera reconstruit dans l'interface Consultant à partir du JSON complet.")
-    elif notes:
-        st.info("Aucun score structuré détecté automatiquement dans ce JSON ; la note de synthèse sera conservée.")
-    else:
-        st.caption("Aucun élément importé pour le moment.")
-
-
-def riasec_match(user_code: str, job_code: str) -> Tuple[int, str]:
-    user = clean_text(user_code).upper().replace(" ", "")
-    job = clean_text(job_code).upper().replace(" ", "")
-    if not user or not job:
-        return 50, "Non déterminé"
-    score = 0
-    if len(user) >= 1 and user[0] in job[:1]: score += 60
-    if len(user) >= 2 and user[1] in job[:2]: score += 30
-    if len(user) >= 3 and user[2] in job[:3]: score += 10
-    return min(score, 100), "Très cohérent" if score >= 80 else "Cohérent" if score >= 50 else "À explorer"
-
-
-def plan_action_from_competences(code: str, rome: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    rows = []
-    for i, r in enumerate(all_competence_rows(code, rome), start=1):
-        statut = r.get("statut")
-        action = clean_text(r.get("plan", ""))
-        if statut in ("En cours d'acquisition", "Non acquis") and action:
-            rows.append({
-                "ID": f"PA-{i:03d}",
-                "Ind": "",
-                "Origine": f"ROME {code} – {r.get('type','')} – {r.get('libelle','')} – {status_short(statut)}",
-                "Famille": r.get("type", ""),
-                "Compétence concernée": r.get("libelle", ""),
-                "Statut origine": statut,
-                "Action à réaliser": action,
-                "Moyens externes / internes": "",
-                "Objectif visé par cette action": f"Acquérir ou renforcer : {r.get('libelle','')}",
-                "Date de réalisation": "",
-                "Indicateur de réussite": "",
-                "Commentaires": "",
-            })
-    return rows
-
-
-def regroup_plan_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    grouped: Dict[str, Dict[str, Any]] = {}
-    result = []
-    for r in rows:
-        ind = clean_text(str(r.get("Ind", "")))
-        if not ind:
-            result.append(r)
-            continue
-        if ind not in grouped:
-            grouped[ind] = dict(r)
-            result.append(grouped[ind])
-        else:
-            base = grouped[ind]
-            for col in ["Origine", "Famille", "Compétence concernée", "Action à réaliser", "Moyens externes / internes", "Objectif visé par cette action", "Indicateur de réussite", "Commentaires"]:
-                a = clean_text(str(base.get(col, "")))
-                b = clean_text(str(r.get(col, "")))
-                if b and b not in a:
-                    base[col] = (a + "\n" + b).strip() if a else b
-            if not clean_text(str(base.get("Date de réalisation", ""))) and clean_text(str(r.get("Date de réalisation", ""))):
-                base["Date de réalisation"] = r.get("Date de réalisation", "")
-    return result
-
-def validate_job_analysis(code: str, rome: Dict[str, Dict[str, Any]]) -> List[str]:
-    """Retourne les points à compléter pour rendre l'analyse exploitable."""
-    warnings: List[str] = []
-    comp_data = st.session_state.analyses.get(code, {}).get("competences", {})
-    if not comp_data:
-        warnings.append("Aucune compétence ROME n'a encore été analysée.")
-        return warnings
-    for key, row in comp_data.items():
-        statut = row.get("statut", "Non renseigné")
-        lib = row.get("libelle", key)
-        preuve = clean_text(row.get("preuve", ""))
-        plan = clean_text(row.get("plan", ""))
-        if statut in ("Acquis", "En cours d'acquisition") and len(preuve) < 10:
-            warnings.append(f"Preuve à compléter pour : {lib}")
-        if statut in ("En cours d'acquisition", "Non acquis") and len(plan) < 10:
-            warnings.append(f"Plan d'acquisition à compléter pour : {lib}")
-        if statut == "Non renseigné":
-            warnings.append(f"Statut non renseigné pour : {lib}")
-    return warnings[:30]
-
-
-def global_validation(rome: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    missing: List[str] = []
-    if not st.session_state.beneficiaire.get("nom") or not st.session_state.beneficiaire.get("prenom"):
-        missing.append("Identité bénéficiaire incomplète.")
-    if not st.session_state.shortlist:
-        missing.append("Aucun métier sélectionné.")
-    for code in st.session_state.shortlist:
-        for w in validate_job_analysis(code, rome):
-            missing.append(f"{code} – {w}")
-    if not st.session_state.decision.get("choix_final"):
-        missing.append("Projet final non sélectionné.")
-    if not st.session_state.decision.get("validation_beneficiaire"):
-        missing.append("Confirmation du libre choix par le bénéficiaire non cochée.")
-    return {"ok": len(missing) == 0, "missing": missing}
-
-
-def pdf_report(rome: Dict[str, Dict[str, Any]]) -> bytes:
-    if not REPORTLAB_OK:
-        return b""
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.4*cm, leftMargin=1.4*cm, topMargin=1.5*cm, bottomMargin=1.8*cm)
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="ClarteTitle", parent=styles["Title"], textColor=colors.HexColor(CLARTE_TEAL_DARK), fontSize=18, leading=22))
-    styles.add(ParagraphStyle(name="ClarteH", parent=styles["Heading2"], textColor=colors.HexColor(CLARTE_TEAL), fontSize=13))
-    normal = styles["BodyText"]
-    story = []
-    b = st.session_state.beneficiaire
-    if LOGO.exists():
-        story.append(Image(str(LOGO), width=4.2*cm, height=4.2*cm, kind="proportional", hAlign="CENTER"))
-        story.append(Spacer(1, 0.2*cm))
-    story.append(Paragraph("Clarté360 – Analyse des compétences transférables et faisabilité du projet professionnel", styles["ClarteTitle"]))
-    story.append(Spacer(1, 0.2*cm))
-    story.append(Paragraph("<b>Précaution de lecture :</b> ce rapport est un support d’accompagnement professionnel. Il ne remplace pas l’échange avec le consultant et ne constitue pas une décision automatique.", normal))
-    story.append(Spacer(1, 0.3*cm))
-    story.append(Paragraph(f"Bénéficiaire : <b>{b.get('prenom','')} {b.get('nom','')}</b>", normal))
-    story.append(Paragraph(f"Email : {b.get('email','')}", normal))
-    story.append(Paragraph(f"Export : {now_iso()}", normal))
-    if st.session_state.sessions:
-        story.append(Paragraph("Connexions : " + "; ".join([f"{x.get('event','')} {x.get('at','')}" for x in st.session_state.sessions]), normal))
-    story.append(Spacer(1, 0.4*cm))
-
-    # Données importées
-    story.append(Paragraph("Données Clarté360 importées", styles["ClarteH"]))
-    for label, key in [("Valeurs", "valeurs"), ("Préférences professionnelles", "preferences"), ("Moteurs professionnels", "moteurs")]:
-        block = st.session_state.cross_data.get(key, {}) if isinstance(st.session_state.cross_data.get(key), dict) else {}
-        parsed = block.get("parsed", {})
-        note = block.get("notes", "")
-        summary = parsed.get("summary") or note or "Non renseigné"
-        story.append(Paragraph(f"<b>{label}</b> : {clean_text(summary)}", normal))
-    rblock = st.session_state.cross_data.get("riasec", {}) if isinstance(st.session_state.cross_data.get("riasec"), dict) else {}
-    story.append(Paragraph(f"<b>RIASEC Diagoriente</b> : {rblock.get('profil','Non renseigné')}", normal))
-    story.append(Spacer(1, 0.4*cm))
-
-    for code in st.session_state.shortlist:
-        item = rome.get(code, {})
-        story.append(Paragraph(f"{code} – {item.get('intitule','')}", styles["ClarteH"]))
-        story.append(Paragraph(f"RIASEC métier : {item.get('riasec','Non renseigné')}", normal))
-        if item.get("definition"):
-            story.append(Paragraph(clean_text(item.get("definition", "")), normal))
-        sc = score_for_job(code)
-        story.append(Paragraph(f"Compatibilité globale : <b>{appreciation(sc['score'])}</b>", normal))
-        stats = competence_stats(code, rome)
-        total = stats["total"]
-        counts = stats["counts"]
-        story.append(Paragraph(f"Total compétences ROME : <b>{total}</b> – Acquises : {pct_label(counts.get('Acquis',0), total)} – ECA : {pct_label(counts.get('En cours d\'acquisition',0), total)} – NA : {pct_label(counts.get('Non acquis',0), total)}", normal))
-        if stats["families"]:
-            rows = [["Famille", "Total", "A", "ECA", "NA", "% acquis"]]
-            for r in stats["families"]:
-                rows.append([r["Famille"], r["Total"], r["A"], r["ECA"], r["NA"], r["% acquis"]])
-            table = Table(rows, colWidths=[5.2*cm, 2*cm, 1.5*cm, 1.5*cm, 1.5*cm, 2*cm])
-            table.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.HexColor(CLARTE_TEAL)),
-                ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-                ("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey),
-                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ]))
-            story.append(table)
-        with_calc = [["Critère", "Score", "Pondération"]] + [[k, str(sc["criteria"][k]), str(sc["weights"][k])] for k in sc["criteria"]]
-        table = Table(with_calc, colWidths=[6.5*cm, 3*cm, 3*cm])
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor(CLARTE_TEAL)),
-            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-            ("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey),
-            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ]))
-        story.append(Spacer(1, 0.2*cm))
-        story.append(table)
-        story.append(Spacer(1, 0.4*cm))
-
-    story.append(Paragraph("Décision finale", styles["ClarteH"]))
-    choice = st.session_state.decision.get("choix_final", "Non renseigné")
-    story.append(Paragraph(f"Projet retenu : <b>{choice}</b>", normal))
-    story.append(Paragraph(st.session_state.decision.get("justification", ""), normal))
-    story.append(Paragraph("Plan d'action", styles["ClarteH"]))
-    plan_rows = st.session_state.decision.get("plan_action_rows", [])
-    if plan_rows:
-        rows = [["Origine", "Action", "Moyens", "Objectif", "Date", "Indicateur"]]
-        for r in plan_rows[:60]:
-            rows.append([clean_text(str(r.get("Origine", "")))[:90], clean_text(str(r.get("Action à réaliser", "")))[:90], clean_text(str(r.get("Moyens externes / internes", "")))[:70], clean_text(str(r.get("Objectif visé par cette action", "")))[:80], clean_text(str(r.get("Date de réalisation", ""))), clean_text(str(r.get("Indicateur de réussite", "")))[:70]])
-        table = Table(rows, colWidths=[3.2*cm, 3.4*cm, 2.8*cm, 3.2*cm, 2*cm, 3*cm], repeatRows=1)
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor(CLARTE_TEAL)),
-            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-            ("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey),
-            ("VALIGN", (0,0), (-1,-1), "TOP"),
-            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ]))
-        story.append(table)
-    else:
-        story.append(Paragraph("Plan d'action non généré.", normal))
-    def _footer(canvas, doc_obj):
-        canvas.saveState()
-        canvas.setFont("Helvetica", 7)
-        canvas.setFillColor(colors.HexColor("#666666"))
-        footer = f"Clarté360 - 60 rue François 1er - 75008 Paris - Tél. : 01 89 48 08 25 - contact@clarte360.com - SIRET : 10234983400014"
-        canvas.drawCentredString(A4[0] / 2, 0.8*cm, footer)
-        canvas.drawRightString(A4[0] - 1.4*cm, 0.45*cm, f"Page {doc_obj.page}")
-        canvas.restoreState()
-    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
-    return buf.getvalue()
-
-
-# -----------------------------
-# UI
-# -----------------------------
-
-def inject_css() -> None:
-    st.markdown(f"""
-    <style>
-    .stApp {{ background: {CLARTE_BG}; }}
-    h1, h2, h3 {{ color: {CLARTE_DARK}; }}
-    .clarte-title {{ color: {CLARTE_TEAL} !important; margin-bottom:0.2rem; }}
-    .clarte-subtitle {{ color:#6B7280; font-size:1.05rem; margin-top:0.2rem; }}
-    .clarte-card {{
-        background:#FFFFFF; border:1px solid #D7ECEA; border-radius:18px; padding:22px;
-        box-shadow:0 4px 14px rgba(0,0,0,0.04); margin-bottom:16px;
-    }}
-    .metric-card {{background:#fff; border-left:6px solid {CLARTE_TEAL}; border-radius:12px; padding:14px;}}
-    .small-muted {{ color:#7B7F88; font-size:0.92rem; }}
-    div.stButton > button:first-child {{ background:{CLARTE_TEAL}; color:white; border-radius:10px; border:0; }}
-    div.stDownloadButton > button:first-child {{ border-radius:10px; }}
-    </style>
-    """, unsafe_allow_html=True)
-
-
-def header() -> None:
-    cols = st.columns([1, 7])
-    with cols[0]:
-        if ICON.exists():
-            st.image(str(ICON), width=105)
-    with cols[1]:
-        st.markdown('<h1 class="clarte-title">Clarté360 - Analyse des compétences transférables et faisabilité du projet professionnel</h1>', unsafe_allow_html=True)
-        st.markdown("<div class='clarte-subtitle'>Version 1.2 - outil propriétaire d’exploration des compétences, de la faisabilité et du plan d’action</div>", unsafe_allow_html=True)
-
-
-def objectif_outil_card() -> None:
-    st.markdown("""
-    <div class='clarte-card'>
-        <h3 style='margin-top:0;'>Objectif de l'outil</h3>
-        <p>
-        Cet outil permet d'analyser l'adéquation entre un ou plusieurs projets professionnels et les compétences attendues dans le référentiel ROME.
-        Il aide à repérer les compétences déjà acquises, celles en cours d'acquisition et celles qui restent à développer.
-        </p>
-        <p>
-        L'objectif n'est pas de décider automatiquement à la place du bénéficiaire, mais de construire une lecture structurée : compétences transférables,
-        cohérence avec les valeurs, préférences professionnelles, moteurs professionnels, RIASEC, contraintes, mobilité et faisabilité du projet.
-        </p>
-        <p>
-        Le résultat sert de support d'échange avec le consultant Clarté360 et alimente le choix final ainsi que le plan d'action du bilan de compétences.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-def rgpd_ok() -> bool:
-    return bool(st.session_state.get("rgpd", {}).get("consentement"))
-
-
-def render_legal_page() -> None:
-    header()
-    st.markdown("## Informations légales et protection des données")
-    tab1, tab2, tab3 = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
-    with tab1:
-        st.markdown("""
-        ### Protection des données
-        Cette application fonctionne à partir d'un fichier JSON qui appartient au bénéficiaire.
-        Aucune donnée n'est stockée sur les serveurs Clarté360 par cette application Streamlit.
-        Le JSON permet de sauvegarder, reprendre et tracer le travail réalisé pendant le bilan de compétences.
-        """)
-        st.write(f"Version du texte accepté : {RGPD_TEXT_VERSION}")
-        if st.session_state.rgpd.get("consentement"):
-            st.success(f"Consentement accepté le {st.session_state.rgpd.get('date','')} à {st.session_state.rgpd.get('heure','')}")
-        if st.session_state.get("sessions"):
-            st.markdown("### Traçabilité de la session")
-            st.write(f"Identifiant racine : `{st.session_state.get('root_passage_id','')}`")
-            st.write(f"Session actuelle : `{st.session_state.get('session_id','')}`")
-            st.write(f"Temps cumulé : {format_duration(total_time_seconds())}")
-            st.dataframe(pd.DataFrame(st.session_state.sessions), use_container_width=True)
-    with tab2:
+def render_rgpd_mentions_contact():
+    st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Informations légales et protection des données</h2>", unsafe_allow_html=True)
+    tabs = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
+    with tabs[0]:
+        st.markdown(RGPD_TEXT)
+    with tabs[1]:
         st.markdown(f"""
-        ### Mentions légales
-        **{CLARTE_LEGAL['nom']}**  
-        {CLARTE_LEGAL['adresse']}  
-        Tél. : {CLARTE_LEGAL['telephone']}  
-        E-mail : {CLARTE_LEGAL['email']}  
-        Web : {CLARTE_LEGAL['web']}  
-        RCS : {CLARTE_LEGAL['rcs']}  
-        SIRET : {CLARTE_LEGAL['siret']}  
-        NAF : {CLARTE_LEGAL['naf']}  
-        TVA intracommunautaire : {CLARTE_LEGAL['tva']}
+        **{CLARTE360_LEGAL['raison_sociale']} {CLARTE360_LEGAL['forme']}**  
+        {CLARTE360_LEGAL['adresse']}  
+        {CLARTE360_LEGAL['code_postal_ville']}  
+        Tél. : {CLARTE360_LEGAL['telephone']}  
+        E-mail : {CLARTE360_LEGAL['email']}  
+        Web : {CLARTE360_LEGAL['web']}  
+        RCS : {CLARTE360_LEGAL['rcs']}  
+        SIRET : {CLARTE360_LEGAL['siret']}  
+        NAF : {CLARTE360_LEGAL['naf']}  
+        TVA intracommunautaire : {CLARTE360_LEGAL['tva']}
 
-        Les contenus, la structure, les méthodes de restitution et les rapports générés relèvent de la propriété intellectuelle de Clarté360.
-        L'application constitue un support d'accompagnement et ne remplace pas l'analyse du consultant.
+        Les contenus de l'application sont protégés au titre de la propriété intellectuelle. Les résultats produits sont des supports d'échange et ne constituent pas une décision automatique.
         """)
-    with tab3:
-        render_contact_form(inline=True)
-    if st.button("Retour à l'application"):
-        st.session_state.institutional_page = ""
-        st.rerun()
+    with tabs[2]:
+        render_contact_form(context="institutionnel")
 
-
-def render_contact_form(inline: bool = False) -> None:
-    if not inline:
-        header()
-        st.markdown("## Contacter Clarté360")
-    st.info("Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d'une suggestion concernant cette application. Pour toute question relative à l'interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.")
-    b = st.session_state.get("beneficiaire", {})
-    with st.form("contact_clarte360_form"):
-        c1, c2 = st.columns(2)
-        with c1:
-            prenom = st.text_input("Prénom", value=b.get("prenom", ""))
-            nom = st.text_input("Nom", value=b.get("nom", ""))
-            email = st.text_input("E-mail", value=b.get("email", ""))
-        with c2:
-            telephone = st.text_input("Téléphone facultatif", value=b.get("telephone", ""))
-            objet = st.text_input("Objet")
-        message = st.text_area("Message")
-        consent = st.checkbox("J'accepte que Clarté360 traite ces informations afin de répondre à ma demande.")
-        sent = st.form_submit_button("Envoyer ma demande")
-    if sent:
-        if not (email and objet and message and consent):
-            st.error("Merci de compléter l'e-mail, l'objet, le message et le consentement spécifique.")
+def render_contact_form(context="sidebar"):
+    b = st.session_state.get("beneficiaire", {}) or st.session_state.get("pending_beneficiaire", {}) or {}
+    st.write("Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d’une suggestion concernant cette application.")
+    st.write("Pour toute question relative à l’interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.")
+    with st.form(f"contact_form_{context}"):
+        col1, col2 = st.columns(2)
+        with col1:
+            prenom = st.text_input("Prénom", value=b.get("prenom", ""), key=f"contact_prenom_{context}")
+        with col2:
+            nom = st.text_input("Nom", value=b.get("nom", ""), key=f"contact_nom_{context}")
+        email = st.text_input("E-mail", value=b.get("email", ""), key=f"contact_email_{context}")
+        tel = st.text_input("Téléphone facultatif", key=f"contact_tel_{context}")
+        objet = st.text_input("Objet", key=f"contact_objet_{context}")
+        message = st.text_area("Message", key=f"contact_message_{context}")
+        consent = st.checkbox("J'accepte que ces informations soient utilisées pour traiter ma demande.", key=f"contact_consent_{context}")
+        submit = st.form_submit_button("Envoyer ma demande à Clarté360", type="primary")
+    if submit:
+        if not email.strip() or not objet.strip() or not message.strip() or not consent:
+            st.error("Merci de renseigner l'e-mail, l'objet, le message et le consentement.")
         else:
-            body = f"""Demande de contact Clarté360
+            body = f"""Demande transmise depuis {APP_FULL_NAME}
 
-Nom : {prenom} {nom}
-Email : {email}
-Téléphone : {telephone}
+Nom : {nom}
+Prénom : {prenom}
+E-mail : {email}
+Téléphone : {tel}
 Objet : {objet}
-Message : {message}
+Message :
+{message}
 
 Application : {APP_NAME}
 Version : {APP_VERSION}
-Socle : {SOCLE_VERSION}
+Socle : {SOCLE_CLARTE360_VERSION}
 Date : {now_iso()}
-Identifiant session : {st.session_state.get('session_id','')}
-Temps session : {format_duration(current_session_duration_seconds())}
-Temps cumulé : {format_duration(total_time_seconds())}
+Session : {st.session_state.get('current_runtime_session_id','')}
+Temps session : {formatted_elapsed()}
+Passation : {st.session_state.get('passation_id','')}
 """
-            ok, info = send_mail("contact@clarte360.com", f"Contact Clarté360 - {objet}", body)
+            ok, msg = send_email(FINAL_EMAIL_TO, f"Clarté360 - Contact - {objet}", body)
             if ok:
-                st.success("Votre message a été envoyé à Clarté360.")
+                st.success("Votre message a été transmis à Clarté360.")
             else:
-                st.warning(info)
-    if not inline and st.button("Retour à l'application"):
-        st.session_state.institutional_page = ""
-        st.rerun()
+                st.info("Le message n'a pas pu être envoyé automatiquement. Vous pouvez écrire à contact@clarte360.com.")
+                st.caption(msg)
 
-
-def render_institutional_sidebar(pre_app: bool = False) -> None:
-    if pre_app:
-        st.sidebar.markdown("### Clarté360")
-    if st.sidebar.button("Contacter Clarté360", key=f"contact_{pre_app}"):
-        st.session_state.institutional_page = "contact"
-        st.rerun()
-    if st.sidebar.button("RGPD et mentions légales", key=f"legal_{pre_app}"):
-        st.session_state.institutional_page = "legal"
-        st.rerun()
-    st.sidebar.caption(f"Application : {APP_VERSION}")
-    st.sidebar.caption(f"Socle : {SOCLE_VERSION}")
-    st.sidebar.caption(f"Questionnaire : {QUESTIONNAIRE_VERSION}")
-    if pre_app:
-        if st.sidebar.button("Réinitialiser la session"):
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
+def render_sidebar_common(active_questions=None):
+    with st.sidebar:
+        if LOGO_PATH.exists():
+            st.image(str(LOGO_PATH), width=86)
+        st.markdown(f"### {APP_NAME}")
+        st.caption(f"Version application : {APP_VERSION}")
+        st.caption(f"Socle Clarté360 : {SOCLE_CLARTE360_VERSION}")
+        st.caption(f"Temps de session : {formatted_elapsed()}")
+        if st.session_state.get("test_started") and active_questions is not None:
+            st.markdown("---")
+            st.markdown("### Sauvegarde / sortie")
+            progress_payload = build_progress_json()
+            st.download_button(
+                "Préparer mon JSON pour reprendre plus tard",
+                data=json_download_bytes(progress_payload),
+                file_name=f"clarte360_preferences_sauvegarde_{current_name_part()}_{timestamp_part()}.json",
+                mime="application/json",
+                key="sidebar_prepare_json",
+            )
+            st.download_button(
+                "Quitter et télécharger mon JSON",
+                data=json_download_bytes(progress_payload),
+                file_name=f"clarte360_preferences_sortie_{current_name_part()}_{timestamp_part()}.json",
+                mime="application/json",
+                key="sidebar_exit_json",
+            )
+            if st.button("Réinitialiser la session"):
+                reset_all()
+        st.markdown("---")
+        if st.button("RGPD et mentions légales"):
+            st.session_state.page = "legal"
             st.rerun()
+        if st.button("Contacter Clarté360"):
+            st.session_state.show_contact_sidebar = not st.session_state.get("show_contact_sidebar", False)
+        if st.session_state.get("show_contact_sidebar"):
+            render_contact_form(context="sidebar")
 
-def access_screen() -> None:
-    render_institutional_sidebar(pre_app=True)
-    header()
-    objectif_outil_card()
-    st.markdown("### Démarrer ou reprendre")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("Commencer une nouvelle session", use_container_width=True):
-            st.session_state.home_choice = "nouvelle_session"
-    with col_b:
-        if st.button("Importer mon fichier JSON", use_container_width=True):
-            st.session_state.home_choice = "import_json"
-
-    if st.session_state.home_choice == "import_json":
-        st.markdown("### Reprendre à partir d'une sauvegarde JSON")
-        upl = st.file_uploader("Importer mon fichier JSON de reprise", type=["json"])
-        if upl:
+def render_landing(active_questions):
+    render_header()
+    st.markdown("""
+    <div class="objectif-box">
+    <strong>Objectif de l'outil</strong><br>
+    Cet outil permet d’explorer votre manière préférée de travailler à partir de situations professionnelles concrètes.
+    Il ne s’agit pas d’analyser votre personnalité, mais de repérer vos préférences déclarées concernant l’autonomie,
+    l’organisation, les relations professionnelles, la décision, l’action, le changement, l’environnement de travail,
+    l’apprentissage, la contribution et les responsabilités. Les résultats servent de support d’échange avec votre consultant Clarté360.
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("### Reprendre ou commencer")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### Importer mon fichier JSON")
+        f = st.file_uploader("JSON de sauvegarde", type=["json"], key="landing_resume_json")
+        if f is not None:
             try:
-                payload = json.loads(upl.read().decode("utf-8"))
-                import_state(payload)
-                st.success("Sauvegarde importée. Une nouvelle session de reprise a été créée.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Import impossible : {e}")
-        return
+                payload = json.loads(f.getvalue().decode("utf-8"))
+                if payload.get("outil") != "clarte360_preferences_professionnelles":
+                    st.error("Ce fichier JSON ne correspond pas à cet outil.")
+                elif payload.get("completed") is True:
+                    st.error("Ce JSON correspond à un questionnaire déjà terminé.")
+                else:
+                    restore_from_progress(payload)
+                    init_runtime_session("reprise_json")
+                    st.session_state.page = "app"
+                    st.success("Sauvegarde chargée. Reprise du questionnaire.")
+                    st.rerun()
+            except Exception as exc:
+                st.error(f"Impossible de charger la sauvegarde : {exc}")
+    with col2:
+        st.markdown("#### Commencer une nouvelle session")
+        if st.button("Commencer une nouvelle session", type="primary", use_container_width=True):
+            st.session_state.page = "identification"
+            init_runtime_session("nouvelle_session")
+            st.rerun()
+    with st.expander("Comprendre les 10 préférences explorées"):
+        for label, description in DIMENSION_DESCRIPTIONS.items():
+            st.markdown(f"**{label}** - {description}")
 
-    if st.session_state.home_choice != "nouvelle_session":
-        st.info("Choisissez 'Importer mon fichier JSON' pour reprendre un travail ou 'Commencer une nouvelle session' pour démarrer.")
-        return
-
-    st.markdown("<div class='clarte-card'>", unsafe_allow_html=True)
-    st.subheader("Accès bénéficiaire")
-    st.write("Cet outil n'est pas un test psychométrique. Il sert de support d'analyse et d'échange avec le consultant Clarté360.")
-    c1, c2 = st.columns(2)
-    with c1:
-        prenom = st.text_input("Prénom *")
-        nom = st.text_input("Nom *")
-    with c2:
-        email = st.text_input("Adresse email *")
-        consultant = st.text_input("Consultant / accompagnateur", value="Clarté360")
-    consent = st.checkbox("J'accepte les conditions de protection des données et je comprends que mon JSON est ma sauvegarde de reprise.")
-    if consent and not rgpd_ok():
-        dt = datetime.now().astimezone()
-        st.session_state.rgpd = {
-            "consentement": True,
-            "date": dt.strftime("%d/%m/%Y"),
-            "heure": dt.strftime("%H:%M:%S"),
-            "version": RGPD_TEXT_VERSION,
-            "texte_accepte": "Aucune donnée n'est stockée sur les serveurs Clarté360 ; le JSON appartient au bénéficiaire.",
-        }
-    if st.button("Recevoir / générer mon code d'accès"):
-        if not (prenom and nom and email and rgpd_ok()):
-            st.error("Merci de compléter les champs obligatoires et d'accepter la protection des données.")
-        else:
-            code = make_code()
-            st.session_state.generated_code = code
-            st.session_state.beneficiaire = {"prenom": prenom, "nom": nom, "email": email, "consultant": consultant}
-            st.session_state.code_history.append({"date": now_iso(), "statut": "genere", "regeneration": len(st.session_state.code_history)})
-            msg = f"Bonjour {prenom},\n\nVotre code d'accès Clarté360 est : {code}\n\nCe code vous permet d'ouvrir votre session et de sauvegarder votre travail."
-            ok, info = send_mail(email, "Votre code d'accès Clarté360", msg)
-            admin_email = get_secret("ADMIN_EMAIL", "contact@clarte360.com")
-            send_mail(admin_email, "Connexion Clarté360 - Compétences projets", f"Création de dossier pour {prenom} {nom} - {email} - {APP_VERSION} - {now_iso()} - consultant : {consultant}")
-            if ok:
-                st.success("Code envoyé par email.")
-            else:
-                st.warning(info)
-                st.info(f"Mode test : code généré = {code}")
-    if st.button("Je n'ai pas reçu mon code"):
-        st.info("Vérifiez vos courriers indésirables puis régénérez un code si nécessaire.")
-    code_in = st.text_input("Saisir le code d'accès", type="password")
-    if st.button("Entrer dans l'outil"):
-        if code_in and (code_in == st.session_state.generated_code or code_in == get_secret("MASTER_CODE", "CLARTE360")):
-            st.session_state.authorized = True
-            start_session("premiere_connexion", rerun=False)
-            touch()
+def accept_rgpd_if_needed():
+    if st.session_state.get("rgpd", {}).get("accepted"):
+        return True
+    st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Consentement RGPD obligatoire</h2>", unsafe_allow_html=True)
+    st.markdown(RGPD_TEXT)
+    accept = st.checkbox("J'ai lu et j'accepte les conditions d'utilisation et de protection des données.")
+    if st.button("Valider le consentement", type="primary"):
+        if accept:
+            st.session_state.rgpd = {"accepted": True, "accepted_at": now_iso(), "text_version": RGPD_TEXT_VERSION}
             st.rerun()
         else:
-            st.error("Code incorrect.")
-    st.markdown("</div>", unsafe_allow_html=True)
+            st.error("Le consentement est nécessaire pour utiliser l'application.")
+    return False
 
 
-def sidebar_exports(rome: Dict[str, Dict[str, Any]]) -> None:
-    st.sidebar.markdown("### Navigation")
-    st.sidebar.caption("Utilisez les onglets centraux pour progresser dans l'outil.")
-    st.sidebar.markdown("### Sauvegarde")
-    val = global_validation(rome)
-    if val["ok"]:
-        st.sidebar.success("Dossier complet")
-    else:
-        st.sidebar.warning(f"{len(val['missing'])} point(s) à compléter")
-    st.sidebar.download_button("Préparer mon JSON pour reprendre plus tard", data=make_json_download("preparation_json_reprise"), file_name="clarte360_competences_projets_reprise.json", mime="application/json")
-    if st.sidebar.button("Quitter et télécharger mon JSON"):
-        close_session("sortie_utilisateur_bouton")
-    if st.session_state.get("session_closed"):
-        st.sidebar.download_button("Télécharger mon JSON de sortie", data=make_json_download("sortie_utilisateur"), file_name="clarte360_competences_projets_sortie.json", mime="application/json")
-    render_institutional_sidebar(pre_app=False)
-    st.sidebar.caption(f"Dernière activité : {st.session_state.updated_at}")
-    if REPORTLAB_OK:
-        st.sidebar.download_button("Télécharger le rapport PDF", data=pdf_report(rome), file_name="clarte360_competences_projets_rapport.pdf", mime="application/pdf")
+# Chargement données
+questions_df, dimensions_df = load_workbook_from_source(None, DEFAULT_XLSX.stat().st_mtime if DEFAULT_XLSX.exists() else 0)
+validation_errors = validate_questionnaire(questions_df)
 
+# Socle visuel et protection navigateur
+inject_beforeunload_guard()
+update_runtime_session()
 
+if validation_errors:
+    render_header()
+    st.error("Le questionnaire source contient des erreurs. Merci de corriger le fichier Excel dans le dossier data/ puis de redéployer l'application.")
+    for err in validation_errors:
+        st.write("- " + err)
+    st.stop()
 
-def tab_identite() -> None:
-    st.subheader("1. Bénéficiaire et contexte")
-    b = st.session_state.beneficiaire.copy()
-    c1, c2 = st.columns(2)
-    with c1:
-        b["prenom"] = st.text_input("Prénom", value=b.get("prenom", ""))
-        b["nom"] = st.text_input("Nom", value=b.get("nom", ""))
-        b["email"] = st.text_input("Email", value=b.get("email", ""))
-    with c2:
-        b["situation"] = st.selectbox("Situation actuelle", ["", "Salarié", "Demandeur d'emploi", "Indépendant", "Agent public", "Autre"], index=0 if not b.get("situation") else ["", "Salarié", "Demandeur d'emploi", "Indépendant", "Agent public", "Autre"].index(b.get("situation")))
-        b["financeur"] = st.selectbox("Financement", ["", "CPF", "Employeur", "Personnel", "France Travail", "Autre"], index=0 if not b.get("financeur") else ["", "CPF", "Employeur", "Personnel", "France Travail", "Autre"].index(b.get("financeur")))
-        b["consultant"] = st.text_input("Consultant", value=b.get("consultant", ""))
-    b["demande_initiale"] = st.text_area("Demande initiale / attente principale", value=b.get("demande_initiale", ""), height=110)
-    b["objectif_bilan"] = st.text_area("Objectif du bilan et objectif de l'outil 5", value=b.get("objectif_bilan", ""), height=110)
-    st.session_state.beneficiaire = b
-    technical_heartbeat()
+active_questions = get_active_questions(questions_df)
+render_sidebar_common(active_questions if st.session_state.get("test_started") else None)
 
+if st.session_state.get("session_expired"):
+    render_header()
+    st.warning("La session est arrivée au délai de sécurité. Téléchargez votre JSON pour reprendre plus tard.")
+    st.download_button(
+        "Quitter et télécharger mon JSON",
+        data=json_download_bytes(build_progress_json()),
+        file_name=f"clarte360_preferences_timeout_{current_name_part()}_{timestamp_part()}.json",
+        mime="application/json",
+        type="primary",
+    )
+    st.stop()
 
-def tab_imports() -> None:
-    st.subheader("2. Données des autres outils Clarté360")
-    st.info("Les imports ne sont pas passifs : les JSON importés sont lus, résumés, puis utilisés pour éclairer l'adéquation aux métiers retenus. Les JSON complets restent conservés pour la future interface Clarté360 Consultant.")
-    cross = st.session_state.cross_data.copy()
-    tool_defs = [
-        ("Roue des valeurs", "valeurs", "Importer le JSON de la roue des valeurs si disponible."),
-        ("Préférences professionnelles", "preferences", "Importer le JSON de l'outil Préférences professionnelles."),
-        ("Moteurs professionnels", "moteurs", "Importer le JSON de l'outil Moteurs professionnels."),
-    ]
-    for label, key, help_text in tool_defs:
-        st.markdown(f"#### {label}")
-        upl = st.file_uploader(help_text, type=["json"], key=f"upl_{key}")
-        block = cross.get(key, {}) if isinstance(cross.get(key), dict) else {}
-        if upl:
-            try:
-                raw = json.loads(upl.read().decode("utf-8"))
-                block["json"] = raw
-                block["parsed"] = parse_clarte_json(raw)
-                st.success("JSON importé et analysé.")
-            except Exception as e:
-                st.error(f"Lecture impossible : {e}")
-        notes = st.text_area(f"Synthèse / éléments utiles – {label}", value=block.get("notes", ""), key=f"notes_{key}", height=90)
-        block["notes"] = notes
-        cross[key] = block
-        render_import_analysis(label, key, cross)
+page = st.session_state.get("page", "landing")
+if page == "legal":
+    render_header()
+    render_rgpd_mentions_contact()
+    if st.button("Retour vers l'application", type="primary"):
+        st.session_state.page = "app" if st.session_state.get("test_started") else "landing"
+        st.rerun()
+    st.stop()
 
-    st.markdown("#### RIASEC Diagoriente")
-    st.caption("Le RIASEC provient de Diagoriente : il n'y a pas de JSON à importer. Saisir simplement le profil dominant utilisé pendant l'entretien.")
-    rblock = cross.get("riasec", {}) if isinstance(cross.get("riasec"), dict) else {}
-    cols = st.columns(3)
-    with cols[0]: rblock["r1"] = st.selectbox("1er code RIASEC", [""] + list("RIASEC"), index=([""] + list("RIASEC")).index(rblock.get("r1", "")) if rblock.get("r1", "") in [""] + list("RIASEC") else 0)
-    with cols[1]: rblock["r2"] = st.selectbox("2e code RIASEC", [""] + list("RIASEC"), index=([""] + list("RIASEC")).index(rblock.get("r2", "")) if rblock.get("r2", "") in [""] + list("RIASEC") else 0)
-    with cols[2]: rblock["r3"] = st.selectbox("3e code optionnel", [""] + list("RIASEC"), index=([""] + list("RIASEC")).index(rblock.get("r3", "")) if rblock.get("r3", "") in [""] + list("RIASEC") else 0)
-    rblock["profil"] = "".join([rblock.get("r1", ""), rblock.get("r2", ""), rblock.get("r3", "")])
-    rblock["notes"] = st.text_area("Note d'interprétation RIASEC", value=rblock.get("notes", ""), height=80)
-    cross["riasec"] = rblock
-    st.session_state.cross_data = cross
-    technical_heartbeat()
+if page == "landing" and not st.session_state.get("test_started"):
+    render_landing(active_questions)
+    st.stop()
 
-def tab_metiers(rome: Dict[str, Dict[str, Any]]) -> None:
-    st.subheader("3. Recherche et shortlist métiers ROME")
-    st.info("Sélectionnez de 1 à 3 métiers maximum. Le ROME XML fournit les compétences ; la table Clarté360 complète le RIASEC.")
-    query = st.text_input("Recherche libre : intitulé, appellation, code ROME", placeholder="ex. responsable qualité, formateur, K2101...")
-    results = search_rome(query, rome) if query else []
-    for item in results[:15]:
-        c1, c2 = st.columns([5, 1])
-        with c1:
-            st.markdown(f"**{item['code_rome']} – {item['intitule']}**  ")
-            st.caption(f"RIASEC : {item.get('riasec') or 'n.c.'} | {', '.join(item.get('secteurs', [])[:2])}")
-        with c2:
-            if st.button("Ajouter", key=f"add_{item['code_rome']}"):
-                if item["code_rome"] not in st.session_state.shortlist and len(st.session_state.shortlist) < 3:
-                    st.session_state.shortlist.append(item["code_rome"])
-                    touch()
-                    st.rerun()
-                elif len(st.session_state.shortlist) >= 3:
-                    st.error("Maximum 3 métiers.")
-    st.markdown("### Shortlist")
-    if not st.session_state.shortlist:
-        st.warning("Aucun métier sélectionné.")
-    for code in list(st.session_state.shortlist):
-        item = rome.get(code, {})
-        with st.expander(f"{code} – {item.get('intitule','')}", expanded=True):
-            st.write(item.get("definition", ""))
-            st.caption(f"Accès métier : {item.get('acces_metier', '')}")
-            st.caption(f"RIASEC : {item.get('riasec','n.c.')} | Secteurs : {', '.join(item.get('secteurs', []))}")
-            if st.button("Retirer", key=f"remove_{code}"):
-                st.session_state.shortlist.remove(code)
-                touch()
-                st.rerun()
-
-
-def tab_competences(rome: Dict[str, Dict[str, Any]]) -> None:
-    st.subheader("4. Analyse Acquis / ECA / NA")
-    if not st.session_state.shortlist:
-        st.warning("Sélectionnez d'abord un métier dans la shortlist.")
-        return
-    code = st.selectbox("Métier à analyser", st.session_state.shortlist, format_func=lambda c: f"{c} – {rome[c]['intitule']}")
-    item = rome[code]
-    dec = st.session_state.decision
-    plan_exists = bool(dec.get("plan_action_generated")) and dec.get("choix_final") == code
-    if plan_exists:
-        st.warning("Le plan d'action a déjà été généré à partir de cette étude des compétences. L'étude est figée pour éviter de rendre le plan incohérent.")
-        allow_edit = st.checkbox("Je comprends le risque et je souhaite modifier quand même l'étude des compétences", value=False)
-    else:
-        allow_edit = True
-    st.markdown(f"### {code} – {item['intitule']}")
-    st.caption("Pour Acquis ou En cours d'acquisition : preuve obligatoire. Pour ECA ou Non acquis : action d'acquisition à renseigner pour alimenter le plan d'action.")
-
-    stats = competence_stats(code, rome)
-    total = stats["total"]
-    counts = stats["counts"]
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total compétences ROME", total)
-    c2.metric("Acquises", pct_label(counts.get("Acquis",0), total))
-    c3.metric("En cours", pct_label(counts.get("En cours d'acquisition",0), total))
-    c4.metric("Non acquises", pct_label(counts.get("Non acquis",0), total))
-    if stats["families"]:
-        with st.expander("Synthèse par famille de compétences", expanded=True):
-            st.dataframe(pd.DataFrame(stats["families"]), hide_index=True, use_container_width=True)
-
-    filt = st.multiselect("Types à afficher", ["Savoir-faire", "Savoir-être professionnel", "Savoir"], default=["Savoir-faire", "Savoir-être professionnel", "Savoir"])
-    core_only = st.checkbox("Afficher uniquement les éléments principaux", value=False)
-    comp_data = st.session_state.analyses.setdefault(code, {}).setdefault("competences", {})
-    comps = [c for c in item["competences"] if c["type"] in filt]
-    if core_only:
-        comps = [c for c in comps if c.get("coeur_metier") == "Principale"]
-    st.write(f"{len(comps)} éléments affichés sur {total} compétences ROME au total.")
-    for c in comps:
-        k = comp_key(code, c)
-        current = comp_data.setdefault(k, {"statut": "Non renseigné", "preuve": "", "plan": "", "commentaire": "", "libelle": c["libelle"], "type": c["type"], "groupe": c.get("groupe",""), "coeur_metier": c.get("coeur_metier",""), "code_ogr": c.get("code_ogr", "")})
-        label = f"{status_short(current.get('statut','Non renseigné'))} | {c['type']} | {c.get('groupe','')} | {c['libelle']}"
-        with st.expander(label, expanded=False):
-            current["statut"] = st.selectbox("Statut", STATUS_OPTIONS, index=STATUS_OPTIONS.index(current.get("statut", "Non renseigné")), key=f"statut_{k}", disabled=not allow_edit)
-            current["preuve"] = st.text_area("Preuve / justification : Quand ? Où ? Comment ?", value=current.get("preuve", ""), key=f"preuve_{k}", height=80, disabled=not allow_edit)
-            current["plan"] = st.text_area("Action à réaliser / Comment acquérir ou renforcer ?", value=current.get("plan", ""), key=f"plan_{k}", height=80, disabled=not allow_edit)
-            current["commentaire"] = st.text_area("Commentaire consultant", value=current.get("commentaire", ""), key=f"comment_{k}", height=70, disabled=not allow_edit)
-    technical_heartbeat()
-
-def tab_contextes(rome: Dict[str, Dict[str, Any]]) -> None:
-    st.subheader("5. Contextes ROME, contraintes et faisabilité")
-    if not st.session_state.shortlist:
-        st.warning("Sélectionnez d'abord un métier.")
-        return
-    st.info("Les contextes ROME décrivent les conditions d'exercice habituellement rencontrées dans le métier : environnement de travail, public, horaires, déplacements, type d'employeur, statut, contraintes. Ils ne sont pas des obligations, mais aident à vérifier la compatibilité concrète du projet.")
-    cross = st.session_state.cross_data
-    user_riasec = (cross.get("riasec", {}) if isinstance(cross.get("riasec"), dict) else {}).get("profil", "")
-    for code in st.session_state.shortlist:
-        item = rome[code]
-        with st.expander(f"{code} – {item['intitule']}", expanded=True):
-            st.markdown("**Contextes ROME**")
-            if item.get("contextes"):
-                ctx_df = pd.DataFrame(item.get("contextes", []))[["groupe", "libelle"]].drop_duplicates()
-                st.dataframe(ctx_df, hide_index=True, use_container_width=True, height=220)
+if not st.session_state.get("test_started"):
+    render_header()
+    if not accept_rgpd_if_needed():
+        st.stop()
+    st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Identification du bénéficiaire</h2>", unsafe_allow_html=True)
+    st.write("Ces informations seront intégrées au rapport PDF, au JSON de sauvegarde et au JSON final.")
+    if not st.session_state.get("code_sent"):
+        with st.form("beneficiaire_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                prenom = st.text_input("Prénom *")
+            with col2:
+                nom = st.text_input("Nom *")
+            email = st.text_input("Adresse e-mail *")
+            consultant = st.text_input("Consultant / accompagnateur", value="")
+            consent = st.checkbox("Je comprends que cet outil est un support d’exploration et non un test psychométrique.")
+            send_code = st.form_submit_button("Recevoir mon code d'accès", type="primary")
+        if send_code:
+            if not prenom.strip() or not nom.strip() or not email.strip():
+                st.error("Merci de renseigner le prénom, le nom et l'adresse e-mail.")
+            elif "@" not in email or "." not in email:
+                st.error("Merci de renseigner une adresse e-mail valide.")
+            elif not consent:
+                st.error("Merci de confirmer la compréhension du cadre d’utilisation.")
             else:
-                st.caption("Aucun contexte ROME détecté pour cette fiche.")
-            cdata = st.session_state.constraints.setdefault(code, {})
-            job_riasec = item.get("riasec", "")
-            if user_riasec and job_riasec:
-                rscore, rlabel = riasec_match(user_riasec, job_riasec)
-                cdata.setdefault("riasec", rscore)
-                st.caption(f"RIASEC Diagoriente : {user_riasec} | RIASEC métier : {job_riasec} | Lecture : {rlabel}")
-            st.markdown("**Cotation d'exploration**")
-            st.caption("Cette cotation est une aide à la réflexion. Elle ne décide jamais à votre place : elle sert à préparer l'échange avec le consultant et à rendre le calcul final compréhensible.")
-            fields = [
-                ("valeurs", "Compatibilité valeurs", "Le métier permet-il de vivre les valeurs importantes pour le bénéficiaire ?"),
-                ("preferences", "Compatibilité préférences", "Les conditions de travail correspondent-elles aux préférences professionnelles ?"),
-                ("moteurs", "Compatibilité moteurs professionnels", "Le métier nourrit-il les principaux moteurs professionnels ?"),
-                ("riasec", "Cohérence RIASEC", "Le profil RIASEC Diagoriente est-il proche du profil RIASEC du métier ?"),
-                ("contraintes", "Contraintes personnelles", "Les contraintes personnelles sont-elles compatibles avec ce projet ?"),
-                ("mobilite", "Mobilité", "La mobilité nécessaire est-elle possible et acceptée ?"),
-                ("formation", "Formation accessible", "Les formations ou prérequis nécessaires sont-ils accessibles ?"),
-                ("marche", "Marché / débouchés", "Le projet semble-t-il réaliste au regard des débouchés identifiés ?"),
-                ("adhesion", "Adhésion bénéficiaire", "Le bénéficiaire exprime-t-il une envie réelle de poursuivre cette piste ?"),
-            ]
-            cols = st.columns(3)
-            for i, (key, label, help_text) in enumerate(fields):
-                with cols[i % 3]:
-                    st.caption(help_text)
-                    cdata[key] = st.slider(label, 0, 100, int(cdata.get(key, 50)), key=f"slider_{code}_{key}")
-            cdata["freins"] = st.text_area("Freins / obstacles repérés", value=cdata.get("freins", ""), key=f"freins_{code}")
-            cdata["leviers"] = st.text_area("Leviers / ressources", value=cdata.get("leviers", ""), key=f"leviers_{code}")
-            cdata["actions"] = st.text_area("Actions à mener pour valider la faisabilité", value=cdata.get("actions", ""), key=f"actions_{code}")
-    technical_heartbeat()
-
-def tab_synthese(rome: Dict[str, Dict[str, Any]]) -> None:
-    st.subheader("6. Synthèse comparée et aide à la décision")
-    if not st.session_state.shortlist:
-        st.warning("Aucun métier à comparer.")
-        return
-    st.info("La synthèse compare les projets, mais ne décide pas à la place du bénéficiaire. L'appréciation Clarté360 est un support d'analyse multicritères.")
-    rows = []
-    for code in st.session_state.shortlist:
-        item = rome[code]
-        sc = score_for_job(code)
-        stats = competence_stats(code, rome)
-        total = stats["total"]
-        counts = stats["counts"]
-        rows.append({
-            "Code": code,
-            "Métier": item["intitule"],
-            "RIASEC": item.get("riasec",""),
-            "Total compétences ROME": total,
-            "Acquis": f"{counts.get('Acquis',0)} ({round(counts.get('Acquis',0)/total*100,1) if total else 0} %)",
-            "ECA": f"{counts.get('En cours d\'acquisition',0)} ({round(counts.get('En cours d\'acquisition',0)/total*100,1) if total else 0} %)",
-            "NA": f"{counts.get('Non acquis',0)} ({round(counts.get('Non acquis',0)/total*100,1) if total else 0} %)",
-            "Compatibilité globale": appreciation(sc["score"]),
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    st.warning("L'appréciation globale n'est pas une note scolaire. Elle agrège plusieurs dimensions et reste subordonnée au choix libre du bénéficiaire et à l'analyse du consultant.")
-
-    for code in st.session_state.shortlist:
-        item = rome[code]
-        sc = score_for_job(code)
-        stats = competence_stats(code, rome)
-        total = stats["total"]
-        counts = stats["counts"]
-        st.markdown(f"### {code} – {item['intitule']}")
-        st.markdown(f"**Compatibilité globale : {appreciation(sc['score'])}**")
-        st.progress(int(sc["score"]))
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total compétences ROME", total)
-        c2.metric("A", pct_label(counts.get("Acquis",0), total))
-        c3.metric("ECA", pct_label(counts.get("En cours d'acquisition",0), total))
-        c4.metric("NA", pct_label(counts.get("Non acquis",0), total))
-        if stats["families"]:
-            st.dataframe(pd.DataFrame(stats["families"]), hide_index=True, use_container_width=True)
-        with st.expander("Comment est calculée cette appréciation ?", expanded=False):
-            st.write("L'appréciation Clarté360 est calculée à partir d'une pondération indicative. Elle sert uniquement de support d'analyse.")
-            wdf = pd.DataFrame([{"Critère": k, "Score": sc["criteria"][k], "Pondération": sc["weights"][k]} for k in sc["criteria"]])
-            st.dataframe(wdf, hide_index=True, use_container_width=True)
-            st.caption("Pondération actuelle : compétences transférables, valeurs, préférences, moteurs professionnels, RIASEC, contraintes, mobilité, formation et marché. Cette logique pourra être ajustée dans l'interface Consultant.")
-
-def tab_decision(rome: Dict[str, Dict[str, Any]]) -> None:
-    st.subheader("7. Décision finale et plan d'action")
-    dec = st.session_state.decision.copy()
-    options = [""] + st.session_state.shortlist
-    previous_choice = dec.get("choix_final", "")
-    dec["choix_final"] = st.selectbox("Projet retenu par le bénéficiaire", options, index=options.index(dec.get("choix_final", "")) if dec.get("choix_final", "") in options else 0, format_func=lambda c: "Aucun" if c == "" else f"{c} – {rome[c]['intitule']}")
-    if previous_choice and previous_choice != dec["choix_final"] and dec.get("plan_action_generated"):
-        st.warning("Le projet retenu a changé alors qu'un plan d'action existe déjà. Le plan existant reste conservé mais devra être régénéré volontairement si nécessaire.")
-    dec["choix_mode"] = st.radio("Mode de choix", ["Choix manuel du bénéficiaire", "Choix accompagné consultant", "Choix avec aide automatisée optionnelle"], index=["Choix manuel du bénéficiaire", "Choix accompagné consultant", "Choix avec aide automatisée optionnelle"].index(dec.get("choix_mode", "Choix manuel du bénéficiaire")))
-    dec["justification"] = st.text_area("Justification du choix", value=dec.get("justification", ""), height=120)
-    dec["points_vigilance"] = st.text_area("Points de vigilance", value=dec.get("points_vigilance", ""), height=100)
-    dec["validation_beneficiaire"] = st.checkbox("Le bénéficiaire confirme que le choix final lui appartient", value=dec.get("validation_beneficiaire", False))
-
-    st.markdown("### Plan d'action")
-    st.caption("Le plan d'action ne concerne qu'un seul métier : le projet professionnel retenu. Il est généré depuis les compétences ECA / NA du métier choisi, puis devient indépendant.")
-    chosen = dec.get("choix_final", "")
-    if not chosen:
-        st.warning("Sélectionnez d'abord le projet final pour générer le plan d'action.")
-    else:
-        if not dec.get("plan_action_generated"):
-            if st.button("Générer le plan d'action à partir de l'étude des compétences"):
-                dec["plan_action_rows"] = plan_action_from_competences(chosen, rome)
-                dec["plan_action_generated"] = True
-                dec["plan_action_source_code"] = chosen
-                dec["plan_action_generated_at"] = now_iso()
-                st.success("Plan d'action généré. Il devient maintenant indépendant de l'étude des compétences.")
-                st.session_state.decision = dec
-                st.rerun()
-        else:
-            st.success(f"Plan d'action généré le {dec.get('plan_action_generated_at','')} à partir du métier {dec.get('plan_action_source_code','')}. Il n'est plus remis à zéro automatiquement.")
-            if dec.get("plan_action_source_code") != chosen:
-                st.error("Le plan d'action existant ne correspond pas au métier actuellement retenu. Utilisez une régénération volontaire uniquement si vous souhaitez repartir de zéro.")
-            col_a, col_b = st.columns(2)
-            with col_a:
-                if st.button("MAJ regroupement par Ind"):
-                    dec["plan_action_rows"] = regroup_plan_rows(dec.get("plan_action_rows", []))
-                    st.session_state.decision = dec
+                beneficiaire_tmp = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip(), "consultant": consultant.strip()}
+                code = generate_access_code()
+                ok, msg = send_access_code_email(beneficiaire_tmp, code)
+                hist = st.session_state.get("code_history", [])
+                hist.append({"generated_at": now_iso(), "status": "envoye" if ok else "erreur", "message": msg, "regeneration_number": len(hist)})
+                st.session_state.code_history = hist
+                st.session_state.pending_beneficiaire = beneficiaire_tmp
+                st.session_state.access_code = code
+                st.session_state.code_sent = ok
+                st.session_state.code_message = msg
+                if ok:
+                    st.success("Un code d'accès vient d'être envoyé à l'adresse e-mail indiquée.")
                     st.rerun()
-            with col_b:
-                with st.expander("Régénération exceptionnelle", expanded=False):
-                    st.warning("Cette action remplace le plan d'action actuel par une nouvelle extraction depuis l'étude des compétences. À utiliser uniquement volontairement.")
-                    if st.button("Écraser et régénérer le plan d'action"):
-                        dec["plan_action_rows"] = plan_action_from_competences(chosen, rome)
-                        dec["plan_action_generated"] = True
-                        dec["plan_action_source_code"] = chosen
-                        dec["plan_action_generated_at"] = now_iso()
-                        st.session_state.decision = dec
-                        st.rerun()
-
-        rows = dec.get("plan_action_rows", [])
-        if dec.get("plan_action_generated"):
-            if not rows:
-                st.info("Aucune action issue des compétences ECA / NA n'a été trouvée. Vous pouvez ajouter des lignes manuellement.")
-            df = pd.DataFrame(rows)
-            base_cols = ["Ind", "Origine", "Action à réaliser", "Moyens externes / internes", "Objectif visé par cette action", "Date de réalisation", "Indicateur de réussite", "Commentaires", "ID", "Famille", "Compétence concernée", "Statut origine"]
-            for col in base_cols:
-                if col not in df.columns:
-                    df[col] = ""
-            edited = st.data_editor(df[base_cols], use_container_width=True, num_rows="dynamic", hide_index=True, key="plan_action_editor")
-            dec["plan_action_rows"] = edited.to_dict(orient="records")
-            with st.expander("Comprendre l'origine des actions", expanded=False):
-                st.write("La colonne Origine explique pourquoi une action apparaît dans le plan : elle reprend le code ROME, la famille de compétence, la compétence concernée et le statut ECA / NA au moment de la génération.")
-                st.write("Les colonnes techniques ID, Famille, Compétence concernée et Statut origine seront utiles pour la traçabilité et la future interface Clarté360 Consultant.")
-
-    st.session_state.decision = dec
-    val = global_validation(rome)
-    if val["ok"]:
-        st.success("Dossier prêt : le JSON final et le rapport PDF peuvent être transmis.")
+                else:
+                    st.error("Le code n'a pas pu être envoyé. Vérifiez la configuration SMTP dans Streamlit Secrets.")
+                    st.caption(msg)
     else:
-        with st.expander(f"Points à compléter avant clôture ({len(val['missing'])})", expanded=False):
-            for m in val["missing"][:80]:
-                st.write("- " + m)
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.download_button("Télécharger JSON final", data=make_json_download(), file_name="clarte360_outil5_final.json", mime="application/json")
-    with c2:
-        if REPORTLAB_OK:
-            st.download_button("Télécharger PDF final", data=pdf_report(rome), file_name="clarte360_outil5_rapport_final.pdf", mime="application/pdf")
-    with c3:
-        if st.button("Clôturer et envoyer à Clarté360"):
-            st.session_state.sessions.append({"event": "end", "at": now_iso()})
-            admin_email = get_secret("ADMIN_EMAIL", "contact@clarte360.com")
-            b = st.session_state.beneficiaire
-            attachments = [("clarte360_outil5_final.json", make_json_download(), "application/json")]
-            if REPORTLAB_OK:
-                attachments.append(("clarte360_outil5_rapport_final.pdf", pdf_report(rome), "application/pdf"))
-            ok, info = send_mail(admin_email, f"Clarté360 Compétences projets final – {b.get('prenom','')} {b.get('nom','')}", "Dossier Outil 5 clôturé en pièce jointe.", attachments=attachments)
+        b = st.session_state.get("pending_beneficiaire", {})
+        st.success(f"Code envoyé à : {b.get('email','')}")
+        code_input = st.text_input("Saisissez le code d'accès reçu par e-mail *", max_chars=6)
+        col_a, col_b, col_c = st.columns([1, 1, 1])
+        with col_a:
+            validate_code = st.button("Valider le code et démarrer", type="primary")
+        with col_b:
+            resend = st.button("Je n’ai pas reçu mon code")
+        with col_c:
+            change = st.button("Modifier l'adresse e-mail")
+        if resend:
+            code = generate_access_code()
+            ok, msg = send_access_code_email(b, code)
+            hist = st.session_state.get("code_history", [])
+            hist.append({"generated_at": now_iso(), "status": "envoye" if ok else "erreur", "message": msg, "regeneration_number": len(hist)})
+            st.session_state.code_history = hist
+            st.session_state.access_code = code
             if ok:
-                st.success("Dossier envoyé à Clarté360.")
+                st.success("Un nouveau code vient d'être envoyé.")
             else:
-                st.warning(info)
-                st.info("SMTP absent : télécharge le JSON/PDF final et transmets-les manuellement.")
-    technical_heartbeat()
+                st.error(msg)
+        if change:
+            for k in ["pending_beneficiaire", "access_code", "code_sent", "code_message", "code_verified"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+        if validate_code:
+            expected = str(st.session_state.get("access_code", "")).strip()
+            if code_input.strip() == expected:
+                st.session_state.code_verified = True
+                st.session_state.code_verified_at = now_iso()
+                b = st.session_state.get("pending_beneficiaire", {})
+                start_new_session(active_questions, nom=b.get("nom", ""), prenom=b.get("prenom", ""), email=b.get("email", ""))
+                st.session_state.beneficiaire["consultant"] = b.get("consultant", "")
+                st.session_state.page = "app"
+                st.rerun()
+            else:
+                st.error("Code incorrect. Merci de vérifier le code reçu par e-mail.")
+    st.stop()
 
-def main_app() -> None:
-    inject_browser_protection()
-    if st_autorefresh is not None:
-        st_autorefresh(interval=30000, key="clarte360_timeout_watchdog")
-    detect_real_activity()
-    if check_timeout():
-        render_timeout_screen()
-        return
-    rome = load_rome()
-    header()
-    st.success(f"Référentiel chargé : {len(rome)} fiches ROME. Table RIASEC : {len(load_riasec_table())} correspondances.")
-    sidebar_exports(rome)
-    tabs = st.tabs(["1 Identité", "2 Imports", "3 Métiers", "4 Compétences", "5 Faisabilité", "6 Synthèse", "7 Décision"])
-    with tabs[0]: tab_identite()
-    with tabs[1]: tab_imports()
-    with tabs[2]: tab_metiers(rome)
-    with tabs[3]: tab_competences(rome)
-    with tabs[4]: tab_contextes(rome)
-    with tabs[5]: tab_synthese(rome)
-    with tabs[6]: tab_decision(rome)
+# Application questionnaire
+render_header()
+st.markdown("""
+<div class="clarte-box">
+<strong>🔒 Sauvegarde et reprise</strong><br>
+Vous pouvez à tout moment préparer votre JSON pour reprendre plus tard. Le fichier JSON appartient au bénéficiaire.
+</div>
+""", unsafe_allow_html=True)
 
+beneficiaire = st.session_state.get("beneficiaire", {})
+st.markdown(f"**Bénéficiaire :** {beneficiaire.get('prenom','')} {beneficiaire.get('nom','')}")
+st.caption(f"Identifiant de passation : {st.session_state.get('passation_id','')}")
+answered = len(st.session_state.answers)
+total = len(st.session_state.question_order)
+progress = answered / total if total else 0
+st.progress(progress)
+st.write(f"{answered} réponse(s) enregistrée(s) sur {total}")
 
-def main() -> None:
-    st.set_page_config(page_title="Clarté360 – Compétences & projets", page_icon=str(ICON) if ICON.exists() else "🧭", layout="wide")
-    inject_css()
-    init_state()
-    if st.session_state.get("institutional_page") == "legal":
-        render_legal_page()
-        return
-    if st.session_state.get("institutional_page") == "contact":
-        render_contact_form(inline=False)
-        return
-    if not st.session_state.authorized:
-        access_screen()
-    else:
-        main_app()
-
-
-if __name__ == "__main__":
-    main()
+if answered < total:
+    idx = st.session_state.current_index
+    qid = st.session_state.question_order[idx]
+    qrow = active_questions.set_index("ID").loc[qid]
+    st.markdown(f"<div class='question-title'>Question {idx + 1} / {total}</div>", unsafe_allow_html=True)
+    options = st.session_state.option_orders[qid]
+    labels = {opt: str(qrow[f"Reponse {opt}"]) for opt in options}
+    displayed_labels = [labels[opt] for opt in options]
+    speech_text = build_speech_text(idx + 1, total, str(qrow["Question"]), displayed_labels)
+    render_speech_button(speech_text)
+    st.markdown(f"<div class='clarte-card'><strong>{str(qrow['Question'])}</strong></div>", unsafe_allow_html=True)
+    selected_label = st.radio("Choisissez la proposition qui vous correspond le mieux :", options=displayed_labels, index=None, key=f"radio_{qid}")
+    if st.button("Valider la réponse", type="primary", disabled=selected_label is None):
+        selected_opt = next(opt for opt, label in labels.items() if label == selected_label)
+        st.session_state.answers[qid] = selected_opt
+        st.session_state.current_index = min(st.session_state.current_index + 1, total)
+        st.rerun()
+else:
+    st.success("Questionnaire terminé.")
+    results, score_details = compute_results(active_questions, st.session_state.answers)
+    interpretation = build_user_interpretation(results, beneficiaire)
+    st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Première lecture bénéficiaire</h2>", unsafe_allow_html=True)
+    st.write(interpretation)
+    bar_fig = plot_bar_results(results)
+    radar_fig = plot_radar_results(results)
+    st.pyplot(bar_fig)
+    st.pyplot(radar_fig)
+    plt.close(bar_fig); plt.close(radar_fig)
+    st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Synthèse chiffrée</h2>", unsafe_allow_html=True)
+    st.dataframe(results[["Dimension", "Pourcentage", "Lecture"]].sort_values("Pourcentage", ascending=False), hide_index=True, use_container_width=True)
+    export_payload = build_export_json(active_questions, results, score_details)
+    name_part = current_name_part()
+    passation_part = sanitize_filename(st.session_state.get("passation_id", "passation"))
+    final_json_name = f"clarte360_preferences_professionnelles_{name_part}_{passation_part}_{timestamp_part()}.json"
+    json_bytes = json_download_bytes(export_payload)
+    if not st.session_state.get("email_sent"):
+        ok, message = try_send_final_json(json_bytes, final_json_name, beneficiaire)
+        st.session_state.email_sent = ok
+        if ok: st.success(message)
+        else: st.info(message)
+    export_payload = build_export_json(active_questions, results, score_details)
+    json_bytes = json_download_bytes(export_payload)
+    pdf_bytes = make_pdf(results, interpretation, beneficiaire)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button("Télécharger le JSON final", data=json_bytes, file_name=final_json_name, mime="application/json")
+    with col2:
+        st.download_button("Télécharger le rapport PDF", data=pdf_bytes, file_name=f"clarte360_preferences_professionnelles_{name_part}_{timestamp_part()}.pdf", mime="application/pdf")

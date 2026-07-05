@@ -1,26 +1,16 @@
-# Journal des modifications - Clarté360 Compétences & Projets v1.3.0
+# CHANGELOG STANDARD CLARTE360
 
-## Harmonisation socle Clarté360
-- Ajout de l'écran d'accueil standard : importer un JSON ou commencer une nouvelle session.
-- Ajout du consentement RGPD versionné avant accès à l'outil.
-- Ajout des pages institutionnelles : Protection des données, Mentions légales, Nous contacter.
+## v1.10.0-socle-clarte360 - Préférences professionnelles
+
+Mise à niveau de l'application sœur de Clarté360 - Moteurs professionnels v1.8.0.
+
+- Alignement de l'écran d'accueil : Importer mon fichier JSON / Commencer une nouvelle session.
+- Ajout du socle Clarté360 v1.8 : version de socle, session, temps, timeout, RGPD, mentions légales, contact.
 - Ajout du bouton permanent Contacter Clarté360.
-- Ajout des identifiants racine de passation et session.
-- Ajout de l'historique des accès, des sessions et des sauvegardes dans le JSON.
-- Ajout du calcul de temps de session et du temps cumulé.
-- Ajout du timeout automatique avec watchdog Streamlit autorefresh.
-- Ajout de l'alerte navigateur avant fermeture via beforeunload.
-- Renommage des boutons JSON selon le standard Clarté360.
-- Amélioration du rapport PDF : logo centré, précaution de lecture, pied de page institutionnel.
-- Mise à jour des dépendances Streamlit Cloud.
-
-## Logique métier
-- Aucun changement volontaire des calculs, questions, scores, ROME, RIASEC, faisabilité, décision ou plan d'action.
-
-
-## v1.3.1 - Contrôle timeout
-
-- Correction du contrôle d’inactivité : l’autorefresh technique ne réinitialise plus le compteur d’activité utilisateur.
-- Ajout d’un heartbeat technique séparé de l’activité réelle.
-- Ajout d’une détection de changement des données utilisateur pour réinitialiser le compteur uniquement en cas d’action réelle.
-- Conservation du timeout automatique à 15 minutes avec fermeture de session `timeout_inactivite` et téléchargement JSON.
+- Ajout de la page Informations légales et protection des données avec onglets.
+- Ajout du consentement RGPD obligatoire horodaté.
+- Renforcement du JSON : version socle, RGPD, historique des codes, temps de session, historique session.
+- Ajout des boutons standards : Préparer mon JSON pour reprendre plus tard, Quitter et télécharger mon JSON, Réinitialiser la session.
+- Ajout de la protection navigateur beforeunload.
+- Harmonisation du PDF : pied de page légal Clarté360.
+- Conservation intégrale de la logique métier : 60 questions, 10 dimensions, scores, interprétations, graphiques.
