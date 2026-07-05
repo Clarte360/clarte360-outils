@@ -1,17 +1,16 @@
 # Clarté360 - Ligne de vie
 
-Application Streamlit propriétaire Clarté360 pour construire une ligne de vie dans le cadre d'un bilan de compétences ou d'un accompagnement professionnel.
+Version 3.4.0 - socle Clarté360 v1.8.2
 
-Version application : 3.3.0  
-Socle : Clarté360 v1.8.2
+Cette version réaligne l'application Ligne de vie sur le socle visuel et fonctionnel Clarté360 validé : accueil standard, navigation latérale, RGPD / mentions légales / contact, JSON de reprise, alertes de sortie, timeout et exports.
 
-## Lancement local
+## Lancement
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## SMTP
+## Données
 
-Configurer les secrets Streamlit à partir de `.streamlit/secrets.example.toml`.
+Aucune donnée n'est stockée durablement par l'application. Le JSON téléchargé reste la mémoire unique du bénéficiaire.

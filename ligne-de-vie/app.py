@@ -24,7 +24,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.4.0"
 BRAND = "#008080"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
@@ -38,22 +38,19 @@ st.set_page_config(page_title="Clarté360 - Ligne de vie", page_icon=str(LOGO_PA
 st.markdown(
     f"""
     <style>
-    .main .block-container {{ padding-top: 1.2rem; max-width: 1180px; }}
-    h1, h2, h3,
-    [data-testid="stMarkdownContainer"] h1,
-    [data-testid="stMarkdownContainer"] h2,
-    [data-testid="stMarkdownContainer"] h3 {{ color: {BRAND} !important; }}
-    .c360-card {{
-        border: 1px solid #dbe7e7; border-radius: 14px; padding: 1rem 1.15rem;
-        background: #f7fbfb; margin: 0.6rem 0 1rem 0;
-    }}
-    .c360-rgpd {{
-        border-left: 5px solid {BRAND}; border-radius: 12px; padding: 1rem 1.15rem;
-        background: #eefafa; margin: 1rem 0;
-    }}
-    .small-muted {{ color: #667; font-size: 0.92rem; }}
-    div.stButton > button:first-child {{ border-color: {BRAND}; color: {BRAND}; }}
-    div.stDownloadButton > button:first-child {{ border-color: {BRAND}; color: {BRAND}; }}
+        .main .block-container {{max-width: 1180px; padding-top: 2rem;}}
+        h1, h2, h3 {{color: {BRAND} !important;}}
+        .brand-header {{margin-bottom: 1.25rem; padding-bottom: 0.75rem; border-bottom: 1px solid #E5E7EB;}}
+        .small-note, .small-muted {{color:#6B7280; font-size:0.95rem; margin-top: -0.6rem;}}
+        .privacy-box, .c360-rgpd {{background:#F1F8F8; border-left:6px solid {BRAND}; padding:16px 18px; border-radius:10px; line-height:1.55; margin: 1rem 0;}}
+        .rule-box, .c360-card {{background:#F1F8F8; border:0; border-left:5px solid {BRAND}; padding:16px; border-radius:8px; line-height:1.5; margin: 1rem 0;}}
+        .warn-box {{background:#FFF7E6; border-left:5px solid #F2C94C; padding:12px; border-radius:8px; line-height:1.5;}}
+        div.stButton > button:first-child {{border-radius:10px; border:1px solid {BRAND}; color:{BRAND}; background:white;}}
+        div.stButton > button:first-child:hover {{border-color:{BRAND}; color:{BRAND}; background:#F1F8F8;}}
+        div.stButton > button[kind="primary"] {{background:{BRAND} !important; color:white !important; border:1px solid {BRAND} !important;}}
+        div.stButton > button[kind="primary"] * {{color:white !important;}}
+        div.stDownloadButton > button:first-child {{border-radius:10px; border:1px solid {BRAND}; color:{BRAND}; background:white;}}
+        div.stDownloadButton > button:first-child:hover {{border-color:{BRAND}; color:{BRAND}; background:#F1F8F8;}}
     </style>
     """,
     unsafe_allow_html=True,
@@ -493,309 +490,458 @@ def get_fig_png(fig: go.Figure) -> bytes | None:
         return None
 
 
-def install_beforeunload_warning() -> None:
-    components.html(
-        """
-        <script>
-        const message = "Quitter le site ? Vos modifications risquent de ne pas être enregistrées.";
-        try {
-          window.parent.onbeforeunload = function(e) { e.preventDefault(); e.returnValue = message; return message; };
-          window.onbeforeunload = function(e) { e.preventDefault(); e.returnValue = message; return message; };
-        } catch(err) {}
-        </script>
-        """,
-        height=0,
-    )
 
 
-def render_institutional_page(page: str) -> None:
-    st.markdown(f"<h1>Informations légales et protection des données</h1><div class='small-muted'>{APP_DISPLAY_NAME} - {APP_VERSION}</div>", unsafe_allow_html=True)
-    tabs = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
-    with tabs[0]:
-        st.markdown("""
-        <div class='c360-rgpd'>
-        <b>Protection des données</b><br>
-        Les informations saisies servent uniquement à réaliser votre ligne de vie et à produire vos exports. Aucun stockage automatique n'est réalisé sur les serveurs Clarté360. Le fichier JSON constitue votre sauvegarde personnelle : vous devez le télécharger et le conserver si vous souhaitez reprendre votre travail plus tard.
-        </div>
-        """, unsafe_allow_html=True)
-        consent = st.checkbox("J'ai lu et j'accepte les conditions de protection des données.", value=bool(st.session_state.get("rgpd_consent", False)))
-        if consent and not st.session_state.get("rgpd_consent", False):
-            st.session_state.rgpd_consent = True
-            st.session_state.rgpd_consent_at = datetime.now().isoformat(timespec="seconds")
-            st.success("Consentement RGPD enregistré dans votre session et dans le JSON.")
-        elif not consent:
-            st.session_state.rgpd_consent = False
-    with tabs[1]:
-        st.markdown("""
-        **Clarté360**  
-        60 rue François 1er, 75008 Paris  
-        Tél. : 01 89 48 08 25  
-        E-mail : contact@clarte360.com  
-        Web : www.clarte360.com  
-        RCS : 102349834 - SIRET : 10234983400014 - NAF : 8559A  
-        TVA intracommunautaire : FR88102349834
-
-        Les contenus, textes, exercices, rapports, interfaces et supports Clarté360 sont protégés au titre de la propriété intellectuelle. Toute reproduction ou diffusion non autorisée est interdite.
-        """)
-    with tabs[2]:
-        render_contact_form(in_page=True)
-    if st.button("Retour à l'application", type="primary"):
-        st.session_state.institutional_page = None
-        st.rerun()
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
-def render_contact_form(in_page: bool = False) -> None:
+def mark_activity() -> None:
+    st.session_state.session_last_activity = now_iso()
+
+
+def total_session_seconds() -> int:
+    started = st.session_state.get("session_started_at")
+    try:
+        return int((datetime.now() - datetime.fromisoformat(started)).total_seconds())
+    except Exception:
+        return 0
+
+
+def format_seconds(seconds: int | float | None) -> str:
+    seconds = int(seconds or 0)
+    h, r = divmod(seconds, 3600)
+    m, s = divmod(r, 60)
+    if h:
+        return f"{h}h {m:02d}min"
+    return f"{m}min {s:02d}s"
+
+
+def header() -> None:
+    col_logo, col_title = st.columns([0.13, 0.87])
+    with col_logo:
+        if LOGO_PATH.exists():
+            st.image(str(LOGO_PATH), width=72)
+    with col_title:
+        st.markdown(
+            f"<div class='brand-header'><h1>{APP_DISPLAY_NAME}</h1><div class='small-note'>Version {APP_VERSION} · {SOCLE_VERSION}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+
+def rgpd_information_block() -> None:
+    st.markdown(f"""
+### Protection des données personnelles (RGPD)
+
+Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
+
+Le fichier JSON constitue le seul support de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, le nom de votre accompagnateur, les dates et heures de connexion, la durée des sessions, les événements saisis, les commentaires facultatifs et les exports nécessaires au rapport.
+
+Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur.
+
+Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : {st.session_state.get('rgpd_text_version', 'RGPD-Clarte360-2026-07')}.
+
+### Nature de l'outil
+
+La ligne de vie est un support de réflexion et d'échange. Elle ne constitue ni un diagnostic psychologique, ni un avis médical, ni une décision d'orientation automatique.
+
+### Propriété intellectuelle
+
+Les applications, outils, méthodes, graphiques, rapports et contenus proposés par Clarté360 constituent des créations originales protégées. Toute reproduction, adaptation, diffusion ou réutilisation sans autorisation écrite préalable est interdite.
+""")
+
+
+def legal_mentions_block() -> None:
     st.markdown("""
-    Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d'une suggestion concernant cette application.
+### Clarté360 SAS
 
-    Pour toute question relative à l'interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.
-    """)
-    with st.form("contact_clarte360_form"):
-        nom = st.text_input("Nom", value=st.session_state.get("last_name", ""))
-        prenom = st.text_input("Prénom", value=st.session_state.get("first_name", ""))
-        email = st.text_input("E-mail", value=st.session_state.get("email", ""))
-        telephone = st.text_input("Téléphone facultatif")
+**Adresse :** 60 rue François 1er – 75008 Paris  
+**Téléphone :** 01 89 48 08 25  
+**E-mail :** contact@clarte360.com  
+**Site internet :** www.clarte360.com  
+
+**RCS :** 102349834  
+**SIRET :** 10234983400014  
+**Code NAF :** 8559 A  
+**TVA intracommunautaire :** FR88102349834
+
+### Responsabilité
+Les résultats proposés constituent des supports de réflexion et d'échange avec le consultant ou l'accompagnateur. Ils ne remplacent pas un accompagnement professionnel lorsque celui-ci est prévu.
+""")
+
+
+def contact_form_main() -> None:
+    st.markdown("""
+### Contacter Clarté360
+Vous pouvez nous adresser une question administrative, signaler un problème technique ou nous faire part d'une suggestion concernant cette application.
+
+Pour toute question relative à l'interprétation des exercices ou des résultats, rapprochez-vous de votre consultant ou accompagnateur.
+""")
+    with st.form("contact_form_standard"):
+        c1, c2 = st.columns(2)
+        with c1:
+            prenom = st.text_input("Prénom", value=st.session_state.get("first_name", ""))
+            nom = st.text_input("Nom", value=st.session_state.get("last_name", ""))
+        with c2:
+            email = st.text_input("Adresse email", value=st.session_state.get("email", ""))
+            telephone = st.text_input("Téléphone facultatif")
         objet = st.text_input("Objet")
         message = st.text_area("Message")
-        consent = st.checkbox("J'accepte que ces informations soient utilisées pour traiter ma demande.")
-        submit = st.form_submit_button("Envoyer à Clarté360", type="primary")
-    if submit:
-        if not objet.strip() or not message.strip() or not consent:
-            st.error("Merci de renseigner l'objet, le message et le consentement spécifique.")
+        consent = st.checkbox("Je consens au traitement de ma demande par Clarté360.")
+        send = st.form_submit_button("Envoyer le message", type="primary")
+    if send:
+        if not email.strip() or not objet.strip() or not message.strip() or not consent:
+            st.error("Merci de renseigner l'e-mail, l'objet, le message et le consentement.")
         else:
-            body = f"""Demande depuis {APP_DISPLAY_NAME}\nVersion application : {APP_VERSION}\nVersion socle : {SOCLE_VERSION}\nDate : {datetime.now().isoformat(timespec='seconds')}\nSession : {st.session_state.get('session_id','')}\nBénéficiaire : {prenom} {nom}\nEmail : {email}\nTéléphone : {telephone}\n\nObjet : {objet}\n\nMessage :\n{message}\n"""
-            ok, msg = send_email(FINAL_EMAIL_TO, f"Clarté360 - Contact Ligne de vie - {objet}", body)
+            body = (
+                "Message envoyé depuis l'application Clarté360 - Ligne de vie.\n\n"
+                f"Bénéficiaire : {prenom} {nom}\nEmail : {email}\nTéléphone : {telephone}\n"
+                f"Application : {APP_DISPLAY_NAME}\nVersion : {APP_VERSION}\nSocle : {SOCLE_VERSION}\n"
+                f"Date : {now_iso()}\nSession : {st.session_state.get('session_id','')}\nTemps session : {format_seconds(total_session_seconds())}\n\n"
+                f"Objet : {objet}\n\nMessage :\n{message}\n"
+            )
+            ok, msg = send_email(FINAL_EMAIL_TO, f"Clarté360 Ligne de vie - {objet}", body)
             if ok:
-                st.success("Message transmis à Clarté360.")
+                st.success("Votre message a été transmis à Clarté360.")
             else:
                 st.error(msg)
 
-init_state()
-install_beforeunload_warning()
 
-if not st.session_state.get("code_verified", False):
-    col_logo, col_title = st.columns([1, 6])
-    with col_logo:
-        if LOGO_PATH.exists():
-            st.image(str(LOGO_PATH), width=95)
-    with col_title:
-        st.markdown(f"<h1>Clarté360 - Ligne de vie</h1><div class='small-muted'>Version {APP_VERSION} - accès sécurisé</div>", unsafe_allow_html=True)
+def rgpd_page() -> None:
+    header()
+    if st.session_state.get("code_verified") and st.button("← Retour à l'application", key="rgpd_back_top"):
+        st.session_state.show_rgpd_page = False
+        st.rerun()
+    st.subheader("Informations légales et protection des données")
+    tabs = st.tabs(["Protection des données", "Mentions légales", "Nous contacter"])
+    with tabs[0]:
+        rgpd_information_block()
+    with tabs[1]:
+        legal_mentions_block()
+    with tabs[2]:
+        contact_form_main()
 
-    st.markdown("""
-    <div class='c360-card'>
-    <b>Objectif de l'outil</b><br>
-    La ligne de vie permet de représenter les événements marquants de votre parcours sur un axe chronologique.
-    Elle sert de support d'échange avec votre consultant Clarté360 pour repérer les périodes importantes,
-    les ressources mobilisées et les éléments utiles à la construction de votre projet professionnel.
-    </div>
-    """, unsafe_allow_html=True)
 
-    st.markdown("""
-    <div class='c360-rgpd'>
-    🔒 <b>Confidentialité et transmission</b><br>
-    Le code d'accès sécurise le démarrage de l'outil. À la fin du travail, vous pourrez télécharger vos fichiers.
-    Le JSON final peut être transmis au consultant Clarté360 afin de préparer l'accompagnement et la restitution.
-    </div>
-    """, unsafe_allow_html=True)
+def contact_page() -> None:
+    header()
+    if st.session_state.get("code_verified") and st.button("← Retour à l'application", key="contact_back_top"):
+        st.session_state.show_contact_page = False
+        st.rerun()
+    contact_form_main()
 
-    uploaded_start = st.file_uploader("Importer mon fichier JSON pour reprendre plus tard", type=["json"], key="json_start")
-    if uploaded_start is not None:
+
+def welcome_screen() -> bool:
+    if st.session_state.get("welcome_done"):
+        return True
+    choice = st.session_state.get("welcome_choice")
+    if choice == "import":
+        return import_json_screen()
+    if choice == "new":
+        st.session_state.welcome_done = True
+        st.rerun()
+    header()
+    st.markdown("### Bienvenue dans l'application Clarté360 – Ligne de vie")
+    st.markdown("Avez-vous conservé le fichier JSON de votre dernière utilisation de cette application ?")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Oui → Importer mon fichier JSON", type="primary", use_container_width=True):
+            st.session_state.welcome_choice = "import"
+            st.rerun()
+    with c2:
+        if st.button("Non → Commencer une nouvelle session", use_container_width=True):
+            st.session_state.welcome_choice = "new"
+            st.rerun()
+    return False
+
+
+def import_json_screen() -> bool:
+    header()
+    st.subheader("Reprise d'une session")
+    st.markdown("Importez le JSON conservé lors de votre dernière utilisation. Une nouvelle session de connexion sera créée.")
+    uploaded = st.file_uploader("Importer mon fichier JSON", type=["json"], key="welcome_json_upload_standard")
+    if uploaded is not None:
         try:
-            load_payload(json.loads(uploaded_start.read().decode("utf-8")))
-            st.success("JSON chargé. Vous pouvez reprendre votre travail.")
+            loaded = json.loads(uploaded.getvalue().decode("utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("Format JSON invalide")
+            load_payload(loaded)
+            st.session_state.welcome_done = True
+            st.session_state.code_verified = True
+            st.success("JSON chargé. Votre progression a été reprise.")
             st.rerun()
         except Exception as exc:
-            st.error(f"Impossible de lire le JSON : {exc}")
-
-    if st.button("RGPD et mentions légales"):
-        st.session_state.institutional_page = "legal"
+            st.error(f"JSON non valide : {exc}")
+    if st.button("Retour à l'accueil"):
+        st.session_state.pop("welcome_choice", None)
         st.rerun()
-    if st.session_state.get("institutional_page"):
-        render_institutional_page("legal")
-        st.stop()
+    return False
 
+
+def access_gate() -> bool:
+    if not welcome_screen():
+        return False
+    if st.session_state.get("code_verified"):
+        return True
+    header()
+    st.markdown("## Accès bénéficiaire")
+    st.write("Cet outil sert de support d'exploration chronologique et d'échange avec votre consultant Clarté360.")
+    rgpd_information_block()
     if not st.session_state.get("code_sent"):
-        with st.form("access_code_form"):
-            prenom = st.text_input("Prénom *")
-            nom = st.text_input("Nom *")
-            email = st.text_input("Adresse email *")
-            send_code = st.form_submit_button("Recevoir mon code d'accès", type="primary")
-        if send_code:
+        with st.form("access_request_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                prenom = st.text_input("Prénom *")
+                nom = st.text_input("Nom *")
+            with c2:
+                email = st.text_input("Adresse email *")
+                consultant = st.text_input("Consultant", value="Clarté360")
+            consent = st.checkbox("J'ai lu les informations RGPD ci-dessus et je consens à l'utilisation de ces données dans le cadre exclusif de mon accompagnement. Je comprends qu'aucune donnée n'est conservée sur un serveur Clarté360 et que le fichier JSON reste sous mon contrôle.")
+            submit = st.form_submit_button("Recevoir / générer mon code d'accès", type="primary")
+        if submit:
             if not prenom.strip() or not nom.strip() or not email.strip():
                 st.error("Merci de renseigner le prénom, le nom et l'adresse email.")
             elif "@" not in email or "." not in email:
                 st.error("Merci de renseigner une adresse email valide.")
+            elif not consent:
+                st.error("Merci de confirmer votre consentement pour poursuivre.")
             else:
-                beneficiaire_tmp = {"prenom": prenom.strip(), "nom": nom.strip(), "email": email.strip()}
+                b = {"prenom": prenom.strip(), "nom": nom.strip(), "email": email.strip(), "consultant": consultant.strip()}
                 code = generate_access_code()
-                ok, msg = send_access_code_email(beneficiaire_tmp, code)
-                st.session_state.pending_beneficiaire = beneficiaire_tmp
+                ok, msg = send_access_code_email(b, code)
+                st.session_state.pending_beneficiaire = b
                 st.session_state.access_code = code
-                st.session_state.code_sent = ok
+                st.session_state.code_sent = True
                 if ok:
                     st.success("Un code d'accès vient d'être envoyé à l'adresse email indiquée.")
-                    st.rerun()
                 else:
-                    st.error(msg)
-                    st.caption("En ligne, configurez les Secrets SMTP Streamlit pour activer l'envoi du code.")
+                    st.warning("Le code n'a pas pu être envoyé par e-mail. Mode test affiché ci-dessous.")
+                    st.caption(msg)
+                    st.info(f"Mode test : code généré = {code}")
+                st.rerun()
     else:
         b = st.session_state.get("pending_beneficiaire", {})
-        st.success(f"Code envoyé à : {b.get('email','')}")
-        code_input = st.text_input("Saisissez le code d'accès reçu par email *", max_chars=6)
-        c1, c2 = st.columns([1, 1])
+        st.success(f"Code généré pour : {b.get('prenom','')} {b.get('nom','')} - {b.get('email','')}")
+        code_input = st.text_input("Saisir le code d'accès", max_chars=6, type="password")
+        c1, c2 = st.columns([0.25, 0.75])
         with c1:
-            if st.button("Valider le code et démarrer", type="primary"):
+            if st.button("Entrer dans l'outil", type="primary"):
                 if code_input.strip() == st.session_state.get("access_code", ""):
                     st.session_state.code_verified = True
                     st.session_state.first_name = b.get("prenom", "")
                     st.session_state.last_name = b.get("nom", "")
                     st.session_state.email = b.get("email", "")
+                    st.session_state.consultant = b.get("consultant", "Clarté360")
+                    st.session_state.rgpd_consent = True
+                    st.session_state.rgpd_consent_at = now_iso()
+                    st.session_state.page = "1. Bénéficiaire"
                     st.rerun()
                 else:
                     st.error("Code incorrect.")
         with c2:
-            if st.button("Modifier l'adresse email"):
-                st.session_state.code_sent = False
-                st.session_state.access_code = ""
-                st.session_state.pending_beneficiaire = {}
-                st.rerun()
-    st.stop()
+            if st.button("Je n'ai pas reçu le code : générer un nouveau code"):
+                code = generate_access_code()
+                st.session_state.access_code = code
+                ok, msg = send_access_code_email(b, code)
+                if ok:
+                    st.success("Un nouveau code vient d'être envoyé.")
+                else:
+                    st.warning("Le nouveau code n'a pas pu être envoyé. Mode test affiché ci-dessous.")
+                    st.info(f"Mode test : nouveau code généré = {code}")
+    return False
 
-# Header
-col_logo, col_title = st.columns([1, 6])
-with col_logo:
-    if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), width=95)
-with col_title:
-    st.markdown(f"<h1>Clarté360 - Ligne de vie</h1><div class='small-muted'>Version {APP_VERSION} - construction chronologique du parcours</div>", unsafe_allow_html=True)
 
-st.markdown(
-    """
-    <div class="c360-card">
-    <b>Objectif de l'outil</b><br>
-    La ligne de vie permet de représenter les événements marquants de votre parcours sur un axe chronologique exprimé en âge.
-    Dans cette première étape, il ne s'agit pas d'analyser votre histoire mais de la poser visuellement, avec vos propres repères.
-    Les événements pourront ensuite servir de support d'échange avec votre consultant, notamment pour identifier les ressources mobilisées lors de certaines périodes de remontée.
+def mark_json_downloaded():
+    st.session_state.json_downloaded = True
+
+
+def prepare_sidebar_json(close_session: bool = False, reason: str = "sauvegarde_manuelle_reprise"):
+    payload = build_payload()
+    payload.setdefault("sauvegardes", []).append({"date": now_iso(), "motif": reason, "close_session": bool(close_session)})
+    base_name = export_name(st.session_state.get("last_name", ""), st.session_state.get("first_name", ""), "json")
+    st.session_state.exit_json_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    st.session_state.exit_json_filename = base_name
+    st.session_state.exit_json_ready = True
+    st.session_state.json_downloaded = False
+
+
+def sidebar() -> None:
+    data_active = bool(st.session_state.get("code_verified"))
+    if data_active:
+        st.sidebar.markdown("### Navigation")
+        pages = [
+            "1. Bénéficiaire",
+            "2. Consignes",
+            "3. Événements",
+            "4. Ligne de vie",
+            "5. Remontées",
+            "6. Export / Rapports",
+        ]
+        if st.session_state.get("page") not in pages:
+            st.session_state.page = pages[0]
+        previous = st.session_state.page
+        selected = st.sidebar.radio("", pages, index=pages.index(previous), label_visibility="collapsed")
+        if selected != previous:
+            st.session_state.show_contact_page = False
+            st.session_state.show_rgpd_page = False
+            mark_activity()
+        st.session_state.page = selected
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### Session")
+        st.sidebar.markdown("Votre progression est enregistrée dans votre fichier JSON.")
+        if st.sidebar.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
+            prepare_sidebar_json(False, "sauvegarde_manuelle_reprise")
+            st.rerun()
+        if st.sidebar.button("🚪 Quitter et télécharger mon JSON", type="primary", use_container_width=True):
+            prepare_sidebar_json(True, "sortie_utilisateur_par_bouton")
+            st.rerun()
+        if st.session_state.get("exit_json_ready"):
+            st.sidebar.download_button(
+                "⬇️ Télécharger le JSON préparé",
+                data=st.session_state.get("exit_json_bytes", b""),
+                file_name=st.session_state.get("exit_json_filename", "ligne_de_vie_clarte360.json"),
+                mime="application/json",
+                use_container_width=True,
+                on_click=mark_json_downloaded,
+            )
+            st.sidebar.caption("Conservez ce JSON : il est nécessaire pour reprendre votre travail.")
+    else:
+        st.sidebar.markdown("### Session")
+    st.sidebar.markdown("---")
+    if st.sidebar.button("💬 Contacter Clarté360", use_container_width=True):
+        st.session_state.show_contact_page = True
+        st.session_state.show_rgpd_page = False
+        st.rerun()
+    if st.sidebar.button("RGPD et mentions légales", use_container_width=True):
+        st.session_state.show_rgpd_page = True
+        st.session_state.show_contact_page = False
+        st.rerun()
+    st.sidebar.caption(f"App v{APP_VERSION} · {SOCLE_VERSION} · Ligne de vie")
+    if not data_active:
+        if st.sidebar.button("Réinitialiser la session"):
+            for key in ["code_verified", "welcome_done", "welcome_choice", "code_sent", "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page"]:
+                st.session_state.pop(key, None)
+            st.rerun()
+
+
+def install_beforeunload_warning() -> None:
+    if st.session_state.get("code_verified") and not st.session_state.get("json_downloaded"):
+        components.html(
+            """
+            <script>
+            window.parent.onbeforeunload = function (e) {
+                const message = "Quitter le site ? Vos modifications risquent de ne pas être enregistrées.";
+                e.preventDefault();
+                e.returnValue = message;
+                return message;
+            };
+            </script>
+            """,
+            height=0,
+        )
+
+
+def timeout_check() -> bool:
+    if not st.session_state.get("code_verified"):
+        return False
+    try:
+        last = datetime.fromisoformat(st.session_state.get("session_last_activity", now_iso()))
+        return (datetime.now() - last).total_seconds() > 15 * 60
+    except Exception:
+        return False
+
+
+def timeout_screen() -> None:
+    header()
+    st.warning("Votre session semble inactive depuis plus de 15 minutes. Préparez et téléchargez votre JSON avant de quitter ou reprenez votre travail.")
+    if st.button("Préparer mon JSON maintenant", type="primary"):
+        prepare_sidebar_json(True, "timeout_utilisateur")
+        st.rerun()
+    if st.session_state.get("exit_json_ready"):
+        st.download_button("Télécharger le JSON préparé", data=st.session_state.exit_json_bytes, file_name=st.session_state.exit_json_filename, mime="application/json", on_click=mark_json_downloaded)
+
+
+def page_beneficiaire() -> None:
+    st.markdown("## 1. Identification du bénéficiaire")
+    st.markdown("""
+    <div class='privacy-box'>
+    🔒 <strong>Confidentialité et maîtrise de vos données</strong><br>
+    Aucune donnée personnelle ou sensible saisie dans cette application n'est sauvegardée sur un serveur Clarté360.
+    Vous devez télécharger le fichier <strong>JSON</strong> pour reprendre votre travail plus tard.
     </div>
-    """, unsafe_allow_html=True
-)
-
-st.markdown(
-    """
-    <div class="c360-rgpd">
-    🔒 <b>Confidentialité et maîtrise de vos données</b><br>
-    Aucune donnée personnelle ou sensible saisie dans cet outil n'est enregistrée automatiquement sur un serveur Clarté360.
-    Pour reprendre votre travail plus tard, vous devez télécharger le fichier JSON et le conserver. En fin de travail, vous pouvez transmettre ce JSON au consultant Clarté360 afin de préparer l'accompagnement.
-    </div>
-    """, unsafe_allow_html=True
-)
-
-with st.sidebar:
-    st.header("Navigation")
-    if st.button("Informations légales et protection des données"):
-        st.session_state.institutional_page = "legal"
-        st.rerun()
-    if st.button("Contacter Clarté360"):
-        st.session_state.institutional_page = "contact"
-        st.rerun()
-    st.divider()
-    uploaded = st.file_uploader("Reprendre depuis un JSON", type=["json"])
-    if uploaded is not None:
-        try:
-            load_payload(json.loads(uploaded.read().decode("utf-8")))
-            st.success("JSON chargé.")
-        except Exception as exc:
-            st.error(f"Impossible de lire le JSON : {exc}")
-    st.divider()
-    st.caption("Sauvegarde")
-    quick_json = json.dumps(build_payload(), ensure_ascii=False, indent=2).encode("utf-8")
-    st.download_button("Préparer mon JSON pour reprendre plus tard", quick_json, file_name=export_name(st.session_state.get("last_name", ""), st.session_state.get("first_name", ""), "json"), mime="application/json")
-    st.download_button("Quitter et télécharger mon JSON", quick_json, file_name=export_name(st.session_state.get("last_name", ""), st.session_state.get("first_name", ""), "json"), mime="application/json")
-    if st.button("Réinitialiser la session"):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.rerun()
-    st.divider()
-    st.caption("Étapes")
-    st.write("1. Paramétrer")
-    st.write("2. Ajouter les événements")
-    st.write("3. Visualiser")
-    st.write("4. Explorer certaines remontées")
-    st.write("5. Exporter")
-
-if st.session_state.get("institutional_page") == "legal":
-    render_institutional_page("legal")
-    st.stop()
-elif st.session_state.get("institutional_page") == "contact":
-    st.markdown("# Contacter Clarté360")
-    render_contact_form(in_page=False)
-    if st.button("Retour à l'application", type="primary"):
-        st.session_state.institutional_page = None
-        st.rerun()
-    st.stop()
-
-if not st.session_state.get("rgpd_consent", False):
-    st.warning("Merci de valider le RGPD dans 'Informations légales et protection des données' avant de poursuivre.")
-    if st.button("Ouvrir RGPD et mentions légales", type="primary"):
-        st.session_state.institutional_page = "legal"
-        st.rerun()
-    st.stop()
-
-# Parameters
-st.subheader("1. Paramétrage")
-col1, col2, col3, col4 = st.columns([1.2, 1.2, 1.3, 1])
-with col1:
-    st.session_state.first_name = st.text_input("Prénom", value=st.session_state.first_name)
-with col2:
-    st.session_state.last_name = st.text_input("Nom", value=st.session_state.last_name)
-    st.session_state.email = st.text_input("Email", value=st.session_state.get("email", ""), help="Adresse utilisée pour le code d'accès et la transmission du JSON au consultant.")
-    st.session_state.consultant = st.text_input("Consultant / accompagnateur", value=st.session_state.get("consultant", ""))
-with col3:
-    st.session_state.birthdate = st.date_input(
-        "Date de naissance (obligatoire pour calculer les âges)",
-        value=st.session_state.birthdate or date(1980, 1, 1),
-        min_value=date(1920, 1, 1), max_value=date.today(),
-    )
-with col4:
-    current_age = decimal_age(st.session_state.birthdate, date.today())
-    st.metric("Âge actuel", f"{current_age:.1f} ans")
-
-col5, col6 = st.columns([1, 1])
-with col5:
-    st.session_state.start_age = st.number_input(
-        "À partir de quel âge souhaitez-vous commencer ?",
-        min_value=0, max_value=int(max(current_age, 1)), value=int(st.session_state.start_age), step=1,
-        help="Conseil : commencez à partir d'un âge où vous avez conscience des événements et où vous pouvez vous représenter votre capacité d'action."
-    )
-with col6:
-    st.session_state.projection_years = st.selectbox(
-        "Souhaitez-vous afficher une zone de projection future ?",
-        options=[0, 5, 10],
-        index=[0, 5, 10].index(int(st.session_state.projection_years)) if int(st.session_state.projection_years) in [0, 5, 10] else 0,
-        format_func=lambda x: "Non" if x == 0 else f"Oui, projection à {x} ans",
-    )
-
-st.subheader("2. Ajouter un événement")
-with st.form("event_form", clear_on_submit=True):
-    st.markdown("**Contenu d'un événement :** date, nom court affiché sur la ligne, position libre entre -10 et +10. Si le jour exact est inconnu, le jour 00 est accepté ; le mois et l'année restent nécessaires pour classer correctement la ligne de vie. Le nom long et la description sont facultatifs.")
-    c1, c2, c3, c4 = st.columns([0.8, 0.9, 1, 1.3])
+    """, unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
     with c1:
-        day_text = st.text_input("Jour", value="01", max_chars=2, help="Si vous ne connaissez pas le jour exact, vous pouvez saisir 00.")
+        st.session_state.first_name = st.text_input("Prénom du bénéficiaire", value=st.session_state.get("first_name", ""))
     with c2:
-        month = st.selectbox("Mois", list(range(1, 13)), format_func=lambda m: f"{m:02d}", help="Le mois est nécessaire pour classer l'événement. Choisissez le mois le plus probable si la date est approximative.")
+        st.session_state.last_name = st.text_input("Nom du bénéficiaire", value=st.session_state.get("last_name", ""))
     with c3:
-        year = st.number_input("Année", min_value=1920, max_value=date.today().year + 10, value=date.today().year, step=1)
+        st.session_state.email = st.text_input("Adresse email", value=st.session_state.get("email", ""))
+    c4, c5 = st.columns(2)
     with c4:
-        position = st.slider("Position sur la ligne", -10, 10, 0, help="Le bénéficiaire choisit librement la place de l'événement sur la ligne.")
+        st.session_state.consultant = st.text_input("Consultant", value=st.session_state.get("consultant", "Clarté360"))
+    with c5:
+        st.session_state.birthdate = st.date_input(
+            "Date de naissance",
+            value=st.session_state.birthdate or date(1980, 1, 1),
+            min_value=date(1920, 1, 1), max_value=date.today(),
+        )
+    if st.session_state.birthdate:
+        current_age = decimal_age(st.session_state.birthdate, date.today())
+        st.metric("Âge actuel", f"{current_age:.1f} ans")
+    mark_activity()
 
-    nom_court = st.text_input("Nom court de l'événement (obligatoire - affiché à côté du point)", max_chars=35, placeholder="Ex. Bac, 1er emploi, création entreprise")
-    nom_long = st.text_input("Nom long (facultatif)", placeholder="Ex. Obtention du baccalauréat / création de ma première entreprise")
-    description = st.text_area("Description libre (facultative)", placeholder="Quelques mots si vous souhaitez préciser le contexte.")
 
-    submitted = st.form_submit_button("Ajouter l'événement")
+def page_consignes() -> None:
+    st.markdown("## 2. Consignes")
+    st.markdown("""
+    <div class='rule-box'>
+    <strong>Objectif de l'outil</strong><br>
+    La ligne de vie permet de représenter les événements marquants de votre parcours sur un axe chronologique exprimé en âge.
+    Dans cette étape, il ne s'agit pas d'analyser votre histoire mais de la poser visuellement, avec vos propres repères.
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+    - Vous saisissez les événements qui vous semblent importants.
+    - Chaque événement reçoit une position libre entre -10 et +10.
+    - Le jour 00 est accepté lorsque la date exacte n'est pas connue.
+    - L'exploration des remontées est facultative et sert uniquement de support d'entretien.
+    """)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.session_state.start_age = st.number_input(
+            "À partir de quel âge souhaitez-vous commencer ?",
+            min_value=0, max_value=120, value=int(st.session_state.start_age), step=1,
+        )
+    with c2:
+        st.session_state.projection_years = st.selectbox(
+            "Afficher une zone de projection future ?",
+            options=[0, 5, 10],
+            index=[0, 5, 10].index(int(st.session_state.projection_years)) if int(st.session_state.projection_years) in [0, 5, 10] else 0,
+            format_func=lambda x: "Non" if x == 0 else f"Oui, projection à {x} ans",
+        )
+    mark_activity()
+
+
+def page_evenements() -> None:
+    st.markdown("## 3. Événements")
+    with st.form("event_form", clear_on_submit=True):
+        st.markdown("**Ajouter un événement :** date, nom court affiché sur la ligne, position libre entre -10 et +10.")
+        c1, c2, c3, c4 = st.columns([0.8, 0.9, 1, 1.3])
+        with c1:
+            day_text = st.text_input("Jour", value="01", max_chars=2, help="Si vous ne connaissez pas le jour exact, vous pouvez saisir 00.")
+        with c2:
+            month = st.selectbox("Mois", list(range(1, 13)), format_func=lambda m: f"{m:02d}")
+        with c3:
+            year = st.number_input("Année", min_value=1920, max_value=date.today().year + 10, value=date.today().year, step=1)
+        with c4:
+            position = st.slider("Position sur la ligne", -10, 10, 0)
+        nom_court = st.text_input("Nom court de l'événement *", max_chars=35, placeholder="Ex. Bac, 1er emploi, création entreprise")
+        nom_long = st.text_input("Nom long (facultatif)")
+        description = st.text_area("Description libre (facultative)")
+        submitted = st.form_submit_button("Ajouter l'événement", type="primary")
     if submitted:
-        if not st.session_state.first_name.strip() or not st.session_state.last_name.strip():
-            st.error("Merci de renseigner le prénom et le nom avant d'ajouter un événement.")
+        if not st.session_state.get("birthdate"):
+            st.error("Merci de renseigner la date de naissance dans l'étape 1.")
         elif not nom_court.strip():
             st.error("Le nom court est obligatoire.")
         else:
@@ -807,9 +953,6 @@ with st.form("event_form", clear_on_submit=True):
                     raise ValueError("Le jour doit être compris entre 00 et 31.")
                 ed = parse_event_date(int(year), int(month), int(day))
                 age = decimal_age(st.session_state.birthdate, ed)
-                if age < st.session_state.start_age:
-                    st.warning("Cet événement est antérieur à l'âge de départ choisi. Il est ajouté, mais il se situera avant le début conseillé de la ligne.")
-                periode = display_date(int(year), int(month), int(day))
                 st.session_state.events.append({
                     "id": str(uuid.uuid4()),
                     "date_precision": "Date avec jour 00 possible",
@@ -817,7 +960,7 @@ with st.form("event_form", clear_on_submit=True):
                     "jour_saisi": int(day),
                     "mois_saisi": int(month),
                     "annee_saisie": int(year),
-                    "periode_affichee": periode,
+                    "periode_affichee": display_date(int(year), int(month), int(day)),
                     "age": age,
                     "nom_court": nom_court.strip(),
                     "nom_long": nom_long.strip(),
@@ -825,53 +968,59 @@ with st.form("event_form", clear_on_submit=True):
                     "position": int(position),
                 })
                 st.success("Événement ajouté et reclassé automatiquement.")
+                mark_activity()
             except Exception as exc:
                 st.error(f"Date invalide : {exc}")
+    if st.session_state.events:
+        st.markdown("### Événements saisis")
+        st.dataframe(events_df(), use_container_width=True, hide_index=True)
+        sorted_events = sorted(enumerate(st.session_state.events), key=lambda x: (float(x[1].get("age", 0)), x[1].get("date_reference", "")))
+        labels = [f"{e.get('age')} ans - {e.get('nom_court')} ({e.get('periode_affichee')})" for _, e in sorted_events]
+        idx_label = st.selectbox("Choisir l'événement à supprimer", labels)
+        if st.button("Supprimer l'événement sélectionné"):
+            original_index = sorted_events[labels.index(idx_label)][0]
+            st.session_state.events.pop(original_index)
+            mark_activity()
+            st.rerun()
+    else:
+        st.info("Ajoutez au moins un événement pour visualiser votre ligne de vie.")
 
-st.subheader("3. Ligne de vie")
-fig = make_figure()
-st.plotly_chart(fig, use_container_width=True)
 
-if st.session_state.events:
-    st.markdown("### Événements saisis")
-    df = events_df()
-    st.dataframe(df, use_container_width=True, hide_index=True)
+def page_ligne_de_vie() -> None:
+    st.markdown("## 4. Ligne de vie")
+    fig = make_figure()
+    st.plotly_chart(fig, use_container_width=True)
+    if st.session_state.events:
+        st.dataframe(events_df(), use_container_width=True, hide_index=True)
+    else:
+        st.info("Ajoutez au moins un événement dans l'étape 3.")
+    mark_activity()
 
-    st.markdown("### Supprimer un événement")
-    sorted_events = sorted(enumerate(st.session_state.events), key=lambda x: (float(x[1].get("age", 0)), x[1].get("date_reference", "")))
-    labels = [f"{e.get('age')} ans - {e.get('nom_court')} ({e.get('periode_affichee')})" for _, e in sorted_events]
-    idx_label = st.selectbox("Choisir l'événement à supprimer", labels)
-    if st.button("Supprimer l'événement sélectionné"):
-        original_index = sorted_events[labels.index(idx_label)][0]
-        st.session_state.events.pop(original_index)
-        st.rerun()
-else:
-    st.info("Ajoutez au moins un événement pour visualiser votre ligne de vie.")
 
-st.subheader("4. Explorer certaines remontées")
-st.markdown("""
-<div class='c360-card'>
-Cette étape est facultative. Elle sert uniquement de support d'entretien : le bénéficiaire choisit les remontées qu'il souhaite approfondir.
-Il peut aussi décider de ne rien écrire et d'en parler seulement oralement avec le consultant.
-</div>
-""", unsafe_allow_html=True)
-segments = upward_segments()
-if not segments:
-    st.info("Aucune remontée n'est encore détectée. Une remontée apparaît lorsqu'un point suivant est placé plus haut que le point précédent.")
-else:
+def page_remontees() -> None:
+    st.markdown("## 5. Explorer certaines remontées")
+    st.markdown("""
+    <div class='rule-box'>
+    Cette étape est facultative. Elle sert uniquement de support d'entretien : le bénéficiaire choisit les remontées qu'il souhaite approfondir.
+    Il peut aussi décider de ne rien écrire et d'en parler seulement oralement avec le consultant.
+    </div>
+    """, unsafe_allow_html=True)
+    segments = upward_segments()
+    if not segments:
+        st.info("Aucune remontée n'est encore détectée. Une remontée apparaît lorsqu'un point suivant est placé plus haut que le point précédent.")
+        return
     labels = [segment_label(seg) for seg in segments]
-    chosen_label = st.selectbox("Choisir une remontée à approfondir, si vous le souhaitez", ["Ne pas approfondir maintenant"] + labels)
+    chosen_label = st.selectbox("Choisir une remontée à approfondir", ["Ne pas approfondir maintenant"] + labels)
     if chosen_label != "Ne pas approfondir maintenant":
         seg = segments[labels.index(chosen_label)]
         key = seg["key"]
         current = st.session_state.remontees.get(key, {})
-        st.markdown(f"**Remontée sélectionnée :** {chosen_label}")
         keep_trace = st.checkbox("Je souhaite conserver une trace écrite de cette réflexion", value=bool(current.get("trace_ecrite_souhaitee", False)))
         if keep_trace:
-            ressources = st.text_area("Ressources mobilisées", value=current.get("ressources", ""), placeholder="Ex. soutien, courage, méthode, réseau, décision personnelle...")
-            actions = st.text_area("Actions qui ont aidé à remonter", value=current.get("actions", ""), placeholder="Ex. reprise de contact, formation, changement d'organisation, demande d'aide...")
-            apprentissages = st.text_area("Ce que j'en retiens aujourd'hui", value=current.get("apprentissages", ""), placeholder="Ce que cette période m'a appris sur moi, mes ressources ou ma façon d'agir.")
-            if st.button("Enregistrer cette réflexion"):
+            ressources = st.text_area("Ressources mobilisées", value=current.get("ressources", ""))
+            actions = st.text_area("Actions qui ont aidé à remonter", value=current.get("actions", ""))
+            apprentissages = st.text_area("Ce que j'en retiens aujourd'hui", value=current.get("apprentissages", ""))
+            if st.button("Enregistrer cette réflexion", type="primary"):
                 st.session_state.remontees[key] = {
                     "trace_ecrite_souhaitee": True,
                     "evenement_depart": seg["from"].get("id"),
@@ -880,42 +1029,76 @@ else:
                     "ressources": ressources.strip(),
                     "actions": actions.strip(),
                     "apprentissages": apprentissages.strip(),
-                    "date_maj": datetime.now().isoformat(timespec="seconds"),
+                    "date_maj": now_iso(),
                 }
                 st.success("Réflexion enregistrée dans le JSON.")
-        else:
-            if key in st.session_state.remontees and st.button("Supprimer la trace écrite déjà enregistrée pour cette remontée"):
-                del st.session_state.remontees[key]
-                st.success("Trace écrite supprimée.")
+                mark_activity()
 
-st.subheader("5. Exports")
-payload = build_payload()
-json_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-fig_png = get_fig_png(fig)
 
-cjson, ccsv, cpdf = st.columns(3)
-with cjson:
+def page_export() -> None:
+    st.markdown("## 6. Export / Rapports")
+    payload = build_payload()
+    json_bytes = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    fig = make_figure()
+    fig_png = get_fig_png(fig)
     json_file_name = export_name(st.session_state.last_name, st.session_state.first_name, "json")
-    st.download_button("Télécharger le JSON", data=json_bytes, file_name=json_file_name, mime="application/json")
-    if not st.session_state.get("final_json_sent", False):
-        if st.button("Transmettre le JSON au consultant Clarté360"):
-            ok, msg = send_final_json_to_consultant(json_bytes, json_file_name)
-            if ok:
-                st.session_state.final_json_sent = True
-                st.success("JSON transmis au consultant Clarté360.")
-            else:
-                st.error(msg)
+    cjson, ccsv, cpdf = st.columns(3)
+    with cjson:
+        st.download_button("Télécharger le JSON", data=json_bytes, file_name=json_file_name, mime="application/json", on_click=mark_json_downloaded)
+        if not st.session_state.get("final_json_sent", False):
+            if st.button("Transmettre le JSON au consultant Clarté360"):
+                ok, msg = send_final_json_to_consultant(json_bytes, json_file_name)
+                if ok:
+                    st.session_state.final_json_sent = True
+                    st.success("JSON transmis au consultant Clarté360.")
+                else:
+                    st.error(msg)
+        else:
+            st.success("JSON déjà transmis au consultant Clarté360.")
+    with ccsv:
+        st.download_button("Télécharger le CSV", data=make_csv_bytes(), file_name=export_name(st.session_state.last_name, st.session_state.first_name, "csv"), mime="text/csv")
+    with cpdf:
+        pdf_bytes = make_pdf_bytes(fig_png)
+        st.download_button("Télécharger le PDF", data=pdf_bytes, file_name=export_name(st.session_state.last_name, st.session_state.first_name, "pdf"), mime="application/pdf")
+    if fig_png:
+        st.download_button("Télécharger l'image PNG de la ligne", data=fig_png, file_name=export_name(st.session_state.last_name, st.session_state.first_name, "png"), mime="image/png")
     else:
-        st.success("JSON déjà transmis au consultant Clarté360.")
-with ccsv:
-    st.download_button("Télécharger le CSV", data=make_csv_bytes(), file_name=export_name(st.session_state.last_name, st.session_state.first_name, "csv"), mime="text/csv")
-with cpdf:
-    pdf_bytes = make_pdf_bytes(fig_png)
-    st.download_button("Télécharger le PDF", data=pdf_bytes, file_name=export_name(st.session_state.last_name, st.session_state.first_name, "pdf"), mime="application/pdf")
+        st.caption("Export PNG indisponible si Kaleido n'est pas disponible. Le PDF et le JSON restent disponibles.")
+    mark_activity()
 
-if fig_png:
-    st.download_button("Télécharger l'image PNG de la ligne", data=fig_png, file_name=export_name(st.session_state.last_name, st.session_state.first_name, "png"), mime="image/png")
-else:
-    st.caption("Export PNG indisponible si le moteur graphique Kaleido n'est pas disponible sur l'hébergement. Le PDF et le JSON restent disponibles.")
 
-st.markdown("<div class='small-muted'>Clarté360 - Ligne de vie. Les analyses de ressources liées aux remontées seront traitées dans un écran séparé ultérieurement, uniquement si le bénéficiaire souhaite conserver une trace écrite.</div>", unsafe_allow_html=True)
+def main() -> None:
+    init_state()
+    sidebar()
+    if st.session_state.get("show_contact_page"):
+        contact_page()
+        return
+    if st.session_state.get("show_rgpd_page"):
+        rgpd_page()
+        return
+    if not access_gate():
+        return
+    install_beforeunload_warning()
+    if timeout_check():
+        timeout_screen()
+        return
+    header()
+    page = st.session_state.get("page", "1. Bénéficiaire")
+    if page.startswith("1"):
+        page_beneficiaire()
+    elif page.startswith("2"):
+        page_consignes()
+    elif page.startswith("3"):
+        page_evenements()
+    elif page.startswith("4"):
+        page_ligne_de_vie()
+    elif page.startswith("5"):
+        page_remontees()
+    elif page.startswith("6"):
+        page_export()
+    else:
+        page_beneficiaire()
+
+
+if __name__ == "__main__":
+    main()
