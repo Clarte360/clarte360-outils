@@ -1,25 +1,30 @@
-# Clarté360 – Analyse des compétences transférables et faisabilité du projet professionnel
+# Clarté360 - Compétences & Projets
 
-Version 1.2.0 – Correctifs opérationnels
+Application Streamlit propriétaire Clarté360 destinée au bilan de compétences.
 
-Corrections principales :
-- exploitation réelle des JSON Valeurs, Préférences professionnelles et Moteurs professionnels ;
-- saisie manuelle du RIASEC Diagoriente et comparaison avec le RIASEC des fiches ROME ;
-- affichage du statut A / ECA / NA dans les accordéons de compétences ;
-- synthèse du nombre total de compétences ROME, avec pourcentages A / ECA / NA ;
-- analyse par famille de compétences ;
-- explication pédagogique des contextes ROME ;
-- remplacement de “motivations” par “moteurs professionnels” ;
-- suppression de l’effet note scolaire dans la synthèse ;
-- explication du calcul de compatibilité globale ;
-- plan d’action généré uniquement à partir du métier final retenu ;
-- plan d’action autonome après génération ;
-- regroupement des actions par indice ;
-- traçabilité de l’origine des actions ;
-- export JSON et PDF enrichis.
+Version application : 1.3.0  
+Socle : Clarté360 Socle v1.8
 
+## Lancement local
 
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-## V1.2.1
-- Titre principal aligné avec les autres applications Clarté360.
-- Ajout du bloc Objectif de l'outil sur l’écran d’accueil.
+## Secrets Streamlit
+
+Copier `.streamlit/secrets.example.toml` vers `.streamlit/secrets.toml` en local et renseigner les paramètres SMTP.
+Ne jamais déposer le fichier `secrets.toml` dans GitHub.
+
+## Données nécessaires
+
+Les fichiers suivants doivent rester dans `/data` :
+
+- `RefRomeXml.zip`
+- `rome_riasec_clarte360.xlsx`
+- `site_icon.png`
+
+## Standard Clarté360
+
+Cette version intègre le socle commun Clarté360 : accueil JSON/nouvelle session, RGPD, contact, mentions légales, gestion des sessions, temps cumulé, timeout, JSON de reprise et rapport PDF institutionnel.
