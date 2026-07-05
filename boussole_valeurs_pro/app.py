@@ -25,7 +25,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "1.8.1-socle-clarte360"
+APP_VERSION = "1.8.2-socle-clarte360"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
@@ -1070,10 +1070,20 @@ def add_clarte360_pdf_footer(fig):
     return fig
 
 def draw_pdf_header(fig, title: str, subtitle: str = ""):
-    fig.text(0.05, 0.975, "Clarté360", ha="left", va="top", fontsize=10, color=BRAND_COLOR, fontweight="bold")
-    fig.text(0.05, 0.948, title, ha="left", va="top", fontsize=16, color=BRAND_COLOR, fontweight="bold")
+    """En-tête PDF institutionnel Clarté360, aligné sur le rapport Moteurs."""
+    try:
+        if LOGO_PATH.exists():
+            logo_img = plt.imread(str(LOGO_PATH))
+            ax_logo = fig.add_axes([0.455, 0.915, 0.09, 0.075])
+            ax_logo.imshow(logo_img)
+            ax_logo.axis("off")
+    except Exception:
+        # Le PDF doit rester générable même si le logo est indisponible.
+        pass
+
+    fig.text(0.5, 0.900, title, ha="center", va="top", fontsize=17, color=BRAND_COLOR, fontweight="bold")
     if subtitle:
-        fig.text(0.05, 0.925, subtitle, ha="left", va="top", fontsize=10, color="#333333")
+        fig.text(0.05, 0.862, subtitle, ha="left", va="top", fontsize=10, color="#333333")
 
 
 def wrap_text_for_pdf(text: str, width: int = 95) -> list[str]:
@@ -1109,12 +1119,12 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
             fig = plt.figure(figsize=(8.27, 11.69))
             draw_pdf_header(fig, "Boussole des valeurs professionnelles", f"Bénéficiaire : {beneficiaire}   |   Date : {date_real}")
             fig.text(
-                0.05, 0.885,
+                0.05, 0.820,
                 "Précaution de lecture",
                 ha="left", va="top", fontsize=11, color=BRAND_COLOR, fontweight="bold",
             )
             fig.text(
-                0.05, 0.865,
+                0.05, 0.800,
                 "Cet outil restitue les valeurs, cotations et exemples saisis par le bénéficiaire. Il ne constitue ni un test psychométrique, ni un diagnostic, ni une interprétation automatique. Le document sert de support d'échange avec le consultant.",
                 ha="left", va="top", fontsize=8.7, color="#333333", wrap=True,
             )
@@ -1126,7 +1136,7 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
             plt.close(wheel_fig)
             wheel_buf.seek(0)
             img = plt.imread(wheel_buf)
-            ax_img = fig.add_axes([0.10, 0.33, 0.80, 0.48])
+            ax_img = fig.add_axes([0.10, 0.31, 0.80, 0.46])
             ax_img.imshow(img)
             ax_img.axis("off")
 
@@ -1159,7 +1169,7 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
             fig2, ax = plt.subplots(figsize=(8.27, 11.69))
             ax.axis("off")
             draw_pdf_header(fig2, "Détail des valeurs et points d'appui", f"Bénéficiaire : {beneficiaire}")
-            y = 0.88
+            y = 0.82
             for val in data.get("valeurs", []):
                 if y < 0.17:
                     add_clarte360_pdf_footer(fig2)
@@ -1202,8 +1212,8 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
             fig3, ax3 = plt.subplots(figsize=(8.27, 11.69))
             ax3.axis("off")
             draw_pdf_header(fig3, "Valeurs énergies", f"Bénéficiaire : {beneficiaire}")
-            ax3.text(0.05, 0.885, "Restitution des valeurs retenues comme sources de mobilisation pour l'objectif ou le projet travaillé.", fontsize=9, va="top", wrap=True)
-            y = 0.84
+            ax3.text(0.05, 0.820, "Restitution des valeurs retenues comme sources de mobilisation pour l'objectif ou le projet travaillé.", fontsize=9, va="top", wrap=True)
+            y = 0.78
             for raw_idx in ve.get("selected", []):
                 try:
                     idx = int(raw_idx)
@@ -1220,7 +1230,7 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
                     fig3, ax3 = plt.subplots(figsize=(8.27, 11.69))
                     ax3.axis("off")
                     draw_pdf_header(fig3, "Valeurs énergies", f"Bénéficiaire : {beneficiaire}")
-                    y = 0.88
+                    y = 0.82
                 ax3.text(0.05, y, f"{val.get('nom','')} — initial : {entry.get('score_initial', moyenne_valeur(val))}/10 — revisité : {entry.get('score_revise', moyenne_valeur(val))}/10", fontsize=11, fontweight="bold", color=BRAND_COLOR, va="top")
                 y -= 0.026
                 comment = entry.get("commentaire", "")
@@ -1250,7 +1260,7 @@ def create_pdf_bytes(data, include_values=True, include_energy=True):
             fig_empty, ax_empty = plt.subplots(figsize=(8.27, 11.69))
             ax_empty.axis("off")
             draw_pdf_header(fig_empty, "Valeurs énergies", f"Bénéficiaire : {beneficiaire}")
-            ax_empty.text(0.05, 0.88, "Aucune valeur énergie n'a été renseignée. Cet espace est optionnel.", fontsize=10, va="top")
+            ax_empty.text(0.05, 0.82, "Aucune valeur énergie n'a été renseignée. Cet espace est optionnel.", fontsize=10, va="top")
             add_clarte360_pdf_footer(fig_empty)
             pdf.savefig(fig_empty, bbox_inches="tight")
             plt.close(fig_empty)

@@ -1,4 +1,4 @@
-# Boussole des valeurs professionnelles - v1.8.1
+# Boussole des valeurs professionnelles - v1.8.2
 
 Correctifs socle Clarté360 v3.0 :
 
@@ -9,3 +9,9 @@ Correctifs socle Clarté360 v3.0 :
 - Conservation de la suppression de l'onglet RGPD du menu métier.
 
 Logique métier non modifiée : valeurs, points d'appui, cotations, boussole, valeurs énergies et philosophie pédagogique inchangés.
+
+
+## v1.8.2
+
+- Harmonisation graphique du rapport PDF avec la charte Clarté360 : logo officiel centré, titre centré, en-tête institutionnel aligné sur Moteurs Professionnels.
+- Aucune modification de la logique métier, des écrans Streamlit, du JSON, des sessions, du RGPD ou du timeout.

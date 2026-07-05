@@ -1,10 +1,10 @@
-# Boussole Valeurs Pro v1.8 - Socle Clarte360 v3.0
+# Boussole Valeurs Pro v1.8.2 - Socle Clarte360 v3.0
 
 # Clarté360 - Boussole des valeurs professionnelles
 
 Application Streamlit propriétaire Clarté360.
 
-Version : v1.8-socle-clarte360  
+Version : v1.8.2-socle-clarte360  
 Socle : Clarté360 1.7, standardisé sur Moteurs Professionnels v1.7.0 référence.
 
 ## Fonctionnalités socle
