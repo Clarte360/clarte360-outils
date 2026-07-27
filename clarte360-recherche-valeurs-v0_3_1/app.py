@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "1.4.0-preproduction"
+APP_VERSION = "1.4.1-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -89,26 +89,16 @@ FALLBACK_QUESTIONS = [
     "Qu’est-ce que vous ne souhaiteriez pas sacrifier durablement, même en échange de davantage d’argent, de confort ou de réussite ?",
 ]
 FORBIDDEN_PATTERNS = [r"\bvous etes\b", r"\bvotre personnalite\b", r"\bcela revele\b", r"\bcela cache\b", r"\bau fond de vous\b", r"\ben realite vous\b", r"\binconsciemment\b", r"\bprobablement parce que\b", r"\bvotre vraie valeur\b", r"\bvous souffrez de\b", r"\bcela prouve que\b", r"\bvotre peur montre\b", r"\bvotre colere signifie\b", r"\bvous cherchez a compenser\b"]
-SYSTEM_ANALYSE_RVC360 = """
-TU ES LE MODULE IA-550 D'ANALYSE STRUCTUREE RVC360.
-Tu ne recherches, ne proposes et ne nommes AUCUNE valeur.
-Tu structures uniquement les éléments explicitement déclarés ou déjà validés par le bénéficiaire.
-REGLE ABSOLUE : ZERO INTERPRETATION. Aucune cause cachée, aucun besoin implicite, aucun trait de personnalité, aucune émotion non formulée.
-Tu distingues : situation, faits observables, émotions déclarées, attentes exprimées, choix/actions, expressions fortes, critères personnels, contradictions explicites, thèmes descriptifs.
-Tu peux reprendre les mots exacts du bénéficiaire. Tu ne transformes jamais un thème en valeur.
-Tu produis une reformulation brève et fidèle, puis UNE seule question ouverte utile si des éléments manquent.
-CONVERGENCE : ne repose pas la même question. Après deux relances sans apport nouveau, change d'angle ou indique que l'analyse est suffisante pour rechercher des hypothèses lexicales.
-SORTIE : uniquement un objet JSON conforme au schéma demandé.
-"""
-
 SYSTEM_PROJECTION_RVC360 = """
 TU ES LE MODULE IA-600/IA-650 DE PROJECTION SUR LE REFERENTIEL RVC360.
-Tu reçois une fiche d'analyse structurée et un sous-ensemble contrôlé du référentiel officiel.
+Tu reçois une fiche descriptive construite localement à partir des mots exacts du bénéficiaire et un sous-ensemble contrôlé du référentiel officiel.
 Tu proposes uniquement des HYPOTHESES LEXICALES présentes dans ce sous-ensemble.
-Chaque hypothèse doit être justifiée par un élément textuel explicite de la fiche. Aucune interprétation psychologique.
+Chaque hypothèse doit être justifiée par un élément textuel explicite de la fiche. Aucune interprétation psychologique, aucune cause cachée, aucun trait de personnalité.
 Tu classes les hypothèses en interne par pertinence, sans afficher de score au bénéficiaire.
 Tu peux ne proposer aucune hypothèse si les éléments sont insuffisants.
-Tu ne poses aucune question et tu ne valide aucune valeur.
+Tu produis aussi une reformulation brève et fidèle, puis UNE seule question ouverte utile uniquement si aucune hypothèse suffisamment étayée ne peut encore être présentée.
+La question suivante approfondit les mots déjà employés ou change réellement d'angle ; elle ne répète pas la question précédente.
+Tu ne valides aucune valeur.
 SORTIE : uniquement un objet JSON conforme au schéma demandé.
 """
 
@@ -125,7 +115,7 @@ Le consentement est obligatoire avant toute utilisation. Son acceptation est enr
 
 ### Utilisation de l'intelligence artificielle
 
-L'intelligence artificielle intervient en deux étapes : elle structure d'abord les propos sans rechercher de valeur, puis rapproche cette fiche d'analyse d'un sous-ensemble contrôlé du référentiel RVC360 afin de formuler des hypothèses lexicales à examiner. Elle ne valide aucune valeur, ne produit aucun diagnostic et ne prend aucune décision à la place du bénéficiaire.
+Le moteur RVC360 intervient en deux niveaux : il structure d'abord localement les propos sans rechercher de valeur, puis l'intelligence artificielle rapproche cette fiche d'analyse d'un sous-ensemble contrôlé du référentiel RVC360 afin de formuler des hypothèses lexicales à examiner. Elle ne valide aucune valeur, ne produit aucun diagnostic et ne prend aucune décision à la place du bénéficiaire.
 
 Les réponses utiles à cette recherche sont transmises au fournisseur d'IA configuré par Clarté360. Il est demandé de ne pas saisir de noms complets, coordonnées ou informations sensibles inutiles. L'application demande au fournisseur de ne pas conserver la réponse comme état applicatif (`store=False`). Les traitements techniques et règles de conservation propres au fournisseur restent applicables.
 
@@ -201,6 +191,7 @@ def default_business_state() -> dict[str, Any]:
         "analysis_card":{}, "analysis_history":[], "analysis_no_novelty_count":0,
         "pipeline_status":"idle", "pipeline_error":"",
         "pending_pipeline_answer":"", "pending_analysis_card":{},
+        "pending_submission":{}, "last_processed_submission_id":"",
     }
 
 def init_state() -> None:
@@ -339,74 +330,109 @@ def response_json(instructions:str,payload:dict[str,Any],schema_name:str,schema:
 def has_forbidden_language(text:str)->bool:
     n=normalize(text); return any(re.search(p,n) for p in FORBIDDEN_PATTERNS)
 
-def run_structured_analysis(answer:str)->dict[str,Any]:
-    previous=st.session_state.get("analysis_card",{}) or {}
-    recent=[{"question":x["question"],"reponse":x["answer"]} for x in st.session_state.conversation[-3:]]
-    payload={
-        "question_posee":st.session_state.current_question,
-        "reponse_du_beneficiaire":answer,
-        "fiche_precedente":previous,
-        "historique_recent":recent,
-        "nombre_de_relances_sans_apport":int(st.session_state.get("analysis_no_novelty_count",0)),
-    }
-    arr={"type":"array","items":{"type":"string"},"maxItems":8}
-    schema={"type":"object","additionalProperties":False,"properties":{
-        "reformulation":{"type":"string"},"situation":{"type":"string"},
-        "faits":arr,"emotions_declarees":arr,"attentes_exprimees":arr,"actions_choix":arr,
-        "expressions_fortes":arr,"criteres_personnels":arr,"contradictions_explicites":arr,"themes_descriptifs":arr,
-        "information_manquante":{"type":"string"},"question_suivante":{"type":"string"},
-        "analyse_suffisante":{"type":"boolean"},"apport_nouveau":{"type":"boolean"}
-    },"required":["reformulation","situation","faits","emotions_declarees","attentes_exprimees","actions_choix","expressions_fortes","criteres_personnels","contradictions_explicites","themes_descriptifs","information_manquante","question_suivante","analyse_suffisante","apport_nouveau"]}
-    result=response_json(SYSTEM_ANALYSE_RVC360,payload,"rvc360_analyse_structuree",schema,800)
-    if has_forbidden_language(str(result.get("reformulation",""))): result["reformulation"]="Vous avez décrit une situation concrète. Est-ce fidèle à ce que vous souhaitez exprimer ?"
-    q=str(result.get("question_suivante","")).strip()
-    if has_forbidden_language(q): q=""
-    if not q: q=FALLBACK_QUESTIONS[(len(st.session_state.conversation)+1)%len(FALLBACK_QUESTIONS)]
-    result["question_suivante"]=q
-    return result
+def _sentences(text:str)->list[str]:
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+|[\n\r]+", str(text)) if x.strip()]
 
-def project_hypotheses(card:dict[str,Any],answer:str)->list[dict[str,str]]:
+
+def _clauses_matching(text:str, patterns:list[str], limit:int=6)->list[str]:
+    out=[]
+    for sentence in _sentences(text):
+        n=normalize(sentence)
+        if any(re.search(p,n) for p in patterns):
+            out.append(sentence)
+    return out[:limit]
+
+
+def build_structured_analysis_local(answer:str)->dict[str,Any]:
+    """IA-550 local et déterministe : structure les mots sans chercher de valeur.
+
+    Aucune entrée du référentiel n'est consultée ici et aucun appel API n'est réalisé.
+    """
+    answer=str(answer).strip()
+    previous=st.session_state.get("analysis_card",{}) or {}
+    facts=_sentences(answer)[:8]
+    emotions=_clauses_matching(answer,[r"\bje (?:me )?sens\b",r"\bj ai ressenti\b",r"\btriste\b",r"\bheureux\b",r"\bcontent\b",r"\bcontrarie\b",r"\benerve\b",r"\bcolere\b",r"\bpeur\b",r"\bdecu\b"])
+    expectations=_clauses_matching(answer,[r"\bje (?:veux|voudrais|souhaite|attends)\b",r"\bj aurais voulu\b",r"\bil (?:faut|faudrait|devrait)\b",r"\bau moins\b"])
+    actions=_clauses_matching(answer,[r"\bj ai (?:dit|fait|choisi|decide|refuse|accepte|demande)\b",r"\bje (?:dis|fais|choisis|decide|refuse|accepte|demande)\b"])
+    criteria=_clauses_matching(answer,[r"\bimportant\b",r"\bcompte\b",r"\bessentiel\b",r"\bnormal\b",r"\bacceptable\b",r"\bjuste\b"])
+    strong=[]
+    for sentence in facts:
+        if any(ch in sentence for ch in ("!", "?")) or any(w in normalize(sentence) for w in ("vraiment","pas du tout","toujours","jamais","au moins")):
+            strong.append(sentence)
+    # Thèmes descriptifs = mots fréquents du discours, sans projection sur le référentiel.
+    stop={"alors","avec","avoir","cette","comme","dans","deux","elle","elles","etait","faire","fait","faut","hier","mais","moins","nous","pour","pourquoi","quand","sans","cela","cette","personnes","personne","passe","passer","devant","vraiment","vous","votre","leurs","leur","plus","tout","tous","une","des","les","que","qui","quoi","est","sont","j ai","je","ils"}
+    words=[w for w in normalize(answer).split() if len(w)>=5 and w not in stop]
+    freq={w:words.count(w) for w in set(words)}
+    themes=[w for w,_ in sorted(freq.items(),key=lambda kv:(-kv[1],kv[0]))[:8]]
+    previous_text=_flatten_analysis_text(previous) if previous else ""
+    novelty=normalize(answer) not in normalize(previous_text) if previous_text else True
+    return {
+        "reformulation":"Vous décrivez : "+answer,
+        "situation":answer,
+        "faits":facts,
+        "emotions_declarees":emotions,
+        "attentes_exprimees":expectations,
+        "actions_choix":actions,
+        "expressions_fortes":strong[:8],
+        "criteres_personnels":criteria,
+        "contradictions_explicites":[],
+        "themes_descriptifs":themes,
+        "information_manquante":"",
+        "question_suivante":"",
+        "analyse_suffisante":bool(len(answer)>=35),
+        "apport_nouveau":novelty,
+    }
+
+
+def project_hypotheses(card:dict[str,Any],answer:str)->dict[str,Any]:
     analysis_text=_flatten_analysis_text(card)
     context_answers=[x["answer"] for x in st.session_state.conversation[-4:]]+[answer,analysis_text]
     subset=lexical_prefilter(context_answers,limit=30)
-    # Les noms exacts prononcés sont seulement garantis dans le sous-ensemble, jamais imposés comme résultat.
     by_name={x["nom"]:x for x in subset}
-    for name in explicit_catalogue_mentions(answer+" "+analysis_text): by_name[name]=VALUE_MAP[name]
+    for name in explicit_catalogue_mentions(answer+" "+analysis_text):
+        by_name[name]=VALUE_MAP[name]
     subset=list(by_name.values())[:30]
-    if not subset: return []
+    if not subset:
+        return {"hypotheses":[],"reformulation":"Vous avez décrit une situation concrète.","question_suivante":FALLBACK_QUESTIONS[(len(st.session_state.conversation)+1)%len(FALLBACK_QUESTIONS)],"elements_insuffisants":True}
     allowed={x["nom"] for x in subset}
     payload={
+        "question_posee":st.session_state.current_question,
         "fiche_analyse_structuree":card,
         "valeurs_deja_validees":validated_names(),
         "hypotheses_deja_examinees":[{"nom":e.get("nom"),"statut":st.session_state.hypothesis_status.get(e.get("nom"),e.get("statut"))} for e in st.session_state.get("hypothesis_history",[])[-10:]],
         "referentiel_autorise":subset,
     }
-    schema={"type":"object","additionalProperties":False,"properties":{"hypotheses":{"type":"array","maxItems":5,"items":{"type":"object","additionalProperties":False,"properties":{"nom":{"type":"string","enum":sorted(allowed)},"raison":{"type":"string"},"preuve":{"type":"string"},"priorite_interne":{"type":"integer","minimum":1,"maximum":5}},"required":["nom","raison","preuve","priorite_interne"]}},"elements_insuffisants":{"type":"boolean"}},"required":["hypotheses","elements_insuffisants"]}
-    result=response_json(SYSTEM_PROJECTION_RVC360,payload,"rvc360_projection_referentiel",schema,650)
+    schema={"type":"object","additionalProperties":False,"properties":{
+        "hypotheses":{"type":"array","maxItems":5,"items":{"type":"object","additionalProperties":False,"properties":{"nom":{"type":"string","enum":sorted(allowed)},"raison":{"type":"string"},"preuve":{"type":"string"},"priorite_interne":{"type":"integer","minimum":1,"maximum":5}},"required":["nom","raison","preuve","priorite_interne"]}},
+        "elements_insuffisants":{"type":"boolean"},"reformulation":{"type":"string"},"question_suivante":{"type":"string"}
+    },"required":["hypotheses","elements_insuffisants","reformulation","question_suivante"]}
+    result=response_json(SYSTEM_PROJECTION_RVC360,payload,"rvc360_projection_referentiel",schema,750)
     cleaned=[]
     for x in result.get("hypotheses",[]):
         name=str(x.get("nom","")).strip()
         if name in allowed and name not in validated_names():
             cleaned.append({"nom":name,"raison":str(x.get("raison","")).strip(),"preuve":str(x.get("preuve","")).strip(),"priorite_interne":int(x.get("priorite_interne",5))})
     cleaned.sort(key=lambda x:x["priorite_interne"])
-    return cleaned
+    q=str(result.get("question_suivante","")).strip()
+    if has_forbidden_language(q): q=""
+    if not q: q=FALLBACK_QUESTIONS[(len(st.session_state.conversation)+1)%len(FALLBACK_QUESTIONS)]
+    reformulation=str(result.get("reformulation","")).strip()
+    if has_forbidden_language(reformulation): reformulation="Vous avez décrit une situation concrète."
+    return {"hypotheses":cleaned,"reformulation":reformulation,"question_suivante":q,"elements_insuffisants":bool(result.get("elements_insuffisants",False))}
+
 
 def run_rvc360_pipeline(answer:str)->dict[str,Any]:
-    """Architecture V1.3 : 1) analyse structurée sans valeur ; 2) projection sur le référentiel.
+    """Architecture V1.3 avec un seul appel API par réponse validée.
 
-    Si la projection échoue après l'analyse, la fiche est gardée en session afin de ne pas
-    facturer ni rejouer inutilement le premier niveau lors d'une nouvelle validation du même texte.
+    Niveau 1 : structuration locale, déterministe et sans référentiel.
+    Niveau 2 : un unique appel IA pour la projection et la prochaine question.
     """
-    if st.session_state.get("pending_pipeline_answer")==answer and st.session_state.get("pending_analysis_card"):
-        card=deepcopy(st.session_state.pending_analysis_card)
-    else:
-        card=run_structured_analysis(answer)
-        st.session_state.pending_pipeline_answer=answer
-        st.session_state.pending_analysis_card=deepcopy(card)
-    hypotheses=project_hypotheses(card,answer)
-    st.session_state.pending_pipeline_answer=""
-    st.session_state.pending_analysis_card={}
-    return {"analysis_card":card,"hypotheses":hypotheses,"reformulation":card.get("reformulation",""),"question_suivante":card.get("question_suivante","")}
+    card=build_structured_analysis_local(answer)
+    projection=project_hypotheses(card,answer)
+    card["reformulation"]=projection.get("reformulation",card.get("reformulation",""))
+    card["question_suivante"]=projection.get("question_suivante","")
+    return {"analysis_card":card,"hypotheses":projection.get("hypotheses",[]),"reformulation":card.get("reformulation",""),"question_suivante":card.get("question_suivante","")}
+
 
 def merge_hypotheses(items:list[dict[str,str]])->list[str]:
     presented=[]
@@ -831,6 +857,71 @@ def auxiliary_back_button(key: str) -> None:
             st.session_state.show_rgpd_page=False
             st.rerun()
 
+def _submission_id(question:str, answer:str)->str:
+    import hashlib
+    raw=f"{len(st.session_state.get('conversation',[]))}|{question}|{answer}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:24]
+
+
+def queue_exploration_submission(answer:str) -> None:
+    question=str(st.session_state.current_question)
+    sid=_submission_id(question,answer)
+    if sid==st.session_state.get("last_processed_submission_id"):
+        return
+    st.session_state.pending_submission={"id":sid,"question":question,"answer":answer,"created_at":now_iso()}
+    st.session_state.pipeline_status="queued"
+    st.session_state.pipeline_error=""
+
+
+def process_pending_exploration_submission() -> bool:
+    pending=st.session_state.get("pending_submission") or {}
+    if st.session_state.get("pipeline_status")!="queued" or not pending:
+        return False
+    sid=str(pending.get("id",""))
+    if sid and sid==st.session_state.get("last_processed_submission_id"):
+        st.session_state.pipeline_status="completed"
+        st.session_state.pending_submission={}
+        return False
+    st.session_state.pipeline_status="running"
+    answer=str(pending.get("answer","")).strip()
+    previous_question=str(pending.get("question",st.session_state.current_question))
+    with st.spinner("Le moteur RVC360 examine votre réponse une seule fois..."):
+        try:
+            result=run_rvc360_pipeline(answer)
+            st.session_state.ai_engine_status="operationnel"
+        except Exception as exc:
+            st.session_state.pipeline_status="error"
+            st.session_state.pipeline_error=str(exc)
+            business_trace("erreur_ia",f"{type(exc).__name__}: {str(exc)[:120]}")
+            return True
+    card=result["analysis_card"]
+    st.session_state.analysis_card=card
+    st.session_state.analysis_history.append({"date":now_iso(),"question":previous_question,"reponse":answer,"fiche":card})
+    if card.get("apport_nouveau",True): st.session_state.analysis_no_novelty_count=0
+    else: st.session_state.analysis_no_novelty_count=int(st.session_state.get("analysis_no_novelty_count",0))+1
+    presented=merge_hypotheses(result["hypotheses"])
+    st.session_state.conversation.append({"question":previous_question,"answer":answer,"reformulation":result["reformulation"],"hypotheses_proposees":presented,"date":now_iso()})
+    st.session_state.exploration_summary=_flatten_analysis_text(card)[-1600:]
+    next_question=result["question_suivante"].strip()
+    if normalize(next_question)==normalize(previous_question):
+        next_question=FALLBACK_QUESTIONS[(len(st.session_state.conversation))%len(FALLBACK_QUESTIONS)]
+    st.session_state.current_question=next_question
+    st.session_state.exploration_complete=False
+    st.session_state.pipeline_status="completed"
+    st.session_state.last_processed_submission_id=sid
+    st.session_state.pending_submission={}
+    reset_voice_capture(clear_text=True)
+    st.session_state.pop("explore_text",None)
+    st.session_state["last_turn_completed"]=True
+    business_trace("tour_ia",f"hypotheses={len(presented)}")
+    if presented:
+        st.session_state.hypothesis_queue=[n for n in st.session_state.candidate_names if n not in st.session_state.completed_hypotheses]
+        st.session_state.hypothesis_index=0
+        st.session_state.page="Mots a examiner"
+    st.rerun()
+    return True
+
+
 def render_business():
     page=st.session_state.page; display_header(); values_side_panel()
     if page=="Accueil":
@@ -900,6 +991,14 @@ def render_business():
 
     elif page=="Exploration IA":
         st.title("2. Recherche guidée des autres valeurs"); value_reminder()
+        if st.session_state.get("pipeline_status")=="queued":
+            process_pending_exploration_submission()
+        elif st.session_state.get("pipeline_status")=="running":
+            st.warning("Une analyse a été interrompue avant sa fin. Aucun nouvel appel n'est lancé automatiquement.")
+            if st.button("Relancer cette analyse une seule fois",type="primary"):
+                st.session_state.pipeline_status="queued"
+                st.rerun()
+            return
         st.caption("Une seule question à la fois. Vous pouvez écrire ou enregistrer votre réponse. L'IA travaille uniquement sur vos mots et ne décide jamais à votre place.")
         for turn_no,turn in enumerate(st.session_state.conversation[-8:], start=max(1,len(st.session_state.conversation)-7)):
             with st.chat_message("assistant"):
@@ -964,42 +1063,25 @@ def render_business():
                     st.rerun()
             with v2:
                 st.caption("Seul le texte que vous validerez sera transmis au moteur RVC360 et conservé dans le JSON.")
-        if st.button("Valider ma réponse et afficher la question suivante",type="primary",disabled=not str(typed).strip()):
-            answer=str(typed).strip()
-            previous_question=st.session_state.current_question
-            st.session_state.pipeline_status="running"; st.session_state.pipeline_error=""
-            with st.spinner("RVC360 structure d'abord vos propos, puis les rapproche du référentiel..."):
-                try:
-                    result=run_rvc360_pipeline(answer)
-                    st.session_state.ai_engine_status="operationnel"
-                except Exception as exc:
-                    st.session_state.pipeline_status="error"; st.session_state.pipeline_error=str(exc)
-                    business_trace("erreur_ia",f"{type(exc).__name__}: {str(exc)[:120]}")
-                    st.error("Le moteur RVC360 n'a pas pu terminer l'analyse. Votre texte reste affiché et peut être validé de nouveau.")
-                    return
-            card=result["analysis_card"]
-            st.session_state.analysis_card=card
-            st.session_state.analysis_history.append({"date":now_iso(),"question":previous_question,"reponse":answer,"fiche":card})
-            if card.get("apport_nouveau",True): st.session_state.analysis_no_novelty_count=0
-            else: st.session_state.analysis_no_novelty_count=int(st.session_state.get("analysis_no_novelty_count",0))+1
-            presented=merge_hypotheses(result["hypotheses"])
-            st.session_state.conversation.append({"question":previous_question,"answer":answer,"reformulation":result["reformulation"],"hypotheses_proposees":presented,"date":now_iso()})
-            st.session_state.exploration_summary=_flatten_analysis_text(card)[-1600:]
-            next_question=result["question_suivante"].strip()
-            if normalize(next_question)==normalize(previous_question):
-                next_question=FALLBACK_QUESTIONS[(len(st.session_state.conversation))%len(FALLBACK_QUESTIONS)]
-            st.session_state.current_question=next_question
-            st.session_state.exploration_complete=False
-            st.session_state.pipeline_status="completed"
-            reset_voice_capture(clear_text=True)
-            st.session_state.pop("explore_text",None)
-            st.session_state["last_turn_completed"]=True
-            business_trace("tour_ia",f"hypotheses={len(presented)}")
-            if presented:
-                st.session_state.hypothesis_queue=[n for n in st.session_state.candidate_names if n not in st.session_state.completed_hypotheses]
-                st.session_state.hypothesis_index=0
-                st.session_state.page="Mots a examiner"
+        processing=st.session_state.get("pipeline_status") in ("queued","running")
+        if st.button("Valider ma réponse et afficher la question suivante",type="primary",disabled=(not str(typed).strip()) or processing):
+            queue_exploration_submission(str(typed).strip())
             st.rerun()
+        if st.session_state.get("pipeline_status")=="error":
+            st.error("Le moteur RVC360 n'a pas pu terminer l'analyse. Aucun nouvel appel ne sera lancé sans votre action.")
+            st.caption(st.session_state.get("pipeline_error",""))
+            e1,e2=st.columns(2)
+            with e1:
+                if st.button("Relancer une seule fois l'analyse",type="primary",use_container_width=True):
+                    st.session_state.pipeline_status="queued"
+                    st.session_state.pipeline_error=""
+                    st.rerun()
+            with e2:
+                if st.button("Annuler et modifier ma réponse",use_container_width=True):
+                    st.session_state.pipeline_status="idle"
+                    st.session_state.pipeline_error=""
+                    st.session_state.pending_submission={}
+                    st.rerun()
         if st.session_state.pop("last_turn_completed",False):
             st.success("Votre réponse a bien été prise en compte. La nouvelle question est affichée ci-dessus.")
         if st.session_state.candidate_names:

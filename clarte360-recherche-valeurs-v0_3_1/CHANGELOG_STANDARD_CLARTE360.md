@@ -58,3 +58,11 @@
 - synchronisation du fichier Excel avec la Phase 1 officielle RVC360 V1.3 ;
 - intégration des documents officiels V1.3 dans le dossier documentaire de l’application ;
 - Framework Clarté360 laissé inchangé.
+
+## 1.4.1-preproduction
+- Correction de la soumission des réponses : mise en file puis traitement unique.
+- Suppression des appels API multiples provoqués par les clics répétés et les rafraîchissements automatiques.
+- Désactivation du watchdog automatique pendant une analyse en cours.
+- Ajout d'un identifiant idempotent par réponse pour empêcher le retraitement du même tour.
+- IA-550 exécuté localement et sans référentiel ; un seul appel API au niveau IA-600/IA-650.
+- En cas d'interruption, aucun nouvel appel n'est lancé automatiquement : relance explicite uniquement.
