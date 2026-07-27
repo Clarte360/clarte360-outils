@@ -1,7 +1,9 @@
-Référentiel métier applicable : RVC360 V1.2
-Source officielle du projet : RVC360_REFERENTIEL_OFFICIEL_V1.2.zip
-Documents maîtres :
-- 01 - RVC360 - PHASE 1 - REFERENTIEL DES VALEURS.xlsx
-- 02 - RVC360 - PHASE 2 - IA CLARTE360 V1.2.docx
-- 03 Historique des evolutions V1.2.docx
-Le Framework Clarté360 reste inchangé.
+Référentiel métier applicable : RVC360 V1.3
+
+Architecture officielle :
+1. IA-550 - analyse structurée des propos, sans recherche ni nomination de valeur.
+2. IA-600 / IA-650 - projection de la fiche structurée sur le référentiel RVC360, classement interne et gestion séquentielle des hypothèses.
+
+Principes obligatoires : zéro interprétation, validation humaine, questionnaire spécifique HEC, hypothèses réversibles, rapport et JSON final limités aux valeurs fondamentales validées.
+
+Documents officiels intégrés dans docs/rvc360_v1_3.

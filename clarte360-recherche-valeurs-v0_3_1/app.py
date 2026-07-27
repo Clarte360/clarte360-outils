@@ -54,13 +54,13 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "1.3.1-preproduction"
+APP_VERSION = "1.4.0-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
 FRAMEWORK_VERSION = "4.0"
-RVC360_VERSION = "1.2"
-RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v1.2-2026-07"
+RVC360_VERSION = "1.3"
+RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v1.3-2026-07"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -89,15 +89,27 @@ FALLBACK_QUESTIONS = [
     "Qu’est-ce que vous ne souhaiteriez pas sacrifier durablement, même en échange de davantage d’argent, de confort ou de réussite ?",
 ]
 FORBIDDEN_PATTERNS = [r"\bvous etes\b", r"\bvotre personnalite\b", r"\bcela revele\b", r"\bcela cache\b", r"\bau fond de vous\b", r"\ben realite vous\b", r"\binconsciemment\b", r"\bprobablement parce que\b", r"\bvotre vraie valeur\b", r"\bvous souffrez de\b", r"\bcela prouve que\b", r"\bvotre peur montre\b", r"\bvotre colere signifie\b", r"\bvous cherchez a compenser\b"]
-SYSTEM_RVC360 = """
-TU ES LE FACILITATEUR RVC360 DE CLARTE360.
-MISSION UNIQUE : aider le bénéficiaire à rechercher ce qui compte fondamentalement pour lui, à clarifier ses propres mots et à examiner des termes du Référentiel des Valeurs Clarté360. Tu ne décides jamais de ses valeurs.
-REGLE ABSOLUE : ZERO INTERPRETATION. Tu n'attribues jamais une cause, une intention, un besoin caché, un trait de personnalité, une émotion non déclarée ou une valeur non validée.
-PERIMETRE : tu ne fais ni coaching, ni bilan de compétences, ni orientation, ni conseil, ni test de personnalité.
-METHODE : une seule question ouverte à la fois ; appui exclusif sur les mots et faits exprimés ; approfondir d'abord la situation déjà racontée avant d'en demander une autre ; varier ensuite les angles d'exploration (satisfaction, contrariété, décision, admiration, engagement, renoncement, autre époque, quotidien) ; ne jamais enchaîner automatiquement plusieurs relances négatives ; demande de signification personnelle ; reformulation brève soumise à confirmation ; hypothèses multiples comparées puis examinées une par une jusqu'à validation ou abandon ; preuve textuelle obligatoire ; insuffisance d'éléments explicitement dite ; liberté totale d'accepter, refuser, ajouter ou renommer ; aucune question contenant le nom d'une valeur attendue ; aucune répétition inutile ni question presque identique à la précédente.
-CONVERGENCE OBLIGATOIRE : dès qu'un mot du référentiel est explicitement employé par le bénéficiaire, ou que plusieurs éléments validés convergent clairement, propose ce mot comme hypothèse à examiner au lieu de poursuivre indéfiniment les relances. Une hypothèse refusée n'est pas interdite pour toujours : elle peut être reproposée si de nouveaux mots explicites apportent une preuve différente. Après trois réponses successives sans hypothèse, indique que l'exploration doit maintenant converger vers un ou plusieurs mots à examiner, ou reconnais explicitement que les éléments sont encore insuffisants.
-LANGAGE INTERDIT : "Vous êtes...", "votre personnalité...", "cela révèle...", "cela cache...", "au fond...", "en réalité...", "inconsciemment...", "votre vraie valeur est...".
-SORTIE : uniquement l'objet JSON conforme au schéma demandé. Aucun texte hors JSON.
+SYSTEM_ANALYSE_RVC360 = """
+TU ES LE MODULE IA-550 D'ANALYSE STRUCTUREE RVC360.
+Tu ne recherches, ne proposes et ne nommes AUCUNE valeur.
+Tu structures uniquement les éléments explicitement déclarés ou déjà validés par le bénéficiaire.
+REGLE ABSOLUE : ZERO INTERPRETATION. Aucune cause cachée, aucun besoin implicite, aucun trait de personnalité, aucune émotion non formulée.
+Tu distingues : situation, faits observables, émotions déclarées, attentes exprimées, choix/actions, expressions fortes, critères personnels, contradictions explicites, thèmes descriptifs.
+Tu peux reprendre les mots exacts du bénéficiaire. Tu ne transformes jamais un thème en valeur.
+Tu produis une reformulation brève et fidèle, puis UNE seule question ouverte utile si des éléments manquent.
+CONVERGENCE : ne repose pas la même question. Après deux relances sans apport nouveau, change d'angle ou indique que l'analyse est suffisante pour rechercher des hypothèses lexicales.
+SORTIE : uniquement un objet JSON conforme au schéma demandé.
+"""
+
+SYSTEM_PROJECTION_RVC360 = """
+TU ES LE MODULE IA-600/IA-650 DE PROJECTION SUR LE REFERENTIEL RVC360.
+Tu reçois une fiche d'analyse structurée et un sous-ensemble contrôlé du référentiel officiel.
+Tu proposes uniquement des HYPOTHESES LEXICALES présentes dans ce sous-ensemble.
+Chaque hypothèse doit être justifiée par un élément textuel explicite de la fiche. Aucune interprétation psychologique.
+Tu classes les hypothèses en interne par pertinence, sans afficher de score au bénéficiaire.
+Tu peux ne proposer aucune hypothèse si les éléments sont insuffisants.
+Tu ne poses aucune question et tu ne valide aucune valeur.
+SORTIE : uniquement un objet JSON conforme au schéma demandé.
 """
 
 RGPD_TEXT = f"""
@@ -113,7 +125,7 @@ Le consentement est obligatoire avant toute utilisation. Son acceptation est enr
 
 ### Utilisation de l'intelligence artificielle
 
-L'intelligence artificielle intervient uniquement pour formuler des hypothèses de mots à examiner à partir des réponses du bénéficiaire et d'un sous-ensemble contrôlé du référentiel RVC360. Elle ne valide aucune valeur, ne produit aucun diagnostic et ne prend aucune décision à la place du bénéficiaire.
+L'intelligence artificielle intervient en deux étapes : elle structure d'abord les propos sans rechercher de valeur, puis rapproche cette fiche d'analyse d'un sous-ensemble contrôlé du référentiel RVC360 afin de formuler des hypothèses lexicales à examiner. Elle ne valide aucune valeur, ne produit aucun diagnostic et ne prend aucune décision à la place du bénéficiaire.
 
 Les réponses utiles à cette recherche sont transmises au fournisseur d'IA configuré par Clarté360. Il est demandé de ne pas saisir de noms complets, coordonnées ou informations sensibles inutiles. L'application demande au fournisseur de ne pas conserver la réponse comme état applicatif (`store=False`). Les traitements techniques et règles de conservation propres au fournisseur restent applicables.
 
@@ -186,6 +198,9 @@ def default_business_state() -> dict[str, Any]:
         "completed_hypotheses":[], "abandoned_hypotheses":[],
         "validated_app_values":[], "hypothesis_history":[], "hypothesis_status":{},
         "turns_since_hypothesis":0, "last_presented_hypotheses":[],
+        "analysis_card":{}, "analysis_history":[], "analysis_no_novelty_count":0,
+        "pipeline_status":"idle", "pipeline_error":"",
+        "pending_pipeline_answer":"", "pending_analysis_card":{},
     }
 
 def init_state() -> None:
@@ -276,93 +291,122 @@ def api_client()->OpenAI:
     if OpenAI is None or not key: raise RuntimeError("La clé API OpenAI n'est pas configurée.")
     return OpenAI(api_key=key,timeout=35.0,max_retries=2)
 
-def lexical_prefilter(texts:list[str],limit:int=24)->list[dict[str,str]]:
-    """Sélectionne un sous-ensemble pertinent du référentiel sans envoyer les 240 valeurs à l'API."""
+def _flatten_analysis_text(card:dict[str,Any])->str:
+    parts=[]
+    for key in ("situation","reformulation","information_manquante"):
+        v=card.get(key,"")
+        if isinstance(v,str): parts.append(v)
+    for key in ("faits","emotions_declarees","attentes_exprimees","actions_choix","expressions_fortes","criteres_personnels","contradictions_explicites","themes_descriptifs"):
+        v=card.get(key,[])
+        if isinstance(v,list): parts.extend(str(x) for x in v)
+    return " ".join(parts)
+
+def lexical_prefilter(texts:list[str],limit:int=30)->list[dict[str,str]]:
+    """Préfiltrage générique du référentiel, sans règle métier du type mot X = valeur Y."""
     text_norm=normalize(" ".join(texts))
     terms={w for w in text_norm.split() if len(w)>=3}
     scored=[]
     for item in CATALOGUE:
-        name_norm=normalize(item["nom"])
-        family_norm=normalize(item["famille"])
-        def_norm=normalize(item["definition"])
+        name_norm=normalize(item["nom"]); family_norm=normalize(item["famille"]); def_norm=normalize(item["definition"])
         words=set((name_norm+" "+family_norm+" "+def_norm).split())
         overlap=len(terms & words)
-        exact_name=8 if re.search(r"(?:^| )"+re.escape(name_norm)+r"(?: |$)", text_norm) else 0
+        exact_name=10 if name_norm and re.search(r"(?:^| )"+re.escape(name_norm)+r"(?: |$)", text_norm) else 0
         name_word_overlap=3*len(set(name_norm.split()) & terms)
         score=exact_name+name_word_overlap+overlap
-        if score>0:
-            scored.append((score,item))
+        if score>0: scored.append((score,item))
     return [item for _,item in sorted(scored,key=lambda x:(x[0],x[1]["nom"]),reverse=True)[:limit]]
 
 def explicit_catalogue_mentions(text:str)->list[str]:
-    """Repère les noms de valeurs réellement prononcés, sans interprétation."""
-    n=normalize(text)
-    found=[]
+    """Repère uniquement les noms exacts du référentiel effectivement prononcés."""
+    n=normalize(text); found=[]
     for name in VALUE_NAMES:
         nn=normalize(name)
-        if len(nn)<4:
-            continue
-        if re.search(r"(?:^| )"+re.escape(nn)+r"(?: |$)", n):
-            found.append(name)
-    # Un mot simple exact comme « respect » doit primer sur ses variantes composées.
-    found.sort(key=lambda x:(len(normalize(x).split()), len(x)))
-    return found
+        if len(nn)>=4 and re.search(r"(?:^| )"+re.escape(nn)+r"(?: |$)",n): found.append(name)
+    return sorted(found,key=lambda x:(len(normalize(x).split()),len(x)))
 
-def response_json(instructions:str,payload:dict[str,Any],schema_name:str,schema:dict[str,Any])->dict[str,Any]:
+def response_json(instructions:str,payload:dict[str,Any],schema_name:str,schema:dict[str,Any],max_tokens:int=700)->dict[str,Any]:
     client=api_client(); model=get_secret("openai","model","gpt-5-mini")
-    response=client.responses.create(model=model,instructions=instructions,input=json.dumps(payload,ensure_ascii=False),store=False,max_output_tokens=600,text={"format":{"type":"json_schema","name":schema_name,"strict":True,"schema":schema}})
+    response=client.responses.create(model=model,instructions=instructions,input=json.dumps(payload,ensure_ascii=False),store=False,max_output_tokens=max_tokens,text={"format":{"type":"json_schema","name":schema_name,"strict":True,"schema":schema}})
     if getattr(response,"status",None) not in (None,"completed"): raise RuntimeError(f"Réponse IA incomplète : {getattr(response,'status',None)}")
     st.session_state.ai_calls+=1; usage=getattr(response,"usage",None)
-    if usage: st.session_state.ai_input_tokens+=int(getattr(usage,"input_tokens",0) or 0); st.session_state.ai_output_tokens+=int(getattr(usage,"output_tokens",0) or 0)
+    if usage:
+        st.session_state.ai_input_tokens+=int(getattr(usage,"input_tokens",0) or 0)
+        st.session_state.ai_output_tokens+=int(getattr(usage,"output_tokens",0) or 0)
     txt=getattr(response,"output_text","")
     if not txt: raise RuntimeError("Réponse IA vide.")
     return json.loads(txt)
 
 def has_forbidden_language(text:str)->bool:
     n=normalize(text); return any(re.search(p,n) for p in FORBIDDEN_PATTERNS)
-def sanitize_engine_result(result:dict[str,Any],allowed_names:set[str])->dict[str,Any]:
-    reform=str(result.get("reformulation","")).strip(); question=str(result.get("question_suivante","")).strip()
-    if has_forbidden_language(reform): reform="Vous avez décrit une situation concrète. Est-ce fidèle à ce que vous souhaitez exprimer ?"
-    if has_forbidden_language(question) or not question: question=FALLBACK_QUESTIONS[len(st.session_state.conversation)%len(FALLBACK_QUESTIONS)]
-    hypotheses=[]
-    for x in result.get("hypotheses",[]):
-        name=str(x.get("nom","")).strip()
-        if name in allowed_names:
-            hypotheses.append({"nom":name,"raison":str(x.get("raison","")).strip(),"preuve":str(x.get("preuve","")).strip()})
-    return {"reformulation":reform,"question_suivante":question,"hypotheses":hypotheses,"exploration_suffisante":bool(result.get("exploration_suffisante",False))}
-def run_rvc360_engine(answer:str)->dict[str,Any]:
-    texts=[t["answer"] for t in st.session_state.conversation]+[answer]
-    subset=lexical_prefilter(texts)
-    # Garantie : tout mot du référentiel explicitement prononcé est toujours présenté au modèle.
-    explicit=explicit_catalogue_mentions(answer)
-    by_name={x["nom"]:x for x in subset}
-    for name in explicit:
-        by_name[name]=VALUE_MAP[name]
-    subset=list(by_name.values())[:24]
-    allowed={x["nom"] for x in subset}
+
+def run_structured_analysis(answer:str)->dict[str,Any]:
+    previous=st.session_state.get("analysis_card",{}) or {}
+    recent=[{"question":x["question"],"reponse":x["answer"]} for x in st.session_state.conversation[-3:]]
     payload={
         "question_posee":st.session_state.current_question,
         "reponse_du_beneficiaire":answer,
-        "memoire_synthetique":st.session_state.get("exploration_summary", ""),
-        "historique_recent":[{"question":x["question"],"reponse":x["answer"]} for x in st.session_state.conversation[-3:]],
+        "fiche_precedente":previous,
+        "historique_recent":recent,
+        "nombre_de_relances_sans_apport":int(st.session_state.get("analysis_no_novelty_count",0)),
+    }
+    arr={"type":"array","items":{"type":"string"},"maxItems":8}
+    schema={"type":"object","additionalProperties":False,"properties":{
+        "reformulation":{"type":"string"},"situation":{"type":"string"},
+        "faits":arr,"emotions_declarees":arr,"attentes_exprimees":arr,"actions_choix":arr,
+        "expressions_fortes":arr,"criteres_personnels":arr,"contradictions_explicites":arr,"themes_descriptifs":arr,
+        "information_manquante":{"type":"string"},"question_suivante":{"type":"string"},
+        "analyse_suffisante":{"type":"boolean"},"apport_nouveau":{"type":"boolean"}
+    },"required":["reformulation","situation","faits","emotions_declarees","attentes_exprimees","actions_choix","expressions_fortes","criteres_personnels","contradictions_explicites","themes_descriptifs","information_manquante","question_suivante","analyse_suffisante","apport_nouveau"]}
+    result=response_json(SYSTEM_ANALYSE_RVC360,payload,"rvc360_analyse_structuree",schema,800)
+    if has_forbidden_language(str(result.get("reformulation",""))): result["reformulation"]="Vous avez décrit une situation concrète. Est-ce fidèle à ce que vous souhaitez exprimer ?"
+    q=str(result.get("question_suivante","")).strip()
+    if has_forbidden_language(q): q=""
+    if not q: q=FALLBACK_QUESTIONS[(len(st.session_state.conversation)+1)%len(FALLBACK_QUESTIONS)]
+    result["question_suivante"]=q
+    return result
+
+def project_hypotheses(card:dict[str,Any],answer:str)->list[dict[str,str]]:
+    analysis_text=_flatten_analysis_text(card)
+    context_answers=[x["answer"] for x in st.session_state.conversation[-4:]]+[answer,analysis_text]
+    subset=lexical_prefilter(context_answers,limit=30)
+    # Les noms exacts prononcés sont seulement garantis dans le sous-ensemble, jamais imposés comme résultat.
+    by_name={x["nom"]:x for x in subset}
+    for name in explicit_catalogue_mentions(answer+" "+analysis_text): by_name[name]=VALUE_MAP[name]
+    subset=list(by_name.values())[:30]
+    if not subset: return []
+    allowed={x["nom"] for x in subset}
+    payload={
+        "fiche_analyse_structuree":card,
         "valeurs_deja_validees":validated_names(),
-        "hypotheses_deja_evoquees":st.session_state.get("hypothesis_history",[])[-8:],
-        "nombre_de_tours_sans_hypothese":int(st.session_state.get("turns_since_hypothesis",0)),
+        "hypotheses_deja_examinees":[{"nom":e.get("nom"),"statut":st.session_state.hypothesis_status.get(e.get("nom"),e.get("statut"))} for e in st.session_state.get("hypothesis_history",[])[-10:]],
         "referentiel_autorise":subset,
     }
-    schema={"type":"object","additionalProperties":False,"properties":{"reformulation":{"type":"string"},"question_suivante":{"type":"string"},"hypotheses":{"type":"array","maxItems":6,"items":{"type":"object","additionalProperties":False,"properties":{"nom":{"type":"string","enum":sorted(allowed)},"raison":{"type":"string"},"preuve":{"type":"string"}},"required":["nom","raison","preuve"]}},"exploration_suffisante":{"type":"boolean"}},"required":["reformulation","question_suivante","hypotheses","exploration_suffisante"]}
-    result=sanitize_engine_result(response_json(SYSTEM_RVC360,payload,"rvc360_exploration",schema),allowed)
-    # Filet de sécurité déterministe : un mot explicite du référentiel ne peut pas être oublié par l'IA.
-    already={x["nom"] for x in result["hypotheses"]}
-    for name in explicit:
-        if name not in already and name not in validated_names():
-            result["hypotheses"].insert(0,{
-                "nom":name,
-                "raison":"Ce mot figure explicitement dans votre réponse.",
-                "preuve":answer[:240],
-            })
-    result["hypotheses"]=result["hypotheses"][:6]
-    return result
+    schema={"type":"object","additionalProperties":False,"properties":{"hypotheses":{"type":"array","maxItems":5,"items":{"type":"object","additionalProperties":False,"properties":{"nom":{"type":"string","enum":sorted(allowed)},"raison":{"type":"string"},"preuve":{"type":"string"},"priorite_interne":{"type":"integer","minimum":1,"maximum":5}},"required":["nom","raison","preuve","priorite_interne"]}},"elements_insuffisants":{"type":"boolean"}},"required":["hypotheses","elements_insuffisants"]}
+    result=response_json(SYSTEM_PROJECTION_RVC360,payload,"rvc360_projection_referentiel",schema,650)
+    cleaned=[]
+    for x in result.get("hypotheses",[]):
+        name=str(x.get("nom","")).strip()
+        if name in allowed and name not in validated_names():
+            cleaned.append({"nom":name,"raison":str(x.get("raison","")).strip(),"preuve":str(x.get("preuve","")).strip(),"priorite_interne":int(x.get("priorite_interne",5))})
+    cleaned.sort(key=lambda x:x["priorite_interne"])
+    return cleaned
+
+def run_rvc360_pipeline(answer:str)->dict[str,Any]:
+    """Architecture V1.3 : 1) analyse structurée sans valeur ; 2) projection sur le référentiel.
+
+    Si la projection échoue après l'analyse, la fiche est gardée en session afin de ne pas
+    facturer ni rejouer inutilement le premier niveau lors d'une nouvelle validation du même texte.
+    """
+    if st.session_state.get("pending_pipeline_answer")==answer and st.session_state.get("pending_analysis_card"):
+        card=deepcopy(st.session_state.pending_analysis_card)
+    else:
+        card=run_structured_analysis(answer)
+        st.session_state.pending_pipeline_answer=answer
+        st.session_state.pending_analysis_card=deepcopy(card)
+    hypotheses=project_hypotheses(card,answer)
+    st.session_state.pending_pipeline_answer=""
+    st.session_state.pending_analysis_card={}
+    return {"analysis_card":card,"hypotheses":hypotheses,"reformulation":card.get("reformulation",""),"question_suivante":card.get("question_suivante","")}
 
 def merge_hypotheses(items:list[dict[str,str]])->list[str]:
     presented=[]
@@ -553,6 +597,8 @@ def build_payload(completed=False)->dict[str,Any]:
             "hypothesis_decisions":st.session_state.hypothesis_decisions,
             "custom_values":st.session_state.custom_values,
             "exploration_summary":st.session_state.exploration_summary,
+            "analysis_card":st.session_state.get("analysis_card",{}),
+            "analysis_history":st.session_state.get("analysis_history",[]),
         })
     return {
         "application":APP_FULL_NAME,"version":APP_VERSION,"socle_clarte360":SOCLE_CLARTE360_VERSION,
@@ -921,36 +967,30 @@ def render_business():
         if st.button("Valider ma réponse et afficher la question suivante",type="primary",disabled=not str(typed).strip()):
             answer=str(typed).strip()
             previous_question=st.session_state.current_question
-            with st.spinner("Le moteur RVC360 examine vos mots..."):
-                try: result=run_rvc360_engine(answer); st.session_state.ai_engine_status="operationnel"
-                except Exception as exc: business_trace("erreur_ia",f"{type(exc).__name__}: {str(exc)[:120]}"); st.error("Le moteur IA n'a pas pu répondre. Votre réponse n'a pas été perdue."); return
+            st.session_state.pipeline_status="running"; st.session_state.pipeline_error=""
+            with st.spinner("RVC360 structure d'abord vos propos, puis les rapproche du référentiel..."):
+                try:
+                    result=run_rvc360_pipeline(answer)
+                    st.session_state.ai_engine_status="operationnel"
+                except Exception as exc:
+                    st.session_state.pipeline_status="error"; st.session_state.pipeline_error=str(exc)
+                    business_trace("erreur_ia",f"{type(exc).__name__}: {str(exc)[:120]}")
+                    st.error("Le moteur RVC360 n'a pas pu terminer l'analyse. Votre texte reste affiché et peut être validé de nouveau.")
+                    return
+            card=result["analysis_card"]
+            st.session_state.analysis_card=card
+            st.session_state.analysis_history.append({"date":now_iso(),"question":previous_question,"reponse":answer,"fiche":card})
+            if card.get("apport_nouveau",True): st.session_state.analysis_no_novelty_count=0
+            else: st.session_state.analysis_no_novelty_count=int(st.session_state.get("analysis_no_novelty_count",0))+1
             presented=merge_hypotheses(result["hypotheses"])
-            # Limite anti-questionnaire-sans-fin : après trois tours sans hypothèse,
-            # on présente au maximum trois rapprochements lexicaux du référentiel,
-            # sans réimposer automatiquement une hypothèse déjà abandonnée.
-            if not presented and int(st.session_state.get("turns_since_hypothesis",0))>=3:
-                context_answers=[t["answer"] for t in st.session_state.conversation]+[answer]
-                forced=[]
-                for item in lexical_prefilter(context_answers,limit=8):
-                    name=item["nom"]
-                    if name in validated_names() or name in st.session_state.abandoned_hypotheses:
-                        continue
-                    forced.append({
-                        "nom":name,
-                        "raison":"Plusieurs mots de votre récit se rapprochent de cette définition du référentiel.",
-                        "preuve":answer[:240],
-                    })
-                    if len(forced)>=3:
-                        break
-                if forced:
-                    presented=merge_hypotheses(forced)
             st.session_state.conversation.append({"question":previous_question,"answer":answer,"reformulation":result["reformulation"],"hypotheses_proposees":presented,"date":now_iso()})
-            st.session_state.exploration_summary=(st.session_state.exploration_summary+" | "+answer[:240]).strip(" |")[-1200:]
+            st.session_state.exploration_summary=_flatten_analysis_text(card)[-1600:]
             next_question=result["question_suivante"].strip()
             if normalize(next_question)==normalize(previous_question):
                 next_question=FALLBACK_QUESTIONS[(len(st.session_state.conversation))%len(FALLBACK_QUESTIONS)]
             st.session_state.current_question=next_question
-            st.session_state.exploration_complete=result["exploration_suffisante"]
+            st.session_state.exploration_complete=False
+            st.session_state.pipeline_status="completed"
             reset_voice_capture(clear_text=True)
             st.session_state.pop("explore_text",None)
             st.session_state["last_turn_completed"]=True

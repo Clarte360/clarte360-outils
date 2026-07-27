@@ -1,24 +1,34 @@
 # Clarté360 – Recherche de mes valeurs
 
-Version applicative : **1.3.0 préproduction**  
+Version applicative : **1.4.0 préproduction**  
 Socle Clarté360 : **1.8**  
-Référentiel métier : **RVC360 V1.2**
+Framework : **4.0**  
+Référentiel métier : **RVC360 V1.3**
 
-Application Streamlit mettant en œuvre l'exercice inter-séance RVC360 : exploration, clarification et validation des valeurs fondamentales, sans interprétation et sans remplacement de l'accompagnateur.
+Application Streamlit mettant en œuvre l’exercice inter-séance RVC360 : exploration, clarification et validation des valeurs fondamentales, sans interprétation et sans remplacement de l’accompagnateur.
 
-## Correctifs principaux de cette version
+## Architecture métier V1.3
 
-- lecture vocale ponctuelle : un clic déclenche une seule lecture, sans boucle ;
-- arrêt de toute lecture précédente avant une nouvelle écoute ;
-- cycle vocal fiabilisé : enregistrement, arrêt avec le carré, transcription, relecture, validation ou réenregistrement ;
-- nouvel enregistrement réellement recréé après échec ou demande de reprise ;
-- aucun audio conservé dans le JSON ou dans l'application ;
-- message clair lorsque l'audio est vide ou que la transcription échoue ;
-- enregistreur présenté dans une zone plus courte ;
-- relances IA moins orientées et diversification des situations ;
-- approfondissement prioritaire de la situation racontée avant changement d'exemple ;
-- hypothèses examinées une par une jusqu'à validation ou abandon ;
-- référentiel des valeurs synchronisé avec le ZIP officiel RVC360 V1.2.
+Le moteur fonctionne désormais en deux niveaux indépendants :
+
+1. **IA-550 – Analyse structurée** : organisation des faits, mots, émotions déclarées, attentes exprimées, actions, expressions fortes, critères personnels, contradictions explicites et thèmes descriptifs. Ce niveau ne recherche et ne nomme aucune valeur.
+2. **IA-600 / IA-650 – Projection RVC360** : rapprochement de la fiche structurée avec un sous-ensemble pertinent du référentiel officiel, classement interne des hypothèses, puis présentation au bénéficiaire.
+
+Aucune règle spécifique du type « expression X = valeur Y » n’est utilisée. Le préfiltrage est générique et s’appuie sur le contenu du référentiel complet.
+
+## Parcours des hypothèses
+
+- toutes les hypothèses détectées sont inscrites dans le dialogue ;
+- elles sont ensuite examinées une par une ;
+- une hypothèse peut être validée, abandonnée ou rouverte ;
+- si toutes les hypothèses sont refusées, l’exploration reprend avec un autre angle ;
+- aucune valeur n’est validée sans le questionnaire spécifique HEC : importante, très importante, fondamentale.
+
+## Données et documents
+
+- le JSON de reprise conserve l’état nécessaire pour continuer le travail, notamment la fiche d’analyse et l’historique technique du parcours ;
+- le JSON final et le rapport PDF ne restituent que les valeurs fondamentales validées et les informations utiles qui en découlent ;
+- aucun fichier audio n’est conservé.
 
 ## Secrets Streamlit
 
@@ -32,8 +42,3 @@ transcription_model = "gpt-4o-mini-transcribe"
 ```
 
 Ne jamais publier `.streamlit/secrets.toml`.
-
-
-## Correctif 1.3.1
-
-Cette version sécurise la convergence du dialogue vers des hypothèses de valeurs. Les hypothèses sont visibles dans l'historique, examinées une par une et peuvent être reprises après abandon. Un mot du référentiel explicitement prononcé, notamment « Respect », ne peut plus être ignoré par le moteur. Le JSON final ne conserve que les valeurs validées ; le JSON de sauvegarde conserve l'état nécessaire à la reprise.

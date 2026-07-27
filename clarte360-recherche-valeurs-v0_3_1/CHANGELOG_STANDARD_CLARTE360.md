@@ -43,3 +43,18 @@
 
 ### Référentiel
 - remplacement du fichier de données par le référentiel RVC360 V1.2 fourni dans les fichiers sources du projet.
+
+## 1.4.0-preproduction - 27/07/2026
+
+- alignement intégral sur le référentiel métier RVC360 V1.3 ;
+- remplacement du moteur monolithique par une architecture en deux niveaux ;
+- ajout du module IA-550 d’analyse structurée, qui ne recherche aucune valeur ;
+- ajout de la projection IA-600 / IA-650 sur le référentiel officiel ;
+- suppression des règles métier particulières associant une formulation précise à une valeur ;
+- préfiltrage générique du référentiel complet avant appel IA ;
+- classement interne des hypothèses sans score visible pour le bénéficiaire ;
+- conservation des hypothèses dans le dialogue puis examen séquentiel et réversible ;
+- cache temporaire de la fiche d’analyse lorsqu’une projection échoue, afin d’éviter de rejouer et refacturer le premier niveau ;
+- synchronisation du fichier Excel avec la Phase 1 officielle RVC360 V1.3 ;
+- intégration des documents officiels V1.3 dans le dossier documentaire de l’application ;
+- Framework Clarté360 laissé inchangé.
