@@ -20,6 +20,7 @@ pas rempli, le parcours s'arrete.
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import random
@@ -53,12 +54,12 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "1.2.0-preproduction"
+APP_VERSION = "1.2.1-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
 FRAMEWORK_VERSION = "4.0"
-RVC360_VERSION = "1.3"
+RVC360_VERSION = "1.3.1"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v1.2-2026-07"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
@@ -134,10 +135,10 @@ div.stButton > button[kind="primary"] {{ background-color:{OFFICIAL_TEAL}; borde
 .objectif-box {{ border:1px solid #cfe6e6; background:#f8fbfb; padding:1.2rem 1.4rem; border-radius:.9rem; margin:1rem 0 1.4rem; color:{DARK_TEXT}; }}
 .clarte-card {{ border:1px solid #d9eeee; border-radius:.8rem; padding:1rem; background:#fff; box-shadow:0 1px 8px rgba(0,128,128,.08); margin-bottom:1rem; }}
 .small-muted {{ color:#666; font-size:.9rem; }}
-.clarte-values-panel {{ position:fixed; right:1.2rem; top:7rem; width:250px; z-index:50; background:#ffffff; border:1px solid #cfe6e6; border-radius:14px; padding:14px; box-shadow:0 3px 18px rgba(0,80,80,.14); }}
-.clarte-values-panel img {{ width:64px; height:64px; object-fit:cover; border-radius:50%; display:block; margin:0 auto 8px; }}
-.clarte-values-panel h4 {{ color:#008080; text-align:center; margin:.2rem 0 .6rem; }}
-.clarte-values-panel .value-pill {{ background:#E6F4F4; color:#243A3A; border-radius:999px; padding:6px 10px; margin:5px 0; font-size:.9rem; text-align:center; }}
+.clarte-values-panel {{ position:fixed; right:1rem; top:6.6rem; width:190px; z-index:50; background:#ffffff; border:1px solid #cfe6e6; border-radius:12px; padding:10px; box-shadow:0 3px 14px rgba(0,80,80,.12); }}
+.clarte-values-panel img {{ width:46px; height:46px; object-fit:cover; border-radius:50%; display:block; margin:0 auto 5px; }}
+.clarte-values-panel h4 {{ color:#008080; text-align:center; margin:.1rem 0 .45rem; font-size:1.05rem; line-height:1.2; }}
+.clarte-values-panel .value-pill {{ background:#E6F4F4; color:#243A3A; border-radius:999px; padding:4px 8px; margin:4px 0; font-size:.82rem; text-align:center; }}
 @media (max-width: 1200px) {{ .clarte-values-panel {{ position:static; width:auto; margin:0 0 1rem 0; }} }}
 </style>
 """, unsafe_allow_html=True)
@@ -595,7 +596,7 @@ def values_side_panel() -> None:
         avatar=base64.b64encode(CHATBOT_PATH.read_bytes()).decode("ascii")
     pills="".join(f'<div class="value-pill">{html.escape(v)}</div>' for v in values) or '<div class="small-muted" style="text-align:center">Aucune valeur validée pour le moment</div>'
     image=f'<img src="data:image/webp;base64,{avatar}" alt="Assistant Clarté360">' if avatar else ''
-    st.markdown(f'<aside class="clarte-values-panel">{image}<h4>Mes valeurs validées</h4>{pills}</aside>',unsafe_allow_html=True)
+    st.markdown(f'<aside class="clarte-values-panel">{image}<h4>Mes valeurs fondamentales</h4>{pills}</aside>',unsafe_allow_html=True)
 
 
 def auxiliary_back_button(key: str) -> None:

@@ -39,7 +39,7 @@ Le bloc `[email]` reprend exactement le format utilisé par les applications Cla
 - Correction du formulaire Contact.
 
 
-## Version 1.2.0
+## Version 1.2.1
 - Hypothèses examinées une par une jusqu’à validation ou abandon.
 - Nouvelle question après chaque cycle de valeur.
 - Consentement explicite avant la fin de la recherche.

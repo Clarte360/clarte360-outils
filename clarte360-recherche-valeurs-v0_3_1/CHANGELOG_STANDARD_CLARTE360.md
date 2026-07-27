@@ -17,3 +17,9 @@
 - Effacement de l’audio après transcription ; seul le texte validé est conservé.
 - Question initiale ouverte aux situations positives et négatives.
 - Amélioration de la lecture vocale navigateur et du passage à la question suivante.
+
+
+## 1.2.1-preproduction
+- Correction du blocage `NameError: html is not defined` dans le panneau des valeurs.
+- Réduction du panneau latéral et de l'avatar.
+- Titre ajusté en « Mes valeurs fondamentales ».
