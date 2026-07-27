@@ -1,49 +1,34 @@
 # Clarté360 – Recherche de mes valeurs
 
-Version 1.0.0 préproduction.
+Version applicative : **1.3.0 préproduction**  
+Socle Clarté360 : **1.8**  
+Référentiel métier : **RVC360 V1.2**
 
-Application Streamlit construite sur le socle Clarté360 de référence et dédiée uniquement à la recherche, à la clarification et à la validation des valeurs du bénéficiaire selon RVC360.
+Application Streamlit mettant en œuvre l'exercice inter-séance RVC360 : exploration, clarification et validation des valeurs fondamentales, sans interprétation et sans remplacement de l'accompagnateur.
 
-## Déploiement Streamlit
+## Correctifs principaux de cette version
 
-Fichier principal : `app.py`
+- lecture vocale ponctuelle : un clic déclenche une seule lecture, sans boucle ;
+- arrêt de toute lecture précédente avant une nouvelle écoute ;
+- cycle vocal fiabilisé : enregistrement, arrêt avec le carré, transcription, relecture, validation ou réenregistrement ;
+- nouvel enregistrement réellement recréé après échec ou demande de reprise ;
+- aucun audio conservé dans le JSON ou dans l'application ;
+- message clair lorsque l'audio est vide ou que la transcription échoue ;
+- enregistreur présenté dans une zone plus courte ;
+- relances IA moins orientées et diversification des situations ;
+- approfondissement prioritaire de la situation racontée avant changement d'exemple ;
+- hypothèses examinées une par une jusqu'à validation ou abandon ;
+- référentiel des valeurs synchronisé avec le ZIP officiel RVC360 V1.2.
 
-Secrets requis :
+## Secrets Streamlit
+
+Le bloc `[email]` reste identique aux autres applications Clarté360. Le bloc `[openai]` doit contenir :
 
 ```toml
-[email]
-smtp_server = "..."
-smtp_port = 465
-smtp_user = "..."
-smtp_password = "..."
-from_email = "..."
-to_email = "..."
-
-[security]
-session_limit_minutes = 60
-
 [openai]
 api_key = "..."
 model = "gpt-5.6-terra"
+transcription_model = "gpt-4o-mini-transcribe"
 ```
 
-Le bloc `[email]` reprend exactement le format utilisé par les applications Clarté360 existantes. La clé OpenAI ne doit jamais être placée dans le dépôt GitHub.
-
-## Version 1.1.0-preproduction
-- Prerequis en saisie libre et valeurs personnelles.
-- Tri des hypotheses avant questionnaire HEC.
-- Questionnaire specifique successif obligatoire.
-- Boucle de recherche depuis les resultats.
-- Reponse vocale et lecture des questions.
-- Rapport PDF enrichi et optimisation des appels IA.
-- Correction du formulaire Contact.
-
-
-## Version 1.2.1
-- Hypothèses examinées une par une jusqu’à validation ou abandon.
-- Nouvelle question après chaque cycle de valeur.
-- Consentement explicite avant la fin de la recherche.
-- Valeurs validées visibles dans un panneau latéral droit.
-- Avatar Clarté360 allégé.
-- Retour garanti depuis les pages auxiliaires.
-- Rapport limité aux valeurs validées.
+Ne jamais publier `.streamlit/secrets.toml`.

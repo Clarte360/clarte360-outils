@@ -1,0 +1,7 @@
+Référentiel métier applicable : RVC360 V1.2
+Source officielle du projet : RVC360_REFERENTIEL_OFFICIEL_V1.2.zip
+Documents maîtres :
+- 01 - RVC360 - PHASE 1 - REFERENTIEL DES VALEURS.xlsx
+- 02 - RVC360 - PHASE 2 - IA CLARTE360 V1.2.docx
+- 03 Historique des evolutions V1.2.docx
+Le Framework Clarté360 reste inchangé.

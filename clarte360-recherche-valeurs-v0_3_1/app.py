@@ -54,12 +54,12 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "1.2.1-preproduction"
+APP_VERSION = "1.3.0-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
 FRAMEWORK_VERSION = "4.0"
-RVC360_VERSION = "1.3.1"
+RVC360_VERSION = "1.2"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v1.2-2026-07"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
@@ -79,12 +79,14 @@ CLARTE360_LEGAL = {
 }
 
 FALLBACK_QUESTIONS = [
-    "Racontez une situation, récente ou ancienne, qui vous a procuré une forte satisfaction ou, au contraire, qui vous a vivement contrarié. Que s’est-il passé et qu’est-ce qui était particulièrement important pour vous dans cette situation ?",
-    "Décrivez une situation qui vous a fait réagir fortement. Qu'est-ce qui vous a dérangé ou touché précisément ?",
-    "Pensez à un choix difficile que vous assumez encore aujourd'hui. Qu'avez-vous voulu préserver ou privilégier ?",
-    "Quelles personnes admirez-vous, et pour quelles raisons concrètes ?",
-    "Dans quelles situations vous sentez-vous le plus engagé, vivant ou à votre place ?",
-    "Qu'est-ce que vous ne seriez pas prêt à sacrifier, même pour davantage d'argent, de confort ou de réussite ?",
+    "Racontez une situation, récente ou ancienne, qui vous a procuré une forte satisfaction ou, au contraire, qui vous a vivement contrarié. Que s’est-il passé concrètement ?",
+    "Dans la situation que vous venez de raconter, qu’est-ce qui comptait particulièrement pour vous ?",
+    "Qu’auriez-vous souhaité voir respecté, préservé ou rendu possible dans cette situation ?",
+    "Pensez maintenant à un moment, dans une autre période de votre vie, où vous vous êtes senti particulièrement satisfait de votre manière d’agir. Qu’est-ce qui comptait pour vous ?",
+    "Racontez un choix important que vous avez fait et que vous assumez encore aujourd’hui. Qu’avez-vous voulu privilégier ?",
+    "Pensez à une personne que vous admirez. Quels actes ou quelles attitudes concrètes appréciez-vous chez elle ?",
+    "Lors d’un week-end, d’un voyage, d’un projet ou d’un moment simple du quotidien, quand vous êtes-vous senti particulièrement à votre place ? Qu’est-ce qui rendait ce moment important ?",
+    "Qu’est-ce que vous ne souhaiteriez pas sacrifier durablement, même en échange de davantage d’argent, de confort ou de réussite ?",
 ]
 FORBIDDEN_PATTERNS = [r"\bvous etes\b", r"\bvotre personnalite\b", r"\bcela revele\b", r"\bcela cache\b", r"\bau fond de vous\b", r"\ben realite vous\b", r"\binconsciemment\b", r"\bprobablement parce que\b", r"\bvotre vraie valeur\b", r"\bvous souffrez de\b", r"\bcela prouve que\b", r"\bvotre peur montre\b", r"\bvotre colere signifie\b", r"\bvous cherchez a compenser\b"]
 SYSTEM_RVC360 = """
@@ -92,7 +94,7 @@ TU ES LE FACILITATEUR RVC360 DE CLARTE360.
 MISSION UNIQUE : aider le bénéficiaire à rechercher ce qui compte fondamentalement pour lui, à clarifier ses propres mots et à examiner des termes du Référentiel des Valeurs Clarté360. Tu ne décides jamais de ses valeurs.
 REGLE ABSOLUE : ZERO INTERPRETATION. Tu n'attribues jamais une cause, une intention, un besoin caché, un trait de personnalité, une émotion non déclarée ou une valeur non validée.
 PERIMETRE : tu ne fais ni coaching, ni bilan de compétences, ni orientation, ni conseil, ni test de personnalité.
-METHODE : une seule question ouverte à la fois ; appui exclusif sur les mots et faits exprimés ; demande de signification personnelle ; reformulation brève soumise à confirmation ; hypothèses multiples comparées ; preuve textuelle obligatoire ; insuffisance d'éléments explicitement dite ; liberté totale d'accepter, refuser, ajouter ou renommer ; aucune question contenant le nom d'une valeur attendue ; aucune répétition inutile.
+METHODE : une seule question ouverte à la fois ; appui exclusif sur les mots et faits exprimés ; approfondir d'abord la situation déjà racontée avant d'en demander une autre ; varier ensuite les angles d'exploration (satisfaction, contrariété, décision, admiration, engagement, renoncement, autre époque, quotidien) ; ne jamais enchaîner automatiquement plusieurs relances négatives ; demande de signification personnelle ; reformulation brève soumise à confirmation ; hypothèses multiples comparées puis examinées une par une jusqu'à validation ou abandon ; preuve textuelle obligatoire ; insuffisance d'éléments explicitement dite ; liberté totale d'accepter, refuser, ajouter ou renommer ; aucune question contenant le nom d'une valeur attendue ; aucune répétition inutile ni question presque identique à la précédente.
 LANGAGE INTERDIT : "Vous êtes...", "votre personnalité...", "cela révèle...", "cela cache...", "au fond...", "en réalité...", "inconsciemment...", "votre vraie valeur est...".
 SORTIE : uniquement l'objet JSON conforme au schéma demandé. Aucun texte hors JSON.
 """
@@ -350,33 +352,76 @@ def notify_new_value(name:str,definition:str)->None:
     send_email(f"Clarté360 - Proposition de valeur à examiner : {name}",body,to_email=FINAL_EMAIL_TO)
 
 def transcribe_audio(audio_file)->str:
+    """Transcrit un enregistrement ponctuel sans conserver le fichier audio."""
     client=api_client()
     model=get_secret("openai","transcription_model","gpt-4o-mini-transcribe")
     data=audio_file.getvalue()
+    if not data or len(data) < 256:
+        raise ValueError("Aucun enregistrement exploitable n’a été reçu. Arrêtez l’enregistrement avec le carré puis recommencez.")
     import io
-    f=io.BytesIO(data); f.name="reponse.wav"
+    mime=str(getattr(audio_file,"type","") or "").lower()
+    suffix=".webm" if "webm" in mime else ".mp3" if "mpeg" in mime or "mp3" in mime else ".m4a" if "mp4" in mime or "m4a" in mime else ".wav"
+    f=io.BytesIO(data)
+    f.name=f"reponse{suffix}"
     result=client.audio.transcriptions.create(model=model,file=f,language="fr")
-    return str(getattr(result,"text","") or "").strip()
+    transcript=str(getattr(result,"text","") or "").strip()
+    # Les octets ne sont jamais placés dans le JSON ni dans un stockage applicatif.
+    del data
+    f.close()
+    if not transcript:
+        raise ValueError("La transcription est vide. Vous pouvez réessayer ou recommencer votre enregistrement.")
+    return transcript
+
+def reset_voice_capture(*, clear_text: bool=True)->None:
+    """Invalide tout ancien enregistrement et recrée réellement le composant audio."""
+    st.session_state["audio_widget_version"]=int(st.session_state.get("audio_widget_version",0))+1
+    if clear_text:
+        st.session_state["voice_draft"]=""
+        st.session_state.pop("voice_edit",None)
+    st.session_state.pop("voice_last_error",None)
 
 def speak_button(text:str,key:str)->None:
+    """Lecture navigateur strictement ponctuelle : un clic, une lecture, puis arrêt."""
     safe=json.dumps(text,ensure_ascii=False)
+    safe_key=re.sub(r"[^a-zA-Z0-9_-]","_",str(key))
     components.html(f"""
-    <button id="speak_{key}" style="border:1px solid #008080;border-radius:8px;padding:8px 12px;background:white;cursor:pointer">🔊 Écouter la question</button>
+    <button id="speak_{safe_key}" style="border:1px solid #008080;border-radius:8px;padding:8px 12px;background:white;cursor:pointer">🔊 Écouter la question</button>
     <script>
-    const btn=document.getElementById("speak_{key}");
-    btn.onclick=()=>{{
-      window.speechSynthesis.cancel();
-      const u=new SpeechSynthesisUtterance({safe});
-      u.lang='fr-FR'; u.rate=0.92; u.pitch=1.0;
-      const speakNow=()=>{{
-        const voices=window.speechSynthesis.getVoices();
-        const preferred=voices.find(v=>v.lang==='fr-FR' && /Microsoft|Google|Natural|Neural/i.test(v.name)) || voices.find(v=>v.lang.startsWith('fr'));
-        if(preferred) u.voice=preferred;
-        window.speechSynthesis.speak(u);
+    (() => {{
+      const synth = window.speechSynthesis;
+      const btn = document.getElementById("speak_{safe_key}");
+      let playing = false;
+      let utterance = null;
+      const chooseVoice = () => {{
+        const voices = synth.getVoices() || [];
+        return voices.find(v => v.lang === 'fr-FR' && /Microsoft|Google|Natural|Neural/i.test(v.name))
+          || voices.find(v => (v.lang || '').toLowerCase().startsWith('fr'))
+          || null;
       }};
-      if(window.speechSynthesis.getVoices().length) speakNow();
-      else {{ window.speechSynthesis.onvoiceschanged=speakNow; setTimeout(speakNow,500); }}
-    }};
+      btn.addEventListener('click', () => {{
+        if (playing) return;
+        synth.cancel();
+        playing = true;
+        btn.disabled = true;
+        btn.textContent = '🔊 Lecture en cours…';
+        utterance = new SpeechSynthesisUtterance({safe});
+        utterance.lang = 'fr-FR';
+        utterance.rate = 0.92;
+        utterance.pitch = 1.0;
+        const voice = chooseVoice();
+        if (voice) utterance.voice = voice;
+        const finish = () => {{
+          playing = false;
+          btn.disabled = false;
+          btn.textContent = '🔊 Écouter la question';
+          utterance = null;
+        }};
+        utterance.onend = finish;
+        utterance.onerror = finish;
+        synth.speak(utterance);
+      }}, {{ once: false }});
+      window.addEventListener('beforeunload', () => synth.cancel(), {{ once: true }});
+    }})();
     </script>""",height=48)
 
 def value_reminder()->None:
@@ -684,25 +729,58 @@ def render_business():
             with st.chat_message("user"): st.write(turn["answer"])
         with st.chat_message("assistant"): st.write(st.session_state.current_question)
         speak_button(st.session_state.current_question,"q")
-        st.markdown("**Deux façons de répondre :** écrivez dans la zone ci-dessous, ou utilisez l'enregistreur. Pour la voix : cliquez sur le micro, parlez, arrêtez l'enregistrement, puis cliquez sur **Transcrire mon enregistrement**. Relisez enfin le texte obtenu avant de le valider.")
+        st.markdown("**Deux façons de répondre :** écrivez dans la zone ci-dessous, ou utilisez l’enregistreur. Pour la voix : cliquez sur le micro, parlez, puis cliquez sur le **carré d’arrêt**. Cliquez ensuite sur **Transcrire** et relisez le texte avant de le valider.")
         st.caption("Confidentialité : le fichier audio sert uniquement à la transcription. Il n'est ni ajouté au JSON, ni sauvegardé dans l'application. Seul le texte que vous validez est conservé.")
         typed=st.text_area("Votre réponse écrite",height=130,key="explore_text",placeholder="Écrivez librement, sans limite de longueur.")
         audio=None
         audio_key=f"explore_audio_{st.session_state.get('audio_widget_version',0)}"
-        if hasattr(st,"audio_input"): audio=st.audio_input("Ou enregistrez votre réponse",key=audio_key)
-        if audio and st.button("Transcrire mon enregistrement",key=f"transcribe_{st.session_state.get('audio_widget_version',0)}"):
-            with st.spinner("Transcription en cours..."):
-                try:
-                    transcript=transcribe_audio(audio)
-                    st.session_state.voice_transcripts.append({"date":now_iso(),"texte":transcript})
-                    st.session_state["voice_draft"]=transcript
-                    st.session_state["audio_widget_version"]+=1
-                    st.session_state.pop("voice_edit",None)
-                    st.rerun()
-                except Exception as exc: st.error(f"La transcription n'a pas pu être réalisée : {exc}")
+        rec_col,_=st.columns([1.15,1.85])
+        with rec_col:
+            if hasattr(st,"audio_input"):
+                audio=st.audio_input("Enregistrer ma réponse",key=audio_key)
+            else:
+                st.warning("L’enregistreur vocal n’est pas disponible dans cette version de Streamlit.")
+        if audio:
+            st.success("Enregistrement arrêté et prêt à être transcrit.")
+            b1,b2,_=st.columns([1.15,1.25,1.6])
+            with b1:
+                do_transcribe=st.button("Transcrire",type="primary",key=f"transcribe_{st.session_state.get('audio_widget_version',0)}",use_container_width=True)
+            with b2:
+                do_rerecord=st.button("Réenregistrer",key=f"rerecord_audio_{st.session_state.get('audio_widget_version',0)}",use_container_width=True)
+            if do_rerecord:
+                reset_voice_capture(clear_text=True)
+                st.session_state.pop("explore_text",None)
+                st.rerun()
+            if do_transcribe:
+                with st.spinner("Transcription en cours..."):
+                    try:
+                        transcript=transcribe_audio(audio)
+                        st.session_state["voice_draft"]=transcript
+                        st.session_state.pop("voice_edit",None)
+                        st.session_state.pop("voice_last_error",None)
+                        # Le composant est renouvelé : l’audio temporaire n’est plus réutilisable.
+                        st.session_state["audio_widget_version"]+=1
+                        st.rerun()
+                    except Exception as exc:
+                        st.session_state["voice_last_error"]=str(exc)
+                        st.error(f"La transcription n’a pas pu être réalisée : {exc}")
+                        st.info("Vous pouvez cliquer sur Réenregistrer puis refaire une prise. Vérifiez que vous avez bien arrêté avec le carré.")
+        elif st.session_state.get("voice_last_error"):
+            st.error(f"Dernier échec de transcription : {st.session_state.voice_last_error}")
+            if st.button("Recommencer mon enregistrement",key="restart_after_voice_error"):
+                reset_voice_capture(clear_text=True)
+                st.rerun()
         if st.session_state.get("voice_draft"):
-            st.info("Transcription proposée. Relisez-la, corrigez-la si nécessaire, puis validez-la.")
+            st.info("Transcription proposée. Relisez-la, corrigez-la si nécessaire, puis validez-la. L’audio n’est pas conservé.")
             typed=st.text_area("Texte transcrit à valider",value=st.session_state.voice_draft,height=160,key="voice_edit")
+            v1,v2,_=st.columns([1.2,1.5,1.3])
+            with v1:
+                if st.button("Réenregistrer ma réponse",key="redo_after_transcript",use_container_width=True):
+                    reset_voice_capture(clear_text=True)
+                    st.session_state.pop("explore_text",None)
+                    st.rerun()
+            with v2:
+                st.caption("Seul le texte que vous validerez sera transmis au moteur RVC360 et conservé dans le JSON.")
         if st.button("Valider ma réponse et afficher la question suivante",type="primary",disabled=not str(typed).strip()):
             answer=str(typed).strip()
             previous_question=st.session_state.current_question
@@ -717,9 +795,7 @@ def render_business():
                 next_question=FALLBACK_QUESTIONS[(len(st.session_state.conversation))%len(FALLBACK_QUESTIONS)]
             st.session_state.current_question=next_question
             st.session_state.exploration_complete=result["exploration_suffisante"]
-            st.session_state.voice_draft=""
-            st.session_state["audio_widget_version"]+=1
-            st.session_state.pop("voice_edit",None)
+            reset_voice_capture(clear_text=True)
             st.session_state.pop("explore_text",None)
             st.session_state["last_turn_completed"]=True
             business_trace("tour_ia",f"hypotheses={len(result['hypotheses'])}")
@@ -731,8 +807,8 @@ def render_business():
             if st.button("Trier et clarifier les hypothèses",type="primary",use_container_width=True): st.session_state.page="Mots a examiner"; st.rerun()
         if st.button("Continuer l'exploration avant d'examiner les hypothèses",use_container_width=True):
             st.session_state.current_question=next_exploration_question()
-            st.session_state.voice_draft=""; st.session_state["audio_widget_version"]+=1
-            st.session_state.pop("voice_edit",None); st.session_state.pop("explore_text",None); st.rerun()
+            reset_voice_capture(clear_text=True)
+            st.session_state.pop("explore_text",None); st.rerun()
 
     elif page=="Mots a examiner":
         st.title("3. Examiner une hypothèse à la fois"); value_reminder()
