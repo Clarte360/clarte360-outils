@@ -1,23 +1,30 @@
-# Clarte360 - Recherche de mes valeurs V0.3.1
+# Clarté360 – Recherche de mes valeurs
 
-Application Streamlit complete avec moteur IA RVC360 contraint par le referentiel comportemental V1.1.
+Version 1.0.0 préproduction.
 
-## Installation
+Application Streamlit construite sur le socle Clarté360 de référence et dédiée uniquement à la recherche, à la clarification et à la validation des valeurs du bénéficiaire selon RVC360.
 
-1. Installer les dependances : `pip install -r requirements.txt`
-2. Copier `.streamlit/secrets.example.toml` vers `.streamlit/secrets.toml`
-3. Renseigner la cle OpenAI et les parametres SMTP.
-4. Lancer : `streamlit run app.py`
+## Déploiement Streamlit
 
-## Mode local
+Fichier principal : `app.py`
 
-Le code maitre local n'est accepte que si la variable d'environnement `CLARTE360_LOCAL=1` est active. Le fichier `.bat` fourni active ce mode uniquement sur le poste de test.
+Secrets requis :
 
-## Architecture IA niveau 2
+```toml
+[email]
+smtp_server = "..."
+smtp_port = 465
+smtp_user = "..."
+smtp_password = "..."
+from_email = "..."
+to_email = "..."
 
-- preselection locale d'un sous-ensemble du referentiel ;
-- appel OpenAI avec sortie JSON structuree ;
-- filtrage strict des mots hors referentiel ;
-- controle lexical anti-interpretation avant affichage ;
-- preuve textuelle obligatoire pour chaque hypothese ;
-- validation exclusivement humaine.
+[security]
+session_limit_minutes = 60
+
+[openai]
+api_key = "..."
+model = "gpt-5.6-terra"
+```
+
+Le bloc `[email]` reprend exactement le format utilisé par les applications Clarté360 existantes. La clé OpenAI ne doit jamais être placée dans le dépôt GitHub.

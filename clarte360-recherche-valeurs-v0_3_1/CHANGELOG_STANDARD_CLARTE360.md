@@ -1,28 +1,12 @@
 # Historique
 
-## V0.3.0 - 26/07/2026
+## 1.0.0 préproduction
 
-- Integration complete du moteur IA RVC360 niveau 2.
-- Conversation progressive, une question ouverte a la fois.
-- Preselection locale du referentiel avant appel IA.
-- Sorties structurees JSON Schema.
-- Controle deterministe des formulations interpretatives.
-- Rejet automatique des mots absents du referentiel autorise.
-- Justification et preuve textuelle obligatoires pour chaque hypothese.
-- Configuration OpenAI et SMTP dans les Secrets.
-- Conservation du commentaire fondamental dans le code.
-
-## V0.2.0
-
-- Premiere structure fonctionnelle sans moteur conversationnel complet.
-
-## V0.3.1 - Audit pre-deploiement
-
-- ajout d'un timeout reseau et de tentatives limitees pour l'API OpenAI ;
-- ajout d'un plafond de sortie IA ;
-- controle explicite du statut et du contenu de la reponse OpenAI ;
-- comptage des tokens d'entree et de sortie dans l'export JSON ;
-- clarification de l'information relative a `store=False` ;
-- renforcement du `.gitignore` ;
-- validation du referentiel : 240 valeurs sans doublon ;
-- ajout du rapport `AUDIT_PREDEPLOIEMENT.md`.
+- Reconstruction sur le socle Clarté360 de référence Moteurs professionnels 1.8.
+- Accueil nouvelle passation / reprise JSON.
+- Identification, consentement RGPD, traçabilité et codes d'accès.
+- Paramètres SMTP compatibles avec le bloc `[email]` Clarté360 existant.
+- Formulaire Contact, mentions légales, timeout, sauvegarde et reprise JSON.
+- Intégration du métier RVC360 sans modification fonctionnelle de fond.
+- Intégration du moteur IA contrôlé par le Référentiel comportemental de l'IA Clarté360.
+- Modèle OpenAI piloté exclusivement par les Secrets Streamlit.

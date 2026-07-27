@@ -1,4 +1,4 @@
 @echo off
-set CLARTE360_LOCAL=1
+cd /d "%~dp0"
 python -m streamlit run app.py
 pause
