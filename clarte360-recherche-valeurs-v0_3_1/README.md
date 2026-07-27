@@ -28,3 +28,12 @@ model = "gpt-5.6-terra"
 ```
 
 Le bloc `[email]` reprend exactement le format utilisé par les applications Clarté360 existantes. La clé OpenAI ne doit jamais être placée dans le dépôt GitHub.
+
+## Version 1.1.0-preproduction
+- Prerequis en saisie libre et valeurs personnelles.
+- Tri des hypotheses avant questionnaire HEC.
+- Questionnaire specifique successif obligatoire.
+- Boucle de recherche depuis les resultats.
+- Reponse vocale et lecture des questions.
+- Rapport PDF enrichi et optimisation des appels IA.
+- Correction du formulaire Contact.
