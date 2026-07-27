@@ -37,3 +37,13 @@ Le bloc `[email]` reprend exactement le format utilisé par les applications Cla
 - Reponse vocale et lecture des questions.
 - Rapport PDF enrichi et optimisation des appels IA.
 - Correction du formulaire Contact.
+
+
+## Version 1.2.0
+- Hypothèses examinées une par une jusqu’à validation ou abandon.
+- Nouvelle question après chaque cycle de valeur.
+- Consentement explicite avant la fin de la recherche.
+- Valeurs validées visibles dans un panneau latéral droit.
+- Avatar Clarté360 allégé.
+- Retour garanti depuis les pages auxiliaires.
+- Rapport limité aux valeurs validées.

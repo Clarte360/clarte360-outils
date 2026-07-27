@@ -10,3 +10,10 @@
 - Intégration du métier RVC360 sans modification fonctionnelle de fond.
 - Intégration du moteur IA contrôlé par le Référentiel comportemental de l'IA Clarté360.
 - Modèle OpenAI piloté exclusivement par les Secrets Streamlit.
+
+## Version 1.1.1-preproduction
+- Correction du parcours multi-valeurs du prérequis.
+- Correction du renouvellement des enregistrements vocaux.
+- Effacement de l’audio après transcription ; seul le texte validé est conservé.
+- Question initiale ouverte aux situations positives et négatives.
+- Amélioration de la lecture vocale navigateur et du passage à la question suivante.
