@@ -19,3 +19,27 @@
 
 - Correction de l'import `html` pour la carte des valeurs fondamentales.
 - Réduction de la carte latérale et de l'avatar.
+
+## 1.3.1-preproduction - 27/07/2026
+
+### Moteur RVC360
+- correction du parcours d'exploration qui pouvait enchaîner des relances sans présenter les hypothèses déjà détectées ;
+- toute hypothèse détectée est désormais inscrite dans le dialogue au tour correspondant ;
+- passage immédiat à l'examen des hypothèses lorsqu'une ou plusieurs hypothèses sont produites ;
+- examen conservé une hypothèse à la fois ;
+- ajout d'un historique consultable des hypothèses, avec possibilité de réexaminer une hypothèse abandonnée ;
+- une hypothèse refusée peut être reproposée lorsqu'un nouvel élément explicite apparaît ;
+- détection déterministe des noms de valeurs réellement prononcés par le bénéficiaire ;
+- garantie que le mot « Respect » est rapproché de l'entrée RVC360-057 lorsqu'il apparaît explicitement ;
+- limite anti-questionnaire-sans-fin après trois tours sans hypothèse : proposition de rapprochements lexicaux contrôlés ;
+- maintien d'un sous-ensemble pertinent du référentiel envoyé à l'API, sans transmettre les 240 valeurs à chaque appel.
+
+### Données et livrables
+- ajout d'une liste indépendante des valeurs validées avec l'application afin qu'elles restent visibles après un nouveau cycle ;
+- compatibilité de reprise avec les JSON produits par les versions précédentes ;
+- le JSON de reprise conserve l'état nécessaire au travail ;
+- le JSON final terminé ne conserve que les valeurs validées et leur traçabilité utile ;
+- le rapport PDF demeure limité aux valeurs fondamentales validées.
+
+### Référentiel
+- remplacement du fichier de données par le référentiel RVC360 V1.2 fourni dans les fichiers sources du projet.

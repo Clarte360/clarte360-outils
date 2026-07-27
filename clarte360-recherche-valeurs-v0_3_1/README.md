@@ -32,3 +32,8 @@ transcription_model = "gpt-4o-mini-transcribe"
 ```
 
 Ne jamais publier `.streamlit/secrets.toml`.
+
+
+## Correctif 1.3.1
+
+Cette version sécurise la convergence du dialogue vers des hypothèses de valeurs. Les hypothèses sont visibles dans l'historique, examinées une par une et peuvent être reprises après abandon. Un mot du référentiel explicitement prononcé, notamment « Respect », ne peut plus être ignoré par le moteur. Le JSON final ne conserve que les valeurs validées ; le JSON de sauvegarde conserve l'état nécessaire à la reprise.

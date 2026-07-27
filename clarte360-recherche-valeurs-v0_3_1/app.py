@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "1.3.0-preproduction"
+APP_VERSION = "1.3.1-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -95,6 +95,7 @@ MISSION UNIQUE : aider le bénéficiaire à rechercher ce qui compte fondamental
 REGLE ABSOLUE : ZERO INTERPRETATION. Tu n'attribues jamais une cause, une intention, un besoin caché, un trait de personnalité, une émotion non déclarée ou une valeur non validée.
 PERIMETRE : tu ne fais ni coaching, ni bilan de compétences, ni orientation, ni conseil, ni test de personnalité.
 METHODE : une seule question ouverte à la fois ; appui exclusif sur les mots et faits exprimés ; approfondir d'abord la situation déjà racontée avant d'en demander une autre ; varier ensuite les angles d'exploration (satisfaction, contrariété, décision, admiration, engagement, renoncement, autre époque, quotidien) ; ne jamais enchaîner automatiquement plusieurs relances négatives ; demande de signification personnelle ; reformulation brève soumise à confirmation ; hypothèses multiples comparées puis examinées une par une jusqu'à validation ou abandon ; preuve textuelle obligatoire ; insuffisance d'éléments explicitement dite ; liberté totale d'accepter, refuser, ajouter ou renommer ; aucune question contenant le nom d'une valeur attendue ; aucune répétition inutile ni question presque identique à la précédente.
+CONVERGENCE OBLIGATOIRE : dès qu'un mot du référentiel est explicitement employé par le bénéficiaire, ou que plusieurs éléments validés convergent clairement, propose ce mot comme hypothèse à examiner au lieu de poursuivre indéfiniment les relances. Une hypothèse refusée n'est pas interdite pour toujours : elle peut être reproposée si de nouveaux mots explicites apportent une preuve différente. Après trois réponses successives sans hypothèse, indique que l'exploration doit maintenant converger vers un ou plusieurs mots à examiner, ou reconnais explicitement que les éléments sont encore insuffisants.
 LANGAGE INTERDIT : "Vous êtes...", "votre personnalité...", "cela révèle...", "cela cache...", "au fond...", "en réalité...", "inconsciemment...", "votre vraie valeur est...".
 SORTIE : uniquement l'objet JSON conforme au schéma demandé. Aucun texte hors JSON.
 """
@@ -183,6 +184,8 @@ def default_business_state() -> dict[str, Any]:
         "audio_widget_version":0, "prerequisite_count":1,
         "exploration_question_index":0, "hypothesis_index":0, "hypothesis_queue":[],
         "completed_hypotheses":[], "abandoned_hypotheses":[],
+        "validated_app_values":[], "hypothesis_history":[], "hypothesis_status":{},
+        "turns_since_hypothesis":0, "last_presented_hypotheses":[],
     }
 
 def init_state() -> None:
@@ -273,17 +276,37 @@ def api_client()->OpenAI:
     if OpenAI is None or not key: raise RuntimeError("La clé API OpenAI n'est pas configurée.")
     return OpenAI(api_key=key,timeout=35.0,max_retries=2)
 
-def lexical_prefilter(texts:list[str],limit:int=18)->list[dict[str,str]]:
-    text_norm=normalize(" ".join(texts)); terms=set(text_norm.split()); scored=[]
+def lexical_prefilter(texts:list[str],limit:int=24)->list[dict[str,str]]:
+    """Sélectionne un sous-ensemble pertinent du référentiel sans envoyer les 240 valeurs à l'API."""
+    text_norm=normalize(" ".join(texts))
+    terms={w for w in text_norm.split() if len(w)>=3}
+    scored=[]
     for item in CATALOGUE:
-        hay=normalize(" ".join([item["nom"],item["famille"],item["definition"]])); words=set(hay.split()); overlap=len(terms & words); phrase=2 if normalize(item["nom"]) in text_norm else 0; scored.append((overlap+phrase,item))
-    selected=[item for score,item in sorted(scored,key=lambda x:(x[0],x[1]["nom"]),reverse=True) if score>0][:limit]
-    if len(selected)<min(limit,len(CATALOGUE)):
-        seen={x["nom"] for x in selected}
-        for item in CATALOGUE:
-            if item["nom"] not in seen: selected.append(item); seen.add(item["nom"])
-            if len(selected)>=limit: break
-    return selected
+        name_norm=normalize(item["nom"])
+        family_norm=normalize(item["famille"])
+        def_norm=normalize(item["definition"])
+        words=set((name_norm+" "+family_norm+" "+def_norm).split())
+        overlap=len(terms & words)
+        exact_name=8 if re.search(r"(?:^| )"+re.escape(name_norm)+r"(?: |$)", text_norm) else 0
+        name_word_overlap=3*len(set(name_norm.split()) & terms)
+        score=exact_name+name_word_overlap+overlap
+        if score>0:
+            scored.append((score,item))
+    return [item for _,item in sorted(scored,key=lambda x:(x[0],x[1]["nom"]),reverse=True)[:limit]]
+
+def explicit_catalogue_mentions(text:str)->list[str]:
+    """Repère les noms de valeurs réellement prononcés, sans interprétation."""
+    n=normalize(text)
+    found=[]
+    for name in VALUE_NAMES:
+        nn=normalize(name)
+        if len(nn)<4:
+            continue
+        if re.search(r"(?:^| )"+re.escape(nn)+r"(?: |$)", n):
+            found.append(name)
+    # Un mot simple exact comme « respect » doit primer sur ses variantes composées.
+    found.sort(key=lambda x:(len(normalize(x).split()), len(x)))
+    return found
 
 def response_json(instructions:str,payload:dict[str,Any],schema_name:str,schema:dict[str,Any])->dict[str,Any]:
     client=api_client(); model=get_secret("openai","model","gpt-5-mini")
@@ -308,15 +331,66 @@ def sanitize_engine_result(result:dict[str,Any],allowed_names:set[str])->dict[st
             hypotheses.append({"nom":name,"raison":str(x.get("raison","")).strip(),"preuve":str(x.get("preuve","")).strip()})
     return {"reformulation":reform,"question_suivante":question,"hypotheses":hypotheses,"exploration_suffisante":bool(result.get("exploration_suffisante",False))}
 def run_rvc360_engine(answer:str)->dict[str,Any]:
-    texts=[t["answer"] for t in st.session_state.conversation]+[answer]; subset=lexical_prefilter(texts)
-    allowed={x["nom"] for x in subset}; payload={"question_posee":st.session_state.current_question,"reponse_du_beneficiaire":answer,"memoire_synthetique":st.session_state.get("exploration_summary", ""),"historique_recent":[{"question":x["question"],"reponse":x["answer"]} for x in st.session_state.conversation[-3:]],"valeurs_deja_validees":st.session_state.existing_values,"referentiel_autorise":subset}
+    texts=[t["answer"] for t in st.session_state.conversation]+[answer]
+    subset=lexical_prefilter(texts)
+    # Garantie : tout mot du référentiel explicitement prononcé est toujours présenté au modèle.
+    explicit=explicit_catalogue_mentions(answer)
+    by_name={x["nom"]:x for x in subset}
+    for name in explicit:
+        by_name[name]=VALUE_MAP[name]
+    subset=list(by_name.values())[:24]
+    allowed={x["nom"] for x in subset}
+    payload={
+        "question_posee":st.session_state.current_question,
+        "reponse_du_beneficiaire":answer,
+        "memoire_synthetique":st.session_state.get("exploration_summary", ""),
+        "historique_recent":[{"question":x["question"],"reponse":x["answer"]} for x in st.session_state.conversation[-3:]],
+        "valeurs_deja_validees":validated_names(),
+        "hypotheses_deja_evoquees":st.session_state.get("hypothesis_history",[])[-8:],
+        "nombre_de_tours_sans_hypothese":int(st.session_state.get("turns_since_hypothesis",0)),
+        "referentiel_autorise":subset,
+    }
     schema={"type":"object","additionalProperties":False,"properties":{"reformulation":{"type":"string"},"question_suivante":{"type":"string"},"hypotheses":{"type":"array","maxItems":6,"items":{"type":"object","additionalProperties":False,"properties":{"nom":{"type":"string","enum":sorted(allowed)},"raison":{"type":"string"},"preuve":{"type":"string"}},"required":["nom","raison","preuve"]}},"exploration_suffisante":{"type":"boolean"}},"required":["reformulation","question_suivante","hypotheses","exploration_suffisante"]}
-    return sanitize_engine_result(response_json(SYSTEM_RVC360,payload,"rvc360_exploration",schema),allowed)
-def merge_hypotheses(items:list[dict[str,str]])->None:
+    result=sanitize_engine_result(response_json(SYSTEM_RVC360,payload,"rvc360_exploration",schema),allowed)
+    # Filet de sécurité déterministe : un mot explicite du référentiel ne peut pas être oublié par l'IA.
+    already={x["nom"] for x in result["hypotheses"]}
+    for name in explicit:
+        if name not in already and name not in validated_names():
+            result["hypotheses"].insert(0,{
+                "nom":name,
+                "raison":"Ce mot figure explicitement dans votre réponse.",
+                "preuve":answer[:240],
+            })
+    result["hypotheses"]=result["hypotheses"][:6]
+    return result
+
+def merge_hypotheses(items:list[dict[str,str]])->list[str]:
+    presented=[]
     for item in items:
         n=item["nom"]
-        if n not in st.session_state.candidate_names and n not in st.session_state.existing_values: st.session_state.candidate_names.append(n)
-        st.session_state.candidate_reasons[n]=item.get("raison",""); st.session_state.candidate_evidence[n]=item.get("preuve","")
+        if n in validated_names():
+            continue
+        # Une hypothèse abandonnée peut être reproposée si une nouvelle preuve explicite apparaît.
+        if n in st.session_state.abandoned_hypotheses:
+            st.session_state.abandoned_hypotheses.remove(n)
+        if n in st.session_state.discarded:
+            st.session_state.discarded.remove(n)
+        if n not in st.session_state.candidate_names:
+            st.session_state.candidate_names.append(n)
+        st.session_state.candidate_reasons[n]=item.get("raison","")
+        st.session_state.candidate_evidence[n]=item.get("preuve","")
+        previous=st.session_state.hypothesis_status.get(n)
+        status="reproposee" if previous in ("abandonnee","ecartee") else "a_examiner"
+        st.session_state.hypothesis_status[n]=status
+        event={
+            "nom":n,"raison":item.get("raison",""),"preuve":item.get("preuve",""),
+            "statut":status,"date":now_iso(),"tour":len(st.session_state.conversation)+1,
+        }
+        st.session_state.hypothesis_history.append(event)
+        presented.append(n)
+    st.session_state.last_presented_hypotheses=presented
+    st.session_state.turns_since_hypothesis=0 if presented else int(st.session_state.get("turns_since_hypothesis",0))+1
+    return presented
 
 
 def value_info(name:str)->dict[str,str]:
@@ -428,7 +502,7 @@ def value_reminder()->None:
     st.info("Une valeur est un principe profondément important qui oriente vos choix et votre manière de vivre. Ce n'est ni une simple préférence, ni une qualité, ni un objectif. Le mot retenu doit avoir pour vous un sens personnel précis.")
 
 def validated_names()->list[str]:
-    names=list(dict.fromkeys(st.session_state.existing_values+st.session_state.candidate_names))
+    names=list(dict.fromkeys(st.session_state.existing_values+st.session_state.get("validated_app_values",[])))
     return [n for n in names if st.session_state.validation.get(n,{}).get("fondamentale")]
 
 def start_new_session(nom:str,prenom:str,email:str,consultant:str=""):
@@ -437,10 +511,60 @@ def start_new_session(nom:str,prenom:str,email:str,consultant:str=""):
     init_runtime_session("premiere_connexion")
 
 def build_payload(completed=False)->dict[str,Any]:
-    names=list(dict.fromkeys(st.session_state.existing_values+st.session_state.candidate_names)); values=[]
-    for name in names:
-        values.append({"nom":name,"source":"seance" if name in st.session_state.existing_values else "application","famille":value_info(name).get("famille",""),"definition_clarte360":value_info(name).get("definition",""),"definition_personnelle":st.session_state.personal_defs.get(name,""),"commentaire":st.session_state.comments.get(name,""),"raison_hypothese":st.session_state.candidate_reasons.get(name,""),"preuve_textuelle":st.session_state.candidate_evidence.get(name,""),"validation":st.session_state.validation.get(name,{})})
-    return {"application":APP_FULL_NAME,"version":APP_VERSION,"socle_clarte360":SOCLE_CLARTE360_VERSION,"framework_version":FRAMEWORK_VERSION,"rvc360_version":RVC360_VERSION,"rgpd_version":RGPD_TEXT_VERSION,"passation_root_id":st.session_state.get("passation_root_id"),"session_id":st.session_state.get("session_id"),"passation_id":st.session_state.get("passation_id"),"beneficiaire":st.session_state.get("beneficiaire",{}),"rgpd_acceptance":st.session_state.get("rgpd_acceptance",{}),"access_history":st.session_state.get("access_history",{}),"sessions":st.session_state.get("session_history",[]),"metier":{"page":st.session_state.page,"prerequis_premiere_valeur":st.session_state.prerequisite_confirmed,"existing_values":st.session_state.existing_values,"conversation":st.session_state.conversation,"current_question":st.session_state.current_question,"candidate_names":st.session_state.candidate_names,"candidate_reasons":st.session_state.candidate_reasons,"candidate_evidence":st.session_state.candidate_evidence,"validation":st.session_state.validation,"personal_defs":st.session_state.personal_defs,"comments":st.session_state.comments,"discarded":st.session_state.discarded,"trace":st.session_state.trace,"exploration_complete":st.session_state.exploration_complete,"prerequisite_entries":st.session_state.prerequisite_entries,"hypothesis_decisions":st.session_state.hypothesis_decisions,"custom_values":st.session_state.custom_values,"exploration_summary":st.session_state.exploration_summary},"ia":{"appels":st.session_state.ai_calls,"tokens_entree":st.session_state.ai_input_tokens,"tokens_sortie":st.session_state.ai_output_tokens,"statut":st.session_state.ai_engine_status,"modele":get_secret("openai","model","gpt-5-mini")},"completed":completed,"exporte_le":now_iso()}
+    validated=validated_names()
+    values=[]
+    for name in validated:
+        info=value_info(name)
+        values.append({
+            "nom":name,"famille":info.get("famille",""),
+            "origine":"seance" if name in st.session_state.existing_values else "application",
+            "definition_clarte360":info.get("definition",""),
+            "definition_personnelle":st.session_state.personal_defs.get(name,""),
+            "validation":st.session_state.validation.get(name,{}),
+            "commentaire":st.session_state.comments.get(name,""),
+        })
+    metier_common={
+        "page":st.session_state.page,
+        "prerequis_premiere_valeur":st.session_state.prerequisite_confirmed,
+        "valeurs_validees":values,
+        "nombre_total_valeurs_validees":len(values),
+        "nombre_valeurs_seance":sum(1 for v in values if v["origine"]=="seance"),
+        "nombre_valeurs_application":sum(1 for v in values if v["origine"]=="application"),
+        "exploration_complete":bool(completed or st.session_state.exploration_complete),
+    }
+    if not completed:
+        # Le JSON de reprise conserve l'état nécessaire à la continuité du travail.
+        metier_common.update({
+            "existing_values":st.session_state.existing_values,
+            "validated_app_values":st.session_state.get("validated_app_values",[]),
+            "conversation":st.session_state.conversation,
+            "current_question":st.session_state.current_question,
+            "candidate_names":st.session_state.candidate_names,
+            "candidate_reasons":st.session_state.candidate_reasons,
+            "candidate_evidence":st.session_state.candidate_evidence,
+            "validation":st.session_state.validation,
+            "personal_defs":st.session_state.personal_defs,
+            "comments":st.session_state.comments,
+            "discarded":st.session_state.discarded,
+            "hypothesis_history":st.session_state.get("hypothesis_history",[]),
+            "hypothesis_status":st.session_state.get("hypothesis_status",{}),
+            "trace":st.session_state.trace,
+            "prerequisite_entries":st.session_state.prerequisite_entries,
+            "hypothesis_decisions":st.session_state.hypothesis_decisions,
+            "custom_values":st.session_state.custom_values,
+            "exploration_summary":st.session_state.exploration_summary,
+        })
+    return {
+        "application":APP_FULL_NAME,"version":APP_VERSION,"socle_clarte360":SOCLE_CLARTE360_VERSION,
+        "framework_version":FRAMEWORK_VERSION,"rvc360_version":RVC360_VERSION,"rgpd_version":RGPD_TEXT_VERSION,
+        "passation_root_id":st.session_state.get("passation_root_id"),"session_id":st.session_state.get("session_id"),
+        "passation_id":st.session_state.get("passation_id"),"beneficiaire":st.session_state.get("beneficiaire",{}),
+        "rgpd_acceptance":st.session_state.get("rgpd_acceptance",{}),"access_history":st.session_state.get("access_history",{}),
+        "sessions":st.session_state.get("session_history",[]),"metier":metier_common,
+        "ia":{"appels":st.session_state.ai_calls,"tokens_entree":st.session_state.ai_input_tokens,"tokens_sortie":st.session_state.ai_output_tokens,"statut":st.session_state.ai_engine_status,"modele":get_secret("openai","model","gpt-5-mini")},
+        "completed":completed,"exporte_le":now_iso(),
+    }
+
 def payload_bytes(completed=False)->bytes: return json.dumps(build_payload(completed),ensure_ascii=False,indent=2).encode("utf-8")
 def make_filename(prefix="rvc360",ext="json"):
     b=st.session_state.get("beneficiaire",{}); return f"{prefix}_{sanitize_filename((b.get('prenom','')+'_'+b.get('nom','')).strip())}_{datetime.now().strftime('%Y%m%d_%H%M')}.{ext}"
@@ -448,6 +572,12 @@ def make_filename(prefix="rvc360",ext="json"):
 def restore_from_progress(payload:dict):
     st.session_state.passation_root_id=payload.get("passation_root_id",str(uuid.uuid4())); st.session_state.session_id=str(uuid.uuid4()); st.session_state.passation_id=payload.get("passation_id") or f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}"; st.session_state.beneficiaire=payload.get("beneficiaire",{}); st.session_state.rgpd_acceptance=payload.get("rgpd_acceptance",{}); st.session_state.access_history=payload.get("access_history",{}); st.session_state.session_history=deepcopy(payload.get("sessions",[])); m=payload.get("metier",{})
     for k,v in default_business_state().items(): st.session_state[k]=deepcopy(m.get(k,v))
+    # Compatibilité avec les JSON 1.3.0 et antérieurs : reconstruire les valeurs application déjà fondamentales.
+    if not st.session_state.get("validated_app_values"):
+        st.session_state.validated_app_values=[
+            n for n,val in st.session_state.get("validation",{}).items()
+            if val.get("fondamentale") and n not in st.session_state.get("existing_values",[])
+        ]
     st.session_state.test_started=True; st.session_state.code_verified_at=now_iso(); init_runtime_session("reprise_json"); business_trace("reprise_json")
 
 def create_pdf()->bytes:
@@ -619,6 +749,7 @@ def next_exploration_question() -> str:
 
 
 def reset_for_new_exploration() -> None:
+    # On conserve l'historique des hypothèses et les valeurs déjà validées.
     st.session_state.candidate_names=[]
     st.session_state.candidate_reasons={}
     st.session_state.candidate_evidence={}
@@ -627,6 +758,8 @@ def reset_for_new_exploration() -> None:
     st.session_state.validation_stage={}
     st.session_state.hypothesis_index=0
     st.session_state.hypothesis_queue=[]
+    st.session_state.last_presented_hypotheses=[]
+    st.session_state.turns_since_hypothesis=0
     st.session_state.current_question=next_exploration_question()
     st.session_state.page="Exploration IA"
 
@@ -722,9 +855,13 @@ def render_business():
     elif page=="Exploration IA":
         st.title("2. Recherche guidée des autres valeurs"); value_reminder()
         st.caption("Une seule question à la fois. Vous pouvez écrire ou enregistrer votre réponse. L'IA travaille uniquement sur vos mots et ne décide jamais à votre place.")
-        for turn in st.session_state.conversation[-6:]:
+        for turn_no,turn in enumerate(st.session_state.conversation[-8:], start=max(1,len(st.session_state.conversation)-7)):
             with st.chat_message("assistant"):
                 if turn.get("reformulation"): st.write(turn["reformulation"])
+                if turn.get("hypotheses_proposees"):
+                    names=turn["hypotheses_proposees"]
+                    st.markdown("**Hypothèse(s) de mot repérée(s) à ce moment :** " + ", ".join(f"`{n}`" for n in names))
+                    st.caption("Ces mots restent des hypothèses. Ils doivent être examinés un par un avant toute validation.")
                 st.write(turn["question"])
             with st.chat_message("user"): st.write(turn["answer"])
         with st.chat_message("assistant"): st.write(st.session_state.current_question)
@@ -787,9 +924,28 @@ def render_business():
             with st.spinner("Le moteur RVC360 examine vos mots..."):
                 try: result=run_rvc360_engine(answer); st.session_state.ai_engine_status="operationnel"
                 except Exception as exc: business_trace("erreur_ia",f"{type(exc).__name__}: {str(exc)[:120]}"); st.error("Le moteur IA n'a pas pu répondre. Votre réponse n'a pas été perdue."); return
-            st.session_state.conversation.append({"question":previous_question,"answer":answer,"reformulation":result["reformulation"],"date":now_iso()})
+            presented=merge_hypotheses(result["hypotheses"])
+            # Limite anti-questionnaire-sans-fin : après trois tours sans hypothèse,
+            # on présente au maximum trois rapprochements lexicaux du référentiel,
+            # sans réimposer automatiquement une hypothèse déjà abandonnée.
+            if not presented and int(st.session_state.get("turns_since_hypothesis",0))>=3:
+                context_answers=[t["answer"] for t in st.session_state.conversation]+[answer]
+                forced=[]
+                for item in lexical_prefilter(context_answers,limit=8):
+                    name=item["nom"]
+                    if name in validated_names() or name in st.session_state.abandoned_hypotheses:
+                        continue
+                    forced.append({
+                        "nom":name,
+                        "raison":"Plusieurs mots de votre récit se rapprochent de cette définition du référentiel.",
+                        "preuve":answer[:240],
+                    })
+                    if len(forced)>=3:
+                        break
+                if forced:
+                    presented=merge_hypotheses(forced)
+            st.session_state.conversation.append({"question":previous_question,"answer":answer,"reformulation":result["reformulation"],"hypotheses_proposees":presented,"date":now_iso()})
             st.session_state.exploration_summary=(st.session_state.exploration_summary+" | "+answer[:240]).strip(" |")[-1200:]
-            merge_hypotheses(result["hypotheses"])
             next_question=result["question_suivante"].strip()
             if normalize(next_question)==normalize(previous_question):
                 next_question=FALLBACK_QUESTIONS[(len(st.session_state.conversation))%len(FALLBACK_QUESTIONS)]
@@ -798,13 +954,35 @@ def render_business():
             reset_voice_capture(clear_text=True)
             st.session_state.pop("explore_text",None)
             st.session_state["last_turn_completed"]=True
-            business_trace("tour_ia",f"hypotheses={len(result['hypotheses'])}")
+            business_trace("tour_ia",f"hypotheses={len(presented)}")
+            if presented:
+                st.session_state.hypothesis_queue=[n for n in st.session_state.candidate_names if n not in st.session_state.completed_hypotheses]
+                st.session_state.hypothesis_index=0
+                st.session_state.page="Mots a examiner"
             st.rerun()
         if st.session_state.pop("last_turn_completed",False):
             st.success("Votre réponse a bien été prise en compte. La nouvelle question est affichée ci-dessus.")
         if st.session_state.candidate_names:
             st.info(f"{len(st.session_state.candidate_names)} hypothèse(s) sont disponibles. Elles doivent d'abord être triées et clarifiées.")
             if st.button("Trier et clarifier les hypothèses",type="primary",use_container_width=True): st.session_state.page="Mots a examiner"; st.rerun()
+        if st.session_state.get("hypothesis_history"):
+            with st.expander("Historique des hypothèses évoquées", expanded=False):
+                latest={}
+                for event in st.session_state.hypothesis_history:
+                    latest[event["nom"]]=event
+                for name,event in latest.items():
+                    status=st.session_state.hypothesis_status.get(name,event.get("statut","a_examiner"))
+                    st.markdown(f"**{name}** — statut : `{status}`")
+                    if event.get("preuve"): st.caption(f"Appui dans vos mots : {event['preuve']}")
+                    if status in ("abandonnee","ecartee") and st.button(f"Réexaminer {name}",key=f"reopen_{normalize(name)}"):
+                        if name in st.session_state.abandoned_hypotheses: st.session_state.abandoned_hypotheses.remove(name)
+                        if name in st.session_state.discarded: st.session_state.discarded.remove(name)
+                        if name not in st.session_state.candidate_names: st.session_state.candidate_names.append(name)
+                        st.session_state.hypothesis_status[name]="a_examiner"
+                        st.session_state.hypothesis_queue=[name]
+                        st.session_state.hypothesis_index=0
+                        st.session_state.page="Mots a examiner"
+                        st.rerun()
         if st.button("Continuer l'exploration avant d'examiner les hypothèses",use_container_width=True):
             st.session_state.current_question=next_exploration_question()
             reset_voice_capture(clear_text=True)
@@ -834,6 +1012,7 @@ def render_business():
             if st.button("Abandonner cette hypothèse et passer à la suivante",type="primary"):
                 if name not in st.session_state.discarded: st.session_state.discarded.append(name)
                 if name not in st.session_state.abandoned_hypotheses: st.session_state.abandoned_hypotheses.append(name)
+                st.session_state.hypothesis_status[name]="abandonnee"
                 st.session_state.hypothesis_index=idx+1
                 if idx+1>=len(queue):
                     reset_for_new_exploration()
@@ -846,12 +1025,14 @@ def render_business():
                 if st.button("Ce mot ne convient finalement pas",use_container_width=True):
                     if name not in st.session_state.discarded: st.session_state.discarded.append(name)
                     if name not in st.session_state.abandoned_hypotheses: st.session_state.abandoned_hypotheses.append(name)
+                    st.session_state.hypothesis_status[name]="abandonnee"
                     st.session_state.hypothesis_index=idx+1
                     if idx+1>=len(queue): reset_for_new_exploration()
                     st.rerun()
             with c2:
                 if st.button("Passer au questionnaire spécifique pour cette valeur",type="primary",disabled=not st.session_state.personal_defs[name].strip(),use_container_width=True):
                     st.session_state.candidate_names=[name]
+                    st.session_state.hypothesis_status[name]="examinee"
                     st.session_state.validation_index=0
                     st.session_state.validation_stage[name]=0
                     st.session_state.page="Validation"
@@ -873,12 +1054,17 @@ def render_business():
             field,q=questions[stage]; speak_button(q,f"val_{stage}"); answer=st.radio(q,["Choisissez une réponse","Oui","Non"],key=f"valradio_{name}_{stage}")
             if st.button("Valider cette réponse",type="primary",disabled=answer=="Choisissez une réponse"):
                 current[field]=(answer=="Oui"); st.session_state.validation[name]=current
-                if field=="fondamentale" and answer=="Oui" and name in st.session_state.custom_values and not st.session_state.custom_values[name].get("notified"):
-                    notify_new_value(name,st.session_state.personal_defs.get(name) or value_info(name).get("definition",""))
-                    st.session_state.custom_values[name]["notified"]=True
+                if field=="fondamentale" and answer=="Oui":
+                    if name not in st.session_state.validated_app_values:
+                        st.session_state.validated_app_values.append(name)
+                    st.session_state.hypothesis_status[name]="validee"
+                    if name in st.session_state.custom_values and not st.session_state.custom_values[name].get("notified"):
+                        notify_new_value(name,st.session_state.personal_defs.get(name) or value_info(name).get("definition",""))
+                        st.session_state.custom_values[name]["notified"]=True
                 if answer=="Oui": st.session_state.validation_stage[name]=stage+1
                 else:
                     st.session_state.validation_stage[name]=3; current["fondamentale"]=False
+                    st.session_state.hypothesis_status[name]="a_revoir"
                 st.rerun()
         else:
             if current.get("fondamentale"): st.success("Cette valeur a franchi successivement les trois niveaux et est validée comme fondamentale.")
@@ -909,11 +1095,18 @@ def render_business():
             if st.button("🔄 Rechercher une autre valeur",type="primary",use_container_width=True):
                 reset_for_new_exploration(); st.rerun()
         with c2:
-            if st.button("↩️ Revoir mes hypothèses",use_container_width=True): st.session_state.page="Mots a examiner"; st.rerun()
+            if st.button("↩️ Revoir mes hypothèses",use_container_width=True):
+                latest=[]
+                for event in st.session_state.get("hypothesis_history",[]):
+                    if event["nom"] not in latest and event["nom"] not in validated: latest.append(event["nom"])
+                st.session_state.hypothesis_queue=latest
+                st.session_state.hypothesis_index=0
+                st.session_state.page="Mots a examiner"
+                st.rerun()
         st.divider(); st.subheader("Documents")
         c1,c2=st.columns(2)
         with c1: st.download_button("Télécharger le rapport PDF",create_pdf(),file_name=make_filename("RVC360_valeurs","pdf"),mime="application/pdf",use_container_width=True)
-        with c2: st.download_button("Télécharger les données JSON",payload_bytes(False),file_name=make_filename("RVC360_valeurs","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("telechargement_json"))
+        with c2: st.download_button("Télécharger les données JSON",payload_bytes(bool(st.session_state.exploration_complete)),file_name=make_filename("RVC360_valeurs","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("telechargement_json"))
         st.divider()
         finish=st.radio("Pensez-vous avoir identifié l’ensemble des valeurs qui vous font agir et réagir ?",["Je souhaite encore poursuivre ma recherche","Oui, je pense avoir suffisamment identifié mes valeurs"],key="finish_consent")
         if finish.startswith("Oui"):
