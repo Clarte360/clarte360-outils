@@ -1377,7 +1377,7 @@ def access_gate_screen():
     text="Cette application est réservée aux bénéficiaires accompagnés. Merci de saisir le code de déblocage communiqué par votre accompagnateur."
     st.markdown(f'<div class="clarte-box">{text}</div>',unsafe_allow_html=True); speak_button(text,"access_gate")
     code=st.text_input("Code de déblocage",type="password")
-    expected=str(get_secret("security","unlock_code",os.environ.get("CLARTE360_UNLOCK_CODE","")) or "")
+    expected=str(get_secret("security","activation_code",os.environ.get("CLARTE360_ACTIVATION_CODE","")) or "")
     if st.button("J’ai déjà un fichier JSON de reprise ou final",use_container_width=True): st.session_state.welcome_choice="import"; st.rerun()
     if not expected: st.error("Le code de déblocage n’est pas configuré dans les paramètres sécurisés."); return
     if st.button("Débloquer l’application",type="primary",disabled=not code):
