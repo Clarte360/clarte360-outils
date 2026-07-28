@@ -54,13 +54,13 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "1.4.1-preproduction"
+APP_VERSION = "2.0.0"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
 FRAMEWORK_VERSION = "4.0"
-RVC360_VERSION = "1.3"
-RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v1.3-2026-07"
+RVC360_VERSION = "2.0"
+RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v2.0-2026-07"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -88,17 +88,28 @@ FALLBACK_QUESTIONS = [
     "Lors d’un week-end, d’un voyage, d’un projet ou d’un moment simple du quotidien, quand vous êtes-vous senti particulièrement à votre place ? Qu’est-ce qui rendait ce moment important ?",
     "Qu’est-ce que vous ne souhaiteriez pas sacrifier durablement, même en échange de davantage d’argent, de confort ou de réussite ?",
 ]
+
+EXPLORATION_DOMAINS = {
+    "famille": "la famille, la transmission, les responsabilités ou les relations familiales",
+    "travail": "le travail, les réussites, les choix, l’autonomie, la reconnaissance ou les injustices",
+    "relations": "les amitiés, la confiance, la loyauté, l’entraide ou les déceptions",
+    "loisirs": "les loisirs, passions, voyages, créations ou moments où vous vous sentez pleinement à votre place",
+    "emotions": "les joies, fiertés, colères, frustrations, admirations ou apaisements",
+    "histoire": "l’enfance, les changements de vie, les périodes difficiles ou les personnes déterminantes",
+    "projections": "les projets, rêves, transmissions, protections ou ce que vous refusez de perdre",
+    "conflits": "les situations inacceptables, injustes ou celles qui vous obligent à agir",
+}
 FORBIDDEN_PATTERNS = [r"\bvous etes\b", r"\bvotre personnalite\b", r"\bcela revele\b", r"\bcela cache\b", r"\bau fond de vous\b", r"\ben realite vous\b", r"\binconsciemment\b", r"\bprobablement parce que\b", r"\bvotre vraie valeur\b", r"\bvous souffrez de\b", r"\bcela prouve que\b", r"\bvotre peur montre\b", r"\bvotre colere signifie\b", r"\bvous cherchez a compenser\b"]
 SYSTEM_PROJECTION_RVC360 = """
-TU ES LE MODULE IA-600/IA-650 DE PROJECTION SUR LE REFERENTIEL RVC360.
-Tu reçois une fiche descriptive construite localement à partir des mots exacts du bénéficiaire et un sous-ensemble contrôlé du référentiel officiel.
-Tu proposes uniquement des HYPOTHESES LEXICALES présentes dans ce sous-ensemble.
-Chaque hypothèse doit être justifiée par un élément textuel explicite de la fiche. Aucune interprétation psychologique, aucune cause cachée, aucun trait de personnalité.
-Tu classes les hypothèses en interne par pertinence, sans afficher de score au bénéficiaire.
-Tu peux ne proposer aucune hypothèse si les éléments sont insuffisants.
-Tu produis aussi une reformulation brève et fidèle, puis UNE seule question ouverte utile uniquement si aucune hypothèse suffisamment étayée ne peut encore être présentée.
-La question suivante approfondit les mots déjà employés ou change réellement d'angle ; elle ne répète pas la question précédente.
-Tu ne valides aucune valeur.
+TU ES L’ASSISTANT CONVERSATIONNEL RVC360 V2 DE CLARTE360.
+Ta mission exclusive est d’aider une personne à explorer, vérifier et consolider ses valeurs personnelles, en complément de son accompagnateur humain.
+Tu suis la personne, pas uniquement le dernier sujet. Tu utilises sa présentation, les valeurs déjà travaillées, les domaines déjà explorés, les sujets saturés, les hypothèses en cours et l’historique récent.
+Tu ne réalises ni diagnostic psychologique, ni analyse de personnalité, ni coaching général. Tu ne déduis aucune cause cachée.
+Tu proposes uniquement des hypothèses lexicales présentes dans le sous-ensemble contrôlé du référentiel transmis. Chaque hypothèse doit être reliée à une preuve textuelle explicite.
+Une hypothèse n’est jamais une valeur validée. Seul le bénéficiaire peut valider.
+Tu poses UNE seule question ouverte à la fois. Après deux approfondissements utiles maximum sur un même épisode, change réellement d’angle ou de domaine, sauf demande explicite du bénéficiaire.
+Évite les répétitions, l’interrogatoire, les félicitations artificielles et les réponses longues. Tu peux reconnaître que tu peux te tromper.
+La question suivante doit contribuer à l’un de ces objectifs : recueillir une autre situation, vérifier la transversalité, explorer un domaine peu couvert, distinguer deux valeurs proches, ou tester une hypothèse.
 SORTIE : uniquement un objet JSON conforme au schéma demandé.
 """
 
@@ -192,6 +203,13 @@ def default_business_state() -> dict[str, Any]:
         "pipeline_status":"idle", "pipeline_error":"",
         "pending_pipeline_answer":"", "pending_analysis_card":{},
         "pending_submission":{}, "last_processed_submission_id":"",
+        "beneficiary_profile":{}, "profile_conversation":[], "profile_complete":False,
+        "assistant_presented":False, "interaction_preferences":{"mode":"ecrit_ou_voix"},
+        "inter_session_values":[], "inter_session_pending":[], "exploration_wanted":None,
+        "domains_explored":{}, "domains_not_explored":list(EXPLORATION_DOMAINS.keys()),
+        "current_domain":"", "subject_depth":0, "saturated_subjects":[],
+        "completion_check":{}, "closure_decision":"", "resume_message":"",
+        "value_records":{}, "rejected_values":[],
     }
 
 def init_state() -> None:
@@ -400,6 +418,12 @@ def project_hypotheses(card:dict[str,Any],answer:str)->dict[str,Any]:
         "fiche_analyse_structuree":card,
         "valeurs_deja_validees":validated_names(),
         "hypotheses_deja_examinees":[{"nom":e.get("nom"),"statut":st.session_state.hypothesis_status.get(e.get("nom"),e.get("statut"))} for e in st.session_state.get("hypothesis_history",[])[-10:]],
+        "presentation_beneficiaire":st.session_state.get("beneficiary_profile",{}),
+        "valeurs_deja_travaillees":st.session_state.get("value_records",{}),
+        "domaines_explores":st.session_state.get("domains_explored",{}),
+        "domaines_non_explores":st.session_state.get("domains_not_explored",[]),
+        "sujets_satures":st.session_state.get("saturated_subjects",[]),
+        "domaine_actuel":st.session_state.get("current_domain",""),
         "referentiel_autorise":subset,
     }
     schema={"type":"object","additionalProperties":False,"properties":{
@@ -601,6 +625,23 @@ def build_payload(completed=False)->dict[str,Any]:
         "nombre_valeurs_seance":sum(1 for v in values if v["origine"]=="seance"),
         "nombre_valeurs_application":sum(1 for v in values if v["origine"]=="application"),
         "exploration_complete":bool(completed or st.session_state.exploration_complete),
+        "presentation_beneficiaire":st.session_state.get("beneficiary_profile",{}),
+        "presentation_assistant":{"effectuee":st.session_state.get("assistant_presented",False)},
+        "preferences_interaction":st.session_state.get("interaction_preferences",{}),
+        "valeurs_accompagnateur":[v for v in st.session_state.get("value_records",{}).values() if v.get("source")=="accompagnateur"],
+        "valeurs_observations_personnelles":st.session_state.get("inter_session_values",[]),
+        "valeurs_entourage":[v for v in st.session_state.get("inter_session_values",[]) if "proche" in normalize(v.get("source",""))],
+        "valeurs_ia":[v for v in values if v.get("origine")=="application"],
+        "hypotheses":st.session_state.get("hypothesis_history",[]),
+        "valeurs_rejetees":st.session_state.get("rejected_values",[])+st.session_state.get("discarded",[]),
+        "domaines_explores":st.session_state.get("domains_explored",{}),
+        "domaines_non_explores":st.session_state.get("domains_not_explored",[]),
+        "questions_posees":[t.get("question") for t in st.session_state.get("conversation",[])],
+        "sujets_satures":st.session_state.get("saturated_subjects",[]),
+        "etat_exploration":{"souhaitee":st.session_state.get("exploration_wanted"),"page":st.session_state.page},
+        "controle_completude":st.session_state.get("completion_check",{}),
+        "decision_cloture":st.session_state.get("closure_decision",""),
+        "historique":st.session_state.get("trace",[]),
     }
     if not completed:
         # Le JSON de reprise conserve l'état nécessaire à la continuité du travail.
@@ -653,25 +694,59 @@ def restore_from_progress(payload:dict):
     st.session_state.test_started=True; st.session_state.code_verified_at=now_iso(); init_runtime_session("reprise_json"); business_trace("reprise_json")
 
 def create_pdf()->bytes:
+    from reportlab.platypus import Image, Table, TableStyle, KeepTogether
     buffer=BytesIO(); styles=getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="Teal",parent=styles["Heading1"],textColor=colors.HexColor(OFFICIAL_TEAL),spaceAfter=10))
+    styles.add(ParagraphStyle(name="Teal",parent=styles["Heading1"],textColor=colors.HexColor(OFFICIAL_TEAL),spaceAfter=12))
+    styles.add(ParagraphStyle(name="Teal2",parent=styles["Heading2"],textColor=colors.HexColor(OFFICIAL_TEAL),spaceBefore=10,spaceAfter=6))
     styles.add(ParagraphStyle(name="Small",parent=styles["Normal"],fontSize=8,leading=10,textColor=colors.HexColor("#666666")))
+    styles.add(ParagraphStyle(name="Cover",parent=styles["Title"],fontSize=24,leading=29,textColor=colors.HexColor(OFFICIAL_TEAL),alignment=1,spaceAfter=18))
     def footer(canvas,doc):
-        canvas.saveState(); canvas.setFont("Helvetica",8); canvas.setFillColor(colors.HexColor("#666666"))
-        canvas.drawString(1.5*cm,.7*cm,"Clarté360 - RVC360 - Document confidentiel")
-        canvas.drawCentredString(A4[0]/2,.7*cm,st.session_state.get("passation_id","") or "")
-        canvas.drawRightString(A4[0]-1.5*cm,.7*cm,f"Page {doc.page}"); canvas.restoreState()
-    doc=SimpleDocTemplate(buffer,pagesize=A4,rightMargin=1.7*cm,leftMargin=1.7*cm,topMargin=1.5*cm,bottomMargin=1.5*cm)
-    b=st.session_state.get("beneficiaire",{}); sessions=st.session_state.get("session_history",[])
-    validated=validated_names(); app_values=[n for n in validated if n not in st.session_state.existing_values]
-    story=[Paragraph("RVC360 - Recherche de mes valeurs",styles["Teal"]),Paragraph("Rapport de recherche, clarification et validation des valeurs fondamentales",styles["Normal"]),Spacer(1,10)]
-    story += [Paragraph(f"<b>Bénéficiaire :</b> {b.get('prenom','')} {b.get('nom','')}",styles["Normal"]),Paragraph(f"<b>Accompagnateur :</b> {b.get('consultant','') or 'Non renseigné'}",styles["Normal"]),Paragraph(f"<b>Référence :</b> {st.session_state.get('passation_id','')}",styles["Normal"]),Paragraph(f"<b>Rapport généré le :</b> {datetime.now().strftime('%d/%m/%Y à %H:%M')}",styles["Normal"]),Paragraph(f"<b>Temps actif cumulé :</b> {format_duration(total_session_seconds())}",styles["Normal"]),Spacer(1,12)]
-    story += [Paragraph("Synthèse du parcours",styles["Heading2"]),Paragraph(f"Valeurs fondamentales validées : {len(validated)}",styles["Normal"]),Paragraph(f"Déjà identifiées avec l'accompagnateur : {len([n for n in validated if n in st.session_state.existing_values])}",styles["Normal"]),Paragraph(f"Complémentaires recherchées avec l'application : {len(app_values)}",styles["Normal"]),Spacer(1,10)]
-    for idx,name in enumerate(validated,1):
-        info=value_info(name); source="Découverte et validée avec l'accompagnateur" if name in st.session_state.existing_values else "Recherchée avec l'application"
-        v=st.session_state.validation.get(name,{})
-        story += [Paragraph(f"{idx}. {name}",styles["Heading2"]),Paragraph(f"<b>Famille :</b> {info.get('famille','')}",styles["Normal"]),Paragraph(f"<b>Origine :</b> {source}",styles["Normal"]),Paragraph(f"<b>Définition Clarté360 / retenue :</b> {info.get('definition','') or 'Valeur personnelle'}",styles["Normal"]),Paragraph(f"<b>Définition personnelle validée :</b> {st.session_state.personal_defs.get(name,'') or 'La définition proposée a été acceptée.'}",styles["Normal"]),Paragraph(f"<b>Questionnaire spécifique HEC :</b> importante : {'Oui' if v.get('importante') else 'Non'} ; très importante : {'Oui' if v.get('tres_importante') else 'Non'} ; fondamentale : {'Oui' if v.get('fondamentale') else 'Non'}",styles["Normal"]),Paragraph(f"<b>Commentaire :</b> {st.session_state.comments.get(name,'') or 'Aucun'}",styles["Normal"]),Spacer(1,10)]
-    story += [PageBreak(),Paragraph("Retour en séance avec l'accompagnateur",styles["Heading2"]),Paragraph("Ce rapport restitue l'état du travail inter-séance. Les valeurs et définitions personnelles peuvent être repris avec l'accompagnateur.",styles["Normal"]),Spacer(1,10),Paragraph("Une valeur n'est validée comme fondamentale qu'après le questionnaire spécifique successif : importante, très importante, fondamentale.",styles["Normal"]),Spacer(1,12),Paragraph("Ce document ne constitue ni un diagnostic psychologique, ni un test de personnalité, ni une décision d'orientation. L'application ne remplace pas l'accompagnateur.",styles["Italic"]),Spacer(1,12),Paragraph(f"Application {APP_VERSION} - Socle Clarté360 {SOCLE_CLARTE360_VERSION} - RVC360 {RVC360_VERSION}",styles["Small"])]
+        canvas.saveState(); canvas.setStrokeColor(colors.HexColor("#D7EAEA")); canvas.line(1.5*cm,1.05*cm,A4[0]-1.5*cm,1.05*cm)
+        canvas.setFont("Helvetica",7.5); canvas.setFillColor(colors.HexColor("#666666"))
+        canvas.drawString(1.5*cm,.65*cm,"Clarté360 - 60 rue François 1er - 75008 Paris - Document confidentiel")
+        canvas.drawRightString(A4[0]-1.5*cm,.65*cm,f"Page {doc.page}")
+        canvas.restoreState()
+    doc=SimpleDocTemplate(buffer,pagesize=A4,rightMargin=1.7*cm,leftMargin=1.7*cm,topMargin=1.5*cm,bottomMargin=1.4*cm,title="Rapport RVC360 - Recherche de mes valeurs")
+    b=st.session_state.get("beneficiaire",{}); validated=validated_names(); records=st.session_state.get("value_records",{})
+    story=[]
+    if LOGO_PATH.exists():
+        story += [Spacer(1,1.2*cm),Image(str(LOGO_PATH),width=3.2*cm,height=3.2*cm),Spacer(1,.5*cm)]
+    story += [Paragraph("CLARTÉ360",styles["Cover"]),Paragraph("Recherche de mes valeurs - Rapport de parcours",styles["Cover"]),Spacer(1,.5*cm),
+              Paragraph(f"<b>Bénéficiaire :</b> {html.escape((b.get('prenom','')+' '+b.get('nom','')).strip())}",styles["Normal"]),
+              Paragraph(f"<b>Date :</b> {datetime.now().strftime('%d/%m/%Y')}",styles["Normal"]),
+              Paragraph(f"<b>Application :</b> {APP_VERSION} - <b>RVC360 :</b> {RVC360_VERSION} - <b>Framework :</b> {FRAMEWORK_VERSION}",styles["Normal"]),
+              Spacer(1,1.2*cm),Paragraph("Ce document restitue les éléments exprimés et validés par le bénéficiaire. Il complète le travail réalisé avec l’accompagnateur et ne constitue ni un diagnostic, ni une analyse de personnalité, ni une décision d’orientation.",styles["Italic"]),PageBreak()]
+    story += [Paragraph("1. Contexte et finalité",styles["Teal"]),
+              Paragraph("L’application aide à identifier, vérifier et consolider les valeurs personnelles. Elle ne remplace jamais l’accompagnateur. Les hypothèses proposées par l’IA restent des mots à examiner ; seules les validations du bénéficiaire sont retenues comme valeurs.",styles["Normal"])]
+    profile=st.session_state.get("beneficiary_profile",{})
+    if profile:
+        story += [Paragraph("2. Présentation du bénéficiaire",styles["Teal"]),Paragraph(html.escape(profile.get("presentation_libre","")),styles["Normal"])]
+        if profile.get("objectif_demarche"): story += [Paragraph(f"<b>Attente exprimée :</b> {html.escape(profile['objectif_demarche'])}",styles["Normal"])]
+    story += [Paragraph("3. Synthèse du parcours",styles["Teal"])]
+    data=[["Élément","État"],["Valeurs validées",str(len(validated))],["Domaines explorés",", ".join(st.session_state.get("domains_explored",{}).keys()) or "Non renseigné"],["Hypothèses examinées",str(len(st.session_state.get("hypothesis_history",[])))]]
+    t=Table(data,colWidths=[6*cm,10*cm]); t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor(LIGHT_TEAL)),('TEXTCOLOR',(0,0),(-1,0),colors.HexColor(DARK_TEXT)),('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('GRID',(0,0),(-1,-1),.3,colors.HexColor('#CFE6E6')),('VALIGN',(0,0),(-1,-1),'TOP'),('LEFTPADDING',(0,0),(-1,-1),6),('RIGHTPADDING',(0,0),(-1,-1),6)])); story += [t,Spacer(1,10)]
+    sections=[("4. Valeurs déjà identifiées avec l’accompagnateur",[r for r in records.values() if r.get("source")=="accompagnateur"]),("5. Valeurs repérées entre les séances",st.session_state.get("inter_session_values",[])),("6. Valeurs explorées avec l’application",[records.get(n,{"nom_propose":n,"source":"application","statut":"validee"}) for n in validated if n not in st.session_state.existing_values])]
+    for title,items in sections:
+        story += [Paragraph(title,styles["Teal"])]
+        if not items: story += [Paragraph("Aucun élément enregistré.",styles["Normal"])]
+        for r in items:
+            name=r.get("nom_propose") or r.get("nom") or "Valeur"
+            definition=r.get("definition_personnelle") or r.get("definition") or st.session_state.personal_defs.get(name,"") or value_info(name).get("definition","")
+            situations=r.get("situations_associees") or r.get("situations") or []
+            emotions=r.get("emotions_associees") or r.get("emotions") or []
+            block=[Paragraph(html.escape(name),styles["Teal2"]),Paragraph(f"<b>Source :</b> {html.escape(str(r.get('source','')))} - <b>Statut :</b> {html.escape(str(r.get('statut','')))}",styles["Normal"]),Paragraph(f"<b>Définition personnelle :</b> {html.escape(definition or 'Non renseignée')}",styles["Normal"])]
+            if situations: block.append(Paragraph(f"<b>Situations associées :</b> {html.escape(' ; '.join(map(str,situations)))}",styles["Normal"]))
+            if emotions: block.append(Paragraph(f"<b>Émotions ou réactions :</b> {html.escape(' ; '.join(map(str,emotions)))}",styles["Normal"]))
+            story += [KeepTogether(block),Spacer(1,5)]
+    story += [Paragraph("7. Liste finale des valeurs validées",styles["Teal"])]
+    if validated:
+        for i,name in enumerate(validated,1): story += [Paragraph(f"{i}. <b>{html.escape(name)}</b> - {html.escape(st.session_state.personal_defs.get(name,'') or value_info(name).get('definition',''))}",styles["Normal"])]
+    else: story += [Paragraph("Aucune valeur n’a encore été validée.",styles["Normal"])]
+    rejected=list(dict.fromkeys(st.session_state.get("discarded",[])+st.session_state.get("abandoned_hypotheses",[])))
+    story += [Paragraph("8. Hypothèses non retenues ou à revoir",styles["Teal"]),Paragraph(html.escape(", ".join(rejected) if rejected else "Aucune."),styles["Normal"])]
+    comp=st.session_state.get("completion_check",{})
+    story += [Paragraph("9. Contrôle de complétude",styles["Teal"]),Paragraph(f"<b>Appréciation du bénéficiaire :</b> {html.escape(str(comp.get('representation','Non réalisé')))}",styles["Normal"]),Paragraph(f"<b>Domaines non explorés :</b> {html.escape(', '.join(comp.get('domaines_non_explores',[])) or 'Aucun identifié')}",styles["Normal"]),Paragraph(f"<b>Points à reprendre avec l’accompagnateur :</b> {html.escape(comp.get('angles_a_reprendre','') or 'Aucun point particulier renseigné')}",styles["Normal"])]
+    story += [Paragraph("10. Conclusion",styles["Teal"]),Paragraph("Les valeurs présentées dans ce rapport sont celles que le bénéficiaire a validées. Elles pourront être relues, différenciées ou consolidées avec l’accompagnateur. Le fichier JSON permet de reprendre ultérieurement le parcours sans recommencer les étapes déjà réalisées.",styles["Normal"]),Spacer(1,12),Paragraph("Document confidentiel - diffusion réservée au bénéficiaire et, avec son accord, à son accompagnateur.",styles["Small"])]
     doc.build(story,onFirstPage=footer,onLaterPages=footer); return buffer.getvalue()
 
 def display_header():
@@ -785,10 +860,15 @@ def sidebar_progress_label(page: str) -> str:
     labels={
         "Accueil":"Étape 1 sur 6 - Accueil",
         "Prerequis":"Étape 2 sur 6 - Prérequis",
-        "Exploration IA":"Étape 3 sur 6 - Exploration IA",
-        "Mots a examiner":"Étape 4 sur 6 - Hypothèse en cours",
-        "Validation":"Étape 5 sur 6 - Validation",
-        "Resultats":"Étape 6 sur 6 - État actuel",
+        "Presentation beneficiaire":"Étape 3 - Faisons connaissance",
+        "Presentation assistant":"Étape 4 - Présentation de l’assistant",
+        "Valeurs interseances":"Étape 5 - Valeurs repérées entre les séances",
+        "Decision exploration":"Étape 6 - Choix de poursuivre",
+        "Exploration IA":"Étape 7 - Exploration",
+        "Mots a examiner":"Étape 8 - Hypothèse en cours",
+        "Validation":"Étape 9 - Validation",
+        "Controle completude":"Étape 10 - Contrôle de complétude",
+        "Resultats":"Étape 11 - État actuel",
     }
     return labels.get(page, str(page))
 
@@ -797,7 +877,7 @@ def sidebar_progress():
     if LOGO_PATH.exists(): st.sidebar.image(str(LOGO_PATH),width=85)
     st.sidebar.markdown("### Clarté360")
     if in_app:
-        steps=["Accueil","Prerequis","Exploration IA","Mots a examiner","Validation","Resultats"]; current=st.session_state.page; idx=steps.index(current) if current in steps else 0; st.sidebar.progress(idx/(len(steps)-1)); st.sidebar.caption(f"Étape {idx+1} sur {len(steps)} - {current}")
+        steps=["Accueil","Prerequis","Presentation beneficiaire","Presentation assistant","Valeurs interseances","Decision exploration","Exploration IA","Mots a examiner","Validation","Controle completude","Resultats"]; current=st.session_state.page; idx=steps.index(current) if current in steps else 0; st.sidebar.progress(idx/(len(steps)-1)); st.sidebar.caption(f"Étape {idx+1} sur {len(steps)} - {current}")
         st.sidebar.markdown("---"); st.sidebar.download_button("💾 Sauvegarder mon travail (JSON)",data=payload_bytes(False),file_name=make_filename("rvc360_sauvegarde","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("sauvegarde_manuelle"))
         if st.sidebar.button("🚪 Quitter et préparer mon JSON",use_container_width=True): record_save_event("sortie_preparee"); close_runtime_session("sortie_preparee"); st.session_state.exit_json_ready=True; st.session_state.exit_mode="quit"; st.rerun()
         st.sidebar.caption(f"Temps cumulé : {format_duration(total_session_seconds())}")
@@ -807,6 +887,46 @@ def sidebar_progress():
     if st.sidebar.button("RGPD et mentions légales",use_container_width=True): st.session_state.show_rgpd_page=True; st.session_state.show_contact_page=False; st.rerun()
     st.sidebar.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION} · RVC360 {RVC360_VERSION}")
     if not in_app and st.sidebar.button("Réinitialiser la session"): st.session_state.clear(); st.rerun()
+
+def update_domain_memory(question: str, answer: str) -> None:
+    text=normalize(f"{question} {answer}")
+    keywords={
+        "famille":["famille","parent","enfant","couple","frere","soeur","transmission"],
+        "travail":["travail","metier","collegue","client","manager","entreprise","profession"],
+        "relations":["ami","confiance","loyaute","relation","entraide"],
+        "loisirs":["loisir","sport","cinema","musique","voyage","cuisine","nature","creation"],
+        "emotions":["joie","fierte","colere","frustration","admiration","peur","tristesse","apaisement"],
+        "histoire":["enfance","adolescence","passe","changement","periode","epoque"],
+        "projections":["projet","avenir","reve","transmettre","proteger","heritage"],
+        "conflits":["injustice","inacceptable","conflit","blesse","refuse","colere"],
+    }
+    hits=[d for d,words in keywords.items() if any(w in text for w in words)]
+    domain=hits[0] if hits else st.session_state.get("current_domain") or "emotions"
+    st.session_state.current_domain=domain
+    st.session_state.domains_explored[domain]=int(st.session_state.domains_explored.get(domain,0))+1
+    st.session_state.domains_not_explored=[d for d in EXPLORATION_DOMAINS if d not in st.session_state.domains_explored]
+
+def choose_wide_question() -> str:
+    unexplored=st.session_state.get("domains_not_explored",[])
+    if unexplored:
+        d=unexplored[0]
+    else:
+        d=min(EXPLORATION_DOMAINS, key=lambda x:int(st.session_state.domains_explored.get(x,0)))
+    st.session_state.current_domain=d
+    return f"J’aimerais maintenant changer d’angle. En pensant à {EXPLORATION_DOMAINS[d]}, quelle situation vous a récemment donné une forte satisfaction, une fierté, une colère ou une frustration ? Qu’est-ce qui comptait particulièrement pour vous ?"
+
+def register_value_record(name: str, source: str, status: str, definition: str="", situations=None, emotions=None, certainty:int=0, alternatives=None) -> None:
+    rec=st.session_state.value_records.get(name,{})
+    rec.update({
+        "nom_propose":name, "source":source, "statut":status,
+        "definition_personnelle":definition or rec.get("definition_personnelle",""),
+        "situations_associees":situations or rec.get("situations_associees",[]),
+        "emotions_associees":emotions or rec.get("emotions_associees",[]),
+        "degre_certitude":certainty, "date_decouverte":rec.get("date_decouverte") or now_iso(),
+        "formulations_alternatives":alternatives or rec.get("formulations_alternatives",[]),
+        "validation_finale":status=="validee",
+    })
+    st.session_state.value_records[name]=rec
 
 def next_exploration_question() -> str:
     """Return a new prompt, never the same initial question after a completed value cycle."""
@@ -900,11 +1020,15 @@ def process_pending_exploration_submission() -> bool:
     if card.get("apport_nouveau",True): st.session_state.analysis_no_novelty_count=0
     else: st.session_state.analysis_no_novelty_count=int(st.session_state.get("analysis_no_novelty_count",0))+1
     presented=merge_hypotheses(result["hypotheses"])
-    st.session_state.conversation.append({"question":previous_question,"answer":answer,"reformulation":result["reformulation"],"hypotheses_proposees":presented,"date":now_iso()})
+    st.session_state.conversation.append({"question":previous_question,"answer":answer,"reformulation":result["reformulation"],"hypotheses_proposees":presented,"date":now_iso(),"domaine":st.session_state.get("current_domain","")})
+    update_domain_memory(previous_question,answer)
     st.session_state.exploration_summary=_flatten_analysis_text(card)[-1600:]
     next_question=result["question_suivante"].strip()
-    if normalize(next_question)==normalize(previous_question):
-        next_question=FALLBACK_QUESTIONS[(len(st.session_state.conversation))%len(FALLBACK_QUESTIONS)]
+    same_domain_turns=sum(1 for t in st.session_state.conversation[-3:] if t.get("domaine")==st.session_state.get("current_domain"))
+    if normalize(next_question)==normalize(previous_question) or same_domain_turns>=2 or st.session_state.get("analysis_no_novelty_count",0)>=1:
+        if st.session_state.get("current_domain") and st.session_state.current_domain not in st.session_state.saturated_subjects:
+            st.session_state.saturated_subjects.append(st.session_state.current_domain)
+        next_question=choose_wide_question()
     st.session_state.current_question=next_question
     st.session_state.exploration_complete=False
     st.session_state.pipeline_status="completed"
@@ -987,7 +1111,72 @@ def render_business():
                 if is_custom:
                     st.session_state.custom_values[name]={"definition":definition,"famille":"Valeur personnelle","notified":False}
             st.session_state.existing_values=list(dict.fromkeys(st.session_state.existing_values))
-            business_trace("prerequis_valide",", ".join(st.session_state.existing_values)); st.session_state.page="Exploration IA"; st.rerun()
+            for name,definition,is_custom in confirmed_values:
+                register_value_record(name,"accompagnateur","validee",definition,certainty=100)
+            business_trace("prerequis_valide",", ".join(st.session_state.existing_values)); st.session_state.page="Presentation beneficiaire"; st.rerun()
+
+    elif page=="Presentation beneficiaire":
+        st.title("2. Faisons connaissance")
+        st.markdown('<div class="clarte-box">Vous vous êtes déjà présenté à votre accompagnateur. Accepteriez-vous de m’en dire un peu sur vous afin que je puisse mieux vous accompagner dans cette recherche de valeurs ? Vous restez libre de ne pas répondre à une question.</div>',unsafe_allow_html=True)
+        profile=st.session_state.get("beneficiary_profile",{})
+        preferred=st.text_input("Comment souhaitez-vous que je vous appelle ?",value=profile.get("prenom_usage",st.session_state.beneficiaire.get("prenom","")))
+        intro=st.text_area("Parlez-moi librement de vous : votre situation actuelle, votre parcours, les personnes ou activités importantes, vos passions, vos projets ou ce qui compte particulièrement aujourd’hui.",value=profile.get("presentation_libre",""),height=190)
+        goal=st.text_area("Qu’aimeriez-vous mieux comprendre ou vérifier grâce à cette recherche de valeurs ?",value=profile.get("objectif_demarche",""),height=100)
+        st.caption("Il ne s’agit pas d’un formulaire administratif. Quelques éléments sincères suffisent.")
+        if st.button("Poursuivre",type="primary",disabled=not intro.strip()):
+            st.session_state.beneficiary_profile={"prenom_usage":preferred.strip(),"presentation_libre":intro.strip(),"objectif_demarche":goal.strip(),"date":now_iso()}
+            st.session_state.profile_complete=True
+            business_trace("presentation_beneficiaire")
+            st.session_state.page="Presentation assistant"; st.rerun()
+
+    elif page=="Presentation assistant":
+        st.title("3. Comment je vais vous accompagner")
+        text=("Je suis l’assistant Clarté360 dédié à la recherche de vos valeurs. Je complète le travail réalisé avec votre accompagnateur, sans le remplacer. "
+              "Je vais alterner les sujets pour mieux comprendre ce qui vous pousse régulièrement à agir ou à réagir. Je pourrai proposer des hypothèses, mais je peux me tromper et vous seul pourrez valider une valeur. "
+              "Une valeur solide se retrouve généralement dans plusieurs situations ou domaines de vie. L’objectif indicatif est souvent d’en identifier environ 8 à 12, mais ce n’est jamais un quota : votre liste peut être plus courte ou plus longue.")
+        st.markdown(f'<div class="clarte-box">{text}</div>',unsafe_allow_html=True)
+        speak_button(text,"assistant_intro")
+        mode=st.radio("Comment souhaitez-vous répondre pendant l’exploration ?",["Écrit ou voix, selon les moments","Principalement à l’écrit","Principalement à la voix"],index=0)
+        if st.button("J’ai compris, continuer",type="primary"):
+            st.session_state.assistant_presented=True; st.session_state.interaction_preferences={"mode":mode}; business_trace("presentation_assistant"); st.session_state.page="Valeurs interseances"; st.rerun()
+
+    elif page=="Valeurs interseances":
+        st.title("4. Valeurs découvertes depuis votre dernière séance")
+        answer=st.radio("Depuis votre dernière séance, avez-vous découvert une ou plusieurs valeurs personnelles ?",["Choisissez une réponse","Non","Oui"],key="inter_yes")
+        if answer=="Non":
+            if st.button("Continuer",type="primary"):
+                st.session_state.page="Decision exploration"; business_trace("aucune_valeur_interseance"); st.rerun()
+        elif answer=="Oui":
+            count=int(st.number_input("Combien ?",1,10,1,key="inter_count"))
+            records=[]
+            sources=["Observation personnelle ou cahier","Émotion ou réaction forte","Événement vécu","Échange avec un proche","Autre"]
+            for i in range(count):
+                st.markdown(f"### Valeur repérée n°{i+1}")
+                name=st.text_input("Nom proposé",key=f"inter_name_{i}")
+                source=st.selectbox("Comment l’avez-vous découverte ?",sources,key=f"inter_source_{i}")
+                meaning=st.text_area("Que signifie ce mot pour vous ?",key=f"inter_meaning_{i}")
+                situations=st.text_area("Dans quelles situations l’avez-vous reconnue ?",key=f"inter_situations_{i}")
+                reactions=st.text_area("Que ressentez-vous lorsqu’elle est respectée ou bafouée ?",key=f"inter_reactions_{i}")
+                certainty=st.slider("À quel point êtes-vous certain qu’il s’agit d’une valeur importante pour vous ?",0,100,50,key=f"inter_cert_{i}")
+                if name.strip() and meaning.strip() and situations.strip(): records.append({"nom":name.strip(),"source":source,"definition":meaning.strip(),"situations":[situations.strip()],"emotions":[reactions.strip()] if reactions.strip() else [],"certitude":certainty})
+            if st.button("Enregistrer ces valeurs et continuer",type="primary",disabled=len(records)!=count):
+                st.session_state.inter_session_values=records
+                for r in records:
+                    register_value_record(r["nom"],r["source"],"hypothese",r["definition"],r["situations"],r["emotions"],r["certitude"])
+                    if r["nom"] not in st.session_state.candidate_names: st.session_state.candidate_names.append(r["nom"])
+                    st.session_state.personal_defs[r["nom"]]=r["definition"]
+                    st.session_state.hypothesis_status[r["nom"]]="a_examiner"
+                business_trace("valeurs_interseances",str(len(records))); st.session_state.page="Decision exploration"; st.rerun()
+
+    elif page=="Decision exploration":
+        st.title("5. Souhaitez-vous rechercher d’autres valeurs ?")
+        decision=st.radio("Souhaitez-vous que je vous aide à rechercher d’autres valeurs ?",["Choisissez une réponse","Oui","Non, je préfère contrôler ce que j’ai déjà"],key="decision_explore")
+        if decision.startswith("Oui") and st.button("Ouvrir l’exploration",type="primary"):
+            st.session_state.exploration_wanted=True
+            st.session_state.current_question=choose_wide_question()
+            st.session_state.page="Exploration IA"; business_trace("exploration_acceptee"); st.rerun()
+        if decision.startswith("Non") and st.button("Contrôler la complétude",type="primary"):
+            st.session_state.exploration_wanted=False; st.session_state.page="Controle completude"; business_trace("exploration_refusee"); st.rerun()
 
     elif page=="Exploration IA":
         st.title("2. Recherche guidée des autres valeurs"); value_reminder()
@@ -1180,6 +1369,7 @@ def render_business():
                     if name not in st.session_state.validated_app_values:
                         st.session_state.validated_app_values.append(name)
                     st.session_state.hypothesis_status[name]="validee"
+                    register_value_record(name,"application","validee",st.session_state.personal_defs.get(name) or value_info(name).get("definition",""),certainty=100)
                     if name in st.session_state.custom_values and not st.session_state.custom_values[name].get("notified"):
                         notify_new_value(name,st.session_state.personal_defs.get(name) or value_info(name).get("definition",""))
                         st.session_state.custom_values[name]["notified"]=True
@@ -1187,6 +1377,7 @@ def render_business():
                 else:
                     st.session_state.validation_stage[name]=3; current["fondamentale"]=False
                     st.session_state.hypothesis_status[name]="a_revoir"
+                    register_value_record(name,"application","a_revoir",st.session_state.personal_defs.get(name,""),certainty=40)
                 st.rerun()
         else:
             if current.get("fondamentale"): st.success("Cette valeur a franchi successivement les trois niveaux et est validée comme fondamentale.")
@@ -1202,8 +1393,30 @@ def render_business():
                     st.session_state.candidate_names=queue
                     st.session_state.page="Mots a examiner"
                 else:
-                    st.session_state.page="Resultats"
+                    st.session_state.page="Controle completude"
                 st.rerun()
+
+    elif page=="Controle completude":
+        st.title("10. Contrôle de complétude")
+        vals=validated_names()
+        explored=list(st.session_state.get("domains_explored",{}).keys())
+        missing=[d for d in EXPLORATION_DOMAINS if d not in explored]
+        close_values=[]
+        for i,a in enumerate(vals):
+            for b in vals[i+1:]:
+                if SequenceMatcher(None,normalize(a),normalize(b)).ratio()>.72: close_values.append((a,b))
+        st.markdown(f"**Valeurs actuellement validées : {len(vals)}**")
+        if len(vals)<8: st.info("Votre liste contient moins de 8 valeurs. Ce n’est pas un problème : 8 à 12 est un repère indicatif, jamais un quota.")
+        if missing: st.warning("Domaines encore peu ou pas explorés : "+", ".join(missing))
+        else: st.success("Les principaux domaines d’exploration ont été abordés.")
+        if close_values: st.warning("Certaines valeurs semblent proches et méritent peut-être d’être différenciées : "+" ; ".join(f"{a} / {b}" for a,b in close_values))
+        represented=st.radio("Cette liste représente-t-elle suffisamment ce qui vous pousse à agir, choisir, accepter, refuser, vous engager, vous protéger ou réagir ?",["Choisissez","Oui","Partiellement","Non"],key="complete_rep")
+        blind=st.text_area("Y a-t-il un angle, une situation ou une valeur que vous souhaiteriez encore explorer ?",key="complete_blind")
+        if st.button("Enregistrer ce contrôle",type="primary",disabled=represented=="Choisissez"):
+            st.session_state.completion_check={"nombre_valeurs":len(vals),"domaines_explores":explored,"domaines_non_explores":missing,"valeurs_proches":close_values,"representation":represented,"angles_a_reprendre":blind.strip(),"date":now_iso()}
+            st.session_state.page="Resultats"; business_trace("controle_completude",represented); st.rerun()
+        if st.button("Reprendre l’exploration"):
+            st.session_state.current_question=choose_wide_question(); st.session_state.page="Exploration IA"; st.rerun()
 
     elif page=="Resultats":
         st.title("5. État actuel de ma recherche"); value_reminder()
@@ -1234,7 +1447,7 @@ def render_business():
         if finish.startswith("Oui"):
             st.warning("La fin de la recherche dépend uniquement de votre décision. Vous pourrez toujours reprendre ultérieurement avec votre fichier JSON.")
             if st.button("Confirmer la fin de mon exercice inter-séance",type="primary",use_container_width=True):
-                st.session_state.exploration_complete=True; close_runtime_session("parcours_termine_volontaire"); business_trace("fin_volontaire_consentie"); st.success("Votre exercice est marqué comme terminé. Téléchargez votre PDF et votre JSON avant de quitter.")
+                st.session_state.exploration_complete=True; st.session_state.closure_decision="cloture_volontaire"; close_runtime_session("parcours_termine_volontaire"); business_trace("fin_volontaire_consentie"); st.success("Votre exercice est marqué comme terminé. Téléchargez votre PDF et votre JSON avant de quitter.")
 
 def exit_prepared_screen():
     display_header(); st.success("Votre JSON de sortie est prêt à être téléchargé."); st.markdown("Téléchargez le fichier dans la colonne de gauche. Il permettra de reprendre l'application.")
