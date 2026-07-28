@@ -1,68 +1,42 @@
-# Clarté360 – Recherche de mes valeurs
+# Clarté360 – Recherche de mes valeurs V2.1.2
 
-Version applicative : **1.4.0 préproduction**  
-Socle Clarté360 : **1.8**  
-Framework : **4.0**  
-Référentiel métier : **RVC360 V1.3**
+Application Streamlit reconstruite depuis la V2.0 puis consolidée selon le Canvas V2.1 et les règles de navigation du Framework Clarté360.
 
-Application Streamlit mettant en œuvre l’exercice inter-séance RVC360 : exploration, clarification et validation des valeurs fondamentales, sans interprétation et sans remplacement de l’accompagnateur.
+## Évolutions centrales de cette version
 
-## Architecture métier V1.3
+- suppression de la numérotation visible des écrans ;
+- navigation libre vers toutes les étapes déjà ouvertes ;
+- recalcul et invalidation automatique des données dépendantes après modification ;
+- reprise exacte de la page, des files de validation, de la navigation et des états métier depuis le JSON de travail ;
+- composant unique pour toutes les questions ouvertes : écoute, clavier, voix, transcription, correction, validation et reformulation facultative ;
+- nettoyage des hésitations, répétitions involontaires et reprises de phrase avant validation ;
+- questionnaire bénéficiaire structuré en plusieurs questions courtes ;
+- audit de cohérence bloquant avant clôture définitive.
 
-Le moteur fonctionne désormais en deux niveaux indépendants :
+## Installation
 
-1. **IA-550 – Analyse structurée** : organisation des faits, mots, émotions déclarées, attentes exprimées, actions, expressions fortes, critères personnels, contradictions explicites et thèmes descriptifs. Ce niveau ne recherche et ne nomme aucune valeur.
-2. **IA-600 / IA-650 – Projection RVC360** : rapprochement de la fiche structurée avec un sous-ensemble pertinent du référentiel officiel, classement interne des hypothèses, puis présentation au bénéficiaire.
-
-Aucune règle spécifique du type « expression X = valeur Y » n’est utilisée. Le préfiltrage est générique et s’appuie sur le contenu du référentiel complet.
-
-## Parcours des hypothèses
-
-- toutes les hypothèses détectées sont inscrites dans le dialogue ;
-- elles sont ensuite examinées une par une ;
-- une hypothèse peut être validée, abandonnée ou rouverte ;
-- si toutes les hypothèses sont refusées, l’exploration reprend avec un autre angle ;
-- aucune valeur n’est validée sans le questionnaire spécifique HEC : importante, très importante, fondamentale.
-
-## Données et documents
-
-- le JSON de reprise conserve l’état nécessaire pour continuer le travail, notamment la fiche d’analyse et l’historique technique du parcours ;
-- le JSON final et le rapport PDF ne restituent que les valeurs fondamentales validées et les informations utiles qui en découlent ;
-- aucun fichier audio n’est conservé.
-
-## Secrets Streamlit
-
-Le bloc `[email]` reste identique aux autres applications Clarté360. Le bloc `[openai]` doit contenir :
-
-```toml
-[openai]
-api_key = "..."
-model = "gpt-5.6-terra"
-transcription_model = "gpt-4o-mini-transcribe"
+```bash
+python -m pip install -r requirements.txt
+streamlit run app.py
 ```
 
-Ne jamais publier `.streamlit/secrets.toml`.
+## Secrets requis
 
+Copier `.streamlit/secrets.example.toml` vers `.streamlit/secrets.toml`, puis renseigner la clé et le modèle OpenAI, le modèle de transcription, le code de déblocage, les paramètres SMTP et la durée maximale de session.
 
-## Nouveautés V2.1.0
+Ne jamais publier le fichier réel `secrets.toml`.
 
-- contrôle d'accès initial par code de déblocage stocké dans Streamlit Secrets ;
-- reprise intelligente et personnalisée des JSON de travail ;
-- distinction stricte JSON de travail / JSON final épuré ;
-- fermeture définitive avec double confirmation ;
-- mode lecture seule pour les parcours clôturés ;
-- transmission volontaire du JSON final à l'accompagnateur ;
-- navigation vers les étapes déjà ouvertes ;
-- gestion renforcée des interruptions temporaires de l'IA ;
-- texte RGPD V2.1 intégrant la voix, l'IA, la clôture et la transmission ;
-- maintien des réponses clavier et voix avec validation de la transcription.
+## Contrôles locaux
 
-### Secret obligatoire
-
-```toml
-[security]
-activation_code = "VOTRE-CODE"
-session_limit_minutes = 60
+```bash
+python -m py_compile app.py
+python -m pytest -q
 ```
 
-Le code n'est jamais stocké dans les JSON ni envoyé à l'API.
+Résultat de fabrication : **11 tests réussis**.
+
+## Versions
+
+- Application : 2.1.2
+- Référentiel RVC360 : 2.1
+- Framework déclaré : 4.0

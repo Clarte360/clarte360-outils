@@ -1,55 +1,41 @@
-# Plan de tests RVC360 V2
+# Plan de recette préproduction – V2.1.2
 
-## 1. Démarrage et prérequis
-- Refus si aucune valeur n'a été travaillée avec l'accompagnateur.
-- Une valeur validée, plusieurs valeurs, formulation hors référentiel.
-- Conservation des composants identification, RGPD, code, timeout.
+## Navigation et recalcul
 
-## 2. Présentation
-- Présentation courte, longue, objectif vide, refus partiel.
-- Vérification de la présence dans le JSON et dans le contexte API.
-- Lecture vocale de la présentation de l'assistant.
+1. Réaliser un parcours jusqu’aux résultats.
+2. Revenir à « Faisons connaissance » et modifier une réponse autre que le prénom.
+3. Vérifier que les hypothèses et validations issues de l’application sont invalidées, tandis que les valeurs validées avec l’accompagnateur restent présentes.
+4. Refaire l’exploration puis modifier une réponse ancienne depuis « Modifier une réponse précédente ».
+5. Vérifier que la conversation reprend à la question modifiée et que tout l’aval est recalculé.
+6. Modifier uniquement le prénom d’usage et vérifier qu’aucun recalcul métier n’est déclenché.
+7. Modifier la définition personnelle d’une valeur et vérifier que seule sa validation est remise à zéro.
+8. Supprimer une valeur découverte personnellement et vérifier la disparition de ses validations et de son affichage latéral.
 
-## 3. Valeurs inter-séances
-- Source cahier, émotion, événement, proche, autre.
-- Mot exact du référentiel, mot proche, valeur personnelle hors référentiel.
-- Situations et émotions conservées.
+## Voix
 
-## 4. Exploration
-- Changement de domaine après deux tours sur le même angle.
-- Changement de domaine si aucun apport nouveau.
-- Réponse très courte, très longue, contradictoire, « je ne sais pas ».
-- Vérifier qu'une seule question est posée.
-- Vérifier qu'aucune hypothèse hors sous-ensemble RVC360 n'est retournée.
+1. Tester chaque question ouverte au clavier puis à la voix.
+2. Prononcer volontairement : « euh… je… je souhaite davantage de liberté, enfin je veux dire de liberté dans mes choix ».
+3. Vérifier l’affichage séparé de la transcription brute et de la proposition corrigée.
+4. Choisir successivement la transcription brute, la correction proposée et une correction manuelle.
+5. Vérifier qu’aucune réponse n’est utilisée avant validation.
+6. Demander une reformulation puis conserver le texte initial.
+7. Réenregistrer après une mauvaise transcription.
+8. Désactiver la lecture vocale globale et vérifier la disparition des boutons d’écoute.
 
-## 5. Hypothèses et validation
-- Hypothèse rejetée, à revoir, validée.
-- Définition personnelle obligatoire avant validation.
-- Questionnaire successif importante / très importante / fondamentale.
-- Valeur validée enregistrée avec source et statut.
+## Questionnaire bénéficiaire
 
-## 6. Complétude
-- Moins de 8 valeurs sans blocage.
-- 8 à 12 valeurs et plus de 12 valeurs.
-- Domaines non explorés affichés.
-- Valeurs lexicalement proches signalées.
-- Retour possible vers l'exploration.
+Vérifier la présence des questions distinctes : situation actuelle, parcours, personnes ou activités importantes, passions, projets ou changements, attente vis-à-vis de la recherche.
 
-## 7. JSON
-- Sauvegarde à chaque grande étape.
-- Reprise exacte sur chaque page.
-- Présence des rubriques V2.
-- Compatibilité avec un JSON V1.4.1.
-- Historique, sessions et traçabilité conservés.
+## JSON de reprise
 
-## 8. PDF
-- Page de garde, logo, identité, date et versions.
-- Pied de page, pagination et confidentialité.
-- Valeurs classées par source.
-- Situations, émotions, hypothèses non retenues et complétude.
-- Absence d'interprétation psychologique.
+1. Sauvegarder au milieu d’une validation HEC.
+2. Importer le JSON.
+3. Vérifier l’accueil personnalisé puis la reprise exacte de la page, de la valeur, du niveau de validation, de la navigation et des réponses.
 
-## 9. Voix
-- Lecture, enregistrement, arrêt, transcription, correction et validation.
-- Audio absent du JSON.
-- Retour possible à l'écrit.
+## Clôture
+
+1. Modifier une donnée après le contrôle de complétude.
+2. Vérifier le blocage de la clôture.
+3. Refaire le contrôle de complétude.
+4. Vérifier la génération du PDF et du JSON final.
+5. Importer le JSON final et confirmer le mode lecture seule sans appel IA.

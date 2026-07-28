@@ -28,7 +28,6 @@ import re
 import smtplib
 import unicodedata
 import uuid
-import time
 from copy import deepcopy
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -55,12 +54,12 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.1.2"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
 FRAMEWORK_VERSION = "4.0"
-RVC360_VERSION = "2.0"
+RVC360_VERSION = "2.1"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v2.1-2026-07"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
@@ -117,27 +116,27 @@ SORTIE : uniquement un objet JSON conforme au schéma demandé.
 RGPD_TEXT = f"""
 ### Protection des données personnelles (RGPD)
 
-Cette application Clarté360 fonctionne sans base de données métier propre à l'application. Le bénéficiaire conserve son travail au moyen de fichiers JSON téléchargés sur son appareil.
+Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
 
-Le **JSON de travail** contient les informations nécessaires pour reprendre le parcours : identité, consentement, étapes, réponses validées, hypothèses, valeurs, historique utile et traçabilité de session. Le **JSON final**, généré uniquement lors de la clôture définitive, est épuré : il ne contient ni questionnaires détaillés, ni conversations avec l'IA, ni transcriptions brutes, ni reformulations rejetées, ni erreurs techniques. Il permet seulement de consulter les résultats et de réimprimer le rapport.
+Le fichier JSON constitue le seul support de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, le nom de votre accompagnateur, les dates et heures de connexion, la durée des sessions, vos réponses, les mots proposés, vos validations, l'historique des connexions, les générations de codes d'accès, le consentement RGPD, la version de l'application et les informations techniques disponibles.
 
-Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée avec la date, l'heure et la version du texte : **{RGPD_TEXT_VERSION}**.
+Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur.
 
-### Voix et transcription
-
-La réponse vocale est facultative. L'enregistrement sert uniquement à produire une transcription. Le fichier audio n'est pas conservé dans le JSON ni dans le rapport. La transcription doit être relue, corrigée si nécessaire et validée avant toute utilisation par l'intelligence artificielle. Le bénéficiaire peut toujours répondre au clavier.
+Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : **{RGPD_TEXT_VERSION}**.
 
 ### Utilisation de l'intelligence artificielle
 
-Les réponses validées strictement utiles à la recherche de valeurs peuvent être transmises au fournisseur d'IA configuré par Clarté360. L'IA formule des questions, des reformulations ou des hypothèses lexicales ; elle ne valide aucune valeur, ne réalise aucun diagnostic et ne décide jamais à la place du bénéficiaire. L'application demande au fournisseur de ne pas conserver la réponse comme état applicatif (`store=False`).
+Le moteur RVC360 intervient en deux niveaux : il structure d'abord localement les propos sans rechercher de valeur, puis l'intelligence artificielle rapproche cette fiche d'analyse d'un sous-ensemble contrôlé du référentiel RVC360 afin de formuler des hypothèses lexicales à examiner. Elle ne valide aucune valeur, ne produit aucun diagnostic et ne prend aucune décision à la place du bénéficiaire.
 
-### Contrôle d'accès
+Les réponses utiles à cette recherche sont transmises au fournisseur d'IA configuré par Clarté360. Il est demandé de ne pas saisir de noms complets, coordonnées ou informations sensibles inutiles. L'application demande au fournisseur de ne pas conserver la réponse comme état applicatif (`store=False`). Les traitements techniques et règles de conservation propres au fournisseur restent applicables.
 
-Un code de déblocage peut être demandé lors de la première utilisation afin de réserver l'application aux bénéficiaires autorisés et de maîtriser les coûts des API payantes. Le code est conservé uniquement dans Streamlit Secrets. Il n'est jamais enregistré dans le JSON, le PDF, les journaux fonctionnels ou les échanges avec l'IA. Seule la preuve d'une autorisation antérieure est conservée dans le JSON de travail.
+### Voix, fichiers de travail et transmission
 
-### Transmission à l'accompagnateur
+La réponse vocale est facultative. Les fichiers audio sont utilisés uniquement le temps nécessaire à leur transcription puis supprimés de la mémoire de travail ; ils ne sont jamais enregistrés dans le JSON. Toute transcription doit être relue et validée avant traitement par l’IA. Une reformulation éventuelle reste optionnelle et ne remplace jamais automatiquement votre texte.
 
-À la clôture, le bénéficiaire peut autoriser l'envoi automatique de son JSON final épuré à son accompagnateur ou choisir de le lui remettre lui-même. Dans le cadre d'un bilan de compétences, cette remise est nécessaire pour permettre l'intégration du travail validé dans les documents de synthèse obligatoires. Aucun questionnaire brut, dialogue complet ou fichier audio n'est transmis.
+Le JSON de travail permet la reprise et contient les éléments nécessaires au parcours. Le JSON final, généré uniquement lors d’une clôture définitive, est épuré : il ne conserve ni dialogues détaillés, ni questionnaires intermédiaires, ni transcriptions brutes, ni hypothèses techniques successives. Sa transmission automatique à l’accompagnateur nécessite un consentement spécifique ; vous pouvez aussi le télécharger et le remettre vous-même.
+
+L’accès initial est contrôlé par un code de déblocage stocké dans les paramètres sécurisés. Le code lui-même n’est jamais conservé dans les fichiers JSON ; seule l’autorisation d’accès est tracée.
 
 ### Nature des résultats
 
@@ -179,19 +178,6 @@ def get_secret(section: str, key: str, default: Any = "") -> Any:
     try: return st.secrets.get(section, {}).get(key, default)
     except Exception: return default
 
-
-def activation_secret() -> str:
-    return str(get_secret("security","activation_code",get_secret("activation","code",""))).strip()
-
-def activation_is_configured() -> bool:
-    return bool(activation_secret())
-
-def authorize_activation() -> None:
-    st.session_state.activation_authorized=True
-    st.session_state.activation_authorized_at=now_iso()
-    st.session_state.activation_mechanism="FW-303-v2.1"
-
-
 @st.cache_data(show_spinner=False)
 def load_referentiel() -> list[dict[str, str]]:
     if not REFERENTIEL_PATH.exists(): return []
@@ -232,11 +218,12 @@ def default_business_state() -> dict[str, Any]:
         "current_domain":"", "subject_depth":0, "saturated_subjects":[],
         "completion_check":{}, "closure_decision":"", "resume_message":"",
         "value_records":{}, "rejected_values":[],
-        "activation_authorized":False, "activation_authorized_at":"", "activation_mechanism":"FW-303-v2.1",
-        "resume_required":False, "resume_return_page":"", "read_only_final":False,
-        "finalized_at":"", "final_json_downloaded":False, "final_pdf_downloaded":False,
-        "transmission_choice":"", "transmission_status":"", "final_summary":"",
-        "completed_pages":[], "navigation_history":[],
+        "access_authorized":False, "resume_welcome_pending":False, "resume_target_page":"",
+        "final_mode":False, "final_payload":{}, "final_pdf_download_offered":False, "final_json_download_offered":False,
+        "final_transmission_choice":"", "final_transmission_status":{}, "closure_confirm_step":0,
+        "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
+        "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
+        "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
     }
 
 def init_state() -> None:
@@ -246,7 +233,7 @@ def init_state() -> None:
         "code_verified_at":None, "show_contact_page":False, "show_rgpd_page":False, "session_expired":False,
         "session_history":[], "current_runtime_session_id":None, "exit_json_ready":False, "exit_mode":None,
         "json_downloaded":False, "final_email_sent":False, "passation_root_id":None, "session_id":None,
-        "passation_id":None, "started_at":None, "activation_step":False,
+        "passation_id":None, "started_at":None,
     }
     defaults.update(default_business_state())
     for k,v in defaults.items():
@@ -361,16 +348,24 @@ def explicit_catalogue_mentions(text:str)->list[str]:
     return sorted(found,key=lambda x:(len(normalize(x).split()),len(x)))
 
 def response_json(instructions:str,payload:dict[str,Any],schema_name:str,schema:dict[str,Any],max_tokens:int=700)->dict[str,Any]:
+    import time
     client=api_client(); model=get_secret("openai","model","gpt-5-mini")
-    response=client.responses.create(model=model,instructions=instructions,input=json.dumps(payload,ensure_ascii=False),store=False,max_output_tokens=max_tokens,text={"format":{"type":"json_schema","name":schema_name,"strict":True,"schema":schema}})
-    if getattr(response,"status",None) not in (None,"completed"): raise RuntimeError(f"Réponse IA incomplète : {getattr(response,'status',None)}")
-    st.session_state.ai_calls+=1; usage=getattr(response,"usage",None)
-    if usage:
-        st.session_state.ai_input_tokens+=int(getattr(usage,"input_tokens",0) or 0)
-        st.session_state.ai_output_tokens+=int(getattr(usage,"output_tokens",0) or 0)
-    txt=getattr(response,"output_text","")
-    if not txt: raise RuntimeError("Réponse IA vide.")
-    return json.loads(txt)
+    last=None
+    for attempt in range(3):
+        try:
+            response=client.responses.create(model=model,instructions=instructions,input=json.dumps(payload,ensure_ascii=False),store=False,max_output_tokens=max_tokens,text={"format":{"type":"json_schema","name":schema_name,"strict":True,"schema":schema}})
+            if getattr(response,"status",None) not in (None,"completed"): raise RuntimeError(f"Réponse IA incomplète : {getattr(response,'status',None)}")
+            st.session_state.ai_calls+=1; usage=getattr(response,"usage",None)
+            if usage:
+                st.session_state.ai_input_tokens+=int(getattr(usage,"input_tokens",0) or 0)
+                st.session_state.ai_output_tokens+=int(getattr(usage,"output_tokens",0) or 0)
+            txt=getattr(response,"output_text","")
+            if not txt: raise RuntimeError("Réponse IA vide.")
+            return json.loads(txt)
+        except Exception as exc:
+            last=exc
+            if attempt < 2: time.sleep(0.7*(attempt+1))
+    raise RuntimeError(f"L’analyse n’a pas pu aboutir après plusieurs tentatives. Votre travail est conservé. Détail : {last}")
 
 def has_forbidden_language(text:str)->bool:
     n=normalize(text); return any(re.search(p,n) for p in FORBIDDEN_PATTERNS)
@@ -577,10 +572,12 @@ def reset_voice_capture(*, clear_text: bool=True)->None:
 
 def speak_button(text:str,key:str)->None:
     """Lecture navigateur strictement ponctuelle : un clic, une lecture, puis arrêt."""
+    if not st.session_state.get("voice_enabled",True):
+        return
     safe=json.dumps(text,ensure_ascii=False)
     safe_key=re.sub(r"[^a-zA-Z0-9_-]","_",str(key))
     components.html(f"""
-    <button id="speak_{safe_key}" style="border:1px solid #008080;border-radius:8px;padding:8px 12px;background:white;cursor:pointer">🔊 Écouter la question</button>
+    <button id="speak_{safe_key}" style="border:1px solid #008080;border-radius:8px;padding:8px 12px;background:white;cursor:pointer">🔊 Écouter</button>
     <script>
     (() => {{
       const synth = window.speechSynthesis;
@@ -608,7 +605,7 @@ def speak_button(text:str,key:str)->None:
         const finish = () => {{
           playing = false;
           btn.disabled = false;
-          btn.textContent = '🔊 Écouter la question';
+          btn.textContent = '🔊 Écouter';
           utterance = null;
         }};
         utterance.onend = finish;
@@ -619,8 +616,258 @@ def speak_button(text:str,key:str)->None:
     }})();
     </script>""",height=48)
 
+def _safe_widget_key(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", str(value))[:90]
+
+
+def reformulate_text(text: str) -> str:
+    """Reformulation facultative, fidèle et sans interprétation."""
+    instructions = """Reformulez le texte fourni en français clair, fidèle et exploitable. Ne déduisez rien, n'ajoutez aucun fait, aucune valeur, aucun diagnostic et aucun conseil. Conservez le sens, la première personne et les nuances. Retournez uniquement un objet JSON contenant la clé reformulation."""
+    schema={"type":"object","properties":{"reformulation":{"type":"string"}},"required":["reformulation"],"additionalProperties":False}
+    result=response_json(instructions,{"texte":text},"reformulation_clarte360",schema,max_tokens=500)
+    return str(result.get("reformulation","") or "").strip()
+
+
+def _local_spoken_cleanup(text: str) -> str:
+    """Nettoyage conservateur de secours : hésitations et répétitions immédiates."""
+    out=str(text or "").strip()
+    out=re.sub(r"(?i)(^|[\s,;:.!?])(?:euh+|heu+|hum+|ben|bah)(?=[\s,;:.!?]|$)", r"\1", out)
+    out=re.sub(r"\s+([,;:.!?])", r"\1", out)
+    out=re.sub(r"\s{2,}", " ", out)
+    # Répétitions immédiates de 1 à 4 mots, sans toucher aux répétitions éloignées porteuses de sens.
+    out=re.sub(r"(?i)\b([\wÀ-ÖØ-öø-ÿ'-]+(?:\s+[\wÀ-ÖØ-öø-ÿ'-]+){0,3})\s+\1\b", r"\1", out)
+    if out and out[0].islower(): out=out[0].upper()+out[1:]
+    return out.strip()
+
+
+def clean_spoken_text(text: str) -> str:
+    """Corrige uniquement les marques d'oralité sans changer le sens."""
+    local=_local_spoken_cleanup(text)
+    if not ai_ready():
+        return local
+    instructions="""Nettoyez une transcription orale française sans la reformuler sur le fond. Supprimez seulement les hésitations (euh, heu, hum), faux départs manifestes, répétitions involontaires et reprises de phrase qui ne changent pas le sens. Corrigez la ponctuation et les accords évidents. Conservez strictement la première personne, le vocabulaire, les nuances, les réserves et tous les faits. N'ajoutez rien et ne déduisez rien. Retournez uniquement un objet JSON avec la clé texte_corrige."""
+    schema={"type":"object","properties":{"texte_corrige":{"type":"string"}},"required":["texte_corrige"],"additionalProperties":False}
+    try:
+        result=response_json(instructions,{"transcription":text},"nettoyage_transcription_clarte360",schema,max_tokens=650)
+        return str(result.get("texte_corrige","") or local).strip() or local
+    except Exception:
+        return local
+
+
+def _clear_application_exploration() -> None:
+    """Supprime uniquement les productions dépendantes de l'exploration, jamais les valeurs source."""
+    generated={n for n,r in st.session_state.get("value_records",{}).items() if (r or {}).get("source") in ("application","exploration_application")}
+    for name in generated:
+        st.session_state.validation.pop(name,None)
+        st.session_state.personal_defs.pop(name,None)
+        st.session_state.hypothesis_status.pop(name,None)
+        st.session_state.value_records.pop(name,None)
+        st.session_state.comments.pop(name,None)
+    st.session_state.validated_app_values=[n for n in st.session_state.get("validated_app_values",[]) if n not in generated]
+    for key,default in {
+        "conversation":[],"candidate_names":[],"candidate_reasons":{},"candidate_evidence":{},
+        "hypothesis_history":[],"hypothesis_queue":[],"completed_hypotheses":[],
+        "abandoned_hypotheses":[],"discarded":[],"reasoning_evolution":[],
+        "analysis_history":[],"analysis_card":{},"completion_check":{},"last_presented_hypotheses":[],
+    }.items(): st.session_state[key]=deepcopy(default)
+    st.session_state.hypothesis_index=0; st.session_state.validation_index=0
+    st.session_state.pipeline_status="idle"; st.session_state.pending_submission={}
+    st.session_state.exploration_complete=False
+
+
+def invalidate_dependencies(scope: str, *, value_name: str="", reason: str="") -> None:
+    """Recalcul déterministe des seuls éléments dépendants d'une modification."""
+    scope=str(scope or "").strip()
+    if not scope: return
+    if scope in ("profile","prerequisites","personal_values"):
+        _clear_application_exploration()
+    elif scope=="exploration":
+        _clear_application_exploration()
+    elif scope=="value_definition" and value_name:
+        st.session_state.validation.pop(value_name,None)
+        st.session_state.validation_stage[value_name]=0
+        if value_name in st.session_state.validated_app_values: st.session_state.validated_app_values.remove(value_name)
+        rec=st.session_state.value_records.get(value_name,{}) or {}
+        if rec:
+            rec["statut"]="en_cours_analyse"; rec["definition_personnelle"]=st.session_state.personal_defs.get(value_name,rec.get("definition_personnelle","")); st.session_state.value_records[value_name]=rec
+        st.session_state.hypothesis_status[value_name]="en_cours_analyse"
+        st.session_state.completion_check={}; st.session_state.exploration_complete=False
+    elif scope=="validation":
+        st.session_state.completion_check={}; st.session_state.exploration_complete=False
+    st.session_state.data_revision=int(st.session_state.get("data_revision",0))+1
+    for item in ("controle_completude","rapport_final"):
+        if item not in st.session_state.stale_sections: st.session_state.stale_sections.append(item)
+    st.session_state.dependency_events.append({"date":now_iso(),"scope":scope,"valeur":value_name,"raison":reason,"revision":st.session_state.data_revision})
+    business_trace("recalcul_dependances",f"{scope}; valeur={value_name}; {reason}")
+    synchronize_value_state()
+
+
+def open_response_widget(label: str, key: str, *, value: str="", height: int=110,
+                         allow_reformulation: bool=True, help_text: str="",
+                         listen: bool=True, dependency_scope: str="", value_name: str="") -> str:
+    """Composant unique : écoute, clavier/voix, correction et validation obligatoire."""
+    base=_safe_widget_key(key)
+    meta=st.session_state.answer_metadata.setdefault(base,{"mode_saisie":"","texte_brut":"","transcription":"","transcription_corrigee":"","reformulation_proposee":"","reformulation_retenue":"","version_officielle":"","validee_le":""})
+    if value and not str(meta.get("version_officielle","") or "").strip():
+        meta.update({"mode_saisie":"reprise","texte_brut":str(value),"version_officielle":str(value),"validee_le":meta.get("validee_le") or now_iso()})
+        st.session_state[f"{base}_official"]=str(value)
+    if listen: speak_button(label,f"listen_{base}")
+    if help_text: st.caption(help_text)
+    current=str(meta.get("version_officielle") or st.session_state.get(f"{base}_official") or value or "")
+    st.markdown("**⌨️ Répondre au clavier ou 🎤 répondre à l’oral**")
+    typed=st.text_area(label,value=current,height=height,key=f"{base}_typed")
+    if typed.strip()!=current.strip():
+        st.caption("Cette modification n’est pas encore enregistrée.")
+        if st.button("✔ Valider ma réponse écrite",key=f"{base}_validate_typed",type="primary",use_container_width=True):
+            old=str(meta.get("version_officielle","") or "")
+            official=typed.strip()
+            meta.update({"mode_saisie":"clavier","texte_brut":official,"transcription":"","transcription_corrigee":"","version_officielle":official,"validee_le":now_iso()})
+            st.session_state[f"{base}_official"]=official
+            if old and old!=official: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
+            st.rerun()
+    audio=None
+    if st.session_state.get("voice_enabled",True):
+        if hasattr(st,"audio_input"):
+            audio=st.audio_input("🎤 Répondre à l’oral",key=f"{base}_audio_{st.session_state.get(base+'_audio_version',0)}")
+        else: st.caption("L’enregistrement vocal n’est pas disponible dans cette version de Streamlit.")
+    if audio:
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button("Transcrire et préparer la correction",key=f"{base}_transcribe",type="primary",use_container_width=True):
+                try:
+                    raw=transcribe_audio(audio)
+                    corrected=clean_spoken_text(raw)
+                    st.session_state[f"{base}_transcript_raw"]=raw
+                    st.session_state[f"{base}_transcript_clean"]=corrected
+                    st.session_state[f"{base}_audio_version"]=int(st.session_state.get(base+'_audio_version',0))+1
+                    st.rerun()
+                except Exception as exc: st.error(f"La transcription n’a pas pu être réalisée : {exc}")
+        with c2:
+            if st.button("🎤 Réenregistrer",key=f"{base}_rerecord",use_container_width=True):
+                st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
+                st.session_state[f"{base}_audio_version"]=int(st.session_state.get(base+'_audio_version',0))+1; st.rerun()
+    raw=str(st.session_state.get(f"{base}_transcript_raw","") or "")
+    cleaned=str(st.session_state.get(f"{base}_transcript_clean","") or "")
+    if raw:
+        st.info("Relisez les deux versions. La correction retire seulement les hésitations, répétitions involontaires et reprises de phrase. Rien n’est enregistré sans votre validation.")
+        st.markdown("**Transcription brute**"); st.write(raw)
+        st.markdown("**Proposition corrigée Clarté360**")
+        clean_edit=st.text_area("Vous pouvez corriger cette proposition",value=cleaned or raw,height=height,key=f"{base}_clean_edit")
+        choice=st.radio("Quelle version souhaitez-vous valider ?",["Conserver la transcription brute","Utiliser la proposition corrigée","Utiliser ma correction manuelle","Réenregistrer"],key=f"{base}_voice_choice")
+        if choice=="Réenregistrer":
+            if st.button("Ouvrir un nouvel enregistrement",key=f"{base}_voice_redo",use_container_width=True):
+                st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
+                st.session_state[f"{base}_audio_version"]=int(st.session_state.get(base+'_audio_version',0))+1; st.rerun()
+        elif st.button("✔ Valider cette réponse orale",key=f"{base}_validate_voice",type="primary",use_container_width=True):
+            retained=raw if choice.startswith("Conserver") else (cleaned if choice.startswith("Utiliser la proposition") else clean_edit.strip())
+            old=str(meta.get("version_officielle","") or "")
+            meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":clean_edit.strip(),"version_officielle":retained.strip(),"validee_le":now_iso()})
+            st.session_state[f"{base}_official"]=retained.strip()
+            st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
+            if old and old!=retained.strip(): invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse vocale {base} modifiée")
+            st.rerun()
+    official=str(meta.get("version_officielle") or st.session_state.get(f"{base}_official") or "").strip()
+    if official:
+        st.success("Réponse validée et enregistrée.")
+    if allow_reformulation and official:
+        choice=st.radio("Souhaitez-vous conserver votre réponse ou demander une reformulation plus claire ?",["Conserver ma réponse","Proposer une reformulation"],key=f"{base}_reform_choice",horizontal=True)
+        if choice.startswith("Proposer") and st.button("Générer la reformulation",key=f"{base}_reform_btn",use_container_width=True):
+            try:
+                with st.spinner("Préparation d’une reformulation fidèle…"): proposal=reformulate_text(official)
+                st.session_state[f"{base}_proposal"]=proposal; meta["reformulation_proposee"]=proposal; st.rerun()
+            except Exception as exc: st.error(f"La reformulation n’a pas pu être générée : {exc}")
+        proposal=str(st.session_state.get(f"{base}_proposal","") or "")
+        if proposal:
+            st.markdown("**Votre réponse validée**"); st.write(official)
+            st.markdown("**Proposition Clarté360**")
+            edited=st.text_area("Vous pouvez modifier la proposition",value=proposal,height=height,key=f"{base}_proposal_edit")
+            selected=st.radio("Quelle version souhaitez-vous enregistrer ?",["Conserver mon texte","Utiliser la reformulation","Utiliser la reformulation modifiée"],key=f"{base}_proposal_select")
+            if st.button("Valider la version officielle",key=f"{base}_proposal_validate",type="primary",use_container_width=True):
+                retained=official if selected.startswith("Conserver") else (proposal if selected=="Utiliser la reformulation" else edited.strip())
+                old=official
+                st.session_state[f"{base}_official"]=retained; meta.update({"reformulation_retenue":retained if not selected.startswith("Conserver") else "","version_officielle":retained,"validee_le":now_iso()})
+                st.session_state.pop(f"{base}_proposal",None)
+                if old!=retained: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"reformulation {base} retenue")
+                st.rerun()
+    return str(meta.get("version_officielle") or st.session_state.get(f"{base}_official") or "").strip()
+
+
+def mark_data_change(section: str, affects: list[str]|None=None) -> None:
+    st.session_state.data_revision=int(st.session_state.get("data_revision",0))+1
+    for item in affects or []:
+        if item not in st.session_state.stale_sections: st.session_state.stale_sections.append(item)
+    business_trace("donnees_modifiees",f"{section}; impacts={','.join(affects or [])}")
+
+
+def synchronize_value_state() -> None:
+    """Réconcilie les structures métier après chaque validation/modification."""
+    valid=[]
+    for name,val in list(st.session_state.get("validation",{}).items()):
+        if bool(val.get("fondamentale")):
+            valid.append(name)
+            rec=st.session_state.value_records.get(name,{})
+            register_value_record(name,rec.get("source","accompagnateur" if name in st.session_state.existing_values else "exploration_application"),"validee",st.session_state.personal_defs.get(name,rec.get("definition_personnelle","")),rec.get("situations_associees",[]),rec.get("emotions_associees",[]),100)
+            st.session_state.hypothesis_status[name]="validee"
+        elif name in st.session_state.value_records and st.session_state.value_records[name].get("statut")=="validee":
+            st.session_state.value_records[name]["statut"]="a_confirmer"
+    st.session_state.validated_app_values=[n for n in valid if n not in st.session_state.existing_values]
+    # Enlève toute valeur supprimée des listes et files dépendantes.
+    known=set(st.session_state.existing_values)|set(st.session_state.value_records)
+    st.session_state.candidate_names=[n for n in st.session_state.get("candidate_names",[]) if n in known or n in VALUE_MAP]
+    st.session_state.hypothesis_queue=[n for n in st.session_state.get("hypothesis_queue",[]) if n in known or n in VALUE_MAP]
+    st.session_state.exploration_complete=False if st.session_state.get("stale_sections") else st.session_state.exploration_complete
+
+
+def revise_exploration_turn(turn_index: int, new_answer: str) -> None:
+    """Repart exactement de la question modifiée et recalcule tout l'aval."""
+    turns=list(st.session_state.get("conversation",[]))
+    if turn_index<0 or turn_index>=len(turns): return
+    question=str(turns[turn_index].get("question","") or "")
+    prefix=turns[:turn_index]
+    invalidate_dependencies("exploration",reason=f"réponse d'exploration n°{turn_index+1} modifiée")
+    st.session_state.conversation=prefix
+    st.session_state.current_question=question
+    queue_exploration_submission(new_answer.strip())
+
+
+def closure_consistency_audit() -> tuple[bool,list[str]]:
+    """Bloque la clôture tant qu'une dépendance ou restitution n'est pas cohérente."""
+    issues=[]; synchronize_value_state()
+    if st.session_state.get("stale_sections"): issues.append("Le contrôle de complétude ou le rapport doit être recalculé après une modification.")
+    if not st.session_state.get("completion_check"): issues.append("Le contrôle de complétude n'a pas été enregistré.")
+    for name in validated_names():
+        if not (st.session_state.validation.get(name,{}) or {}).get("fondamentale"): issues.append(f"La valeur {name} est affichée comme validée sans validation fondamentale cohérente.")
+    expected=set(validated_names()); recorded={n for n,r in st.session_state.get("value_records",{}).items() if (r or {}).get("statut")=="validee"}
+    if expected!=recorded: issues.append("Le panneau des valeurs et les enregistrements métier ne sont pas synchronisés.")
+    st.session_state.closure_audit={"date":now_iso(),"revision":st.session_state.get("data_revision",0),"conforme":not issues,"anomalies":issues}
+    return not issues,issues
+
+def final_pdf_from_payload(payload: dict[str,Any]) -> bytes:
+    """Rapport autonome régénérable depuis le seul JSON final."""
+    from reportlab.platypus import Image, Table, TableStyle
+    buffer=BytesIO(); styles=getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="FinalTitle",parent=styles["Title"],fontSize=22,leading=27,textColor=colors.HexColor(OFFICIAL_TEAL),alignment=1,spaceAfter=16))
+    styles.add(ParagraphStyle(name="FinalH2",parent=styles["Heading2"],textColor=colors.HexColor(OFFICIAL_TEAL),spaceBefore=10,spaceAfter=6))
+    def footer(canvas,doc):
+        canvas.saveState(); canvas.setStrokeColor(colors.HexColor("#D7EAEA")); canvas.line(1.5*cm,1.05*cm,A4[0]-1.5*cm,1.05*cm); canvas.setFont("Helvetica",7.5); canvas.setFillColor(colors.HexColor("#666666")); canvas.drawString(1.5*cm,.65*cm,"Clarté360 - Document confidentiel"); canvas.drawRightString(A4[0]-1.5*cm,.65*cm,f"Page {doc.page}"); canvas.restoreState()
+    doc=SimpleDocTemplate(buffer,pagesize=A4,rightMargin=1.7*cm,leftMargin=1.7*cm,topMargin=1.5*cm,bottomMargin=1.4*cm,title="Rapport final RVC360")
+    ident=payload.get("identite",{}); vals=payload.get("valeurs_fondamentales",[]); story=[]
+    if LOGO_PATH.exists(): story += [Image(str(LOGO_PATH),width=2.6*cm,height=2.6*cm),Spacer(1,.35*cm)]
+    story += [Paragraph("Recherche de mes valeurs",styles["FinalTitle"]),Paragraph(f"<b>Bénéficiaire :</b> {html.escape((ident.get('prenom','')+' '+ident.get('nom','')).strip())}",styles["Normal"]),Paragraph(f"<b>Parcours :</b> {html.escape(str(payload.get('passation_id','')))}",styles["Normal"]),Paragraph(f"<b>Clôture :</b> {html.escape(str(payload.get('date_cloture','')))}",styles["Normal"]),Spacer(1,.35*cm),Paragraph("Synthèse finale",styles["FinalH2"])]
+    summary=payload.get("synthese_finale",{})
+    story.append(Paragraph(html.escape(str(summary.get("texte","Les valeurs ci-dessous ont été validées par le bénéficiaire."))),styles["Normal"]))
+    for i,v in enumerate(vals,1):
+        story += [Paragraph(f"{i}. {html.escape(str(v.get('nom','')))}",styles["FinalH2"]),Paragraph(f"<b>Origine :</b> {html.escape(str(v.get('origine','')))}",styles["Normal"]),Paragraph(html.escape(str(v.get('definition_personnelle','') or 'Définition personnelle non renseignée.')),styles["Normal"])]
+        sits=v.get("situations_significatives",[]) or []
+        if sits: story.append(Paragraph("<b>Situation(s) significative(s) :</b> "+html.escape(" ; ".join(map(str,sits))),styles["Normal"]))
+    elements=payload.get("elements_a_reprendre_avec_accompagnateur","")
+    if elements: story += [Paragraph("À reprendre avec l’accompagnateur",styles["FinalH2"]),Paragraph(html.escape(str(elements)),styles["Normal"])]
+    doc.build(story,onFirstPage=footer,onLaterPages=footer); return buffer.getvalue()
+
 def value_reminder()->None:
-    st.info("Une valeur est un principe profondément important qui oriente vos choix et votre manière de vivre. Ce n'est ni une simple préférence, ni une qualité, ni un objectif. Le mot retenu doit avoir pour vous un sens personnel précis.")
+    text="Une valeur est un principe profondément important qui oriente vos choix et votre manière de vivre. Ce n'est ni une simple préférence, ni une qualité, ni un objectif. Le mot retenu doit avoir pour vous un sens personnel précis."
+    speak_button(text,"listen_value_reminder")
+    st.info(text)
 
 def validated_names()->list[str]:
     names=list(dict.fromkeys(st.session_state.existing_values+st.session_state.get("validated_app_values",[])))
@@ -628,9 +875,7 @@ def validated_names()->list[str]:
 
 def start_new_session(nom:str,prenom:str,email:str,consultant:str=""):
     st.session_state.passation_root_id=str(uuid.uuid4()); st.session_state.session_id=str(uuid.uuid4()); st.session_state.passation_id=f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{st.session_state.session_id[:8].upper()}"; st.session_state.started_at=now_iso(); st.session_state.beneficiaire={"nom":nom.strip(),"prenom":prenom.strip(),"email":email.strip(),"consultant":consultant.strip()}; st.session_state.test_started=True; st.session_state.session_history=[]
-    activation_ok=bool(st.session_state.get("activation_authorized")); activation_at=st.session_state.get("activation_authorized_at","")
     for k,v in default_business_state().items(): st.session_state[k]=deepcopy(v)
-    st.session_state.activation_authorized=activation_ok; st.session_state.activation_authorized_at=activation_at; st.session_state.activation_mechanism="FW-303-v2.1"
     init_runtime_session("premiere_connexion")
 
 def build_payload(completed=False)->dict[str,Any]:
@@ -670,11 +915,21 @@ def build_payload(completed=False)->dict[str,Any]:
         "etat_exploration":{"souhaitee":st.session_state.get("exploration_wanted"),"page":st.session_state.page},
         "controle_completude":st.session_state.get("completion_check",{}),
         "decision_cloture":st.session_state.get("closure_decision",""),
-        "autorisation_acces":{"acces_autorise":bool(st.session_state.get("activation_authorized")),"date_autorisation":st.session_state.get("activation_authorized_at","") or None,"version_mecanisme":st.session_state.get("activation_mechanism","FW-303-v2.1")},
         "historique":st.session_state.get("trace",[]),
+        "reponses_structurees":st.session_state.get("answer_metadata",{}),
+        "revision_donnees":st.session_state.get("data_revision",0),
+        "sections_a_recalculer":st.session_state.get("stale_sections",[]),
+        "evenements_dependances":st.session_state.get("dependency_events",[]),
+        "derniere_revision_coherente":st.session_state.get("last_consistent_revision",0),
+        "audit_cloture":st.session_state.get("closure_audit",{}),
     }
     if not completed:
-        # Le JSON de reprise conserve l'état nécessaire à la continuité du travail.
+        # Copie complète et versionnée de l'état métier pour une reprise exacte de la page,
+        # des files de validation, de la navigation et des dépendances.
+        resume_state={k:deepcopy(st.session_state.get(k,v)) for k,v in default_business_state().items()}
+        # Aucun audio binaire ni secret n'appartient à cet état.
+        metier_common["etat_reprise"]=resume_state
+        # Le JSON de reprise conserve aussi les champs historiques explicites pour compatibilité.
         metier_common.update({
             "existing_values":st.session_state.existing_values,
             "validated_app_values":st.session_state.get("validated_app_values",[]),
@@ -705,83 +960,33 @@ def build_payload(completed=False)->dict[str,Any]:
         "rgpd_acceptance":st.session_state.get("rgpd_acceptance",{}),"access_history":st.session_state.get("access_history",{}),
         "sessions":st.session_state.get("session_history",[]),"metier":metier_common,
         "ia":{"appels":st.session_state.ai_calls,"tokens_entree":st.session_state.ai_input_tokens,"tokens_sortie":st.session_state.ai_output_tokens,"statut":st.session_state.ai_engine_status,"modele":get_secret("openai","model","gpt-5-mini")},
-        "completed":completed,"statut":"parcours_cloture" if completed else "parcours_en_cours",
-        "finalise_le":st.session_state.get("finalized_at","") if completed else "",
-        "exporte_le":now_iso(),
+        "completed":completed,"acces_autorise":bool(st.session_state.get("access_authorized")),"exporte_le":now_iso(),
     }
 
-def build_final_payload()->dict[str,Any]:
-    base=build_payload(True)
-    m=base.get("metier",{})
-    allowed={
-        "valeurs_validees":m.get("valeurs_validees",[]),
-        "nombre_total_valeurs_validees":m.get("nombre_total_valeurs_validees",0),
-        "nombre_valeurs_seance":m.get("nombre_valeurs_seance",0),
-        "nombre_valeurs_application":m.get("nombre_valeurs_application",0),
-        "presentation_beneficiaire":m.get("presentation_beneficiaire",{}),
-        "valeurs_accompagnateur":m.get("valeurs_accompagnateur",[]),
-        "valeurs_observations_personnelles":m.get("valeurs_observations_personnelles",[]),
-        "valeurs_ia":m.get("valeurs_ia",[]),
-        "domaines_explores":m.get("domaines_explores",{}),
-        "controle_completude":m.get("controle_completude",{}),
-        "decision_cloture":"cloture_definitive",
-        "synthese_finale":st.session_state.get("final_summary","") or st.session_state.get("exploration_summary",""),
-        "elements_a_reprendre_avec_accompagnateur":m.get("controle_completude",{}).get("angles_a_reprendre",""),
-        "autorisation_acces":{"acces_autorise":True,"version_mecanisme":st.session_state.get("activation_mechanism","FW-303-v2.1")},
-    }
-    base["metier"]=allowed
-    base.pop("access_history",None)
-    base["ia"]={"appels_realises_pendant_le_parcours":st.session_state.get("ai_calls",0),"aucun_nouvel_appel_en_mode_final":True}
-    base["statut"]="parcours_cloture"
-    base["completed"]=True
-    base["finalise_le"]=st.session_state.get("finalized_at","") or now_iso()
-    return base
-
-def payload_bytes(completed=False)->bytes:
-    payload=build_final_payload() if completed else build_payload(False)
-    return json.dumps(payload,ensure_ascii=False,indent=2).encode("utf-8")
+def payload_bytes(completed=False)->bytes: return json.dumps(build_payload(completed),ensure_ascii=False,indent=2).encode("utf-8")
 def make_filename(prefix="rvc360",ext="json"):
     b=st.session_state.get("beneficiaire",{}); return f"{prefix}_{sanitize_filename((b.get('prenom','')+'_'+b.get('nom','')).strip())}_{datetime.now().strftime('%Y%m%d_%H%M')}.{ext}"
 
 def restore_from_progress(payload:dict):
-    is_final=payload.get("statut")=="parcours_cloture" or bool(payload.get("completed"))
-    st.session_state.passation_root_id=payload.get("passation_root_id",str(uuid.uuid4()))
-    st.session_state.session_id=str(uuid.uuid4())
-    st.session_state.passation_id=payload.get("passation_id") or f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    st.session_state.beneficiaire=payload.get("beneficiaire",{})
-    st.session_state.rgpd_acceptance=payload.get("rgpd_acceptance",{})
-    st.session_state.access_history=payload.get("access_history",{})
-    st.session_state.session_history=deepcopy(payload.get("sessions",[]))
-    m=payload.get("metier",{})
-    for k,v in default_business_state().items(): st.session_state[k]=deepcopy(m.get(k,v))
-    auth=m.get("autorisation_acces",{})
-    st.session_state.activation_authorized=bool(auth.get("acces_autorise",True))
-    st.session_state.activation_authorized_at=auth.get("date_autorisation","") or now_iso()
-    st.session_state.activation_mechanism=auth.get("version_mecanisme","FW-303-v2.1")
-    if is_final:
-        vals=m.get("valeurs_validees",[])
-        st.session_state.existing_values=[]; st.session_state.validated_app_values=[]
-        for v in vals:
-            name=v.get("nom","")
-            if not name: continue
-            st.session_state.personal_defs[name]=v.get("definition_personnelle","") or v.get("definition_clarte360","")
-            st.session_state.validation[name]={"importante":True,"tres_importante":True,"fondamentale":True}
-            if v.get("origine")=="seance": st.session_state.existing_values.append(name)
-            else: st.session_state.validated_app_values.append(name)
-        st.session_state.read_only_final=True
-        st.session_state.finalized_at=payload.get("finalise_le","")
-        st.session_state.final_summary=m.get("synthese_finale","")
-        st.session_state.page="Consultation finale"
+    st.session_state.passation_root_id=payload.get("passation_root_id",str(uuid.uuid4())); st.session_state.session_id=str(uuid.uuid4()); st.session_state.passation_id=payload.get("passation_id") or f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}"; st.session_state.beneficiaire=payload.get("beneficiaire",{}); st.session_state.rgpd_acceptance=payload.get("rgpd_acceptance",{}); st.session_state.access_history=payload.get("access_history",{}); st.session_state.session_history=deepcopy(payload.get("sessions",[])); m=payload.get("metier",{})
+    resume_state=m.get("etat_reprise",m)
+    for k,v in default_business_state().items(): st.session_state[k]=deepcopy(resume_state.get(k,m.get(k,v)))
+    # Compatibilité avec les JSON 1.3.0 et antérieurs : reconstruire les valeurs application déjà fondamentales.
+    if not st.session_state.get("validated_app_values"):
+        st.session_state.validated_app_values=[
+            n for n,val in st.session_state.get("validation",{}).items()
+            if val.get("fondamentale") and n not in st.session_state.get("existing_values",[])
+        ]
+    authorized=bool(payload.get("acces_autorise") or payload.get("access_authorized") or (payload.get("access_history") or {}).get("autorise") or (payload.get("rgpd_acceptance") and payload.get("passation_id")))
+    if not authorized:
+        raise ValueError("Ce fichier ne contient pas de preuve d’autorisation d’accès Clarté360.")
+    st.session_state.test_started=True; st.session_state.code_verified_at=now_iso(); st.session_state.access_authorized=True
+    synchronize_value_state()
+    if payload.get("statut")=="parcours_cloture" or payload.get("completed") is True and payload.get("type_export")=="final":
+        st.session_state.final_mode=True; st.session_state.final_payload=deepcopy(payload); st.session_state.page="Consultation finale"
     else:
-        if not st.session_state.get("validated_app_values"):
-            st.session_state.validated_app_values=[n for n,val in st.session_state.get("validation",{}).items() if val.get("fondamentale") and n not in st.session_state.get("existing_values",[])]
-        st.session_state.resume_return_page=st.session_state.page
-        st.session_state.resume_required=True
-        st.session_state.page="Reprise intelligente"
-    st.session_state.test_started=True
-    st.session_state.code_verified_at=now_iso()
-    init_runtime_session("consultation_json_final" if is_final else "reprise_json")
-    business_trace("import_json_final" if is_final else "reprise_json")
+        st.session_state.resume_target_page=st.session_state.page; st.session_state.resume_welcome_pending=True; st.session_state.page="Accueil reprise"
+    init_runtime_session("reprise_json"); business_trace("reprise_json")
 
 def create_pdf()->bytes:
     from reportlab.platypus import Image, Table, TableStyle, KeepTogether
@@ -910,79 +1115,56 @@ def import_json_screen():
             else: restore_from_progress(payload); st.rerun()
         except Exception as exc: st.error(f"Fichier JSON invalide : {exc}")
 
-def activation_and_identification_screen():
-    display_header()
-    st.markdown('<div class="objectif-box"><h3>Bienvenue sur Clarté360</h3><p>Cette application est réservée aux bénéficiaires accompagnés. Merci de saisir le code de déblocage transmis par votre accompagnateur.</p></div>',unsafe_allow_html=True)
-    if not activation_is_configured():
-        st.error("Le code de déblocage n'est pas configuré dans Streamlit Secrets (security.activation_code).")
-        return
-    code=st.text_input("Code de déblocage",type="password",key="activation_code_input")
-    if st.button("Valider le code",type="primary",disabled=not code.strip()):
-        if code.strip()==activation_secret():
-            authorize_activation(); st.session_state.activation_step=True; st.rerun()
-        else: st.error("Code incorrect. Vérifiez le code transmis par votre accompagnateur.")
-
+def issue_access_code(email:str,prenom:str,is_regeneration:bool):
+    code=f"{random.randint(100000,999999)}"; minutes=int(get_secret("security","code_expiration_minutes",15)); st.session_state.access_code=code; st.session_state.code_expires_at=(datetime.now()+timedelta(minutes=minutes)).isoformat(timespec="seconds"); h=st.session_state.get("access_history",{"generations":[],"nombre_regenerations":0})
+    if is_regeneration: h["nombre_regenerations"]=int(h.get("nombre_regenerations",0))+1
+    h.setdefault("generations",[]).append({"date":datetime.now().strftime("%Y-%m-%d"),"heure":datetime.now().strftime("%H:%M:%S"),"generation":"regeneration" if is_regeneration else "initiale","envoi":"email","version_application":APP_VERSION}); st.session_state.access_history=h
+    pending=st.session_state.get("pending_beneficiaire",{}); body_user=f"Bonjour {prenom},\n\nVotre code d'accès à {APP_FULL_NAME} est : {code}\n\nCe code est valable {minutes} minutes.\n\nClarté360"; body_admin=f"Demande de code d'accès pour {APP_FULL_NAME}.\n\nPrénom : {pending.get('prenom',prenom)}\nNom : {pending.get('nom','')}\nEmail : {email}\nConsultant : {pending.get('consultant','')}\nCode : {code}\nType : {'régénération' if is_regeneration else 'initiale'}\nDate/heure : {now_iso()}\nVersion : {APP_VERSION}\nConsentement RGPD : accepté ({RGPD_TEXT_VERSION})."
+    ok_admin,msg_admin=send_email(f"Clarté360 - Nouveau code d'accès {APP_NAME}",body_admin); ok_user,msg_user=send_email(f"Votre code d'accès {APP_FULL_NAME}",body_user,to_email=email); h["generations"][-1]["envoi_beneficiaire"]="ok" if ok_user else msg_user; h["generations"][-1]["notification_admin"]="ok" if ok_admin else msg_admin
+    if ok_user: st.success("Un code d'accès vient de vous être envoyé par e-mail.")
+    else: st.error("Impossible d'envoyer le code : "+msg_user)
 def identification_screen():
-    if not st.session_state.get("activation_authorized"):
-        activation_and_identification_screen(); return
-    display_header(); st.success("Accès autorisé.")
+    display_header(); st.markdown('<div class="objectif-box"><h3>Objectif de l’outil</h3><p>Cette application a pour objectif unique d’aider le bénéficiaire à rechercher, clarifier et valider ses valeurs fondamentales. Elle ne fait ni coaching, ni bilan de compétences, ni orientation, ni test de personnalité.</p></div>',unsafe_allow_html=True)
     with st.expander("Protection des données personnelles, traçabilité et utilisation de l'IA",expanded=True): st.markdown(RGPD_TEXT)
     st.subheader("Identification")
     with st.form("identification"):
         c1,c2=st.columns(2)
         with c1: prenom=st.text_input("Prénom *")
         with c2: nom=st.text_input("Nom *")
-        email=st.text_input("Adresse e-mail *"); consultant=st.text_input("Consultant / accompagnateur")
-        consent=st.checkbox("J'ai lu et j'accepte les conditions RGPD et les informations relatives à l'utilisation de l'intelligence artificielle.")
-        submitted=st.form_submit_button("Commencer mon parcours",type="primary")
+        email=st.text_input("Adresse e-mail *"); consultant=st.text_input("Consultant / accompagnateur"); consent=st.checkbox("J'ai lu et j'accepte les conditions RGPD et les informations relatives à l'utilisation de l'intelligence artificielle."); submitted=st.form_submit_button("Recevoir mon code d'accès",type="primary")
     if submitted:
         if not prenom.strip() or not nom.strip() or "@" not in email: st.error("Merci de renseigner prénom, nom et une adresse e-mail valide.")
         elif not consent: st.error("Le consentement est obligatoire avant toute utilisation.")
         else:
-            st.session_state.rgpd_acceptance={"consentement":True,"date":datetime.now().strftime("%Y-%m-%d"),"heure":datetime.now().strftime("%H:%M:%S"),"version_texte":RGPD_TEXT_VERSION}
-            start_new_session(nom,prenom,email,consultant); st.rerun()
+            st.session_state.rgpd_acceptance={"consentement":True,"date":datetime.now().strftime("%Y-%m-%d"),"heure":datetime.now().strftime("%H:%M:%S"),"version_texte":RGPD_TEXT_VERSION}; st.session_state.pending_beneficiaire={"prenom":prenom.strip(),"nom":nom.strip(),"email":email.strip(),"consultant":consultant.strip()}; issue_access_code(email.strip(),prenom.strip(),False)
+    if st.session_state.get("access_code"):
+        st.subheader("Code d'accès"); code_in=st.text_input("Saisissez le code reçu par e-mail",max_chars=6); c1,c2=st.columns(2)
+        with c1:
+            if st.button("Valider le code et commencer",type="primary"):
+                exp=datetime.fromisoformat(st.session_state.code_expires_at)
+                if datetime.now()>exp: st.error("Le code a expiré. Demandez un nouveau code.")
+                elif code_in.strip()==st.session_state.access_code:
+                    b=st.session_state.pending_beneficiaire; st.session_state.code_verified_at=now_iso(); st.session_state.access_history["validation_code"]={"date_heure":now_iso(),"code_valide":True,"version_application":APP_VERSION}; start_new_session(b["nom"],b["prenom"],b["email"],b.get("consultant","")); st.rerun()
+                else: st.error("Code incorrect.")
+        with c2:
+            if st.button("Je n'ai pas reçu mon code → Générer un nouveau code"):
+                b=st.session_state.pending_beneficiaire; issue_access_code(b["email"],b["prenom"],True)
 
 
 def sidebar_progress_label(page: str) -> str:
-    labels={
-        "Accueil":"Étape 1 sur 6 - Accueil",
-        "Prerequis":"Étape 2 sur 6 - Prérequis",
-        "Presentation beneficiaire":"Étape 3 - Faisons connaissance",
-        "Presentation assistant":"Étape 4 - Présentation de l’assistant",
-        "Valeurs interseances":"Étape 5 - Valeurs repérées entre les séances",
-        "Decision exploration":"Étape 6 - Choix de poursuivre",
-        "Exploration IA":"Étape 7 - Exploration",
-        "Mots a examiner":"Étape 8 - Hypothèse en cours",
-        "Validation":"Étape 9 - Validation",
-        "Controle completude":"Étape 10 - Contrôle de complétude",
-        "Resultats":"Étape 11 - État actuel",
-        "Reprise intelligente":"Reprise de votre parcours",
-        "Cloture definitive":"Clôture définitive",
-        "Consultation finale":"Consultation du parcours finalisé",
-    }
-    return labels.get(page, str(page))
+    return PAGE_LABELS.get(page,str(page))
 
 def sidebar_progress():
     in_app=st.session_state.get("test_started",False)
     if LOGO_PATH.exists(): st.sidebar.image(str(LOGO_PATH),width=85)
     st.sidebar.markdown("### Clarté360")
     if in_app:
-        st.sidebar.caption(sidebar_progress_label(st.session_state.page))
-        vals=validated_names()
-        if vals: st.sidebar.markdown("**Valeurs validées**  "+" · ".join(vals))
-        if not st.session_state.get("read_only_final"):
-            st.sidebar.markdown("---")
-            st.sidebar.download_button("💾 Sauvegarder mon travail (JSON)",data=payload_bytes(False),file_name=make_filename("rvc360_sauvegarde","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("sauvegarde_manuelle"))
-            completed=st.session_state.get("completed_pages",[])
-            nav_pages=[("Accueil","Accueil"),("Presentation beneficiaire","Faisons connaissance"),("Valeurs interseances","Découvertes personnelles"),("Exploration IA","Exploration"),("Controle completude","Contrôle de complétude"),("Resultats","Résultats")]
-            available=[x for x in nav_pages if x[0] in completed or x[0]==st.session_state.page or x[0] in ["Accueil","Resultats"]]
-            if available:
-                chosen=st.sidebar.selectbox("Revenir à une étape déjà ouverte",[x[1] for x in available],index=0,key="free_nav")
-                if st.sidebar.button("Ouvrir cette étape",use_container_width=True):
-                    target=dict((label,page) for page,label in available)[chosen]
-                    st.session_state.navigation_history.append({"de":st.session_state.page,"vers":target,"date":now_iso()})
-                    st.session_state.page=target; st.rerun()
-            if st.sidebar.button("🚪 Quitter temporairement",use_container_width=True): record_save_event("sortie_preparee"); close_runtime_session("sortie_preparee"); st.session_state.exit_json_ready=True; st.session_state.exit_mode="quit"; st.rerun()
+        steps=PAGE_ORDER; current=st.session_state.page; idx=steps.index(current) if current in steps else 0
+        st.sidebar.progress(idx/(len(steps)-1) if len(steps)>1 else 0)
+        st.sidebar.caption(PAGE_LABELS.get(current,current))
+        st.sidebar.markdown("---")
+        st.sidebar.download_button("💾 Sauvegarder mon travail (JSON)",data=payload_bytes(False),file_name=make_filename("rvc360_sauvegarde","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("sauvegarde_manuelle"))
+        if st.sidebar.button("🚪 Quitter et préparer mon JSON",use_container_width=True): record_save_event("sortie_preparee"); close_runtime_session("sortie_preparee"); st.session_state.exit_json_ready=True; st.session_state.exit_mode="quit"; st.rerun()
         st.sidebar.caption(f"Temps cumulé : {format_duration(total_session_seconds())}")
     else: st.sidebar.markdown("### Session")
     st.sidebar.markdown("---")
@@ -1070,6 +1252,12 @@ def values_side_panel() -> None:
     pills="".join(f'<div class="value-pill">{html.escape(v)}</div>' for v in values) or '<div class="small-muted" style="text-align:center">Aucune valeur validée pour le moment</div>'
     image=f'<img src="data:image/webp;base64,{avatar}" alt="Assistant Clarté360">' if avatar else ''
     st.markdown(f'<aside class="clarte-values-panel">{image}<h4>Mes valeurs fondamentales</h4>{pills}</aside>',unsafe_allow_html=True)
+    st.session_state.voice_enabled=st.toggle("🔊 Lecture vocale",value=bool(st.session_state.get("voice_enabled",True)),key="global_voice_toggle")
+    visited=[p for p in PAGE_ORDER if p in st.session_state.get("navigation_history",[]) or p==st.session_state.get("page")]
+    if visited:
+        selected=st.selectbox("Accéder à une étape déjà réalisée",visited,index=max(0,visited.index(st.session_state.page) if st.session_state.page in visited else 0),format_func=lambda p:PAGE_LABELS.get(p,p),key="direct_navigation")
+        if selected!=st.session_state.page and st.button("Ouvrir cette étape",use_container_width=True):
+            st.session_state.page=selected; st.rerun()
 
 
 def auxiliary_back_button(key: str) -> None:
@@ -1109,20 +1297,24 @@ def process_pending_exploration_submission() -> bool:
     answer=str(pending.get("answer","")).strip()
     previous_question=str(pending.get("question",st.session_state.current_question))
     with st.spinner("Le moteur RVC360 examine votre réponse une seule fois..."):
-        try:
-            last_exc=None
-            for attempt in range(3):
-                try:
-                    result=run_rvc360_pipeline(answer); last_exc=None; break
-                except Exception as exc:
-                    last_exc=exc
-                    if attempt<2: time.sleep(1.2*(attempt+1))
-            if last_exc is not None: raise last_exc
-            st.session_state.ai_engine_status="operationnel"
-        except Exception as exc:
+        last_exc=None
+        result=None
+        for attempt in range(1,4):
+            try:
+                result=run_rvc360_pipeline(answer)
+                if not result or not str(result.get("question_suivante","")).strip():
+                    raise ValueError("Réponse d’analyse incomplète")
+                st.session_state.ai_engine_status="operationnel"
+                if attempt>1: business_trace("reprise_ia_automatique",f"tentative={attempt}")
+                break
+            except Exception as exc:
+                last_exc=exc
+                if attempt<3:
+                    import time; time.sleep(0.8*attempt)
+        if result is None:
             st.session_state.pipeline_status="error"
-            st.session_state.pipeline_error=str(exc)
-            business_trace("erreur_ia",f"{type(exc).__name__}: {str(exc)[:120]}")
+            st.session_state.pipeline_error=str(last_exc)
+            business_trace("erreur_ia",f"{type(last_exc).__name__}: {str(last_exc)[:120]}")
             return True
     card=result["analysis_card"]
     st.session_state.analysis_card=card
@@ -1130,6 +1322,10 @@ def process_pending_exploration_submission() -> bool:
     if card.get("apport_nouveau",True): st.session_state.analysis_no_novelty_count=0
     else: st.session_state.analysis_no_novelty_count=int(st.session_state.get("analysis_no_novelty_count",0))+1
     presented=merge_hypotheses(result["hypotheses"])
+    previous_hyp=(st.session_state.get("last_presented_hypotheses") or [""])[0] if st.session_state.get("last_presented_hypotheses") else ""
+    if previous_hyp and presented and normalize(previous_hyp)!=normalize(presented[0]):
+        st.session_state.reasoning_evolution.append({"date":now_iso(),"premiere_hypothese":previous_hyp,"hypothese_revisee":presented[0],"explication":"Vos précisions ont permis d’affiner progressivement la compréhension de ce qui compte réellement pour vous."})
+    if presented: st.session_state.last_presented_hypotheses=presented
     st.session_state.conversation.append({"question":previous_question,"answer":answer,"reformulation":result["reformulation"],"hypotheses_proposees":presented,"date":now_iso(),"domaine":st.session_state.get("current_domain","")})
     update_domain_memory(previous_question,answer)
     st.session_state.exploration_summary=_flatten_analysis_text(card)[-1600:]
@@ -1156,59 +1352,124 @@ def process_pending_exploration_submission() -> bool:
     return True
 
 
+
+PAGE_ORDER=["Accueil","Prerequis","Presentation beneficiaire","Presentation assistant","Valeurs interseances","Decision exploration","Exploration IA","Mots a examiner","Validation","Controle completude","Resultats"]
+PAGE_LABELS={"Accueil":"Accueil","Prerequis":"Prérequis","Presentation beneficiaire":"Faisons connaissance","Presentation assistant":"Présentation de l’assistant","Valeurs interseances":"Découvertes personnelles","Decision exploration":"Choix de l’exploration","Exploration IA":"Recherche guidée","Mots a examiner":"Hypothèses","Validation":"Validation HEC","Controle completude":"Contrôle de complétude","Resultats":"Résultats"}
+
+def navigation_controls():
+    page=st.session_state.page
+    if page not in PAGE_ORDER or page=="Accueil": return
+    history=st.session_state.setdefault("navigation_history",[])
+    if page not in history: history.append(page)
+    accessible=[p for p in PAGE_ORDER if p in history or p==page]
+    idx=accessible.index(page)
+    st.caption("Vous pouvez revenir sur toute étape déjà ouverte. Une modification recalcule ou invalide automatiquement les éléments dépendants.")
+    c1,c2=st.columns(2)
+    with c1:
+        if idx>0 and st.button("← Étape précédente",key=f"nav_prev_{page}",use_container_width=True): st.session_state.page=accessible[idx-1]; st.rerun()
+    with c2:
+        if idx<len(accessible)-1 and st.button("Étape suivante →",key=f"nav_next_{page}",use_container_width=True): st.session_state.page=accessible[idx+1]; st.rerun()
+    if st.session_state.get("stale_sections"):
+        st.warning("Une modification antérieure a rendu certaines restitutions obsolètes. Le contrôle de complétude doit être refait avant la clôture.")
+
+def access_gate_screen():
+    display_header(); st.title("Bienvenue sur Clarté360")
+    text="Cette application est réservée aux bénéficiaires accompagnés. Merci de saisir le code de déblocage communiqué par votre accompagnateur."
+    st.markdown(f'<div class="clarte-box">{text}</div>',unsafe_allow_html=True); speak_button(text,"access_gate")
+    code=st.text_input("Code de déblocage",type="password")
+    expected=str(get_secret("security","unlock_code",os.environ.get("CLARTE360_UNLOCK_CODE","")) or "")
+    if st.button("J’ai déjà un fichier JSON de reprise ou final",use_container_width=True): st.session_state.welcome_choice="import"; st.rerun()
+    if not expected: st.error("Le code de déblocage n’est pas configuré dans les paramètres sécurisés."); return
+    if st.button("Débloquer l’application",type="primary",disabled=not code):
+        if str(code).strip()==expected:
+            st.session_state.access_authorized=True; st.session_state.code_verified_at=now_iso(); st.success("Accès autorisé."); st.rerun()
+        else: st.error("Code incorrect.")
+
+def build_final_payload()->dict[str,Any]:
+    synchronize_value_state()
+    vals=[]
+    for n in validated_names():
+        rec=deepcopy(st.session_state.value_records.get(n,{})); info=value_info(n)
+        vals.append({"nom":n,"famille":info.get("famille",""),"definition_personnelle":st.session_state.personal_defs.get(n,rec.get("definition_personnelle","")),"origine":rec.get("source","accompagnateur" if n in st.session_state.existing_values else "exploration_application"),"situations_significatives":rec.get("situations_associees",[]),"date_decouverte":rec.get("date_decouverte","")})
+    profile=deepcopy(st.session_state.get("beneficiary_profile",{}))
+    summary_text=f"Le bénéficiaire a validé {len(vals)} valeur(s) fondamentale(s) : {', '.join(v['nom'] for v in vals) if vals else 'aucune valeur validée'}."
+    payload={"application":APP_FULL_NAME,"version":APP_VERSION,"framework_version":FRAMEWORK_VERSION,"rvc360_version":RVC360_VERSION,"type_export":"final","statut":"parcours_cloture","completed":True,"passation_id":st.session_state.get("passation_id"),"identite":deepcopy(st.session_state.get("beneficiaire",{})),"date_debut":st.session_state.get("started_at"),"date_cloture":now_iso(),"contexte_et_attente":profile,"valeurs_fondamentales":vals,"domaines_explores":list(st.session_state.get("domains_explored",{}).keys()),"appreciation_finale":deepcopy(st.session_state.get("completion_check",{})),"elements_a_reprendre_avec_accompagnateur":st.session_state.get("completion_check",{}).get("angles_a_reprendre",""),"synthese_finale":{"texte":summary_text},"rapport_regenerable":True,"acces_autorise":True,"transmission":deepcopy(st.session_state.get("final_transmission_status",{}))}
+    return payload
+
+def render_final_consultation():
+    display_header(); st.title("Consultation du parcours finalisé")
+    final_info="Ce parcours a été clôturé définitivement. Il est disponible en lecture seule ; aucun appel à l’intelligence artificielle ne sera effectué."
+    speak_button(final_info,"listen_final_mode"); st.success(final_info)
+    payload=st.session_state.get("final_payload") or build_final_payload()
+    vals=payload.get("valeurs_fondamentales",[])
+    st.subheader("Synthèse finale")
+    st.write((payload.get("synthese_finale") or {}).get("texte",""))
+    for i,v in enumerate(vals,1): st.markdown(f"### {i}. {v.get('nom','')}"); st.caption(f"Origine : {v.get('origine','')}"); st.write(v.get("definition_personnelle",''))
+    st.download_button("Télécharger à nouveau le rapport PDF",final_pdf_from_payload(payload),file_name=make_filename("RVC360_rapport_final","pdf"),mime="application/pdf",use_container_width=True)
+    st.download_button("Télécharger une copie du JSON final",json.dumps(payload,ensure_ascii=False,indent=2).encode(),file_name=make_filename("RVC360_final","json"),mime="application/json",use_container_width=True)
+    st.divider(); st.subheader("Transmission à l’accompagnateur")
+    if st.button("Transmettre ce JSON final à mon accompagnateur",use_container_width=True):
+        ident=payload.get("identite",{}); body=f"Le bénéficiaire {ident.get('prenom','')} {ident.get('nom','')} demande la transmission de son JSON final Clarté360."
+        ok,msg=send_email("Clarté360 - JSON final du bénéficiaire",body,attachments=[(make_filename("RVC360_final","json"),json.dumps(payload,ensure_ascii=False,indent=2).encode(),"application/json")])
+        if ok: st.success("Votre JSON final a bien été transmis à votre accompagnateur.")
+        else: st.error(msg)
+
+def render_resume_welcome():
+    display_header(); vals=validated_names(); prenom=st.session_state.get("beneficiary_profile",{}).get("prenom_usage") or st.session_state.get("beneficiaire",{}).get("prenom","")
+    summary=f"Bonjour {prenom}, je suis heureux de vous retrouver. Lors de votre précédente utilisation, nous avions identifié ensemble {len(vals)} valeur(s) fondamentale(s) : {', '.join(vals) if vals else 'aucune valeur validée pour le moment'}. Depuis notre dernière rencontre, vous avez peut-être vécu de nouvelles expériences ou pris du recul."
+    st.markdown(f'<div class="clarte-box">{summary}</div>',unsafe_allow_html=True); speak_button(summary,"resume_welcome")
+    ans=st.radio("Depuis votre dernière utilisation, avez-vous découvert une ou plusieurs nouvelles valeurs importantes ?",["Choisissez une réponse","Oui","Non"],key="resume_new_values")
+    if ans=="Oui" and st.button("Explorer mes nouvelles valeurs",type="primary"):
+        st.session_state.resume_welcome_pending=False; st.session_state.return_after_personal_values=st.session_state.get("resume_target_page") or "Exploration IA"; st.session_state.page="Valeurs interseances"; st.rerun()
+    if ans=="Non" and st.button("Reprendre exactement où je m’étais arrêté",type="primary"):
+        st.session_state.resume_welcome_pending=False; st.session_state.page=st.session_state.get("resume_target_page") or "Exploration IA"; st.rerun()
+
+def render_closure_screen():
+    display_header(); st.title("Clôture définitive du parcours")
+    message="Après cette clôture, vous ne pourrez plus modifier vos réponses ni poursuivre l’exploration à partir du JSON final. Vous pourrez consulter les résultats et réimprimer le rapport."
+    st.warning(message); speak_button(message,"closure_warning")
+    st.download_button("Sauvegarder une dernière copie de mon JSON de travail",payload_bytes(False),file_name=make_filename("RVC360_travail_avant_cloture","json"),mime="application/json")
+    preview=build_final_payload(); pdf=final_pdf_from_payload(preview)
+    st.subheader("Documents finaux obligatoires")
+    st.download_button("Télécharger mon rapport final PDF",pdf,file_name=make_filename("RVC360_rapport_final","pdf"),mime="application/pdf",use_container_width=True,on_click=lambda:st.session_state.update(final_pdf_download_offered=True))
+    st.download_button("Télécharger mon JSON final",json.dumps(preview,ensure_ascii=False,indent=2).encode(),file_name=make_filename("RVC360_final","json"),mime="application/json",use_container_width=True,on_click=lambda:st.session_state.update(final_json_download_offered=True))
+    docs_info="Conservez soigneusement ces deux documents. Le rapport présente vos résultats. Le JSON final permet leur consultation et la réimpression du rapport, sans reprendre les questionnaires."
+    speak_button(docs_info,"listen_final_docs"); st.info(docs_info)
+    choice=st.radio("Souhaitez-vous transmettre votre JSON final à votre accompagnateur ?",["Oui, transmettre mon JSON final automatiquement","Je préfère le lui remettre moi-même"],key="final_send_choice")
+    if choice.startswith("Oui"):
+        st.caption("Votre consentement porte uniquement sur l’envoi automatique. Votre accompagnateur a besoin des résultats validés pour assurer la continuité du bilan.")
+        include_pdf=st.checkbox("Joindre également le rapport PDF final (facultatif).")
+        consent=st.checkbox("J’autorise l’envoi automatique de mon JSON final épuré à mon accompagnateur.")
+        if consent and st.button("Transmettre maintenant",type="primary"):
+            ben=st.session_state.get("beneficiaire",{}); consultant=ben.get("consultant","")
+            body=f"Le bénéficiaire {ben.get('prenom','')} {ben.get('nom','')} a demandé la transmission de son JSON final Clarté360 le {now_iso()}."
+            attachments=[(make_filename("RVC360_final","json"),json.dumps(preview,ensure_ascii=False,indent=2).encode(),"application/json")]
+            if include_pdf: attachments.append((make_filename("RVC360_rapport_final","pdf"),pdf,"application/pdf"))
+            ok,msg=send_email("Clarté360 - JSON final du bénéficiaire",body,attachments=attachments)
+            st.session_state.final_transmission_status={"choix":"envoi_automatique","date":now_iso(),"resultat":"ok" if ok else "echec","detail":msg}
+            if ok: st.success("Votre JSON final a bien été transmis à votre accompagnateur.")
+            else: st.error(f"L’envoi automatique n’a pas abouti : {msg}. Téléchargez le fichier pour le transmettre vous-même.")
+    else: st.session_state.final_transmission_status={"choix":"remise_manuelle","date":now_iso()}
+    confirm1=st.checkbox("Je comprends que la clôture est irréversible.")
+    confirm2=st.checkbox("Je confirme vouloir figer mes résultats.")
+    ready=bool(st.session_state.get("final_pdf_download_offered") and st.session_state.get("final_json_download_offered"))
+    if not ready: st.caption("Les deux documents finaux doivent avoir été proposés avant la clôture.")
+    if confirm1 and confirm2 and ready and st.button("Clôturer définitivement mon parcours",type="primary"):
+        ok,issues=closure_consistency_audit()
+        if not ok:
+            st.error("La clôture est impossible tant que les incohérences suivantes subsistent :")
+            for issue in issues: st.write("• "+issue)
+            return
+        st.session_state.final_payload=build_final_payload(); st.session_state.final_mode=True; st.session_state.page="Consultation finale"; st.session_state.exploration_complete=True; close_runtime_session("cloture_definitive"); business_trace("cloture_definitive"); st.rerun()
+
 def render_business():
     page=st.session_state.page
-    if page not in st.session_state.completed_pages: st.session_state.completed_pages.append(page)
-    display_header(); values_side_panel()
-    if page=="Reprise intelligente":
-        b=st.session_state.get("beneficiaire",{}); prenom=st.session_state.get("beneficiary_profile",{}).get("prenom_usage") or b.get("prenom","")
-        vals=validated_names(); valtxt=", ".join(vals) if vals else "aucune valeur fondamentale pour le moment"
-        msg=f"Bonjour {prenom}, je suis heureux de vous retrouver. Lors de votre précédente utilisation, nous avions identifié : {valtxt}. Avant de poursuivre, voyons si quelque chose a évolué depuis votre dernière connexion."
-        st.markdown(f'<div class="clarte-box">{html.escape(msg)}</div>',unsafe_allow_html=True); speak_button(msg,"resume_intro")
-        answer=st.radio("Depuis votre dernière utilisation, avez-vous découvert une ou plusieurs nouvelles valeurs importantes ?",["Choisissez","Oui","Non"],key="resume_new_values")
-        if answer=="Oui" and st.button("Ajouter mes nouvelles valeurs",type="primary"):
-            st.session_state.resume_required=False; st.session_state.page="Valeurs interseances"; st.rerun()
-        if answer=="Non" and st.button("Reprendre mon parcours",type="primary"):
-            st.session_state.resume_required=False; st.session_state.page=st.session_state.get("resume_return_page") or "Resultats"; st.rerun()
-
-    elif page=="Consultation finale":
-        st.title("Parcours clôturé définitivement")
-        st.info("Ce fichier est en lecture seule. Il permet de consulter vos résultats et de réimprimer le rapport, sans reprendre les questionnaires ni appeler l'IA.")
-        for i,name in enumerate(validated_names(),1):
-            st.markdown(f"### {i}. {name}"); st.write(st.session_state.personal_defs.get(name) or value_info(name).get("definition",""))
-        st.download_button("Télécharger à nouveau le rapport PDF",create_pdf(),file_name=make_filename("RVC360_rapport_final","pdf"),mime="application/pdf",type="primary")
-        st.download_button("Télécharger une copie du JSON final",payload_bytes(True),file_name=make_filename("RVC360_JSON_FINAL","json"),mime="application/json")
-
-    elif page=="Cloture definitive":
-        st.title("Clôture définitive du parcours")
-        st.warning("Après cette clôture, vous ne pourrez plus modifier vos réponses, reprendre les questionnaires ni poursuivre l'exploration à partir du JSON final.")
-        confirm1=st.checkbox("Je comprends que cette clôture est irréversible pour le JSON final.")
-        confirm2=st.checkbox("Je confirme que les valeurs présentées correspondent aux résultats que je souhaite conserver.")
-        st.caption("Vous pouvez encore télécharger un JSON de travail avant de clôturer.")
-        st.download_button("Télécharger une dernière sauvegarde de travail",payload_bytes(False),file_name=make_filename("RVC360_sauvegarde_avant_cloture","json"),mime="application/json")
-        if st.button("Générer mes documents finaux",type="primary",disabled=not(confirm1 and confirm2)):
-            st.session_state.exploration_complete=True; st.session_state.closure_decision="cloture_definitive"; st.session_state.finalized_at=now_iso(); close_runtime_session("cloture_definitive"); business_trace("cloture_definitive"); st.rerun()
-        if st.session_state.get("finalized_at"):
-            st.success("Vos documents finaux sont prêts.")
-            c1,c2=st.columns(2)
-            with c1: st.download_button("Télécharger mon rapport final PDF",create_pdf(),file_name=make_filename("RVC360_rapport_final","pdf"),mime="application/pdf",use_container_width=True,on_click=lambda:st.session_state.update(final_pdf_downloaded=True))
-            with c2: st.download_button("Télécharger mon JSON final épuré",payload_bytes(True),file_name=make_filename("RVC360_JSON_FINAL","json"),mime="application/json",use_container_width=True,on_click=lambda:st.session_state.update(final_json_downloaded=True))
-            st.markdown("### Transmission à votre accompagnateur")
-            st.write("Dans le cadre d'un bilan de compétences, ce JSON final doit être remis à votre accompagnateur afin qu'il puisse intégrer ce travail dans les documents de synthèse obligatoires.")
-            choice=st.radio("Comment souhaitez-vous le transmettre ?",["Choisissez","Envoyer automatiquement par l'application","Je le remettrai moi-même"],key="trans_choice")
-            if choice=="Envoyer automatiquement par l'application" and st.button("Autoriser et envoyer le JSON final",type="primary"):
-                ben=st.session_state.get("beneficiaire",{}); consultant=ben.get("consultant","")
-                body=f"Le bénéficiaire {ben.get('prenom','')} {ben.get('nom','')} a demandé la transmission de son JSON final RVC360. Date de clôture : {st.session_state.finalized_at}."
-                ok,msg=send_email(f"Clarté360 - JSON final RVC360 - {ben.get('prenom','')} {ben.get('nom','')}",body,attachments=[(make_filename("RVC360_JSON_FINAL","json"),payload_bytes(True),"application/json")])
-                st.session_state.transmission_choice="envoi_automatique"; st.session_state.transmission_status="envoye" if ok else msg
-                if ok: st.success("Votre JSON final a bien été transmis à votre accompagnateur.")
-                else: st.error(msg)
-            elif choice=="Je le remettrai moi-même":
-                st.session_state.transmission_choice="remise_manuelle"; st.info("Téléchargez le JSON final et remettez-le à votre accompagnateur.")
-            if st.session_state.get("final_pdf_downloaded") and st.session_state.get("final_json_downloaded") and choice!="Choisissez":
-                st.success("Clôture complète. Vos documents ont été proposés et votre mode de transmission est enregistré.")
-
-    elif page=="Accueil":
+    if page=="Accueil reprise": render_resume_welcome(); return
+    if page=="Consultation finale" or st.session_state.get("final_mode"): render_final_consultation(); return
+    if page=="Cloture definitive": render_closure_screen(); return
+    display_header(); values_side_panel(); navigation_controls()
+    if page=="Accueil":
+        speak_button("Objectif unique : rechercher et valider vos valeurs fondamentales. Cette application prolonge l’exercice inter-séance engagé avec votre accompagnateur. Elle ne fait ni coaching, ni diagnostic, ni orientation.","listen_home_intro")
         st.markdown('<div class="clarte-box"><b>Objectif unique : rechercher et valider vos valeurs fondamentales.</b><br>Cette application prolonge l’exercice inter-séance engagé avec votre accompagnateur. Elle ne fait ni coaching, ni diagnostic, ni orientation.</div>',unsafe_allow_html=True)
         value_reminder()
         if not CATALOGUE: st.error("Le référentiel RVC360 n'a pas pu être chargé.")
@@ -1218,8 +1479,9 @@ def render_business():
             st.session_state.page="Prerequis"; business_trace("debut_metier"); st.rerun()
 
     elif page=="Prerequis":
-        st.title("1. Prérequis obligatoire")
-        st.warning("La première valeur doit avoir été recherchée et validée avec votre accompagnateur avant d'utiliser cette application.")
+        st.title("Prérequis obligatoire")
+        prereq_warning="La première valeur doit avoir été recherchée et validée avec votre accompagnateur avant d'utiliser cette application."
+        speak_button(prereq_warning,"listen_prereq_warning"); st.warning(prereq_warning)
         value_reminder()
         confirmed=st.radio("Avez-vous déjà identifié et validé au moins une valeur avec votre accompagnateur ?",["Choisissez une réponse","Oui","Non"],index=0,key="prereq_yesno")
         if confirmed=="Non":
@@ -1227,12 +1489,13 @@ def render_business():
             return
         if confirmed!="Oui": return
         st.session_state.prerequisite_confirmed=True
-        st.info("Votre accompagnateur a pu valider avec vous une ou plusieurs valeurs. Indiquez-les toutes, une par champ.")
+        prereq_info="Votre accompagnateur a pu valider avec vous une ou plusieurs valeurs. Indiquez-les toutes, une par champ."
+        speak_button(prereq_info,"listen_prereq_info"); st.info(prereq_info)
         count=int(st.number_input("Combien de valeurs avez-vous déjà identifiées et validées avec votre accompagnateur ?",min_value=1,max_value=15,value=int(st.session_state.get("prerequisite_count",1)),step=1))
         st.session_state.prerequisite_count=count
         entries=[]
         for i in range(count):
-            val=st.text_input(f"Valeur déjà identifiée n°{i+1}",key=f"prereq_free_{i}",placeholder="Écrivez librement le mot ou l'expression retenue")
+            val=open_response_widget(f"Valeur déjà identifiée n°{i+1}",f"prereq_free_{i}",height=70,allow_reformulation=False,dependency_scope="prerequisites")
             if val.strip(): entries.append(val.strip())
         if st.button("Examiner mes formulations",type="primary",disabled=len(entries)!=count):
             st.session_state.prerequisite_pending=[resolve_prerequisite(x) for x in entries]
@@ -1245,25 +1508,30 @@ def render_business():
                 name=props[0]; info=value_info(name); st.write(f"**Valeur trouvée : {name}**"); st.write(info.get("definition",""))
                 agree=st.radio("Êtes-vous d'accord avec cette définition ?",["Choisissez","Oui","Non, je donne ma propre définition"],key=f"defagree_{i}")
                 own=""
-                if agree.startswith("Non"): own=st.text_area("Votre définition personnelle",key=f"owndef_{i}")
+                if agree.startswith("Non"): own=open_response_widget("Votre définition personnelle",f"owndef_{i}",height=110,dependency_scope="prerequisites",value_name=name)
                 if agree!="Choisissez" and (agree=="Oui" or own.strip()): confirmed_values.append((name,own.strip() or info.get("definition",""),False))
             elif props:
                 st.write("Votre formulation semble proche de plusieurs noms de valeurs. Rien n'est imposé.")
                 choice=st.radio("Quel nom correspond le mieux à ce que vous avez validé avec votre accompagnateur ?",["Aucune de ces propositions"]+props,key=f"prop_{i}")
                 if choice!="Aucune de ces propositions":
-                    info=value_info(choice); st.write(info.get("definition","")); own=st.text_area("Conservez cette définition ou écrivez la vôtre",value=info.get("definition",""),key=f"propdef_{i}")
+                    info=value_info(choice); st.write(info.get("definition","")); own=open_response_widget("Conservez cette définition ou écrivez la vôtre",f"propdef_{i}",value=info.get("definition",""),height=110,dependency_scope="prerequisites",value_name=choice)
                     if own.strip(): confirmed_values.append((choice,own.strip(),False))
                 else:
-                    custom_name=st.text_input("Nom de votre valeur",value=item['raw'],key=f"customname_{i}")
-                    custom_def=st.text_area("Que signifie cette valeur pour vous ?",key=f"customdef_{i}")
+                    custom_name=open_response_widget("Nom de votre valeur",f"customname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites")
+                    custom_def=open_response_widget("Que signifie cette valeur pour vous ?",f"customdef_{i}",height=110,dependency_scope="prerequisites",value_name=custom_name.strip())
                     if custom_name.strip() and custom_def.strip(): confirmed_values.append((custom_name.strip(),custom_def.strip(),True))
             else:
                 st.write("Cette formulation n'existe pas telle quelle dans le référentiel. Elle peut néanmoins être retenue pour vous.")
-                custom_name=st.text_input("Nom de votre valeur",value=item['raw'],key=f"newname_{i}")
-                custom_def=st.text_area("Que signifie cette valeur pour vous ?",key=f"newdef_{i}")
+                custom_name=open_response_widget("Nom de votre valeur",f"newname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites")
+                custom_def=open_response_widget("Que signifie cette valeur pour vous ?",f"newdef_{i}",height=110,dependency_scope="prerequisites",value_name=custom_name.strip())
                 if custom_name.strip() and custom_def.strip(): confirmed_values.append((custom_name.strip(),custom_def.strip(),True))
         pending_count=len(st.session_state.get("prerequisite_pending",[]))
         if pending_count and st.button("Valider toutes mes valeurs déjà identifiées",type="primary",disabled=len(confirmed_values)!=pending_count):
+            previous_values=list(st.session_state.get("existing_values",[]))
+            new_names=[x[0] for x in confirmed_values]
+            if previous_values and previous_values!=new_names: invalidate_dependencies("prerequisites",reason="valeurs accompagnateur modifiées")
+            for removed in set(previous_values)-set(new_names):
+                st.session_state.validation.pop(removed,None); st.session_state.personal_defs.pop(removed,None); st.session_state.value_records.pop(removed,None); st.session_state.hypothesis_status.pop(removed,None)
             st.session_state.existing_values=[]
             for name,definition,is_custom in confirmed_values:
                 st.session_state.existing_values.append(name); st.session_state.personal_defs[name]=definition
@@ -1273,63 +1541,101 @@ def render_business():
             st.session_state.existing_values=list(dict.fromkeys(st.session_state.existing_values))
             for name,definition,is_custom in confirmed_values:
                 register_value_record(name,"accompagnateur","validee",definition,certainty=100)
-            business_trace("prerequis_valide",", ".join(st.session_state.existing_values)); st.session_state.page="Presentation beneficiaire"; st.rerun()
+            synchronize_value_state(); business_trace("prerequis_valide",", ".join(st.session_state.existing_values)); st.session_state.page="Presentation beneficiaire"; st.rerun()
 
     elif page=="Presentation beneficiaire":
-        st.title("2. Faisons connaissance")
+        st.title("Faisons connaissance")
+        intro_profile="Vous vous êtes déjà présenté à votre accompagnateur. Accepteriez-vous de m’en dire un peu sur vous afin que je puisse mieux vous accompagner dans cette recherche de valeurs ? Vous restez libre de ne pas répondre à une question."
+        speak_button(intro_profile,"listen_profile_intro")
         st.markdown('<div class="clarte-box">Vous vous êtes déjà présenté à votre accompagnateur. Accepteriez-vous de m’en dire un peu sur vous afin que je puisse mieux vous accompagner dans cette recherche de valeurs ? Vous restez libre de ne pas répondre à une question.</div>',unsafe_allow_html=True)
         profile=st.session_state.get("beneficiary_profile",{})
-        preferred=st.text_input("Comment souhaitez-vous que je vous appelle ?",value=profile.get("prenom_usage",st.session_state.beneficiaire.get("prenom","")))
-        intro=st.text_area("Parlez-moi librement de vous : votre situation actuelle, votre parcours, les personnes ou activités importantes, vos passions, vos projets ou ce qui compte particulièrement aujourd’hui.",value=profile.get("presentation_libre",""),height=190)
-        goal=st.text_area("Qu’aimeriez-vous mieux comprendre ou vérifier grâce à cette recherche de valeurs ?",value=profile.get("objectif_demarche",""),height=100)
+        preferred=open_response_widget("Comment souhaitez-vous que je vous appelle ?","profile_preferred_name",value=profile.get("prenom_usage",st.session_state.beneficiaire.get("prenom","")),height=70,allow_reformulation=False)
+        intro_parts=[]
+        for fld,label in [("situation_actuelle","Quelle est votre situation actuelle ?"),("parcours","Quels éléments de votre parcours vous semblent importants ?"),("activites_importantes","Quelles personnes ou activités occupent une place importante ?"),("passions","Quelles sont vos passions ou centres d’intérêt ?"),("projets","Quels projets ou changements envisagez-vous ?")]:
+            intro_parts.append((fld,open_response_widget(label,f"profile_{fld}",value=profile.get(fld,""),height=90,dependency_scope="profile")))
+        goal_label="Qu’aimeriez-vous mieux comprendre ou vérifier grâce à cette recherche de valeurs ?"
+        goal=open_response_widget(goal_label,"profile_objectif",value=profile.get("objectif_demarche",""),height=110,dependency_scope="profile")
+        intro="\n\n".join(v.strip() for _,v in intro_parts if v.strip())
         st.caption("Il ne s’agit pas d’un formulaire administratif. Quelques éléments sincères suffisent.")
         if st.button("Poursuivre",type="primary",disabled=not intro.strip()):
-            st.session_state.beneficiary_profile={"prenom_usage":preferred.strip(),"presentation_libre":intro.strip(),"objectif_demarche":goal.strip(),"date":now_iso()}
+            new_profile={"prenom_usage":preferred.strip(),"presentation_libre":intro.strip(),"objectif_demarche":goal.strip(),"date":now_iso(),**{k:v.strip() for k,v in intro_parts}}
+            old_profile=st.session_state.get("beneficiary_profile",{})
+            meaningful_old={k:v for k,v in old_profile.items() if k not in ("prenom_usage","date")}
+            meaningful_new={k:v for k,v in new_profile.items() if k not in ("prenom_usage","date")}
+            if meaningful_old and meaningful_old!=meaningful_new: invalidate_dependencies("profile",reason="questionnaire bénéficiaire modifié")
+            st.session_state.beneficiary_profile=new_profile
             st.session_state.profile_complete=True
             business_trace("presentation_beneficiaire")
             st.session_state.page="Presentation assistant"; st.rerun()
 
     elif page=="Presentation assistant":
-        st.title("3. Comment je vais vous accompagner")
+        st.title("Comment je vais vous accompagner")
         text=("Je suis l’assistant Clarté360 dédié à la recherche de vos valeurs. Je complète le travail réalisé avec votre accompagnateur, sans le remplacer. "
               "Je vais alterner les sujets pour mieux comprendre ce qui vous pousse régulièrement à agir ou à réagir. Je pourrai proposer des hypothèses, mais je peux me tromper et vous seul pourrez valider une valeur. "
               "Une valeur solide se retrouve généralement dans plusieurs situations ou domaines de vie. L’objectif indicatif est souvent d’en identifier environ 8 à 12, mais ce n’est jamais un quota : votre liste peut être plus courte ou plus longue.")
         st.markdown(f'<div class="clarte-box">{text}</div>',unsafe_allow_html=True)
         speak_button(text,"assistant_intro")
-        mode=st.radio("Comment souhaitez-vous répondre pendant l’exploration ?",["Écrit ou voix, selon les moments","Principalement à l’écrit","Principalement à la voix"],index=0)
+        info_voice="À chaque question ouverte, vous pourrez répondre librement au clavier ou à la voix, et alterner à tout moment. Toute transcription ou correction doit être validée avant d’être enregistrée."
+        speak_button(info_voice,"listen_voice_info")
+        st.info(info_voice)
         if st.button("J’ai compris, continuer",type="primary"):
-            st.session_state.assistant_presented=True; st.session_state.interaction_preferences={"mode":mode}; business_trace("presentation_assistant"); st.session_state.page="Valeurs interseances"; st.rerun()
+            st.session_state.assistant_presented=True; st.session_state.interaction_preferences={"mode":"clavier_et_voix_permanents"}; business_trace("presentation_assistant"); st.session_state.page="Valeurs interseances"; st.rerun()
 
     elif page=="Valeurs interseances":
-        st.title("4. Valeurs découvertes depuis votre dernière séance")
+        st.title("Valeurs découvertes depuis votre dernière séance")
         answer=st.radio("Depuis votre dernière séance, avez-vous découvert une ou plusieurs valeurs personnelles ?",["Choisissez une réponse","Non","Oui"],key="inter_yes")
         if answer=="Non":
             if st.button("Continuer",type="primary"):
-                st.session_state.page="Decision exploration"; business_trace("aucune_valeur_interseance"); st.rerun()
+                target=st.session_state.get("return_after_personal_values")
+                st.session_state.page=target or "Decision exploration"
+                st.session_state.return_after_personal_values=""
+                business_trace("aucune_valeur_interseance"); st.rerun()
         elif answer=="Oui":
-            count=int(st.number_input("Combien ?",1,10,1,key="inter_count"))
+            existing_inter=st.session_state.get("inter_session_values",[])
+            count=int(st.number_input("Combien ?",1,10,max(1,len(existing_inter)),key="inter_count"))
             records=[]
             sources=["Observation personnelle ou cahier","Émotion ou réaction forte","Événement vécu","Échange avec un proche","Autre"]
             for i in range(count):
                 st.markdown(f"### Valeur repérée n°{i+1}")
-                name=st.text_input("Nom proposé",key=f"inter_name_{i}")
+                previous=existing_inter[i] if i < len(existing_inter) else {}
+                name=open_response_widget("Nom proposé",f"inter_name_{i}",value=previous.get("nom",""),height=70,allow_reformulation=False,dependency_scope="personal_values")
                 source=st.selectbox("Comment l’avez-vous découverte ?",sources,key=f"inter_source_{i}")
-                meaning=st.text_area("Que signifie ce mot pour vous ?",key=f"inter_meaning_{i}")
-                situations=st.text_area("Dans quelles situations l’avez-vous reconnue ?",key=f"inter_situations_{i}")
-                reactions=st.text_area("Que ressentez-vous lorsqu’elle est respectée ou bafouée ?",key=f"inter_reactions_{i}")
+                meaning=open_response_widget("Que signifie ce mot pour vous ?",f"inter_meaning_{i}",value=previous.get("definition",""),height=100,dependency_scope="personal_values",value_name=name.strip())
+                situations=open_response_widget("Dans quelles situations l’avez-vous reconnue ?",f"inter_situations_{i}",value=" ; ".join(previous.get("situations",[]) or []),height=100,dependency_scope="personal_values",value_name=name.strip())
+                reactions=open_response_widget("Que ressentez-vous lorsqu’elle est respectée ou bafouée ?",f"inter_reactions_{i}",value=" ; ".join(previous.get("emotions",[]) or []),height=100,dependency_scope="personal_values",value_name=name.strip())
                 certainty=st.slider("À quel point êtes-vous certain qu’il s’agit d’une valeur importante pour vous ?",0,100,50,key=f"inter_cert_{i}")
                 if name.strip() and meaning.strip() and situations.strip(): records.append({"nom":name.strip(),"source":source,"definition":meaning.strip(),"situations":[situations.strip()],"emotions":[reactions.strip()] if reactions.strip() else [],"certitude":certainty})
+            direct=st.radio("Que souhaitez-vous faire de ces valeurs découvertes par vous-même ?",["Les valider maintenant","Les conserver en attente afin d’y revenir plus tard"],key="direct_validation_choice")
             if st.button("Enregistrer ces valeurs et continuer",type="primary",disabled=len(records)!=count):
+                old_records=st.session_state.get("inter_session_values",[])
+                if old_records and old_records!=records: invalidate_dependencies("personal_values",reason="valeurs découvertes personnellement modifiées")
+                old_names={r.get("nom") for r in old_records}; new_names={r.get("nom") for r in records}
+                for removed in old_names-new_names:
+                    st.session_state.validation.pop(removed,None); st.session_state.personal_defs.pop(removed,None); st.session_state.value_records.pop(removed,None); st.session_state.hypothesis_status.pop(removed,None)
                 st.session_state.inter_session_values=records
                 for r in records:
-                    register_value_record(r["nom"],r["source"],"hypothese",r["definition"],r["situations"],r["emotions"],r["certitude"])
-                    if r["nom"] not in st.session_state.candidate_names: st.session_state.candidate_names.append(r["nom"])
                     st.session_state.personal_defs[r["nom"]]=r["definition"]
-                    st.session_state.hypothesis_status[r["nom"]]="a_examiner"
-                business_trace("valeurs_interseances",str(len(records))); st.session_state.page="Decision exploration"; st.rerun()
+                    if direct.startswith("Les valider"):
+                        register_value_record(r["nom"],"decouverte_personnelle","en_cours_analyse",r["definition"],r["situations"],r["emotions"],r["certitude"])
+                        st.session_state.hypothesis_status[r["nom"]]="en_cours_analyse"
+                    else:
+                        register_value_record(r["nom"],"decouverte_personnelle","a_confirmer",r["definition"],r["situations"],r["emotions"],r["certitude"])
+                        st.session_state.hypothesis_status[r["nom"]]="a_confirmer"
+                synchronize_value_state(); business_trace("valeurs_interseances",str(len(records)))
+                if direct.startswith("Les valider"):
+                    names=[r["nom"] for r in records]
+                    st.session_state.candidate_names=names
+                    st.session_state.hypothesis_queue=names
+                    st.session_state.hypothesis_index=0
+                    st.session_state.validation_index=0; st.session_state.validation_stage={n:0 for n in names}; st.session_state.page="Validation"
+                else:
+                    target=st.session_state.get("return_after_personal_values")
+                    st.session_state.page=target or "Decision exploration"
+                    st.session_state.return_after_personal_values=""
+                st.rerun()
 
     elif page=="Decision exploration":
-        st.title("5. Souhaitez-vous rechercher d’autres valeurs ?")
+        st.title("Souhaitez-vous rechercher d’autres valeurs ?")
         decision=st.radio("Souhaitez-vous que je vous aide à rechercher d’autres valeurs ?",["Choisissez une réponse","Oui","Non, je préfère contrôler ce que j’ai déjà"],key="decision_explore")
         if decision.startswith("Oui") and st.button("Ouvrir l’exploration",type="primary"):
             st.session_state.exploration_wanted=True
@@ -1339,16 +1645,19 @@ def render_business():
             st.session_state.exploration_wanted=False; st.session_state.page="Controle completude"; business_trace("exploration_refusee"); st.rerun()
 
     elif page=="Exploration IA":
-        st.title("2. Recherche guidée des autres valeurs"); value_reminder()
+        st.title("Recherche guidée des autres valeurs"); value_reminder()
         if st.session_state.get("pipeline_status")=="queued":
             process_pending_exploration_submission()
         elif st.session_state.get("pipeline_status")=="running":
-            st.warning("Une analyse a été interrompue avant sa fin. Aucun nouvel appel n'est lancé automatiquement.")
+            st.warning("L’analyse précédente a été interrompue. Toutes vos réponses sont conservées. Vous pouvez relancer simplement l’analyse.")
             if st.button("Relancer cette analyse une seule fois",type="primary"):
                 st.session_state.pipeline_status="queued"
                 st.rerun()
             return
         st.caption("Une seule question à la fois. Vous pouvez écrire ou enregistrer votre réponse. L'IA travaille uniquement sur vos mots et ne décide jamais à votre place.")
+        if st.session_state.get("reasoning_evolution"):
+            evo=st.session_state.reasoning_evolution[-1]
+            st.info(f"Première hypothèse : {evo.get('premiere_hypothese','')}  →  Hypothèse révisée : {evo.get('hypothese_revisee','')}\n\n{evo.get('explication','')}")
         for turn_no,turn in enumerate(st.session_state.conversation[-8:], start=max(1,len(st.session_state.conversation)-7)):
             with st.chat_message("assistant"):
                 if turn.get("reformulation"): st.write(turn["reformulation"])
@@ -1359,63 +1668,24 @@ def render_business():
                 st.write(turn["question"])
             with st.chat_message("user"): st.write(turn["answer"])
         with st.chat_message("assistant"): st.write(st.session_state.current_question)
-        speak_button(st.session_state.current_question,"q")
-        st.markdown("**Deux façons de répondre :** écrivez dans la zone ci-dessous, ou utilisez l’enregistreur. Pour la voix : cliquez sur le micro, parlez, puis cliquez sur le **carré d’arrêt**. Cliquez ensuite sur **Transcrire** et relisez le texte avant de le valider.")
-        st.caption("Confidentialité : le fichier audio sert uniquement à la transcription. Il n'est ni ajouté au JSON, ni sauvegardé dans l'application. Seul le texte que vous validez est conservé.")
-        typed=st.text_area("Votre réponse écrite",height=130,key="explore_text",placeholder="Écrivez librement, sans limite de longueur.")
-        audio=None
-        audio_key=f"explore_audio_{st.session_state.get('audio_widget_version',0)}"
-        rec_col,_=st.columns([1.15,1.85])
-        with rec_col:
-            if hasattr(st,"audio_input"):
-                audio=st.audio_input("Enregistrer ma réponse",key=audio_key)
-            else:
-                st.warning("L’enregistreur vocal n’est pas disponible dans cette version de Streamlit.")
-        if audio:
-            st.success("Enregistrement arrêté et prêt à être transcrit.")
-            b1,b2,_=st.columns([1.15,1.25,1.6])
-            with b1:
-                do_transcribe=st.button("Transcrire",type="primary",key=f"transcribe_{st.session_state.get('audio_widget_version',0)}",use_container_width=True)
-            with b2:
-                do_rerecord=st.button("Réenregistrer",key=f"rerecord_audio_{st.session_state.get('audio_widget_version',0)}",use_container_width=True)
-            if do_rerecord:
-                reset_voice_capture(clear_text=True)
-                st.session_state.pop("explore_text",None)
-                st.rerun()
-            if do_transcribe:
-                with st.spinner("Transcription en cours..."):
-                    try:
-                        transcript=transcribe_audio(audio)
-                        st.session_state["voice_draft"]=transcript
-                        st.session_state.pop("voice_edit",None)
-                        st.session_state.pop("voice_last_error",None)
-                        # Le composant est renouvelé : l’audio temporaire n’est plus réutilisable.
-                        st.session_state["audio_widget_version"]+=1
-                        st.rerun()
-                    except Exception as exc:
-                        st.session_state["voice_last_error"]=str(exc)
-                        st.error(f"La transcription n’a pas pu être réalisée : {exc}")
-                        st.info("Vous pouvez cliquer sur Réenregistrer puis refaire une prise. Vérifiez que vous avez bien arrêté avec le carré.")
-        elif st.session_state.get("voice_last_error"):
-            st.error(f"Dernier échec de transcription : {st.session_state.voice_last_error}")
-            if st.button("Recommencer mon enregistrement",key="restart_after_voice_error"):
-                reset_voice_capture(clear_text=True)
-                st.rerun()
-        if st.session_state.get("voice_draft"):
-            st.info("Transcription proposée. Relisez-la, corrigez-la si nécessaire, puis validez-la. L’audio n’est pas conservé.")
-            typed=st.text_area("Texte transcrit à valider",value=st.session_state.voice_draft,height=160,key="voice_edit")
-            v1,v2,_=st.columns([1.2,1.5,1.3])
-            with v1:
-                if st.button("Réenregistrer ma réponse",key="redo_after_transcript",use_container_width=True):
-                    reset_voice_capture(clear_text=True)
-                    st.session_state.pop("explore_text",None)
-                    st.rerun()
-            with v2:
-                st.caption("Seul le texte que vous validerez sera transmis au moteur RVC360 et conservé dans le JSON.")
+        explanation="Une seule question à la fois. Vous pouvez écrire ou enregistrer votre réponse. Pour une réponse orale, l’application affiche la transcription brute et une correction limitée aux hésitations, répétitions involontaires et reprises de phrase. Vous choisissez ensuite la version officielle."
+        speak_button(explanation,"listen_exploration_instructions")
+        st.caption(explanation)
+        answer_key=f"exploration_{len(st.session_state.get('conversation',[]))}_{abs(hash(st.session_state.current_question))%100000}"
+        answer=open_response_widget(st.session_state.current_question,answer_key,height=150,allow_reformulation=True,dependency_scope="")
         processing=st.session_state.get("pipeline_status") in ("queued","running")
-        if st.button("Valider ma réponse et afficher la question suivante",type="primary",disabled=(not str(typed).strip()) or processing):
-            queue_exploration_submission(str(typed).strip())
+        if st.button("Envoyer ma réponse validée et afficher la question suivante",type="primary",disabled=(not answer.strip()) or processing):
+            queue_exploration_submission(answer.strip())
             st.rerun()
+        if st.session_state.get("conversation"):
+            with st.expander("Modifier une réponse précédente et recalculer la suite",expanded=False):
+                options=list(range(len(st.session_state.conversation)))
+                selected_turn=st.selectbox("Réponse à modifier",options,format_func=lambda i:f"Question {i+1} — {st.session_state.conversation[i].get('question','')[:70]}",key="edit_turn_select")
+                old_turn=st.session_state.conversation[selected_turn]
+                revised=open_response_widget(old_turn.get("question",""),f"revise_turn_{selected_turn}",value=old_turn.get("answer",""),height=140,allow_reformulation=True,dependency_scope="")
+                if st.button("Enregistrer cette modification et recalculer toutes les étapes dépendantes",type="primary",disabled=not revised.strip(),key="recalc_turn"):
+                    revise_exploration_turn(selected_turn,revised)
+                    st.rerun()
         if st.session_state.get("pipeline_status")=="error":
             st.error("Le moteur RVC360 n'a pas pu terminer l'analyse. Aucun nouvel appel ne sera lancé sans votre action.")
             st.caption(st.session_state.get("pipeline_error",""))
@@ -1460,8 +1730,10 @@ def render_business():
             st.session_state.pop("explore_text",None); st.rerun()
 
     elif page=="Mots a examiner":
-        st.title("3. Examiner une hypothèse à la fois"); value_reminder()
-        st.markdown('<div class="clarte-box">Nous examinons une seule hypothèse jusqu’à sa validation ou son abandon. Les autres restent en attente et seront proposées ensuite.</div>',unsafe_allow_html=True)
+        st.title("Examiner une hypothèse à la fois"); value_reminder()
+        hyp_intro="Nous examinons une seule hypothèse jusqu’à sa validation ou son abandon. Les autres restent en attente et seront proposées ensuite."
+        speak_button(hyp_intro,"listen_hyp_intro")
+        st.markdown(f'<div class="clarte-box">{hyp_intro}</div>',unsafe_allow_html=True)
         if not st.session_state.hypothesis_queue:
             st.session_state.hypothesis_queue=[n for n in st.session_state.candidate_names if n not in st.session_state.completed_hypotheses and n not in st.session_state.abandoned_hypotheses]
             st.session_state.hypothesis_index=0
@@ -1490,7 +1762,7 @@ def render_business():
                 st.rerun()
         elif decision in ("Peut-être, je veux le clarifier","Oui, ce mot semble juste"):
             proposed=st.session_state.personal_defs.get(name) or info.get("definition","")
-            st.session_state.personal_defs[name]=st.text_area("Que signifie précisément ce mot pour vous ? Vous pouvez accepter, compléter ou remplacer la définition.",value=proposed,key=f"one_def_{name}")
+            st.session_state.personal_defs[name]=open_response_widget("Que signifie précisément ce mot pour vous ? Vous pouvez accepter, compléter ou remplacer la définition.",f"one_def_{name}",value=proposed,height=120,dependency_scope="value_definition",value_name=name)
             c1,c2=st.columns(2)
             with c1:
                 if st.button("Ce mot ne convient finalement pas",use_container_width=True):
@@ -1513,7 +1785,7 @@ def render_business():
             st.caption("Commencez par indiquer si cette hypothèse correspond réellement à votre idée.")
 
     elif page=="Validation":
-        st.title("4. Questionnaire spécifique HEC"); value_reminder()
+        st.title("Questionnaire spécifique HEC"); value_reminder()
         names=list(dict.fromkeys(st.session_state.candidate_names))
         if not names: st.warning("Aucune hypothèse n'est prête à être validée."); return
         idx=min(st.session_state.validation_index,len(names)-1); name=names[idx]; info=value_info(name)
@@ -1529,7 +1801,7 @@ def render_business():
                     if name not in st.session_state.validated_app_values:
                         st.session_state.validated_app_values.append(name)
                     st.session_state.hypothesis_status[name]="validee"
-                    register_value_record(name,"application","validee",st.session_state.personal_defs.get(name) or value_info(name).get("definition",""),certainty=100)
+                    register_value_record(name,(st.session_state.value_records.get(name,{}) or {}).get("source","application"),"validee",st.session_state.personal_defs.get(name) or value_info(name).get("definition",""),certainty=100)
                     if name in st.session_state.custom_values and not st.session_state.custom_values[name].get("notified"):
                         notify_new_value(name,st.session_state.personal_defs.get(name) or value_info(name).get("definition",""))
                         st.session_state.custom_values[name]["notified"]=True
@@ -1537,12 +1809,14 @@ def render_business():
                 else:
                     st.session_state.validation_stage[name]=3; current["fondamentale"]=False
                     st.session_state.hypothesis_status[name]="a_revoir"
-                    register_value_record(name,"application","a_revoir",st.session_state.personal_defs.get(name,""),certainty=40)
+                    register_value_record(name,(st.session_state.value_records.get(name,{}) or {}).get("source","application"),"a_revoir",st.session_state.personal_defs.get(name,""),certainty=40)
+                synchronize_value_state()
+                mark_data_change("validation_valeur",["controle_completude","rapport_final"])
                 st.rerun()
         else:
             if current.get("fondamentale"): st.success("Cette valeur a franchi successivement les trois niveaux et est validée comme fondamentale.")
             else: st.info("Cette hypothèse n'est pas validée comme valeur fondamentale à ce stade. Elle pourra être reprise avec l'accompagnateur.")
-            st.session_state.comments[name]=st.text_area("Commentaire facultatif",value=st.session_state.comments.get(name,""),key=f"comment_{name}")
+            st.session_state.comments[name]=open_response_widget("Commentaire facultatif",f"comment_{name}",value=st.session_state.comments.get(name,""),height=90,dependency_scope="validation",value_name=name)
             if st.button("Continuer",type="primary"):
                 if name not in st.session_state.completed_hypotheses:
                     st.session_state.completed_hypotheses.append(name)
@@ -1553,11 +1827,16 @@ def render_business():
                     st.session_state.candidate_names=queue
                     st.session_state.page="Mots a examiner"
                 else:
-                    st.session_state.page="Controle completude"
+                    target=st.session_state.get("return_after_personal_values")
+                    if target:
+                        st.session_state.page=target
+                        st.session_state.return_after_personal_values=""
+                    else:
+                        st.session_state.page="Controle completude"
                 st.rerun()
 
     elif page=="Controle completude":
-        st.title("10. Contrôle de complétude")
+        st.title("Contrôle de complétude")
         vals=validated_names()
         explored=list(st.session_state.get("domains_explored",{}).keys())
         missing=[d for d in EXPLORATION_DOMAINS if d not in explored]
@@ -1565,26 +1844,35 @@ def render_business():
         for i,a in enumerate(vals):
             for b in vals[i+1:]:
                 if SequenceMatcher(None,normalize(a),normalize(b)).ratio()>.72: close_values.append((a,b))
+        completion_summary=(f"Vous avez actuellement {len(vals)} valeur(s) fondamentale(s) validée(s). "
+                            + ("Certains domaines restent peu explorés : "+", ".join(missing)+". " if missing else "Les principaux domaines ont été explorés. ")
+                            + ("Certaines valeurs paraissent proches et méritent d’être différenciées : "+" ; ".join(f"{a} et {b}" for a,b in close_values)+"." if close_values else ""))
+        speak_button(completion_summary,"listen_completion_summary")
         st.markdown(f"**Valeurs actuellement validées : {len(vals)}**")
         if len(vals)<8: st.info("Votre liste contient moins de 8 valeurs. Ce n’est pas un problème : 8 à 12 est un repère indicatif, jamais un quota.")
         if missing: st.warning("Domaines encore peu ou pas explorés : "+", ".join(missing))
         else: st.success("Les principaux domaines d’exploration ont été abordés.")
         if close_values: st.warning("Certaines valeurs semblent proches et méritent peut-être d’être différenciées : "+" ; ".join(f"{a} / {b}" for a,b in close_values))
         represented=st.radio("Cette liste représente-t-elle suffisamment ce qui vous pousse à agir, choisir, accepter, refuser, vous engager, vous protéger ou réagir ?",["Choisissez","Oui","Partiellement","Non"],key="complete_rep")
-        blind=st.text_area("Y a-t-il un angle, une situation ou une valeur que vous souhaiteriez encore explorer ?",key="complete_blind")
+        blind=open_response_widget("Y a-t-il un angle, une situation ou une valeur que vous souhaiteriez encore explorer ?","complete_blind",height=100,dependency_scope="validation")
         if st.button("Enregistrer ce contrôle",type="primary",disabled=represented=="Choisissez"):
-            st.session_state.completion_check={"nombre_valeurs":len(vals),"domaines_explores":explored,"domaines_non_explores":missing,"valeurs_proches":close_values,"representation":represented,"angles_a_reprendre":blind.strip(),"date":now_iso()}
+            st.session_state.completion_check={"nombre_valeurs":len(vals),"domaines_explores":explored,"domaines_non_explores":missing,"valeurs_proches":close_values,"representation":represented,"angles_a_reprendre":blind.strip(),"date":now_iso(),"revision_donnees":st.session_state.get("data_revision",0)}
+            st.session_state.stale_sections=[]; st.session_state.last_consistent_revision=st.session_state.get("data_revision",0)
             st.session_state.page="Resultats"; business_trace("controle_completude",represented); st.rerun()
         if st.button("Reprendre l’exploration"):
             st.session_state.current_question=choose_wide_question(); st.session_state.page="Exploration IA"; st.rerun()
 
     elif page=="Resultats":
-        st.title("5. État actuel de ma recherche"); value_reminder()
+        st.title("État actuel de ma recherche"); value_reminder()
+        if st.session_state.get("stale_sections"):
+            st.warning("Certaines informations ont été modifiées depuis le dernier contrôle. Reprenez le contrôle de complétude avant une clôture définitive.")
         validated=validated_names(); st.metric("Nombre de valeurs fondamentales validées",len(validated))
         for idx,name in enumerate(validated,1):
-            info=value_info(name); source="Séance avec l'accompagnateur" if name in st.session_state.existing_values else "Application"
+            info=value_info(name); source=(st.session_state.value_records.get(name,{}) or {}).get("source") or ("Séance avec l'accompagnateur" if name in st.session_state.existing_values else "Exploration avec l'application")
             st.markdown(f"### {idx}. {name}"); st.caption(f"{info.get('famille','')} - Origine : {source}"); st.write(st.session_state.personal_defs.get(name) or info.get("definition",""))
-        st.markdown('<div class="clarte-box">Cette page n’est pas une fin imposée. Vous pouvez rechercher une autre valeur, revoir une hypothèse ou terminer volontairement votre exercice inter-séance.</div>',unsafe_allow_html=True)
+        result_info="Cette page n’est pas une fin imposée. Vous pouvez rechercher une autre valeur, revoir une hypothèse ou terminer volontairement votre exercice inter-séance."
+        speak_button(result_info,"listen_result_info")
+        st.markdown(f'<div class="clarte-box">{result_info}</div>',unsafe_allow_html=True)
         c1,c2=st.columns(2)
         with c1:
             if st.button("🔄 Rechercher une autre valeur",type="primary",use_container_width=True):
@@ -1603,13 +1891,21 @@ def render_business():
         with c1: st.download_button("Télécharger le rapport PDF",create_pdf(),file_name=make_filename("RVC360_valeurs","pdf"),mime="application/pdf",use_container_width=True)
         with c2: st.download_button("Télécharger les données JSON",payload_bytes(bool(st.session_state.exploration_complete)),file_name=make_filename("RVC360_valeurs","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("telechargement_json"))
         st.divider()
-        st.markdown("### Que souhaitez-vous faire ?")
-        c1,c2=st.columns(2)
-        with c1:
-            st.download_button("Quitter temporairement - JSON de reprise",payload_bytes(False),file_name=make_filename("RVC360_reprise","json"),mime="application/json",use_container_width=True)
-        with c2:
-            if st.button("Clôturer définitivement mon parcours",type="primary",use_container_width=True):
-                st.session_state.page="Cloture definitive"; st.rerun()
+        st.subheader("Sortie du parcours")
+        exit_choice=st.radio("Souhaitez-vous quitter temporairement ou clôturer définitivement ?",["Sortie temporaire : conserver un JSON de reprise","Fermeture définitive : figer les résultats"],key="exit_choice")
+        if exit_choice.startswith("Sortie temporaire"):
+            st.download_button("Télécharger mon JSON de reprise",payload_bytes(False),file_name=make_filename("RVC360_reprise","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("sortie_temporaire"))
+        elif st.button("Préparer la clôture définitive",type="primary",use_container_width=True):
+            ok,issues=closure_consistency_audit()
+            if ok: st.session_state.page="Cloture definitive"; st.rerun()
+            else:
+                st.error("La clôture est bloquée tant que les incohérences suivantes ne sont pas corrigées :")
+                for issue in issues: st.write("• "+issue)
+        finish=st.radio("Pensez-vous avoir identifié l’ensemble des valeurs qui vous font agir et réagir ?",["Je souhaite encore poursuivre ma recherche","Oui, je pense avoir suffisamment identifié mes valeurs"],key="finish_consent")
+        if finish.startswith("Oui"):
+            st.warning("La fin de la recherche dépend uniquement de votre décision. Vous pourrez toujours reprendre ultérieurement avec votre fichier JSON.")
+            if st.button("Confirmer la fin de mon exercice inter-séance",type="primary",use_container_width=True):
+                st.session_state.exploration_complete=True; st.session_state.closure_decision="cloture_volontaire"; close_runtime_session("parcours_termine_volontaire"); business_trace("fin_volontaire_consentie"); st.success("Votre exercice est marqué comme terminé. Téléchargez votre PDF et votre JSON avant de quitter.")
 
 def exit_prepared_screen():
     display_header(); st.success("Votre JSON de sortie est prêt à être téléchargé."); st.markdown("Téléchargez le fichier dans la colonne de gauche. Il permettra de reprendre l'application.")
@@ -1620,7 +1916,10 @@ def install_beforeunload_warning():
         components.html("""<script>window.parent.onbeforeunload=function(e){const m='Avant de quitter, utilisez le bouton Clarté360 : Quitter et préparer mon JSON.';e.preventDefault();e.returnValue=m;return m;};</script>""",height=0)
 
 def main():
-    init_state(); sidebar_progress(); install_beforeunload_warning()
+    init_state()
+    if not st.session_state.get("access_authorized") and not st.session_state.get("test_started") and st.session_state.get("welcome_choice")!="import":
+        access_gate_screen(); return
+    sidebar_progress(); install_beforeunload_warning()
     if st.session_state.get("show_contact_page"): contact_page(); return
     if st.session_state.get("show_rgpd_page"): rgpd_page(); return
     if st.session_state.get("session_expired"): expired_screen(); return
