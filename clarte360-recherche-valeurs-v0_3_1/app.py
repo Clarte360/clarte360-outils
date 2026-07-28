@@ -28,6 +28,7 @@ import re
 import smtplib
 import unicodedata
 import uuid
+import time
 from copy import deepcopy
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -54,13 +55,13 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
 FRAMEWORK_VERSION = "4.0"
 RVC360_VERSION = "2.0"
-RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v2.0-2026-07"
+RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v2.1-2026-07"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -116,19 +117,27 @@ SORTIE : uniquement un objet JSON conforme au schéma demandé.
 RGPD_TEXT = f"""
 ### Protection des données personnelles (RGPD)
 
-Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
+Cette application Clarté360 fonctionne sans base de données métier propre à l'application. Le bénéficiaire conserve son travail au moyen de fichiers JSON téléchargés sur son appareil.
 
-Le fichier JSON constitue le seul support de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, le nom de votre accompagnateur, les dates et heures de connexion, la durée des sessions, vos réponses, les mots proposés, vos validations, l'historique des connexions, les générations de codes d'accès, le consentement RGPD, la version de l'application et les informations techniques disponibles.
+Le **JSON de travail** contient les informations nécessaires pour reprendre le parcours : identité, consentement, étapes, réponses validées, hypothèses, valeurs, historique utile et traçabilité de session. Le **JSON final**, généré uniquement lors de la clôture définitive, est épuré : il ne contient ni questionnaires détaillés, ni conversations avec l'IA, ni transcriptions brutes, ni reformulations rejetées, ni erreurs techniques. Il permet seulement de consulter les résultats et de réimprimer le rapport.
 
-Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur.
+Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée avec la date, l'heure et la version du texte : **{RGPD_TEXT_VERSION}**.
 
-Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : **{RGPD_TEXT_VERSION}**.
+### Voix et transcription
+
+La réponse vocale est facultative. L'enregistrement sert uniquement à produire une transcription. Le fichier audio n'est pas conservé dans le JSON ni dans le rapport. La transcription doit être relue, corrigée si nécessaire et validée avant toute utilisation par l'intelligence artificielle. Le bénéficiaire peut toujours répondre au clavier.
 
 ### Utilisation de l'intelligence artificielle
 
-Le moteur RVC360 intervient en deux niveaux : il structure d'abord localement les propos sans rechercher de valeur, puis l'intelligence artificielle rapproche cette fiche d'analyse d'un sous-ensemble contrôlé du référentiel RVC360 afin de formuler des hypothèses lexicales à examiner. Elle ne valide aucune valeur, ne produit aucun diagnostic et ne prend aucune décision à la place du bénéficiaire.
+Les réponses validées strictement utiles à la recherche de valeurs peuvent être transmises au fournisseur d'IA configuré par Clarté360. L'IA formule des questions, des reformulations ou des hypothèses lexicales ; elle ne valide aucune valeur, ne réalise aucun diagnostic et ne décide jamais à la place du bénéficiaire. L'application demande au fournisseur de ne pas conserver la réponse comme état applicatif (`store=False`).
 
-Les réponses utiles à cette recherche sont transmises au fournisseur d'IA configuré par Clarté360. Il est demandé de ne pas saisir de noms complets, coordonnées ou informations sensibles inutiles. L'application demande au fournisseur de ne pas conserver la réponse comme état applicatif (`store=False`). Les traitements techniques et règles de conservation propres au fournisseur restent applicables.
+### Contrôle d'accès
+
+Un code de déblocage peut être demandé lors de la première utilisation afin de réserver l'application aux bénéficiaires autorisés et de maîtriser les coûts des API payantes. Le code est conservé uniquement dans Streamlit Secrets. Il n'est jamais enregistré dans le JSON, le PDF, les journaux fonctionnels ou les échanges avec l'IA. Seule la preuve d'une autorisation antérieure est conservée dans le JSON de travail.
+
+### Transmission à l'accompagnateur
+
+À la clôture, le bénéficiaire peut autoriser l'envoi automatique de son JSON final épuré à son accompagnateur ou choisir de le lui remettre lui-même. Dans le cadre d'un bilan de compétences, cette remise est nécessaire pour permettre l'intégration du travail validé dans les documents de synthèse obligatoires. Aucun questionnaire brut, dialogue complet ou fichier audio n'est transmis.
 
 ### Nature des résultats
 
@@ -170,6 +179,19 @@ def get_secret(section: str, key: str, default: Any = "") -> Any:
     try: return st.secrets.get(section, {}).get(key, default)
     except Exception: return default
 
+
+def activation_secret() -> str:
+    return str(get_secret("security","activation_code",get_secret("activation","code",""))).strip()
+
+def activation_is_configured() -> bool:
+    return bool(activation_secret())
+
+def authorize_activation() -> None:
+    st.session_state.activation_authorized=True
+    st.session_state.activation_authorized_at=now_iso()
+    st.session_state.activation_mechanism="FW-303-v2.1"
+
+
 @st.cache_data(show_spinner=False)
 def load_referentiel() -> list[dict[str, str]]:
     if not REFERENTIEL_PATH.exists(): return []
@@ -210,6 +232,11 @@ def default_business_state() -> dict[str, Any]:
         "current_domain":"", "subject_depth":0, "saturated_subjects":[],
         "completion_check":{}, "closure_decision":"", "resume_message":"",
         "value_records":{}, "rejected_values":[],
+        "activation_authorized":False, "activation_authorized_at":"", "activation_mechanism":"FW-303-v2.1",
+        "resume_required":False, "resume_return_page":"", "read_only_final":False,
+        "finalized_at":"", "final_json_downloaded":False, "final_pdf_downloaded":False,
+        "transmission_choice":"", "transmission_status":"", "final_summary":"",
+        "completed_pages":[], "navigation_history":[],
     }
 
 def init_state() -> None:
@@ -219,7 +246,7 @@ def init_state() -> None:
         "code_verified_at":None, "show_contact_page":False, "show_rgpd_page":False, "session_expired":False,
         "session_history":[], "current_runtime_session_id":None, "exit_json_ready":False, "exit_mode":None,
         "json_downloaded":False, "final_email_sent":False, "passation_root_id":None, "session_id":None,
-        "passation_id":None, "started_at":None,
+        "passation_id":None, "started_at":None, "activation_step":False,
     }
     defaults.update(default_business_state())
     for k,v in defaults.items():
@@ -601,7 +628,9 @@ def validated_names()->list[str]:
 
 def start_new_session(nom:str,prenom:str,email:str,consultant:str=""):
     st.session_state.passation_root_id=str(uuid.uuid4()); st.session_state.session_id=str(uuid.uuid4()); st.session_state.passation_id=f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{st.session_state.session_id[:8].upper()}"; st.session_state.started_at=now_iso(); st.session_state.beneficiaire={"nom":nom.strip(),"prenom":prenom.strip(),"email":email.strip(),"consultant":consultant.strip()}; st.session_state.test_started=True; st.session_state.session_history=[]
+    activation_ok=bool(st.session_state.get("activation_authorized")); activation_at=st.session_state.get("activation_authorized_at","")
     for k,v in default_business_state().items(): st.session_state[k]=deepcopy(v)
+    st.session_state.activation_authorized=activation_ok; st.session_state.activation_authorized_at=activation_at; st.session_state.activation_mechanism="FW-303-v2.1"
     init_runtime_session("premiere_connexion")
 
 def build_payload(completed=False)->dict[str,Any]:
@@ -641,6 +670,7 @@ def build_payload(completed=False)->dict[str,Any]:
         "etat_exploration":{"souhaitee":st.session_state.get("exploration_wanted"),"page":st.session_state.page},
         "controle_completude":st.session_state.get("completion_check",{}),
         "decision_cloture":st.session_state.get("closure_decision",""),
+        "autorisation_acces":{"acces_autorise":bool(st.session_state.get("activation_authorized")),"date_autorisation":st.session_state.get("activation_authorized_at","") or None,"version_mecanisme":st.session_state.get("activation_mechanism","FW-303-v2.1")},
         "historique":st.session_state.get("trace",[]),
     }
     if not completed:
@@ -675,23 +705,83 @@ def build_payload(completed=False)->dict[str,Any]:
         "rgpd_acceptance":st.session_state.get("rgpd_acceptance",{}),"access_history":st.session_state.get("access_history",{}),
         "sessions":st.session_state.get("session_history",[]),"metier":metier_common,
         "ia":{"appels":st.session_state.ai_calls,"tokens_entree":st.session_state.ai_input_tokens,"tokens_sortie":st.session_state.ai_output_tokens,"statut":st.session_state.ai_engine_status,"modele":get_secret("openai","model","gpt-5-mini")},
-        "completed":completed,"exporte_le":now_iso(),
+        "completed":completed,"statut":"parcours_cloture" if completed else "parcours_en_cours",
+        "finalise_le":st.session_state.get("finalized_at","") if completed else "",
+        "exporte_le":now_iso(),
     }
 
-def payload_bytes(completed=False)->bytes: return json.dumps(build_payload(completed),ensure_ascii=False,indent=2).encode("utf-8")
+def build_final_payload()->dict[str,Any]:
+    base=build_payload(True)
+    m=base.get("metier",{})
+    allowed={
+        "valeurs_validees":m.get("valeurs_validees",[]),
+        "nombre_total_valeurs_validees":m.get("nombre_total_valeurs_validees",0),
+        "nombre_valeurs_seance":m.get("nombre_valeurs_seance",0),
+        "nombre_valeurs_application":m.get("nombre_valeurs_application",0),
+        "presentation_beneficiaire":m.get("presentation_beneficiaire",{}),
+        "valeurs_accompagnateur":m.get("valeurs_accompagnateur",[]),
+        "valeurs_observations_personnelles":m.get("valeurs_observations_personnelles",[]),
+        "valeurs_ia":m.get("valeurs_ia",[]),
+        "domaines_explores":m.get("domaines_explores",{}),
+        "controle_completude":m.get("controle_completude",{}),
+        "decision_cloture":"cloture_definitive",
+        "synthese_finale":st.session_state.get("final_summary","") or st.session_state.get("exploration_summary",""),
+        "elements_a_reprendre_avec_accompagnateur":m.get("controle_completude",{}).get("angles_a_reprendre",""),
+        "autorisation_acces":{"acces_autorise":True,"version_mecanisme":st.session_state.get("activation_mechanism","FW-303-v2.1")},
+    }
+    base["metier"]=allowed
+    base.pop("access_history",None)
+    base["ia"]={"appels_realises_pendant_le_parcours":st.session_state.get("ai_calls",0),"aucun_nouvel_appel_en_mode_final":True}
+    base["statut"]="parcours_cloture"
+    base["completed"]=True
+    base["finalise_le"]=st.session_state.get("finalized_at","") or now_iso()
+    return base
+
+def payload_bytes(completed=False)->bytes:
+    payload=build_final_payload() if completed else build_payload(False)
+    return json.dumps(payload,ensure_ascii=False,indent=2).encode("utf-8")
 def make_filename(prefix="rvc360",ext="json"):
     b=st.session_state.get("beneficiaire",{}); return f"{prefix}_{sanitize_filename((b.get('prenom','')+'_'+b.get('nom','')).strip())}_{datetime.now().strftime('%Y%m%d_%H%M')}.{ext}"
 
 def restore_from_progress(payload:dict):
-    st.session_state.passation_root_id=payload.get("passation_root_id",str(uuid.uuid4())); st.session_state.session_id=str(uuid.uuid4()); st.session_state.passation_id=payload.get("passation_id") or f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}"; st.session_state.beneficiaire=payload.get("beneficiaire",{}); st.session_state.rgpd_acceptance=payload.get("rgpd_acceptance",{}); st.session_state.access_history=payload.get("access_history",{}); st.session_state.session_history=deepcopy(payload.get("sessions",[])); m=payload.get("metier",{})
+    is_final=payload.get("statut")=="parcours_cloture" or bool(payload.get("completed"))
+    st.session_state.passation_root_id=payload.get("passation_root_id",str(uuid.uuid4()))
+    st.session_state.session_id=str(uuid.uuid4())
+    st.session_state.passation_id=payload.get("passation_id") or f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    st.session_state.beneficiaire=payload.get("beneficiaire",{})
+    st.session_state.rgpd_acceptance=payload.get("rgpd_acceptance",{})
+    st.session_state.access_history=payload.get("access_history",{})
+    st.session_state.session_history=deepcopy(payload.get("sessions",[]))
+    m=payload.get("metier",{})
     for k,v in default_business_state().items(): st.session_state[k]=deepcopy(m.get(k,v))
-    # Compatibilité avec les JSON 1.3.0 et antérieurs : reconstruire les valeurs application déjà fondamentales.
-    if not st.session_state.get("validated_app_values"):
-        st.session_state.validated_app_values=[
-            n for n,val in st.session_state.get("validation",{}).items()
-            if val.get("fondamentale") and n not in st.session_state.get("existing_values",[])
-        ]
-    st.session_state.test_started=True; st.session_state.code_verified_at=now_iso(); init_runtime_session("reprise_json"); business_trace("reprise_json")
+    auth=m.get("autorisation_acces",{})
+    st.session_state.activation_authorized=bool(auth.get("acces_autorise",True))
+    st.session_state.activation_authorized_at=auth.get("date_autorisation","") or now_iso()
+    st.session_state.activation_mechanism=auth.get("version_mecanisme","FW-303-v2.1")
+    if is_final:
+        vals=m.get("valeurs_validees",[])
+        st.session_state.existing_values=[]; st.session_state.validated_app_values=[]
+        for v in vals:
+            name=v.get("nom","")
+            if not name: continue
+            st.session_state.personal_defs[name]=v.get("definition_personnelle","") or v.get("definition_clarte360","")
+            st.session_state.validation[name]={"importante":True,"tres_importante":True,"fondamentale":True}
+            if v.get("origine")=="seance": st.session_state.existing_values.append(name)
+            else: st.session_state.validated_app_values.append(name)
+        st.session_state.read_only_final=True
+        st.session_state.finalized_at=payload.get("finalise_le","")
+        st.session_state.final_summary=m.get("synthese_finale","")
+        st.session_state.page="Consultation finale"
+    else:
+        if not st.session_state.get("validated_app_values"):
+            st.session_state.validated_app_values=[n for n,val in st.session_state.get("validation",{}).items() if val.get("fondamentale") and n not in st.session_state.get("existing_values",[])]
+        st.session_state.resume_return_page=st.session_state.page
+        st.session_state.resume_required=True
+        st.session_state.page="Reprise intelligente"
+    st.session_state.test_started=True
+    st.session_state.code_verified_at=now_iso()
+    init_runtime_session("consultation_json_final" if is_final else "reprise_json")
+    business_trace("import_json_final" if is_final else "reprise_json")
 
 def create_pdf()->bytes:
     from reportlab.platypus import Image, Table, TableStyle, KeepTogether
@@ -820,40 +910,37 @@ def import_json_screen():
             else: restore_from_progress(payload); st.rerun()
         except Exception as exc: st.error(f"Fichier JSON invalide : {exc}")
 
-def issue_access_code(email:str,prenom:str,is_regeneration:bool):
-    code=f"{random.randint(100000,999999)}"; minutes=int(get_secret("security","code_expiration_minutes",15)); st.session_state.access_code=code; st.session_state.code_expires_at=(datetime.now()+timedelta(minutes=minutes)).isoformat(timespec="seconds"); h=st.session_state.get("access_history",{"generations":[],"nombre_regenerations":0})
-    if is_regeneration: h["nombre_regenerations"]=int(h.get("nombre_regenerations",0))+1
-    h.setdefault("generations",[]).append({"date":datetime.now().strftime("%Y-%m-%d"),"heure":datetime.now().strftime("%H:%M:%S"),"generation":"regeneration" if is_regeneration else "initiale","envoi":"email","version_application":APP_VERSION}); st.session_state.access_history=h
-    pending=st.session_state.get("pending_beneficiaire",{}); body_user=f"Bonjour {prenom},\n\nVotre code d'accès à {APP_FULL_NAME} est : {code}\n\nCe code est valable {minutes} minutes.\n\nClarté360"; body_admin=f"Demande de code d'accès pour {APP_FULL_NAME}.\n\nPrénom : {pending.get('prenom',prenom)}\nNom : {pending.get('nom','')}\nEmail : {email}\nConsultant : {pending.get('consultant','')}\nCode : {code}\nType : {'régénération' if is_regeneration else 'initiale'}\nDate/heure : {now_iso()}\nVersion : {APP_VERSION}\nConsentement RGPD : accepté ({RGPD_TEXT_VERSION})."
-    ok_admin,msg_admin=send_email(f"Clarté360 - Nouveau code d'accès {APP_NAME}",body_admin); ok_user,msg_user=send_email(f"Votre code d'accès {APP_FULL_NAME}",body_user,to_email=email); h["generations"][-1]["envoi_beneficiaire"]="ok" if ok_user else msg_user; h["generations"][-1]["notification_admin"]="ok" if ok_admin else msg_admin
-    if ok_user: st.success("Un code d'accès vient de vous être envoyé par e-mail.")
-    else: st.error("Impossible d'envoyer le code : "+msg_user)
+def activation_and_identification_screen():
+    display_header()
+    st.markdown('<div class="objectif-box"><h3>Bienvenue sur Clarté360</h3><p>Cette application est réservée aux bénéficiaires accompagnés. Merci de saisir le code de déblocage transmis par votre accompagnateur.</p></div>',unsafe_allow_html=True)
+    if not activation_is_configured():
+        st.error("Le code de déblocage n'est pas configuré dans Streamlit Secrets (security.activation_code).")
+        return
+    code=st.text_input("Code de déblocage",type="password",key="activation_code_input")
+    if st.button("Valider le code",type="primary",disabled=not code.strip()):
+        if code.strip()==activation_secret():
+            authorize_activation(); st.session_state.activation_step=True; st.rerun()
+        else: st.error("Code incorrect. Vérifiez le code transmis par votre accompagnateur.")
+
 def identification_screen():
-    display_header(); st.markdown('<div class="objectif-box"><h3>Objectif de l’outil</h3><p>Cette application a pour objectif unique d’aider le bénéficiaire à rechercher, clarifier et valider ses valeurs fondamentales. Elle ne fait ni coaching, ni bilan de compétences, ni orientation, ni test de personnalité.</p></div>',unsafe_allow_html=True)
+    if not st.session_state.get("activation_authorized"):
+        activation_and_identification_screen(); return
+    display_header(); st.success("Accès autorisé.")
     with st.expander("Protection des données personnelles, traçabilité et utilisation de l'IA",expanded=True): st.markdown(RGPD_TEXT)
     st.subheader("Identification")
     with st.form("identification"):
         c1,c2=st.columns(2)
         with c1: prenom=st.text_input("Prénom *")
         with c2: nom=st.text_input("Nom *")
-        email=st.text_input("Adresse e-mail *"); consultant=st.text_input("Consultant / accompagnateur"); consent=st.checkbox("J'ai lu et j'accepte les conditions RGPD et les informations relatives à l'utilisation de l'intelligence artificielle."); submitted=st.form_submit_button("Recevoir mon code d'accès",type="primary")
+        email=st.text_input("Adresse e-mail *"); consultant=st.text_input("Consultant / accompagnateur")
+        consent=st.checkbox("J'ai lu et j'accepte les conditions RGPD et les informations relatives à l'utilisation de l'intelligence artificielle.")
+        submitted=st.form_submit_button("Commencer mon parcours",type="primary")
     if submitted:
         if not prenom.strip() or not nom.strip() or "@" not in email: st.error("Merci de renseigner prénom, nom et une adresse e-mail valide.")
         elif not consent: st.error("Le consentement est obligatoire avant toute utilisation.")
         else:
-            st.session_state.rgpd_acceptance={"consentement":True,"date":datetime.now().strftime("%Y-%m-%d"),"heure":datetime.now().strftime("%H:%M:%S"),"version_texte":RGPD_TEXT_VERSION}; st.session_state.pending_beneficiaire={"prenom":prenom.strip(),"nom":nom.strip(),"email":email.strip(),"consultant":consultant.strip()}; issue_access_code(email.strip(),prenom.strip(),False)
-    if st.session_state.get("access_code"):
-        st.subheader("Code d'accès"); code_in=st.text_input("Saisissez le code reçu par e-mail",max_chars=6); c1,c2=st.columns(2)
-        with c1:
-            if st.button("Valider le code et commencer",type="primary"):
-                exp=datetime.fromisoformat(st.session_state.code_expires_at)
-                if datetime.now()>exp: st.error("Le code a expiré. Demandez un nouveau code.")
-                elif code_in.strip()==st.session_state.access_code:
-                    b=st.session_state.pending_beneficiaire; st.session_state.code_verified_at=now_iso(); st.session_state.access_history["validation_code"]={"date_heure":now_iso(),"code_valide":True,"version_application":APP_VERSION}; start_new_session(b["nom"],b["prenom"],b["email"],b.get("consultant","")); st.rerun()
-                else: st.error("Code incorrect.")
-        with c2:
-            if st.button("Je n'ai pas reçu mon code → Générer un nouveau code"):
-                b=st.session_state.pending_beneficiaire; issue_access_code(b["email"],b["prenom"],True)
+            st.session_state.rgpd_acceptance={"consentement":True,"date":datetime.now().strftime("%Y-%m-%d"),"heure":datetime.now().strftime("%H:%M:%S"),"version_texte":RGPD_TEXT_VERSION}
+            start_new_session(nom,prenom,email,consultant); st.rerun()
 
 
 def sidebar_progress_label(page: str) -> str:
@@ -869,6 +956,9 @@ def sidebar_progress_label(page: str) -> str:
         "Validation":"Étape 9 - Validation",
         "Controle completude":"Étape 10 - Contrôle de complétude",
         "Resultats":"Étape 11 - État actuel",
+        "Reprise intelligente":"Reprise de votre parcours",
+        "Cloture definitive":"Clôture définitive",
+        "Consultation finale":"Consultation du parcours finalisé",
     }
     return labels.get(page, str(page))
 
@@ -877,9 +967,22 @@ def sidebar_progress():
     if LOGO_PATH.exists(): st.sidebar.image(str(LOGO_PATH),width=85)
     st.sidebar.markdown("### Clarté360")
     if in_app:
-        steps=["Accueil","Prerequis","Presentation beneficiaire","Presentation assistant","Valeurs interseances","Decision exploration","Exploration IA","Mots a examiner","Validation","Controle completude","Resultats"]; current=st.session_state.page; idx=steps.index(current) if current in steps else 0; st.sidebar.progress(idx/(len(steps)-1)); st.sidebar.caption(f"Étape {idx+1} sur {len(steps)} - {current}")
-        st.sidebar.markdown("---"); st.sidebar.download_button("💾 Sauvegarder mon travail (JSON)",data=payload_bytes(False),file_name=make_filename("rvc360_sauvegarde","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("sauvegarde_manuelle"))
-        if st.sidebar.button("🚪 Quitter et préparer mon JSON",use_container_width=True): record_save_event("sortie_preparee"); close_runtime_session("sortie_preparee"); st.session_state.exit_json_ready=True; st.session_state.exit_mode="quit"; st.rerun()
+        st.sidebar.caption(sidebar_progress_label(st.session_state.page))
+        vals=validated_names()
+        if vals: st.sidebar.markdown("**Valeurs validées**  "+" · ".join(vals))
+        if not st.session_state.get("read_only_final"):
+            st.sidebar.markdown("---")
+            st.sidebar.download_button("💾 Sauvegarder mon travail (JSON)",data=payload_bytes(False),file_name=make_filename("rvc360_sauvegarde","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("sauvegarde_manuelle"))
+            completed=st.session_state.get("completed_pages",[])
+            nav_pages=[("Accueil","Accueil"),("Presentation beneficiaire","Faisons connaissance"),("Valeurs interseances","Découvertes personnelles"),("Exploration IA","Exploration"),("Controle completude","Contrôle de complétude"),("Resultats","Résultats")]
+            available=[x for x in nav_pages if x[0] in completed or x[0]==st.session_state.page or x[0] in ["Accueil","Resultats"]]
+            if available:
+                chosen=st.sidebar.selectbox("Revenir à une étape déjà ouverte",[x[1] for x in available],index=0,key="free_nav")
+                if st.sidebar.button("Ouvrir cette étape",use_container_width=True):
+                    target=dict((label,page) for page,label in available)[chosen]
+                    st.session_state.navigation_history.append({"de":st.session_state.page,"vers":target,"date":now_iso()})
+                    st.session_state.page=target; st.rerun()
+            if st.sidebar.button("🚪 Quitter temporairement",use_container_width=True): record_save_event("sortie_preparee"); close_runtime_session("sortie_preparee"); st.session_state.exit_json_ready=True; st.session_state.exit_mode="quit"; st.rerun()
         st.sidebar.caption(f"Temps cumulé : {format_duration(total_session_seconds())}")
     else: st.sidebar.markdown("### Session")
     st.sidebar.markdown("---")
@@ -1007,7 +1110,14 @@ def process_pending_exploration_submission() -> bool:
     previous_question=str(pending.get("question",st.session_state.current_question))
     with st.spinner("Le moteur RVC360 examine votre réponse une seule fois..."):
         try:
-            result=run_rvc360_pipeline(answer)
+            last_exc=None
+            for attempt in range(3):
+                try:
+                    result=run_rvc360_pipeline(answer); last_exc=None; break
+                except Exception as exc:
+                    last_exc=exc
+                    if attempt<2: time.sleep(1.2*(attempt+1))
+            if last_exc is not None: raise last_exc
             st.session_state.ai_engine_status="operationnel"
         except Exception as exc:
             st.session_state.pipeline_status="error"
@@ -1047,8 +1157,58 @@ def process_pending_exploration_submission() -> bool:
 
 
 def render_business():
-    page=st.session_state.page; display_header(); values_side_panel()
-    if page=="Accueil":
+    page=st.session_state.page
+    if page not in st.session_state.completed_pages: st.session_state.completed_pages.append(page)
+    display_header(); values_side_panel()
+    if page=="Reprise intelligente":
+        b=st.session_state.get("beneficiaire",{}); prenom=st.session_state.get("beneficiary_profile",{}).get("prenom_usage") or b.get("prenom","")
+        vals=validated_names(); valtxt=", ".join(vals) if vals else "aucune valeur fondamentale pour le moment"
+        msg=f"Bonjour {prenom}, je suis heureux de vous retrouver. Lors de votre précédente utilisation, nous avions identifié : {valtxt}. Avant de poursuivre, voyons si quelque chose a évolué depuis votre dernière connexion."
+        st.markdown(f'<div class="clarte-box">{html.escape(msg)}</div>',unsafe_allow_html=True); speak_button(msg,"resume_intro")
+        answer=st.radio("Depuis votre dernière utilisation, avez-vous découvert une ou plusieurs nouvelles valeurs importantes ?",["Choisissez","Oui","Non"],key="resume_new_values")
+        if answer=="Oui" and st.button("Ajouter mes nouvelles valeurs",type="primary"):
+            st.session_state.resume_required=False; st.session_state.page="Valeurs interseances"; st.rerun()
+        if answer=="Non" and st.button("Reprendre mon parcours",type="primary"):
+            st.session_state.resume_required=False; st.session_state.page=st.session_state.get("resume_return_page") or "Resultats"; st.rerun()
+
+    elif page=="Consultation finale":
+        st.title("Parcours clôturé définitivement")
+        st.info("Ce fichier est en lecture seule. Il permet de consulter vos résultats et de réimprimer le rapport, sans reprendre les questionnaires ni appeler l'IA.")
+        for i,name in enumerate(validated_names(),1):
+            st.markdown(f"### {i}. {name}"); st.write(st.session_state.personal_defs.get(name) or value_info(name).get("definition",""))
+        st.download_button("Télécharger à nouveau le rapport PDF",create_pdf(),file_name=make_filename("RVC360_rapport_final","pdf"),mime="application/pdf",type="primary")
+        st.download_button("Télécharger une copie du JSON final",payload_bytes(True),file_name=make_filename("RVC360_JSON_FINAL","json"),mime="application/json")
+
+    elif page=="Cloture definitive":
+        st.title("Clôture définitive du parcours")
+        st.warning("Après cette clôture, vous ne pourrez plus modifier vos réponses, reprendre les questionnaires ni poursuivre l'exploration à partir du JSON final.")
+        confirm1=st.checkbox("Je comprends que cette clôture est irréversible pour le JSON final.")
+        confirm2=st.checkbox("Je confirme que les valeurs présentées correspondent aux résultats que je souhaite conserver.")
+        st.caption("Vous pouvez encore télécharger un JSON de travail avant de clôturer.")
+        st.download_button("Télécharger une dernière sauvegarde de travail",payload_bytes(False),file_name=make_filename("RVC360_sauvegarde_avant_cloture","json"),mime="application/json")
+        if st.button("Générer mes documents finaux",type="primary",disabled=not(confirm1 and confirm2)):
+            st.session_state.exploration_complete=True; st.session_state.closure_decision="cloture_definitive"; st.session_state.finalized_at=now_iso(); close_runtime_session("cloture_definitive"); business_trace("cloture_definitive"); st.rerun()
+        if st.session_state.get("finalized_at"):
+            st.success("Vos documents finaux sont prêts.")
+            c1,c2=st.columns(2)
+            with c1: st.download_button("Télécharger mon rapport final PDF",create_pdf(),file_name=make_filename("RVC360_rapport_final","pdf"),mime="application/pdf",use_container_width=True,on_click=lambda:st.session_state.update(final_pdf_downloaded=True))
+            with c2: st.download_button("Télécharger mon JSON final épuré",payload_bytes(True),file_name=make_filename("RVC360_JSON_FINAL","json"),mime="application/json",use_container_width=True,on_click=lambda:st.session_state.update(final_json_downloaded=True))
+            st.markdown("### Transmission à votre accompagnateur")
+            st.write("Dans le cadre d'un bilan de compétences, ce JSON final doit être remis à votre accompagnateur afin qu'il puisse intégrer ce travail dans les documents de synthèse obligatoires.")
+            choice=st.radio("Comment souhaitez-vous le transmettre ?",["Choisissez","Envoyer automatiquement par l'application","Je le remettrai moi-même"],key="trans_choice")
+            if choice=="Envoyer automatiquement par l'application" and st.button("Autoriser et envoyer le JSON final",type="primary"):
+                ben=st.session_state.get("beneficiaire",{}); consultant=ben.get("consultant","")
+                body=f"Le bénéficiaire {ben.get('prenom','')} {ben.get('nom','')} a demandé la transmission de son JSON final RVC360. Date de clôture : {st.session_state.finalized_at}."
+                ok,msg=send_email(f"Clarté360 - JSON final RVC360 - {ben.get('prenom','')} {ben.get('nom','')}",body,attachments=[(make_filename("RVC360_JSON_FINAL","json"),payload_bytes(True),"application/json")])
+                st.session_state.transmission_choice="envoi_automatique"; st.session_state.transmission_status="envoye" if ok else msg
+                if ok: st.success("Votre JSON final a bien été transmis à votre accompagnateur.")
+                else: st.error(msg)
+            elif choice=="Je le remettrai moi-même":
+                st.session_state.transmission_choice="remise_manuelle"; st.info("Téléchargez le JSON final et remettez-le à votre accompagnateur.")
+            if st.session_state.get("final_pdf_downloaded") and st.session_state.get("final_json_downloaded") and choice!="Choisissez":
+                st.success("Clôture complète. Vos documents ont été proposés et votre mode de transmission est enregistré.")
+
+    elif page=="Accueil":
         st.markdown('<div class="clarte-box"><b>Objectif unique : rechercher et valider vos valeurs fondamentales.</b><br>Cette application prolonge l’exercice inter-séance engagé avec votre accompagnateur. Elle ne fait ni coaching, ni diagnostic, ni orientation.</div>',unsafe_allow_html=True)
         value_reminder()
         if not CATALOGUE: st.error("Le référentiel RVC360 n'a pas pu être chargé.")
@@ -1443,11 +1603,13 @@ def render_business():
         with c1: st.download_button("Télécharger le rapport PDF",create_pdf(),file_name=make_filename("RVC360_valeurs","pdf"),mime="application/pdf",use_container_width=True)
         with c2: st.download_button("Télécharger les données JSON",payload_bytes(bool(st.session_state.exploration_complete)),file_name=make_filename("RVC360_valeurs","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("telechargement_json"))
         st.divider()
-        finish=st.radio("Pensez-vous avoir identifié l’ensemble des valeurs qui vous font agir et réagir ?",["Je souhaite encore poursuivre ma recherche","Oui, je pense avoir suffisamment identifié mes valeurs"],key="finish_consent")
-        if finish.startswith("Oui"):
-            st.warning("La fin de la recherche dépend uniquement de votre décision. Vous pourrez toujours reprendre ultérieurement avec votre fichier JSON.")
-            if st.button("Confirmer la fin de mon exercice inter-séance",type="primary",use_container_width=True):
-                st.session_state.exploration_complete=True; st.session_state.closure_decision="cloture_volontaire"; close_runtime_session("parcours_termine_volontaire"); business_trace("fin_volontaire_consentie"); st.success("Votre exercice est marqué comme terminé. Téléchargez votre PDF et votre JSON avant de quitter.")
+        st.markdown("### Que souhaitez-vous faire ?")
+        c1,c2=st.columns(2)
+        with c1:
+            st.download_button("Quitter temporairement - JSON de reprise",payload_bytes(False),file_name=make_filename("RVC360_reprise","json"),mime="application/json",use_container_width=True)
+        with c2:
+            if st.button("Clôturer définitivement mon parcours",type="primary",use_container_width=True):
+                st.session_state.page="Cloture definitive"; st.rerun()
 
 def exit_prepared_screen():
     display_header(); st.success("Votre JSON de sortie est prêt à être téléchargé."); st.markdown("Téléchargez le fichier dans la colonne de gauche. Il permettra de reprendre l'application.")

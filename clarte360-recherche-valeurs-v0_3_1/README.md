@@ -42,3 +42,27 @@ transcription_model = "gpt-4o-mini-transcribe"
 ```
 
 Ne jamais publier `.streamlit/secrets.toml`.
+
+
+## Nouveautés V2.1.0
+
+- contrôle d'accès initial par code de déblocage stocké dans Streamlit Secrets ;
+- reprise intelligente et personnalisée des JSON de travail ;
+- distinction stricte JSON de travail / JSON final épuré ;
+- fermeture définitive avec double confirmation ;
+- mode lecture seule pour les parcours clôturés ;
+- transmission volontaire du JSON final à l'accompagnateur ;
+- navigation vers les étapes déjà ouvertes ;
+- gestion renforcée des interruptions temporaires de l'IA ;
+- texte RGPD V2.1 intégrant la voix, l'IA, la clôture et la transmission ;
+- maintien des réponses clavier et voix avec validation de la transcription.
+
+### Secret obligatoire
+
+```toml
+[security]
+activation_code = "VOTRE-CODE"
+session_limit_minutes = 60
+```
+
+Le code n'est jamais stocké dans les JSON ni envoyé à l'API.
