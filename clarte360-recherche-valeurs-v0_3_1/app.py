@@ -218,15 +218,15 @@ div.stButton > button[kind="primary"] {{ background-color:{OFFICIAL_TEAL}; borde
 .clarte-box {{ border-left:6px solid {OFFICIAL_TEAL}; background:{LIGHT_TEAL}; padding:1rem 1.1rem; border-radius:.55rem; margin:1rem 0; color:{DARK_TEXT}; }}
 .objectif-box {{ border:1px solid #cfe6e6; background:#f8fbfb; padding:1.2rem 1.4rem; border-radius:.9rem; margin:1rem 0 1.4rem; color:{DARK_TEXT}; }}
 .clarte-card {{ border:1px solid #d9eeee; border-radius:.8rem; padding:1rem; background:#fff; box-shadow:0 1px 8px rgba(0,128,128,.08); margin-bottom:1rem; }}
-.question-card { border-left:8px solid #008080; background:linear-gradient(135deg,#E6F4F4 0%,#F8FCFC 100%); padding:1.15rem 1.3rem; border-radius:14px; margin:1.2rem 0 .65rem; box-shadow:0 3px 12px rgba(0,128,128,.10); }
-.question-card .question-kicker { color:#007575; font-size:.82rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; margin-bottom:.35rem; }
-.question-card .question-text { color:#173838; font-size:1.42rem; line-height:1.38; font-weight:750; }
-.answer-card { border:2px solid #74C9A7; background:#EFFAF4; padding:1rem 1.15rem; border-radius:14px; margin:.65rem 0 1rem; box-shadow:0 2px 9px rgba(50,140,100,.10); }
-.answer-card .answer-title { color:#18794E; font-size:.9rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; margin-bottom:.4rem; }
-.answer-card .answer-text { color:#17352A; font-size:1.08rem; line-height:1.55; white-space:pre-wrap; }
-.transcript-card { border:1px solid #AFCACA; background:#F7FBFB; padding:.9rem 1rem; border-radius:12px; margin:.5rem 0; }
-.transcript-card.corrected { border-color:#F0C36A; background:#FFF9E9; }
-.response-mode { color:#667; font-size:.82rem; margin-top:.45rem; }
+.question-card {{ border-left:8px solid #008080; background:linear-gradient(135deg,#E6F4F4 0%,#F8FCFC 100%); padding:1.15rem 1.3rem; border-radius:14px; margin:1.2rem 0 .65rem; box-shadow:0 3px 12px rgba(0,128,128,.10); }}
+.question-card .question-kicker {{ color:#007575; font-size:.82rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; margin-bottom:.35rem; }}
+.question-card .question-text {{ color:#173838; font-size:1.42rem; line-height:1.38; font-weight:750; }}
+.answer-card {{ border:2px solid #74C9A7; background:#EFFAF4; padding:1rem 1.15rem; border-radius:14px; margin:.65rem 0 1rem; box-shadow:0 2px 9px rgba(50,140,100,.10); }}
+.answer-card .answer-title {{ color:#18794E; font-size:.9rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; margin-bottom:.4rem; }}
+.answer-card .answer-text {{ color:#17352A; font-size:1.08rem; line-height:1.55; white-space:pre-wrap; }}
+.transcript-card {{ border:1px solid #AFCACA; background:#F7FBFB; padding:.9rem 1rem; border-radius:12px; margin:.5rem 0; }}
+.transcript-card.corrected {{ border-color:#F0C36A; background:#FFF9E9; }}
+.response-mode {{ color:#667; font-size:.82rem; margin-top:.45rem; }}
 .small-muted {{ color:#666; font-size:.9rem; }}
 .clarte-values-panel {{ position:fixed; right:1rem; top:6.6rem; width:190px; z-index:50; background:#ffffff; border:1px solid #cfe6e6; border-radius:12px; padding:10px; box-shadow:0 3px 14px rgba(0,80,80,.12); }}
 .clarte-values-panel img {{ width:46px; height:46px; object-fit:cover; border-radius:50%; display:block; margin:0 auto 5px; }}
