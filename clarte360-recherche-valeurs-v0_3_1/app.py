@@ -54,13 +54,13 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.1.3"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
 FRAMEWORK_VERSION = "4.0"
 RVC360_VERSION = "2.1"
-RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v2.1-2026-07"
+RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v2.1.1-2026-07"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -116,31 +116,91 @@ SORTIE : uniquement un objet JSON conforme au schéma demandé.
 RGPD_TEXT = f"""
 ### Protection des données personnelles (RGPD)
 
-Cette application Clarté360 fonctionne sans base de données serveur propre à l'application. Aucune donnée n'est enregistrée durablement sur un serveur Clarté360 par l'application.
+Cette application Clarté360 fonctionne sans base de données serveur propre à l’application. Elle n’enregistre pas durablement, sur un serveur Clarté360, les réponses, fichiers JSON, rapports PDF ou fichiers audio du bénéficiaire.
 
-Le fichier JSON constitue le seul support de conservation de votre travail. Il peut contenir votre identité, votre adresse e-mail, le nom de votre accompagnateur, les dates et heures de connexion, la durée des sessions, vos réponses, les mots proposés, vos validations, l'historique des connexions, les générations de codes d'accès, le consentement RGPD, la version de l'application et les informations techniques disponibles.
+Le bénéficiaire reste responsable des fichiers qu’il choisit de télécharger, de conserver, de supprimer ou de transmettre. Le consentement à l’utilisation de l’application est obligatoire. Son acceptation est inscrite dans le JSON avec la date, l’heure et la version du texte accepté : **{RGPD_TEXT_VERSION}**.
 
-Le fichier JSON appartient exclusivement au bénéficiaire. Vous choisissez librement de le conserver, de le supprimer ou de le transmettre à votre accompagnateur.
+### Données traitées et finalité
 
-Le consentement est obligatoire avant toute utilisation. Son acceptation est enregistrée dans le JSON avec la date, l'heure et la version du texte accepté : **{RGPD_TEXT_VERSION}**.
+L’application peut traiter les informations nécessaires à la recherche et à la validation des valeurs : identité et coordonnées saisies, nom de l’accompagnateur, réponses validées, valeurs proposées ou retenues, étapes du parcours, validations, dates et durées de session, éléments de traçabilité, version de l’application et informations techniques strictement nécessaires à la reprise ou à la restitution.
 
-### Utilisation de l'intelligence artificielle
+Ces données sont utilisées uniquement pour permettre au bénéficiaire de réaliser son parcours, de reprendre son travail, de consulter ses résultats, de produire ses documents et, lorsqu’il le choisit, de transmettre ses résultats à son accompagnateur.
 
-Le moteur RVC360 intervient en deux niveaux : il structure d'abord localement les propos sans rechercher de valeur, puis l'intelligence artificielle rapproche cette fiche d'analyse d'un sous-ensemble contrôlé du référentiel RVC360 afin de formuler des hypothèses lexicales à examiner. Elle ne valide aucune valeur, ne produit aucun diagnostic et ne prend aucune décision à la place du bénéficiaire.
+### Réponse vocale et transcription
 
-Les réponses utiles à cette recherche sont transmises au fournisseur d'IA configuré par Clarté360. Il est demandé de ne pas saisir de noms complets, coordonnées ou informations sensibles inutiles. L'application demande au fournisseur de ne pas conserver la réponse comme état applicatif (`store=False`). Les traitements techniques et règles de conservation propres au fournisseur restent applicables.
+La réponse vocale est facultative. Le bénéficiaire peut toujours répondre par écrit.
 
-### Voix, fichiers de travail et transmission
+Lorsqu’il choisit de répondre à l’oral, l’enregistrement est transmis au prestataire technique de transcription configuré par Clarté360 afin de produire une version textuelle. Le fichier audio est utilisé uniquement le temps nécessaire à cette opération par l’application : il n’est pas intégré au JSON, n’est pas conservé dans les documents produits et n’est pas enregistré durablement par l’application Clarté360.
 
-La réponse vocale est facultative. Les fichiers audio sont utilisés uniquement le temps nécessaire à leur transcription puis supprimés de la mémoire de travail ; ils ne sont jamais enregistrés dans le JSON. Toute transcription doit être relue et validée avant traitement par l’IA. Une reformulation éventuelle reste optionnelle et ne remplace jamais automatiquement votre texte.
+L’application affiche la transcription initiale et, le cas échéant, une proposition corrigée limitée aux hésitations, répétitions involontaires, faux départs, reprises de phrase, ponctuation et accords évidents. Le bénéficiaire peut conserver la transcription initiale, choisir la proposition corrigée, la modifier ou réenregistrer sa réponse.
 
-Le JSON de travail permet la reprise et contient les éléments nécessaires au parcours. Le JSON final, généré uniquement lors d’une clôture définitive, est épuré : il ne conserve ni dialogues détaillés, ni questionnaires intermédiaires, ni transcriptions brutes, ni hypothèses techniques successives. Sa transmission automatique à l’accompagnateur nécessite un consentement spécifique ; vous pouvez aussi le télécharger et le remettre vous-même.
+Aucune transcription ne devient une réponse officielle et aucune analyse de valeurs n’est lancée à partir de cette réponse tant que le bénéficiaire n’a pas explicitement validé la version textuelle qu’il souhaite conserver. Seule cette version validée est enregistrée dans le parcours.
 
-L’accès initial est contrôlé par un code de déblocage stocké dans les paramètres sécurisés. Le code lui-même n’est jamais conservé dans les fichiers JSON ; seule l’autorisation d’accès est tracée.
+### Utilisation de l’intelligence artificielle
+
+Certaines données textuelles validées peuvent être transmises au prestataire technique d’intelligence artificielle configuré par Clarté360, uniquement lorsqu’elles sont utiles à la fonction demandée, afin de :
+
+- proposer une reformulation fidèle ;
+- structurer ou exploiter une réponse dans la recherche guidée ;
+- proposer une question suivante ;
+- faire émerger des hypothèses de valeurs à examiner.
+
+Seules les informations utiles à l’étape en cours doivent être transmises. Il est demandé au bénéficiaire de ne pas saisir de noms complets, coordonnées ou informations sensibles qui ne seraient pas nécessaires à la recherche de ses valeurs.
+
+L’intelligence artificielle ne valide aucune valeur, ne prend aucune décision à la place du bénéficiaire, ne réalise aucun diagnostic psychologique et ne remplace jamais l’accompagnateur. Toute hypothèse doit être examinée et validée par le bénéficiaire.
+
+L’application demande au fournisseur d’IA de ne pas conserver la réponse comme état applicatif (`store=False`). Les traitements techniques, mesures de sécurité et règles de conservation propres au prestataire restent toutefois applicables.
+
+### JSON de travail
+
+Le JSON de travail permet de sauvegarder et de reprendre le parcours. Il peut contenir les informations nécessaires à cette reprise, notamment les réponses validées, les valeurs, les hypothèses, les validations, les étapes déjà réalisées, les états de navigation, les contrôles de cohérence et les éléments de traçabilité.
+
+Ce fichier reste sous la responsabilité du bénéficiaire. Il peut permettre de reprendre et de modifier le parcours tant que celui-ci n’a pas été clôturé définitivement.
+
+### JSON final et rapport final
+
+Le JSON final est généré uniquement lors d’une clôture définitive. Il est épuré et ne conserve pas les questionnaires détaillés, les dialogues complets, les transcriptions initiales, les fichiers audio, les hypothèses techniques successives ni les états internes nécessaires au travail en cours.
+
+Il contient uniquement les résultats validés et les informations nécessaires à la restitution, à la consultation et à la réimpression du rapport final. Il ne permet plus de reprendre ou de modifier le parcours clôturé.
+
+Le rapport PDF final restitue les éléments validés par le bénéficiaire. Il ne constitue ni un diagnostic, ni un avis médical, ni une décision d’orientation automatique.
+
+### Transmission à l’accompagnateur
+
+Le bénéficiaire peut transmettre son JSON final à l’accompagnateur chargé de son bilan ou de son accompagnement :
+
+- soit automatiquement par l’application, lorsqu’un service d’envoi est configuré ;
+- soit manuellement, après téléchargement du fichier.
+
+La finalité de cette transmission est de permettre à l’accompagnateur d’intégrer les résultats validés dans la continuité de l’accompagnement et, le cas échéant, dans les documents de synthèse.
+
+L’envoi automatique porte uniquement sur le JSON final épuré et, si le bénéficiaire le choisit, sur le rapport PDF final. Aucun fichier audio, questionnaire brut, transcription initiale, dialogue complet ou historique technique détaillé n’est transmis dans cet envoi.
+
+Le choix du mode de transmission est libre. L’envoi automatique nécessite un consentement spécifique, distinct du consentement général à l’utilisation de l’application. Le bénéficiaire peut toujours préférer télécharger les documents et les remettre lui-même à son accompagnateur.
+
+### Conservation et traces techniques
+
+Clarté360 ne conserve pas durablement, par cette application, les fichiers audio, JSON ou PDF du bénéficiaire. Le bénéficiaire choisit la durée pendant laquelle il conserve les fichiers téléchargés.
+
+Lorsque l’envoi automatique est utilisé, seules les traces techniques strictement nécessaires au suivi de l’envoi peuvent être enregistrées dans le parcours, par exemple la date, le choix du mode de transmission et le résultat de l’envoi. Elles ne doivent pas contenir le secret technique d’accès ni le contenu détaillé des questionnaires.
+
+Les durées et règles de conservation propres aux prestataires techniques utilisés pour la transcription, l’intelligence artificielle ou l’envoi d’e-mails restent applicables selon leurs propres politiques.
+
+### Code de déblocage et sécurité
+
+L’accès initial à l’application est contrôlé par un code de déblocage stocké dans les paramètres sécurisés de l’application.
+
+Le code secret réel n’est jamais enregistré dans le JSON de travail, le JSON final ou le rapport PDF. Seule une information d’autorisation d’accès, telle que `acces_autorise: true`, et les éléments de traçabilité nécessaires peuvent être conservés. Aucun secret technique ne doit être transmis au bénéficiaire ou à l’accompagnateur.
+
+### Droits et maîtrise des fichiers
+
+Le bénéficiaire peut choisir de ne pas utiliser la voix, de ne pas demander de reformulation, de télécharger ou non ses fichiers et de choisir le mode de transmission de ses résultats. Il peut supprimer les fichiers qu’il conserve sur son propre équipement.
+
+Pour toute question relative à la protection des données ou à l’exercice de ses droits, le bénéficiaire peut utiliser l’onglet **Nous contacter** de l’application ou écrire à Clarté360 à l’adresse indiquée dans les mentions légales.
 
 ### Nature des résultats
 
-Les résultats constituent des supports d'aide à la réflexion. Ils ne constituent ni un diagnostic psychologique, ni un avis médical, ni une décision d'orientation automatique. Le bénéficiaire demeure seul décisionnaire des valeurs qu'il retient et valide.
+Les résultats constituent des supports d’aide à la réflexion. Ils ne constituent ni un diagnostic psychologique, ni un avis médical, ni une décision d’orientation automatique. Le bénéficiaire demeure seul décisionnaire des valeurs qu’il retient et valide.
 
 ### Propriété intellectuelle
 
@@ -158,6 +218,15 @@ div.stButton > button[kind="primary"] {{ background-color:{OFFICIAL_TEAL}; borde
 .clarte-box {{ border-left:6px solid {OFFICIAL_TEAL}; background:{LIGHT_TEAL}; padding:1rem 1.1rem; border-radius:.55rem; margin:1rem 0; color:{DARK_TEXT}; }}
 .objectif-box {{ border:1px solid #cfe6e6; background:#f8fbfb; padding:1.2rem 1.4rem; border-radius:.9rem; margin:1rem 0 1.4rem; color:{DARK_TEXT}; }}
 .clarte-card {{ border:1px solid #d9eeee; border-radius:.8rem; padding:1rem; background:#fff; box-shadow:0 1px 8px rgba(0,128,128,.08); margin-bottom:1rem; }}
+.question-card {{ border-left:8px solid #008080; background:linear-gradient(135deg,#E6F4F4 0%,#F8FCFC 100%); padding:1.15rem 1.3rem; border-radius:14px; margin:1.2rem 0 .65rem; box-shadow:0 3px 12px rgba(0,128,128,.10); }}
+.question-card .question-kicker {{ color:#007575; font-size:.82rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; margin-bottom:.35rem; }}
+.question-card .question-text {{ color:#173838; font-size:1.42rem; line-height:1.38; font-weight:750; }}
+.answer-card {{ border:2px solid #74C9A7; background:#EFFAF4; padding:1rem 1.15rem; border-radius:14px; margin:.65rem 0 1rem; box-shadow:0 2px 9px rgba(50,140,100,.10); }}
+.answer-card .answer-title {{ color:#18794E; font-size:.9rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; margin-bottom:.4rem; }}
+.answer-card .answer-text {{ color:#17352A; font-size:1.08rem; line-height:1.55; white-space:pre-wrap; }}
+.transcript-card {{ border:1px solid #AFCACA; background:#F7FBFB; padding:.9rem 1rem; border-radius:12px; margin:.5rem 0; }}
+.transcript-card.corrected {{ border-color:#F0C36A; background:#FFF9E9; }}
+.response-mode {{ color:#667; font-size:.82rem; margin-top:.45rem; }}
 .small-muted {{ color:#666; font-size:.9rem; }}
 .clarte-values-panel {{ position:fixed; right:1rem; top:6.6rem; width:190px; z-index:50; background:#ffffff; border:1px solid #cfe6e6; border-radius:12px; padding:10px; box-shadow:0 3px 14px rgba(0,80,80,.12); }}
 .clarte-values-panel img {{ width:46px; height:46px; object-fit:cover; border-radius:50%; display:block; margin:0 auto 5px; }}
@@ -553,7 +622,7 @@ def transcribe_audio(audio_file)->str:
     suffix=".webm" if "webm" in mime else ".mp3" if "mpeg" in mime or "mp3" in mime else ".m4a" if "mp4" in mime or "m4a" in mime else ".wav"
     f=io.BytesIO(data)
     f.name=f"reponse{suffix}"
-    result=client.audio.transcriptions.create(model=model,file=f,language="fr")
+    result=client.audio.transcriptions.create(model=model,file=f,language="fr",prompt="Transcription verbatim en français. Conservez les hésitations comme euh, heu, hum, les répétitions, les faux départs et les reprises de phrase. Ne corrigez pas et ne reformulez pas.")
     transcript=str(getattr(result,"text","") or "").strip()
     # Les octets ne sont jamais placés dans le JSON ni dans un stockage applicatif.
     del data
@@ -705,35 +774,98 @@ def invalidate_dependencies(scope: str, *, value_name: str="", reason: str="") -
 def open_response_widget(label: str, key: str, *, value: str="", height: int=110,
                          allow_reformulation: bool=True, help_text: str="",
                          listen: bool=True, dependency_scope: str="", value_name: str="") -> str:
-    """Composant unique : écoute, clavier/voix, correction et validation obligatoire."""
+    """Composant uniforme : question visible, réponse validée persistante, clavier/voix et validation."""
     base=_safe_widget_key(key)
     meta=st.session_state.answer_metadata.setdefault(base,{"mode_saisie":"","texte_brut":"","transcription":"","transcription_corrigee":"","reformulation_proposee":"","reformulation_retenue":"","version_officielle":"","validee_le":""})
     if value and not str(meta.get("version_officielle","") or "").strip():
         meta.update({"mode_saisie":"reprise","texte_brut":str(value),"version_officielle":str(value),"validee_le":meta.get("validee_le") or now_iso()})
         st.session_state[f"{base}_official"]=str(value)
+
+    # La question est toujours immédiatement visible et nettement différenciée.
+    st.markdown(
+        f'<div class="question-card"><div class="question-kicker">Question</div>'
+        f'<div class="question-text">{html.escape(str(label))}</div></div>',
+        unsafe_allow_html=True,
+    )
     if listen: speak_button(label,f"listen_{base}")
     if help_text: st.caption(help_text)
-    current=str(meta.get("version_officielle") or st.session_state.get(f"{base}_official") or value or "")
-    st.markdown("**⌨️ Répondre au clavier ou 🎤 répondre à l’oral**")
-    typed=st.text_area(label,value=current,height=height,key=f"{base}_typed")
-    if typed.strip()!=current.strip():
+
+    official=str(meta.get("version_officielle") or st.session_state.get(f"{base}_official") or "").strip()
+    editing_key=f"{base}_editing"
+    if editing_key not in st.session_state:
+        st.session_state[editing_key]=not bool(official)
+
+    # Une réponse validée reste toujours affichée, même après un rerun Streamlit.
+    if official:
+        mode={"voix":"Réponse orale validée","clavier":"Réponse écrite validée","reprise":"Réponse déjà enregistrée"}.get(str(meta.get("mode_saisie","")),"Réponse validée")
+        st.markdown(
+            f'<div class="answer-card"><div class="answer-title">✓ {html.escape(mode)}</div>'
+            f'<div class="answer-text">{html.escape(official)}</div>'
+            f'<div class="response-mode">Enregistrée le {html.escape(str(meta.get("validee_le","") or ""))}</div></div>',
+            unsafe_allow_html=True,
+        )
+        cmod,cref=st.columns(2)
+        with cmod:
+            if st.button("✏️ Modifier cette réponse",key=f"{base}_edit_btn",use_container_width=True):
+                st.session_state[editing_key]=True; st.rerun()
+        with cref:
+            if st.button("🎤 Remplacer par une réponse orale",key=f"{base}_voice_replace",use_container_width=True):
+                st.session_state[editing_key]=True
+                st.session_state[f"{base}_focus_voice"]=True
+                st.rerun()
+
+    if not st.session_state.get(editing_key,True):
+        # La reformulation demeure facultative mais le fonctionnement est identique partout.
+        if allow_reformulation and official:
+            with st.expander("Améliorer la formulation de ma réponse (facultatif)",expanded=False):
+                st.caption("Clarté360 peut proposer une formulation plus fluide sans changer le sens. Rien ne remplace votre texte sans validation.")
+                if st.button("Générer une proposition",key=f"{base}_reform_btn",use_container_width=True):
+                    try:
+                        with st.spinner("Préparation d’une reformulation fidèle…"):
+                            proposal=reformulate_text(official)
+                        st.session_state[f"{base}_proposal"]=proposal; meta["reformulation_proposee"]=proposal; st.rerun()
+                    except Exception as exc: st.error(f"La reformulation n’a pas pu être générée : {exc}")
+                proposal=str(st.session_state.get(f"{base}_proposal","") or "")
+                if proposal:
+                    st.markdown("**Votre réponse validée**"); st.write(official)
+                    st.markdown("**Proposition Clarté360**")
+                    edited=st.text_area("Modifier la proposition",value=proposal,height=height,key=f"{base}_proposal_edit")
+                    selected=st.radio("Quelle version souhaitez-vous enregistrer ?",["Choisissez une option","Conserver mon texte","Utiliser la reformulation","Utiliser la reformulation modifiée"],key=f"{base}_proposal_select")
+                    if st.button("Valider la version officielle",key=f"{base}_proposal_validate",type="primary",use_container_width=True,disabled=selected=="Choisissez une option"):
+                        retained=official if selected=="Conserver mon texte" else (proposal if selected=="Utiliser la reformulation" else edited.strip())
+                        old=official
+                        st.session_state[f"{base}_official"]=retained
+                        meta.update({"reformulation_retenue":retained if selected!="Conserver mon texte" else "","version_officielle":retained,"validee_le":now_iso()})
+                        st.session_state.pop(f"{base}_proposal",None)
+                        if old!=retained: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"reformulation {base} retenue")
+                        st.rerun()
+        return official
+
+    st.markdown("#### Votre réponse")
+    st.caption("Choisissez le clavier ou la voix. Une réponse n’est enregistrée qu’après validation explicite.")
+    current=official or str(value or "")
+    typed=st.text_area("Votre réponse écrite",value=current,height=height,key=f"{base}_typed",label_visibility="collapsed",placeholder="Écrivez votre réponse ici…")
+    if typed.strip()!=official.strip():
         st.caption("Cette modification n’est pas encore enregistrée.")
-        if st.button("✔ Valider ma réponse écrite",key=f"{base}_validate_typed",type="primary",use_container_width=True):
-            old=str(meta.get("version_officielle","") or "")
-            official=typed.strip()
-            meta.update({"mode_saisie":"clavier","texte_brut":official,"transcription":"","transcription_corrigee":"","version_officielle":official,"validee_le":now_iso()})
-            st.session_state[f"{base}_official"]=official
-            if old and old!=official: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
+        if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed",type="primary",use_container_width=True,disabled=not typed.strip()):
+            old=official
+            new_value=typed.strip()
+            meta.update({"mode_saisie":"clavier","texte_brut":new_value,"transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
+            st.session_state[f"{base}_official"]=new_value
+            st.session_state[editing_key]=False
+            if old and old!=new_value: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
             st.rerun()
+
+    st.markdown("#### 🎤 Répondre à l’oral")
     audio=None
     if st.session_state.get("voice_enabled",True):
         if hasattr(st,"audio_input"):
-            audio=st.audio_input("🎤 Répondre à l’oral",key=f"{base}_audio_{st.session_state.get(base+'_audio_version',0)}")
+            audio=st.audio_input("Enregistrer ma réponse",key=f"{base}_audio_{st.session_state.get(base+'_audio_version',0)}",label_visibility="collapsed")
         else: st.caption("L’enregistrement vocal n’est pas disponible dans cette version de Streamlit.")
     if audio:
         c1,c2=st.columns(2)
         with c1:
-            if st.button("Transcrire et préparer la correction",key=f"{base}_transcribe",type="primary",use_container_width=True):
+            if st.button("Transcrire et comparer les versions",key=f"{base}_transcribe",type="primary",use_container_width=True):
                 try:
                     raw=transcribe_audio(audio)
                     corrected=clean_spoken_text(raw)
@@ -746,51 +878,35 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
             if st.button("🎤 Réenregistrer",key=f"{base}_rerecord",use_container_width=True):
                 st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
                 st.session_state[f"{base}_audio_version"]=int(st.session_state.get(base+'_audio_version',0))+1; st.rerun()
+
     raw=str(st.session_state.get(f"{base}_transcript_raw","") or "")
     cleaned=str(st.session_state.get(f"{base}_transcript_clean","") or "")
     if raw:
-        st.info("Relisez les deux versions. La correction retire seulement les hésitations, répétitions involontaires et reprises de phrase. Rien n’est enregistré sans votre validation.")
-        st.markdown("**Transcription brute**"); st.write(raw)
-        st.markdown("**Proposition corrigée Clarté360**")
+        st.info("Comparez les deux versions. La première est la transcription reçue du moteur vocal. La seconde retire uniquement les hésitations, répétitions involontaires et reprises de phrase. Rien n’est enregistré sans votre validation.")
+        st.markdown(f'<div class="transcript-card"><b>Transcription initiale</b><br><br>{html.escape(raw)}</div>',unsafe_allow_html=True)
+        st.markdown('<div class="transcript-card corrected"><b>Proposition corrigée Clarté360</b></div>',unsafe_allow_html=True)
         clean_edit=st.text_area("Vous pouvez corriger cette proposition",value=cleaned or raw,height=height,key=f"{base}_clean_edit")
-        choice=st.radio("Quelle version souhaitez-vous valider ?",["Conserver la transcription brute","Utiliser la proposition corrigée","Utiliser ma correction manuelle","Réenregistrer"],key=f"{base}_voice_choice")
+        choice=st.radio("Quelle version souhaitez-vous valider ?",["Choisissez une option","Conserver la transcription initiale","Utiliser la proposition corrigée","Utiliser ma correction manuelle","Réenregistrer"],key=f"{base}_voice_choice")
         if choice=="Réenregistrer":
             if st.button("Ouvrir un nouvel enregistrement",key=f"{base}_voice_redo",use_container_width=True):
                 st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
                 st.session_state[f"{base}_audio_version"]=int(st.session_state.get(base+'_audio_version',0))+1; st.rerun()
-        elif st.button("✔ Valider cette réponse orale",key=f"{base}_validate_voice",type="primary",use_container_width=True):
-            retained=raw if choice.startswith("Conserver") else (cleaned if choice.startswith("Utiliser la proposition") else clean_edit.strip())
-            old=str(meta.get("version_officielle","") or "")
-            meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":clean_edit.strip(),"version_officielle":retained.strip(),"validee_le":now_iso()})
-            st.session_state[f"{base}_official"]=retained.strip()
-            st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
-            if old and old!=retained.strip(): invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse vocale {base} modifiée")
-            st.rerun()
-    official=str(meta.get("version_officielle") or st.session_state.get(f"{base}_official") or "").strip()
-    if official:
-        st.success("Réponse validée et enregistrée.")
-    if allow_reformulation and official:
-        choice=st.radio("Souhaitez-vous conserver votre réponse ou demander une reformulation plus claire ?",["Conserver ma réponse","Proposer une reformulation"],key=f"{base}_reform_choice",horizontal=True)
-        if choice.startswith("Proposer") and st.button("Générer la reformulation",key=f"{base}_reform_btn",use_container_width=True):
-            try:
-                with st.spinner("Préparation d’une reformulation fidèle…"): proposal=reformulate_text(official)
-                st.session_state[f"{base}_proposal"]=proposal; meta["reformulation_proposee"]=proposal; st.rerun()
-            except Exception as exc: st.error(f"La reformulation n’a pas pu être générée : {exc}")
-        proposal=str(st.session_state.get(f"{base}_proposal","") or "")
-        if proposal:
-            st.markdown("**Votre réponse validée**"); st.write(official)
-            st.markdown("**Proposition Clarté360**")
-            edited=st.text_area("Vous pouvez modifier la proposition",value=proposal,height=height,key=f"{base}_proposal_edit")
-            selected=st.radio("Quelle version souhaitez-vous enregistrer ?",["Conserver mon texte","Utiliser la reformulation","Utiliser la reformulation modifiée"],key=f"{base}_proposal_select")
-            if st.button("Valider la version officielle",key=f"{base}_proposal_validate",type="primary",use_container_width=True):
-                retained=official if selected.startswith("Conserver") else (proposal if selected=="Utiliser la reformulation" else edited.strip())
+        else:
+            if st.button("✓ Valider cette réponse orale",key=f"{base}_validate_voice",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
+                retained=raw if choice=="Conserver la transcription initiale" else (cleaned if choice=="Utiliser la proposition corrigée" else clean_edit.strip())
                 old=official
-                st.session_state[f"{base}_official"]=retained; meta.update({"reformulation_retenue":retained if not selected.startswith("Conserver") else "","version_officielle":retained,"validee_le":now_iso()})
-                st.session_state.pop(f"{base}_proposal",None)
-                if old!=retained: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"reformulation {base} retenue")
+                meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":clean_edit.strip(),"version_officielle":retained.strip(),"validee_le":now_iso()})
+                st.session_state[f"{base}_official"]=retained.strip()
+                st.session_state[editing_key]=False
+                st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
+                if old and old!=retained.strip(): invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse vocale {base} modifiée")
                 st.rerun()
-    return str(meta.get("version_officielle") or st.session_state.get(f"{base}_official") or "").strip()
 
+    if official and st.button("Annuler la modification",key=f"{base}_cancel_edit",use_container_width=True):
+        st.session_state[editing_key]=False
+        st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
+        st.rerun()
+    return official
 
 def mark_data_change(section: str, affects: list[str]|None=None) -> None:
     st.session_state.data_revision=int(st.session_state.get("data_revision",0))+1
