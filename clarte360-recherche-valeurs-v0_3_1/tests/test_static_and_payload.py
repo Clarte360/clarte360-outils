@@ -108,8 +108,11 @@ def test_single_open_response_architecture_and_voice_cleanup():
     names={n.name for n in tree.body if isinstance(n,ast.FunctionDef)}
     assert {'clean_spoken_text','_local_spoken_cleanup','revise_exploration_turn','invalidate_dependencies','closure_consistency_audit'} <= names
     text=APP.read_text(encoding='utf-8')
-    assert 'st.audio_input("Enregistrer ma réponse"' not in text
-    assert 'Transcription brute' in text
+    assert text.count('st.audio_input("Enregistrer ma réponse"')==1
+    assert '_audio_fingerprint(audio)' in text
+    assert 'already_done=' in text
+    assert 'Transcription en cours…' in text
+    assert 'Transcription initiale' in text
     assert 'Proposition corrigée Clarté360' in text
     assert 'Valider cette réponse orale' in text
     assert 'Valider ma réponse écrite' in text
@@ -169,3 +172,19 @@ def test_work_json_contains_exact_resume_state_and_navigation():
     assert resume['hypothesis_queue']==['Respect']
     raw=json.dumps(payload,ensure_ascii=False)
     assert 'access_code' not in raw and 'unlock_code' not in raw
+
+
+def test_ai_calls_are_idempotent_and_retries_are_bounded():
+    text=APP.read_text(encoding='utf-8')
+    assert 'max_retries=0' in text
+    assert 'for attempt in range(3)' not in text
+    assert 'ai_request_log' in text
+    assert 'ai_result_cache' in text
+    assert 'audio_transcript_cache' in text
+
+def test_rgpd_and_profile_question_are_updated():
+    text=APP.read_text(encoding='utf-8')
+    assert 'RGPD-Clarte360-RVC360-v2.1.2-2026-07' in text
+    assert 'API OpenAI et non le service grand public ChatGPT' in text
+    assert 'ne sont pas utilisées pour entraîner les modèles' in text
+    assert 'votre âge, votre situation familiale, votre métier et vos principales activités' in text

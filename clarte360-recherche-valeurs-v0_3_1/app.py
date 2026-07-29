@@ -54,13 +54,13 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3"
+APP_VERSION = "2.1.3.5"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
 FRAMEWORK_VERSION = "4.0"
 RVC360_VERSION = "2.1"
-RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v2.1.1-2026-07"
+RGPD_TEXT_VERSION = "RGPD-Clarte360-RVC360-v2.1.2-2026-07"
 OFFICIAL_TEAL = "#008080"
 LIGHT_TEAL = "#E6F4F4"
 DARK_TEXT = "#243A3A"
@@ -130,7 +130,7 @@ Ces données sont utilisées uniquement pour permettre au bénéficiaire de réa
 
 La réponse vocale est facultative. Le bénéficiaire peut toujours répondre par écrit.
 
-Lorsqu’il choisit de répondre à l’oral, l’enregistrement est transmis au prestataire technique de transcription configuré par Clarté360 afin de produire une version textuelle. Le fichier audio est utilisé uniquement le temps nécessaire à cette opération par l’application : il n’est pas intégré au JSON, n’est pas conservé dans les documents produits et n’est pas enregistré durablement par l’application Clarté360.
+Lorsqu’il choisit de répondre à l’oral, l’enregistrement est transmis au prestataire technique OpenAI, via son API de transcription afin de produire une version textuelle. Le fichier audio est utilisé uniquement le temps nécessaire à cette opération par l’application : il n’est pas intégré au JSON, n’est pas conservé dans les documents produits et n’est pas enregistré durablement par l’application Clarté360.
 
 L’application affiche la transcription initiale et, le cas échéant, une proposition corrigée limitée aux hésitations, répétitions involontaires, faux départs, reprises de phrase, ponctuation et accords évidents. Le bénéficiaire peut conserver la transcription initiale, choisir la proposition corrigée, la modifier ou réenregistrer sa réponse.
 
@@ -138,7 +138,7 @@ Aucune transcription ne devient une réponse officielle et aucune analyse de val
 
 ### Utilisation de l’intelligence artificielle
 
-Certaines données textuelles validées peuvent être transmises au prestataire technique d’intelligence artificielle configuré par Clarté360, uniquement lorsqu’elles sont utiles à la fonction demandée, afin de :
+Certaines données textuelles validées peuvent être transmises au prestataire technique OpenAI, via l’API OpenAI et non le service grand public ChatGPT, uniquement lorsqu’elles sont utiles à la fonction demandée, afin de :
 
 - proposer une reformulation fidèle ;
 - structurer ou exploiter une réponse dans la recherche guidée ;
@@ -149,7 +149,7 @@ Seules les informations utiles à l’étape en cours doivent être transmises. 
 
 L’intelligence artificielle ne valide aucune valeur, ne prend aucune décision à la place du bénéficiaire, ne réalise aucun diagnostic psychologique et ne remplace jamais l’accompagnateur. Toute hypothèse doit être examinée et validée par le bénéficiaire.
 
-L’application demande au fournisseur d’IA de ne pas conserver la réponse comme état applicatif (`store=False`). Les traitements techniques, mesures de sécurité et règles de conservation propres au prestataire restent toutefois applicables.
+Par défaut, les données transmises par les clients de l’API OpenAI ne sont pas utilisées pour entraîner les modèles, sauf choix explicite de partage de données. Lorsque la Responses API est utilisée, l’application conserve `store=False` lorsque cette option est disponible et adaptée. Ce réglage évite la conservation comme état applicatif, mais ne garantit pas l’absence absolue de toute trace technique. OpenAI peut conserver pendant une durée limitée certains journaux techniques ou de surveillance des abus, selon les règles applicables à l’organisation et au service utilisé. Les règles propres à OpenAI restent applicables.
 
 ### JSON de travail
 
@@ -266,7 +266,7 @@ def default_business_state() -> dict[str, Any]:
         "page":"Accueil", "prerequisite_confirmed":False, "existing_values":[], "conversation":[],
         "current_question":FALLBACK_QUESTIONS[0], "candidate_names":[], "candidate_reasons":{},
         "candidate_evidence":{}, "validation":{}, "personal_defs":{}, "comments":{}, "discarded":[],
-        "trace":[], "ai_calls":0, "ai_input_tokens":0, "ai_output_tokens":0,
+        "trace":[], "ai_calls":0, "ai_input_tokens":0, "ai_output_tokens":0, "ai_request_log":[],
         "ai_engine_status":"non_verifie", "exploration_complete":False,
         "prerequisite_entries":[], "prerequisite_pending":[], "prerequisite_index":0,
         "exploration_summary":"", "hypothesis_decisions":{}, "validation_index":0,
@@ -381,7 +381,7 @@ def ai_ready()->bool: return OpenAI is not None and bool(get_secret("openai","ap
 def api_client()->OpenAI:
     key=get_secret("openai","api_key",os.environ.get("OPENAI_API_KEY",""))
     if OpenAI is None or not key: raise RuntimeError("La clé API OpenAI n'est pas configurée.")
-    return OpenAI(api_key=key,timeout=35.0,max_retries=2)
+    return OpenAI(api_key=key,timeout=35.0,max_retries=0)
 
 def _flatten_analysis_text(card:dict[str,Any])->str:
     parts=[]
@@ -416,25 +416,46 @@ def explicit_catalogue_mentions(text:str)->list[str]:
         if len(nn)>=4 and re.search(r"(?:^| )"+re.escape(nn)+r"(?: |$)",n): found.append(name)
     return sorted(found,key=lambda x:(len(normalize(x).split()),len(x)))
 
+def _ai_request_id(call_type:str, payload:Any)->str:
+    import hashlib
+    raw=json.dumps({"type":call_type,"payload":payload},ensure_ascii=False,sort_keys=True,default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:32]
+
+def _ai_trace(call_type:str, request_id:str, status:str, *, model:str="", attempts:int=1, error:str="", usage:Any=None)->None:
+    registry=st.session_state.setdefault("ai_request_log",[])
+    item={"type":call_type,"date_heure":now_iso(),"identifiant":request_id,"statut":status,"tentatives":attempts,"modele":model,"erreur":str(error or "")[:500]}
+    if usage is not None:
+        item["tokens_entree"]=int(getattr(usage,"input_tokens",0) or 0)
+        item["tokens_sortie"]=int(getattr(usage,"output_tokens",0) or 0)
+    registry.append(item)
+
 def response_json(instructions:str,payload:dict[str,Any],schema_name:str,schema:dict[str,Any],max_tokens:int=700)->dict[str,Any]:
-    import time
-    client=api_client(); model=get_secret("openai","model","gpt-5-mini")
-    last=None
-    for attempt in range(3):
-        try:
-            response=client.responses.create(model=model,instructions=instructions,input=json.dumps(payload,ensure_ascii=False),store=False,max_output_tokens=max_tokens,text={"format":{"type":"json_schema","name":schema_name,"strict":True,"schema":schema}})
-            if getattr(response,"status",None) not in (None,"completed"): raise RuntimeError(f"Réponse IA incomplète : {getattr(response,'status',None)}")
-            st.session_state.ai_calls+=1; usage=getattr(response,"usage",None)
-            if usage:
-                st.session_state.ai_input_tokens+=int(getattr(usage,"input_tokens",0) or 0)
-                st.session_state.ai_output_tokens+=int(getattr(usage,"output_tokens",0) or 0)
-            txt=getattr(response,"output_text","")
-            if not txt: raise RuntimeError("Réponse IA vide.")
-            return json.loads(txt)
-        except Exception as exc:
-            last=exc
-            if attempt < 2: time.sleep(0.7*(attempt+1))
-    raise RuntimeError(f"L’analyse n’a pas pu aboutir après plusieurs tentatives. Votre travail est conservé. Détail : {last}")
+    model=get_secret("openai","model","gpt-5-mini")
+    request_id=_ai_request_id(schema_name,payload)
+    cache=st.session_state.setdefault("ai_result_cache",{})
+    if request_id in cache:
+        _ai_trace(schema_name,request_id,"reussi_cache",model=model,attempts=0)
+        return deepcopy(cache[request_id])
+    _ai_trace(schema_name,request_id,"en_cours",model=model,attempts=1)
+    try:
+        client=api_client()
+        response=client.responses.create(model=model,instructions=instructions,input=json.dumps(payload,ensure_ascii=False),store=False,max_output_tokens=max_tokens,text={"format":{"type":"json_schema","name":schema_name,"strict":True,"schema":schema}})
+        if getattr(response,"status",None) not in (None,"completed"):
+            raise RuntimeError(f"Réponse IA incomplète : {getattr(response,'status',None)}")
+        usage=getattr(response,"usage",None)
+        st.session_state.ai_calls+=1
+        if usage:
+            st.session_state.ai_input_tokens+=int(getattr(usage,"input_tokens",0) or 0)
+            st.session_state.ai_output_tokens+=int(getattr(usage,"output_tokens",0) or 0)
+        txt=getattr(response,"output_text","")
+        if not txt: raise RuntimeError("Réponse IA vide.")
+        result=json.loads(txt)
+        cache[request_id]=deepcopy(result)
+        _ai_trace(schema_name,request_id,"reussi",model=model,attempts=1,usage=usage)
+        return result
+    except Exception as exc:
+        _ai_trace(schema_name,request_id,"echoue",model=model,attempts=1,error=exc)
+        raise RuntimeError(f"L’analyse n’a pas pu aboutir. Votre travail est conservé. Détail : {exc}") from exc
 
 def has_forbidden_language(text:str)->bool:
     n=normalize(text); return any(re.search(p,n) for p in FORBIDDEN_PATTERNS)
@@ -610,26 +631,40 @@ def notify_new_value(name:str,definition:str)->None:
           "Aucune réponse détaillée ni identité du bénéficiaire n'est transmise dans cette notification.")
     send_email(f"Clarté360 - Proposition de valeur à examiner : {name}",body,to_email=FINAL_EMAIL_TO)
 
+def _audio_fingerprint(audio_file)->str:
+    import hashlib
+    data=audio_file.getvalue()
+    return hashlib.sha256(data).hexdigest()[:32]
+
 def transcribe_audio(audio_file)->str:
-    """Transcrit un enregistrement ponctuel sans conserver le fichier audio."""
-    client=api_client()
+    """Transcrit une seule fois un audio donné, sans conserver ses octets dans les exports."""
     model=get_secret("openai","transcription_model","gpt-4o-mini-transcribe")
     data=audio_file.getvalue()
     if not data or len(data) < 256:
         raise ValueError("Aucun enregistrement exploitable n’a été reçu. Arrêtez l’enregistrement avec le carré puis recommencez.")
-    import io
-    mime=str(getattr(audio_file,"type","") or "").lower()
-    suffix=".webm" if "webm" in mime else ".mp3" if "mpeg" in mime or "mp3" in mime else ".m4a" if "mp4" in mime or "m4a" in mime else ".wav"
-    f=io.BytesIO(data)
-    f.name=f"reponse{suffix}"
-    result=client.audio.transcriptions.create(model=model,file=f,language="fr",prompt="Transcription verbatim en français. Conservez les hésitations comme euh, heu, hum, les répétitions, les faux départs et les reprises de phrase. Ne corrigez pas et ne reformulez pas.")
-    transcript=str(getattr(result,"text","") or "").strip()
-    # Les octets ne sont jamais placés dans le JSON ni dans un stockage applicatif.
-    del data
-    f.close()
-    if not transcript:
-        raise ValueError("La transcription est vide. Vous pouvez réessayer ou recommencer votre enregistrement.")
-    return transcript
+    request_id=_audio_fingerprint(audio_file)
+    cache=st.session_state.setdefault("audio_transcript_cache",{})
+    if request_id in cache:
+        _ai_trace("transcription_vocale",request_id,"reussi_cache",model=model,attempts=0)
+        return str(cache[request_id])
+    _ai_trace("transcription_vocale",request_id,"en_cours",model=model,attempts=1)
+    try:
+        client=api_client()
+        import io
+        mime=str(getattr(audio_file,"type","") or "").lower()
+        suffix=".webm" if "webm" in mime else ".mp3" if "mpeg" in mime or "mp3" in mime else ".m4a" if "mp4" in mime or "m4a" in mime else ".wav"
+        f=io.BytesIO(data); f.name=f"reponse{suffix}"
+        result=client.audio.transcriptions.create(model=model,file=f,language="fr",prompt="Transcription verbatim en français. Conservez les hésitations comme euh, heu, hum, les répétitions, les faux départs et les reprises de phrase. Ne corrigez pas et ne reformulez pas.")
+        transcript=str(getattr(result,"text","") or "").strip()
+        f.close(); del data
+        if not transcript: raise ValueError("La transcription est vide. Vous pouvez réessayer ou recommencer votre enregistrement.")
+        cache[request_id]=transcript
+        st.session_state.ai_calls+=1
+        _ai_trace("transcription_vocale",request_id,"reussi",model=model,attempts=1)
+        return transcript
+    except Exception as exc:
+        _ai_trace("transcription_vocale",request_id,"echoue",model=model,attempts=1,error=exc)
+        raise
 
 def reset_voice_capture(*, clear_text: bool=True)->None:
     """Invalide tout ancien enregistrement et recrée réellement le composant audio."""
@@ -865,20 +900,31 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
     if audio:
         c1,c2=st.columns(2)
         with c1:
-            if st.button("Transcrire et comparer les versions",key=f"{base}_transcribe",type="primary",use_container_width=True):
+            audio_id=_audio_fingerprint(audio)
+            processing_key=f"{base}_processing_audio"
+            already_done=(st.session_state.get(f"{base}_audio_id")==audio_id and bool(st.session_state.get(f"{base}_transcript_raw")))
+            if st.button("Transcrire et comparer les versions",key=f"{base}_transcribe",type="primary",use_container_width=True,disabled=bool(st.session_state.get(processing_key)) or already_done):
+                st.session_state[processing_key]=True
+                st.session_state[f"{base}_audio_id"]=audio_id
                 try:
-                    raw=transcribe_audio(audio)
-                    corrected=clean_spoken_text(raw)
-                    st.session_state[f"{base}_transcript_raw"]=raw
-                    st.session_state[f"{base}_transcript_clean"]=corrected
-                    st.session_state[f"{base}_audio_version"]=int(st.session_state.get(base+'_audio_version',0))+1
-                    st.rerun()
-                except Exception as exc: st.error(f"La transcription n’a pas pu être réalisée : {exc}")
+                    with st.spinner("Transcription en cours…"):
+                        raw=transcribe_audio(audio)
+                        st.session_state[f"{base}_transcript_raw"]=raw
+                        corrected=clean_spoken_text(raw)
+                        st.session_state[f"{base}_transcript_clean"]=corrected
+                        meta["transcription"]=raw; meta["transcription_corrigee"]=corrected
+                except Exception as exc:
+                    st.session_state[f"{base}_transcription_error"]=str(exc)
+                finally:
+                    st.session_state[processing_key]=False
+                st.rerun()
         with c2:
             if st.button("🎤 Réenregistrer",key=f"{base}_rerecord",use_container_width=True):
                 st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
                 st.session_state[f"{base}_audio_version"]=int(st.session_state.get(base+'_audio_version',0))+1; st.rerun()
 
+    transcription_error=str(st.session_state.pop(f"{base}_transcription_error","") or "")
+    if transcription_error: st.error(f"La transcription n’a pas pu être réalisée : {transcription_error}")
     raw=str(st.session_state.get(f"{base}_transcript_raw","") or "")
     cleaned=str(st.session_state.get(f"{base}_transcript_clean","") or "")
     if raw:
@@ -1413,24 +1459,15 @@ def process_pending_exploration_submission() -> bool:
     answer=str(pending.get("answer","")).strip()
     previous_question=str(pending.get("question",st.session_state.current_question))
     with st.spinner("Le moteur RVC360 examine votre réponse une seule fois..."):
-        last_exc=None
-        result=None
-        for attempt in range(1,4):
-            try:
-                result=run_rvc360_pipeline(answer)
-                if not result or not str(result.get("question_suivante","")).strip():
-                    raise ValueError("Réponse d’analyse incomplète")
-                st.session_state.ai_engine_status="operationnel"
-                if attempt>1: business_trace("reprise_ia_automatique",f"tentative={attempt}")
-                break
-            except Exception as exc:
-                last_exc=exc
-                if attempt<3:
-                    import time; time.sleep(0.8*attempt)
-        if result is None:
+        try:
+            result=run_rvc360_pipeline(answer)
+            if not result or not str(result.get("question_suivante","")).strip():
+                raise ValueError("Réponse d’analyse incomplète")
+            st.session_state.ai_engine_status="operationnel"
+        except Exception as exc:
             st.session_state.pipeline_status="error"
-            st.session_state.pipeline_error=str(last_exc)
-            business_trace("erreur_ia",f"{type(last_exc).__name__}: {str(last_exc)[:120]}")
+            st.session_state.pipeline_error=str(exc)
+            business_trace("erreur_ia",f"{type(exc).__name__}: {str(exc)[:120]}")
             return True
     card=result["analysis_card"]
     st.session_state.analysis_card=card
@@ -1667,7 +1704,7 @@ def render_business():
         profile=st.session_state.get("beneficiary_profile",{})
         preferred=open_response_widget("Comment souhaitez-vous que je vous appelle ?","profile_preferred_name",value=profile.get("prenom_usage",st.session_state.beneficiaire.get("prenom","")),height=70,allow_reformulation=False)
         intro_parts=[]
-        for fld,label in [("situation_actuelle","Quelle est votre situation actuelle ?"),("parcours","Quels éléments de votre parcours vous semblent importants ?"),("activites_importantes","Quelles personnes ou activités occupent une place importante ?"),("passions","Quelles sont vos passions ou centres d’intérêt ?"),("projets","Quels projets ou changements envisagez-vous ?")]:
+        for fld,label in [("situation_actuelle","Quelle est votre situation actuelle ?\n(Si vous le voulez bien, vous pouvez me préciser rapidement votre âge, votre situation familiale, votre métier et vos principales activités.)"),("parcours","Quels éléments de votre parcours vous semblent importants ?"),("activites_importantes","Quelles personnes ou activités occupent une place importante ?"),("passions","Quelles sont vos passions ou centres d’intérêt ?"),("projets","Quels projets ou changements envisagez-vous ?")]:
             intro_parts.append((fld,open_response_widget(label,f"profile_{fld}",value=profile.get(fld,""),height=90,dependency_scope="profile")))
         goal_label="Qu’aimeriez-vous mieux comprendre ou vérifier grâce à cette recherche de valeurs ?"
         goal=open_response_widget(goal_label,"profile_objectif",value=profile.get("objectif_demarche",""),height=110,dependency_scope="profile")
