@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.6"
+APP_VERSION = "2.1.3.7"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -766,6 +766,20 @@ def repair_all_answer_metadata() -> int:
     return repaired
 
 
+def _reset_response_voice_state(base: str) -> None:
+    """Réinitialise intégralement le brouillon vocal d'une question sans toucher à sa réponse officielle."""
+    current_version=int(st.session_state.get(f"{base}_audio_version",0) or 0)
+    keys=[
+        f"{base}_audio_{current_version}", f"{base}_audio_id",
+        f"{base}_transcript_raw", f"{base}_transcript_clean",
+        f"{base}_processing_audio", f"{base}_transcription_error",
+        f"{base}_voice_choice", f"{base}_clean_edit",
+    ]
+    for key in keys:
+        st.session_state.pop(key,None)
+    st.session_state[f"{base}_audio_version"]=current_version+1
+
+
 def _local_spoken_cleanup(text: str) -> str:
     """Nettoyage conservateur de secours : hésitations et répétitions immédiates."""
     out=str(text or "").strip()
@@ -892,15 +906,10 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
             f'<div class="response-mode">Enregistrée le {html.escape(str(meta.get("validee_le","") or ""))}</div></div>',
             unsafe_allow_html=True,
         )
-        cmod,cref=st.columns(2)
-        with cmod:
-            if st.button("✏️ Modifier cette réponse",key=f"{base}_edit_btn",use_container_width=True):
-                st.session_state[editing_key]=True; st.rerun()
-        with cref:
-            if st.button("🎤 Remplacer par une réponse orale",key=f"{base}_voice_replace",use_container_width=True):
-                st.session_state[editing_key]=True
-                st.session_state[f"{base}_focus_voice"]=True
-                st.rerun()
+        if st.button("✏️ Modifier cette réponse",key=f"{base}_edit_btn",use_container_width=True):
+            _reset_response_voice_state(base)
+            st.session_state[editing_key]=True
+            st.rerun()
 
     if not st.session_state.get(editing_key,True):
         return official
@@ -916,11 +925,16 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
             new_value=typed.strip()
             meta.update({"mode_saisie":"clavier","texte_brut":new_value,"transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
             st.session_state[f"{base}_official"]=new_value
+            _reset_response_voice_state(base)
             st.session_state[editing_key]=False
             if old and old!=new_value: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
             st.rerun()
 
     st.markdown("#### 🎤 Répondre à l’oral")
+    processing_key=f"{base}_processing_audio"
+    if st.session_state.get(processing_key):
+        # Un rerun ou une interruption ne doit jamais bloquer définitivement ce questionnaire.
+        st.session_state[processing_key]=False
     audio=None
     if st.session_state.get("voice_enabled",True):
         if hasattr(st,"audio_input"):
@@ -930,7 +944,6 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         c1,c2=st.columns(2)
         with c1:
             audio_id=_audio_fingerprint(audio)
-            processing_key=f"{base}_processing_audio"
             already_done=(st.session_state.get(f"{base}_audio_id")==audio_id and bool(st.session_state.get(f"{base}_transcript_raw")))
             if st.button("Transcrire et comparer les versions",key=f"{base}_transcribe",type="primary",use_container_width=True,disabled=bool(st.session_state.get(processing_key)) or already_done):
                 st.session_state[processing_key]=True
@@ -949,8 +962,8 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
                 st.rerun()
         with c2:
             if st.button("🎤 Réenregistrer",key=f"{base}_rerecord",use_container_width=True):
-                st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
-                st.session_state[f"{base}_audio_version"]=int(st.session_state.get(base+'_audio_version',0))+1; st.rerun()
+                _reset_response_voice_state(base)
+                st.rerun()
 
     transcription_error=str(st.session_state.pop(f"{base}_transcription_error","") or "")
     if transcription_error: st.error(f"La transcription n’a pas pu être réalisée : {transcription_error}")
@@ -964,8 +977,8 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         choice=st.radio("Quelle version souhaitez-vous valider ?",["Choisissez une option","Conserver la transcription initiale","Utiliser la proposition corrigée","Utiliser ma correction manuelle","Réenregistrer"],key=f"{base}_voice_choice")
         if choice=="Réenregistrer":
             if st.button("Ouvrir un nouvel enregistrement",key=f"{base}_voice_redo",use_container_width=True):
-                st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
-                st.session_state[f"{base}_audio_version"]=int(st.session_state.get(base+'_audio_version',0))+1; st.rerun()
+                _reset_response_voice_state(base)
+                st.rerun()
         else:
             if st.button("✓ Valider cette réponse orale",key=f"{base}_validate_voice",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
                 retained=raw if choice=="Conserver la transcription initiale" else (cleaned if choice=="Utiliser la proposition corrigée" else clean_edit.strip())
@@ -977,14 +990,14 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
                 corrected_for_json=(clean_edit.strip() or cleaned or _local_spoken_cleanup(raw)).strip()
                 meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":corrected_for_json,"version_officielle":retained,"validee_le":now_iso()})
                 st.session_state[f"{base}_official"]=retained
+                _reset_response_voice_state(base)
                 st.session_state[editing_key]=False
-                st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
                 if old and old!=retained: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse vocale {base} modifiée")
                 st.rerun()
 
     if official and st.button("Annuler la modification",key=f"{base}_cancel_edit",use_container_width=True):
+        _reset_response_voice_state(base)
         st.session_state[editing_key]=False
-        st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
         st.rerun()
     return official
 
@@ -1602,15 +1615,45 @@ def render_final_consultation():
         if ok: st.success("Votre JSON final a bien été transmis à votre accompagnateur.")
         else: st.error(msg)
 
+def _resume_can_offer_new_values() -> bool:
+    """Ne propose les nouvelles valeurs que si cette étape avait déjà été atteinte auparavant."""
+    target=str(st.session_state.get("resume_target_page") or "")
+    visited=set(st.session_state.get("navigation_history",[]) or [])
+    if "Valeurs interseances" in visited:
+        return True
+    try:
+        return target in PAGE_ORDER and PAGE_ORDER.index(target) >= PAGE_ORDER.index("Valeurs interseances")
+    except ValueError:
+        return False
+
+
 def render_resume_welcome():
-    display_header(); vals=validated_names(); prenom=st.session_state.get("beneficiary_profile",{}).get("prenom_usage") or st.session_state.get("beneficiaire",{}).get("prenom","")
-    summary=f"Bonjour {prenom}, je suis heureux de vous retrouver. Lors de votre précédente utilisation, nous avions identifié ensemble {len(vals)} valeur(s) fondamentale(s) : {', '.join(vals) if vals else 'aucune valeur validée pour le moment'}. Depuis notre dernière rencontre, vous avez peut-être vécu de nouvelles expériences ou pris du recul."
-    st.markdown(f'<div class="clarte-box">{summary}</div>',unsafe_allow_html=True); speak_button(summary,"resume_welcome")
-    ans=st.radio("Depuis votre dernière utilisation, avez-vous découvert une ou plusieurs nouvelles valeurs importantes ?",["Choisissez une réponse","Oui","Non"],key="resume_new_values")
-    if ans=="Oui" and st.button("Explorer mes nouvelles valeurs",type="primary"):
-        st.session_state.resume_welcome_pending=False; st.session_state.return_after_personal_values=st.session_state.get("resume_target_page") or "Exploration IA"; st.session_state.page="Valeurs interseances"; st.rerun()
-    if ans=="Non" and st.button("Reprendre exactement où je m’étais arrêté",type="primary"):
-        st.session_state.resume_welcome_pending=False; st.session_state.page=st.session_state.get("resume_target_page") or "Exploration IA"; st.rerun()
+    display_header()
+    vals=validated_names()
+    prenom=st.session_state.get("beneficiary_profile",{}).get("prenom_usage") or st.session_state.get("beneficiaire",{}).get("prenom","")
+    target=st.session_state.get("resume_target_page") or "Exploration IA"
+    target_label=PAGE_LABELS.get(target,target)
+    summary=(f"Bonjour {prenom}, je suis heureux de vous retrouver. Votre travail a bien été retrouvé. "
+             f"Vous étiez à l’étape « {target_label} ». "
+             f"{len(vals)} valeur(s) fondamentale(s) étaient déjà validée(s) : "
+             f"{', '.join(vals) if vals else 'aucune pour le moment'}.")
+    st.markdown(f'<div class="clarte-box">{summary}</div>',unsafe_allow_html=True)
+    speak_button(summary,"resume_welcome")
+
+    if st.button("Reprendre exactement où je m’étais arrêté",type="primary",use_container_width=True):
+        st.session_state.resume_welcome_pending=False
+        st.session_state.page=target
+        st.rerun()
+
+    if _resume_can_offer_new_values():
+        st.divider()
+        st.caption("Cette étape avait déjà été atteinte lors de votre parcours précédent.")
+        ans=st.radio("Depuis votre dernière utilisation, avez-vous découvert une ou plusieurs nouvelles valeurs importantes ?",["Choisissez une réponse","Oui","Non"],key="resume_new_values")
+        if ans=="Oui" and st.button("Explorer mes nouvelles valeurs",use_container_width=True):
+            st.session_state.resume_welcome_pending=False
+            st.session_state.return_after_personal_values=target
+            st.session_state.page="Valeurs interseances"
+            st.rerun()
 
 def render_closure_screen():
     display_header(); st.title("Clôture définitive du parcours")
