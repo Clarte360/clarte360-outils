@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.5"
+APP_VERSION = "2.1.3.6"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -724,6 +724,48 @@ def _safe_widget_key(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", str(value))[:90]
 
 
+def _contains_oral_hesitations(text: str) -> bool:
+    """Détecte une proposition encore manifestement trop proche de l'oral brut."""
+    return bool(re.search(r"(?i)(^|[\s,;:.!?])(?:euh+|heu+|hum+|bah|ben)(?=[\s,;:.!?]|$)", str(text or "")))
+
+
+def _official_answer_from_meta(meta: dict[str, Any]) -> str:
+    """Retourne toujours la meilleure version disponible d'une réponse déjà validée."""
+    for field in ("version_officielle", "transcription_corrigee", "transcription", "texte_brut"):
+        value=str(meta.get(field, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _repair_answer_metadata_entry(meta: dict[str, Any]) -> bool:
+    """Répare les anciens JSON où une réponse validée existe mais version_officielle est vide."""
+    if not isinstance(meta, dict):
+        return False
+    if str(meta.get("version_officielle", "") or "").strip():
+        return False
+    if not str(meta.get("validee_le", "") or "").strip():
+        return False
+    recovered=_official_answer_from_meta(meta)
+    if not recovered:
+        return False
+    meta["version_officielle"]=recovered
+    if not str(meta.get("mode_saisie", "") or "").strip():
+        meta["mode_saisie"]="reprise"
+    return True
+
+
+def repair_all_answer_metadata() -> int:
+    """Répare uniformément toutes les réponses des questionnaires chargées en mémoire."""
+    repaired=0
+    metadata=st.session_state.setdefault("answer_metadata", {})
+    for base, meta in metadata.items():
+        if _repair_answer_metadata_entry(meta):
+            st.session_state[f"{base}_official"]=meta["version_officielle"]
+            repaired+=1
+    return repaired
+
+
 def _local_spoken_cleanup(text: str) -> str:
     """Nettoyage conservateur de secours : hésitations et répétitions immédiates."""
     out=str(text or "").strip()
@@ -757,7 +799,10 @@ Retournez uniquement un objet JSON avec la clé texte_corrige."""
     schema={"type":"object","properties":{"texte_corrige":{"type":"string"}},"required":["texte_corrige"],"additionalProperties":False}
     try:
         result=response_json(instructions,{"transcription":text},"redaction_transcription_clarte360",schema,max_tokens=650)
-        return str(result.get("texte_corrige","") or local).strip() or local
+        candidate=str(result.get("texte_corrige","") or "").strip()
+        if not candidate or _contains_oral_hesitations(candidate):
+            return local
+        return candidate
     except Exception:
         return local
 
@@ -816,7 +861,8 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
     """Composant uniforme : question visible, réponse validée persistante, clavier/voix et validation."""
     base=_safe_widget_key(key)
     meta=st.session_state.answer_metadata.setdefault(base,{"mode_saisie":"","texte_brut":"","transcription":"","transcription_corrigee":"","reformulation_proposee":"","reformulation_retenue":"","version_officielle":"","validee_le":""})
-    if value and not str(meta.get("version_officielle","") or "").strip():
+    _repair_answer_metadata_entry(meta)
+    if value and not _official_answer_from_meta(meta):
         meta.update({"mode_saisie":"reprise","texte_brut":str(value),"version_officielle":str(value),"validee_le":meta.get("validee_le") or now_iso()})
         st.session_state[f"{base}_official"]=str(value)
 
@@ -829,7 +875,10 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
     if listen: speak_button(label,f"listen_{base}")
     if help_text: st.caption(help_text)
 
-    official=str(meta.get("version_officielle") or st.session_state.get(f"{base}_official") or "").strip()
+    official=_official_answer_from_meta(meta) or str(st.session_state.get(f"{base}_official") or "").strip()
+    if official and not str(meta.get("version_officielle", "") or "").strip():
+        meta["version_officielle"]=official
+        st.session_state[f"{base}_official"]=official
     editing_key=f"{base}_editing"
     if editing_key not in st.session_state:
         st.session_state[editing_key]=not bool(official)
@@ -920,12 +969,17 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         else:
             if st.button("✓ Valider cette réponse orale",key=f"{base}_validate_voice",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
                 retained=raw if choice=="Conserver la transcription initiale" else (cleaned if choice=="Utiliser la proposition corrigée" else clean_edit.strip())
+                retained=retained.strip()
+                if not retained:
+                    st.error("La réponse orale ne peut pas être validée car la version choisie est vide.")
+                    return official
                 old=official
-                meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":clean_edit.strip(),"version_officielle":retained.strip(),"validee_le":now_iso()})
-                st.session_state[f"{base}_official"]=retained.strip()
+                corrected_for_json=(clean_edit.strip() or cleaned or _local_spoken_cleanup(raw)).strip()
+                meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":corrected_for_json,"version_officielle":retained,"validee_le":now_iso()})
+                st.session_state[f"{base}_official"]=retained
                 st.session_state[editing_key]=False
                 st.session_state.pop(f"{base}_transcript_raw",None); st.session_state.pop(f"{base}_transcript_clean",None)
-                if old and old!=retained.strip(): invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse vocale {base} modifiée")
+                if old and old!=retained: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse vocale {base} modifiée")
                 st.rerun()
 
     if official and st.button("Annuler la modification",key=f"{base}_cancel_edit",use_container_width=True):
@@ -1113,6 +1167,7 @@ def restore_from_progress(payload:dict):
     st.session_state.passation_root_id=payload.get("passation_root_id",str(uuid.uuid4())); st.session_state.session_id=str(uuid.uuid4()); st.session_state.passation_id=payload.get("passation_id") or f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}"; st.session_state.beneficiaire=payload.get("beneficiaire",{}); st.session_state.rgpd_acceptance=payload.get("rgpd_acceptance",{}); st.session_state.access_history=payload.get("access_history",{}); st.session_state.session_history=deepcopy(payload.get("sessions",[])); m=payload.get("metier",{})
     resume_state=m.get("etat_reprise",m)
     for k,v in default_business_state().items(): st.session_state[k]=deepcopy(resume_state.get(k,m.get(k,v)))
+    repair_all_answer_metadata()
     # Compatibilité avec les JSON 1.3.0 et antérieurs : reconstruire les valeurs application déjà fondamentales.
     if not st.session_state.get("validated_app_values"):
         st.session_state.validated_app_values=[
@@ -1804,7 +1859,9 @@ def render_business():
         explanation="Une seule question à la fois. Vous pouvez écrire ou enregistrer votre réponse. Pour une réponse orale, l’application affiche la transcription brute et une proposition Clarté360 rédigée en français écrit naturel, fluide et fidèle. Vous choisissez ensuite la version officielle."
         speak_button(explanation,"listen_exploration_instructions")
         st.caption(explanation)
-        answer_key=f"exploration_{len(st.session_state.get('conversation',[]))}_{abs(hash(st.session_state.current_question))%100000}"
+        import hashlib
+        question_key=hashlib.sha256(str(st.session_state.current_question).encode("utf-8")).hexdigest()[:12]
+        answer_key=f"exploration_{len(st.session_state.get('conversation',[]))}_{question_key}"
         answer=open_response_widget(st.session_state.current_question,answer_key,height=150,allow_reformulation=True,dependency_scope="")
         processing=st.session_state.get("pipeline_status") in ("queued","running")
         if st.button("Envoyer ma réponse validée et afficher la question suivante",type="primary",disabled=(not answer.strip()) or processing):
