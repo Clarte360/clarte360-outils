@@ -132,7 +132,7 @@ La réponse vocale est facultative. Le bénéficiaire peut toujours répondre pa
 
 Lorsqu’il choisit de répondre à l’oral, l’enregistrement est transmis au prestataire technique OpenAI, via son API de transcription afin de produire une version textuelle. Le fichier audio est utilisé uniquement le temps nécessaire à cette opération par l’application : il n’est pas intégré au JSON, n’est pas conservé dans les documents produits et n’est pas enregistré durablement par l’application Clarté360.
 
-L’application affiche la transcription initiale et, le cas échéant, une proposition corrigée limitée aux hésitations, répétitions involontaires, faux départs, reprises de phrase, ponctuation et accords évidents. Le bénéficiaire peut conserver la transcription initiale, choisir la proposition corrigée, la modifier ou réenregistrer sa réponse.
+L’application affiche la transcription initiale et une proposition rédigée par Clarté360. Cette proposition transforme l’expression orale en un texte écrit naturel, fluide et fidèle, en supprimant les hésitations, faux départs et répétitions inutiles, sans ajouter de fait ni modifier le sens. Le bénéficiaire peut conserver la transcription initiale, choisir la proposition Clarté360, la modifier ou réenregistrer sa réponse.
 
 Aucune transcription ne devient une réponse officielle et aucune analyse de valeurs n’est lancée à partir de cette réponse tant que le bénéficiaire n’a pas explicitement validé la version textuelle qu’il souhaite conserver. Seule cette version validée est enregistrée dans le parcours.
 
@@ -724,14 +724,6 @@ def _safe_widget_key(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", str(value))[:90]
 
 
-def reformulate_text(text: str) -> str:
-    """Reformulation facultative, fidèle et sans interprétation."""
-    instructions = """Reformulez le texte fourni en français clair, fidèle et exploitable. Ne déduisez rien, n'ajoutez aucun fait, aucune valeur, aucun diagnostic et aucun conseil. Conservez le sens, la première personne et les nuances. Retournez uniquement un objet JSON contenant la clé reformulation."""
-    schema={"type":"object","properties":{"reformulation":{"type":"string"}},"required":["reformulation"],"additionalProperties":False}
-    result=response_json(instructions,{"texte":text},"reformulation_clarte360",schema,max_tokens=500)
-    return str(result.get("reformulation","") or "").strip()
-
-
 def _local_spoken_cleanup(text: str) -> str:
     """Nettoyage conservateur de secours : hésitations et répétitions immédiates."""
     out=str(text or "").strip()
@@ -745,14 +737,26 @@ def _local_spoken_cleanup(text: str) -> str:
 
 
 def clean_spoken_text(text: str) -> str:
-    """Corrige uniquement les marques d'oralité sans changer le sens."""
+    """Transforme une transcription orale en texte écrit fluide, fidèle et naturel."""
     local=_local_spoken_cleanup(text)
     if not ai_ready():
         return local
-    instructions="""Nettoyez une transcription orale française sans la reformuler sur le fond. Supprimez seulement les hésitations (euh, heu, hum), faux départs manifestes, répétitions involontaires et reprises de phrase qui ne changent pas le sens. Corrigez la ponctuation et les accords évidents. Conservez strictement la première personne, le vocabulaire, les nuances, les réserves et tous les faits. N'ajoutez rien et ne déduisez rien. Retournez uniquement un objet JSON avec la clé texte_corrige."""
+    instructions="""Transformez la transcription orale française fournie en un texte écrit naturel, fluide et fidèle.
+
+Règles impératives :
+- supprimez les hésitations, faux départs, reprises de phrase et répétitions inutiles ;
+- remplacez les tournures purement orales par un français écrit naturel ;
+- réorganisez légèrement les phrases lorsque cela améliore clairement la lecture ;
+- conservez strictement la première personne, tous les faits, les nuances et les réserves ;
+- ne changez jamais le sens ;
+- n'ajoutez aucun fait, aucune interprétation, aucune valeur, aucun diagnostic et aucun conseil ;
+- ne résumez pas excessivement et ne rendez pas le texte plus flatteur qu'il ne l'est ;
+- produisez directement une version exploitable comme réponse écrite du bénéficiaire.
+
+Retournez uniquement un objet JSON avec la clé texte_corrige."""
     schema={"type":"object","properties":{"texte_corrige":{"type":"string"}},"required":["texte_corrige"],"additionalProperties":False}
     try:
-        result=response_json(instructions,{"transcription":text},"nettoyage_transcription_clarte360",schema,max_tokens=650)
+        result=response_json(instructions,{"transcription":text},"redaction_transcription_clarte360",schema,max_tokens=650)
         return str(result.get("texte_corrige","") or local).strip() or local
     except Exception:
         return local
@@ -850,30 +854,6 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
                 st.rerun()
 
     if not st.session_state.get(editing_key,True):
-        # La reformulation demeure facultative mais le fonctionnement est identique partout.
-        if allow_reformulation and official:
-            with st.expander("Améliorer la formulation de ma réponse (facultatif)",expanded=False):
-                st.caption("Clarté360 peut proposer une formulation plus fluide sans changer le sens. Rien ne remplace votre texte sans validation.")
-                if st.button("Générer une proposition",key=f"{base}_reform_btn",use_container_width=True):
-                    try:
-                        with st.spinner("Préparation d’une reformulation fidèle…"):
-                            proposal=reformulate_text(official)
-                        st.session_state[f"{base}_proposal"]=proposal; meta["reformulation_proposee"]=proposal; st.rerun()
-                    except Exception as exc: st.error(f"La reformulation n’a pas pu être générée : {exc}")
-                proposal=str(st.session_state.get(f"{base}_proposal","") or "")
-                if proposal:
-                    st.markdown("**Votre réponse validée**"); st.write(official)
-                    st.markdown("**Proposition Clarté360**")
-                    edited=st.text_area("Modifier la proposition",value=proposal,height=height,key=f"{base}_proposal_edit")
-                    selected=st.radio("Quelle version souhaitez-vous enregistrer ?",["Choisissez une option","Conserver mon texte","Utiliser la reformulation","Utiliser la reformulation modifiée"],key=f"{base}_proposal_select")
-                    if st.button("Valider la version officielle",key=f"{base}_proposal_validate",type="primary",use_container_width=True,disabled=selected=="Choisissez une option"):
-                        retained=official if selected=="Conserver mon texte" else (proposal if selected=="Utiliser la reformulation" else edited.strip())
-                        old=official
-                        st.session_state[f"{base}_official"]=retained
-                        meta.update({"reformulation_retenue":retained if selected!="Conserver mon texte" else "","version_officielle":retained,"validee_le":now_iso()})
-                        st.session_state.pop(f"{base}_proposal",None)
-                        if old!=retained: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"reformulation {base} retenue")
-                        st.rerun()
         return official
 
     st.markdown("#### Votre réponse")
@@ -928,7 +908,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
     raw=str(st.session_state.get(f"{base}_transcript_raw","") or "")
     cleaned=str(st.session_state.get(f"{base}_transcript_clean","") or "")
     if raw:
-        st.info("Comparez les deux versions. La première est la transcription reçue du moteur vocal. La seconde retire uniquement les hésitations, répétitions involontaires et reprises de phrase. Rien n’est enregistré sans votre validation.")
+        st.info("Comparez les deux versions. La première est la transcription reçue du moteur vocal. La seconde transforme votre réponse orale en un texte écrit naturel, fluide et fidèle, sans ajouter de fait ni changer le sens. Rien n’est enregistré sans votre validation.")
         st.markdown(f'<div class="transcript-card"><b>Transcription initiale</b><br><br>{html.escape(raw)}</div>',unsafe_allow_html=True)
         st.markdown('<div class="transcript-card corrected"><b>Proposition corrigée Clarté360</b></div>',unsafe_allow_html=True)
         clean_edit=st.text_area("Vous pouvez corriger cette proposition",value=cleaned or raw,height=height,key=f"{base}_clean_edit")
@@ -1728,7 +1708,7 @@ def render_business():
               "Une valeur solide se retrouve généralement dans plusieurs situations ou domaines de vie. L’objectif indicatif est souvent d’en identifier environ 8 à 12, mais ce n’est jamais un quota : votre liste peut être plus courte ou plus longue.")
         st.markdown(f'<div class="clarte-box">{text}</div>',unsafe_allow_html=True)
         speak_button(text,"assistant_intro")
-        info_voice="À chaque question ouverte, vous pourrez répondre librement au clavier ou à la voix, et alterner à tout moment. Toute transcription ou correction doit être validée avant d’être enregistrée."
+        info_voice="À chaque question ouverte, vous pourrez répondre librement au clavier ou à la voix, et alterner à tout moment. Pour une réponse orale, vous comparerez la transcription initiale et une proposition Clarté360 rédigée en français écrit. La version choisie doit être validée avant d’être enregistrée."
         speak_button(info_voice,"listen_voice_info")
         st.info(info_voice)
         if st.button("J’ai compris, continuer",type="primary"):
@@ -1821,7 +1801,7 @@ def render_business():
                 st.write(turn["question"])
             with st.chat_message("user"): st.write(turn["answer"])
         with st.chat_message("assistant"): st.write(st.session_state.current_question)
-        explanation="Une seule question à la fois. Vous pouvez écrire ou enregistrer votre réponse. Pour une réponse orale, l’application affiche la transcription brute et une correction limitée aux hésitations, répétitions involontaires et reprises de phrase. Vous choisissez ensuite la version officielle."
+        explanation="Une seule question à la fois. Vous pouvez écrire ou enregistrer votre réponse. Pour une réponse orale, l’application affiche la transcription brute et une proposition Clarté360 rédigée en français écrit naturel, fluide et fidèle. Vous choisissez ensuite la version officielle."
         speak_button(explanation,"listen_exploration_instructions")
         st.caption(explanation)
         answer_key=f"exploration_{len(st.session_state.get('conversation',[]))}_{abs(hash(st.session_state.current_question))%100000}"
