@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.7"
+APP_VERSION = "2.1.3.8-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -250,7 +250,10 @@ def get_secret(section: str, key: str, default: Any = "") -> Any:
 @st.cache_data(show_spinner=False)
 def load_referentiel() -> list[dict[str, str]]:
     if not REFERENTIEL_PATH.exists(): return []
-    df = pd.read_excel(REFERENTIEL_PATH, sheet_name="Référentiel 240")
+    xls = pd.ExcelFile(REFERENTIEL_PATH)
+    candidates = [name for name in xls.sheet_names if normalize(name).startswith("referentiel")]
+    sheet = candidates[0] if candidates else xls.sheet_names[0]
+    df = pd.read_excel(REFERENTIEL_PATH, sheet_name=sheet)
     df = df.rename(columns={"Code":"code", "Valeur":"nom", "Famille":"famille", "Définition Clarté360 - base de travail":"definition"})
     out=[]
     for _, row in df.iterrows():
@@ -293,6 +296,20 @@ def default_business_state() -> dict[str, Any]:
         "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
         "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
         "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
+        "json_schema_version":"2.1.3.8",
+        "active_module":"module_1",
+        "module_states":{
+            "module_1":{"status":"non_commence","step":"intro"},
+            "module_2":{"status":"non_commence","step":"questionnaire"},
+            "module_3":{"status":"disponible","step":"accueil"},
+            "module_4":{"status":"disponible","step":"attente_v2139"},
+            "module_5":{"status":"indisponible","step":"accueil"},
+        },
+        "central_validated_values":[], "values_to_examine":[], "session_review_items":[],
+        "current_value_work":{}, "module1_count":0, "module1_index":0,
+        "module2_question_index":0, "module2_answers":{},
+        "module3_declared_count":0, "module3_index":0, "module3_queue":[],
+        "followup_panel_open":True, "report_history":[], "answer_history":{},
     }
 
 def init_state() -> None:
@@ -920,15 +937,43 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
     typed=st.text_area("Votre réponse écrite",value=current,height=height,key=f"{base}_typed",label_visibility="collapsed",placeholder="Écrivez votre réponse ici…")
     if typed.strip()!=official.strip():
         st.caption("Cette modification n’est pas encore enregistrée.")
-        if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed",type="primary",use_container_width=True,disabled=not typed.strip()):
-            old=official
-            new_value=typed.strip()
-            meta.update({"mode_saisie":"clavier","texte_brut":new_value,"transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
-            st.session_state[f"{base}_official"]=new_value
-            _reset_response_voice_state(base)
-            st.session_state[editing_key]=False
-            if old and old!=new_value: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
-            st.rerun()
+        proposal_key=f"{base}_typed_proposal"
+        source_key=f"{base}_typed_source"
+        if not allow_reformulation:
+            if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed",type="primary",use_container_width=True,disabled=not typed.strip()):
+                old=official; new_value=typed.strip()
+                meta.setdefault("historique_versions",[])
+                if old: meta["historique_versions"].append({"version":old,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
+                meta.update({"mode_saisie":"clavier","texte_brut":new_value,"reformulation_proposee":"","reformulation_retenue":"original","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
+                st.session_state[f"{base}_official"]=new_value; _reset_response_voice_state(base); st.session_state[editing_key]=False
+                if old and old!=new_value: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
+                st.rerun()
+        else:
+            if st.session_state.get(source_key)!=typed.strip():
+                st.session_state.pop(proposal_key,None)
+            if st.button("Préparer ma réponse écrite",key=f"{base}_prepare_typed",type="primary",use_container_width=True,disabled=not typed.strip()):
+                st.session_state[source_key]=typed.strip()
+                try:
+                    st.session_state[proposal_key]=clean_spoken_text(typed.strip())
+                    st.session_state.pop(f"{base}_typed_error",None)
+                except Exception as exc:
+                    st.session_state[proposal_key]=_local_spoken_cleanup(typed.strip())
+                    st.session_state[f"{base}_typed_error"]=str(exc)
+                st.rerun()
+            proposal=str(st.session_state.get(proposal_key,"") or "").strip()
+            if proposal:
+                if st.session_state.get(f"{base}_typed_error"): st.warning("La reformulation IA n’a pas répondu. Une correction locale légère est proposée ; vous pouvez conserver votre texte initial.")
+                st.markdown(f'<div class="transcript-card"><b>Réponse initiale</b><br><br>{html.escape(typed.strip())}</div>',unsafe_allow_html=True)
+                st.markdown(f'<div class="transcript-card corrected"><b>Proposition Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
+                choice=st.radio("Quelle version souhaitez-vous valider ?",["Choisissez une option","Conserver ma réponse initiale","Utiliser la proposition Clarté360"],key=f"{base}_typed_choice")
+                if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
+                    old=official; new_value=typed.strip() if choice.startswith("Conserver") else proposal
+                    meta.setdefault("historique_versions",[])
+                    if old: meta["historique_versions"].append({"version":old,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
+                    meta.update({"mode_saisie":"clavier","texte_brut":typed.strip(),"reformulation_proposee":proposal,"reformulation_retenue":"original" if choice.startswith("Conserver") else "clarte360","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
+                    st.session_state[f"{base}_official"]=new_value; st.session_state.pop(proposal_key,None); st.session_state.pop(source_key,None); _reset_response_voice_state(base); st.session_state[editing_key]=False
+                    if old and old!=new_value: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
+                    st.rerun()
 
     st.markdown("#### 🎤 Répondre à l’oral")
     processing_key=f"{base}_processing_audio"
@@ -988,7 +1033,9 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
                     return official
                 old=official
                 corrected_for_json=(clean_edit.strip() or cleaned or _local_spoken_cleanup(raw)).strip()
-                meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":corrected_for_json,"version_officielle":retained,"validee_le":now_iso()})
+                meta.setdefault("historique_versions",[])
+                if old: meta["historique_versions"].append({"version":old,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
+                meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":corrected_for_json,"reformulation_proposee":corrected_for_json,"reformulation_retenue":choice,"version_officielle":retained,"validee_le":now_iso()})
                 st.session_state[f"{base}_official"]=retained
                 _reset_response_voice_state(base)
                 st.session_state[editing_key]=False
@@ -1079,8 +1126,267 @@ def value_reminder()->None:
     st.info(text)
 
 def validated_names()->list[str]:
+    central = st.session_state.get("central_validated_values", [])
+    if central:
+        return [str(v.get("nom_final") or v.get("nom") or "").strip() for v in central if v.get("statut") == "validee" and not v.get("en_reexamen") and str(v.get("nom_final") or v.get("nom") or "").strip()]
     names=list(dict.fromkeys(st.session_state.existing_values+st.session_state.get("validated_app_values",[])))
     return [n for n in names if st.session_state.validation.get(n,{}).get("fondamentale")]
+
+
+MODULE_LABELS = {
+    "module_1":"1. Prérequis", "module_2":"2. Faisons connaissance",
+    "module_3":"3. Valider ou revoir une valeur", "module_4":"4. Rechercher une nouvelle valeur",
+    "module_5":"5. Mes rapports",
+}
+MODULE2_QUESTIONS = [
+    {"id":"M2-IDENTITE-001","rubrique":"Votre situation","text":"Quelle est votre situation actuelle ? Vous pouvez préciser, si vous le souhaitez, votre âge, votre situation familiale, votre métier et vos principales activités."},
+    {"id":"M2-PARCOURS-001","rubrique":"Votre parcours","text":"Quels éléments de votre parcours vous semblent importants ?"},
+    {"id":"M2-ENTOURAGE-001","rubrique":"Votre environnement","text":"Quelles personnes ou activités occupent une place importante dans votre vie ?"},
+    {"id":"M2-INTERETS-001","rubrique":"Vos centres d’intérêt","text":"Quelles sont vos passions ou vos centres d’intérêt ?"},
+    {"id":"M2-PROJETS-001","rubrique":"Vos projets","text":"Quels projets ou changements envisagez-vous ?"},
+    {"id":"M2-OBJECTIF-001","rubrique":"Votre démarche","text":"Qu’aimeriez-vous mieux comprendre ou vérifier grâce à cette recherche de valeurs ?"},
+]
+
+def _module_state(module_id: str) -> dict[str, Any]:
+    return st.session_state.module_states.setdefault(module_id,{"status":"non_commence","step":"accueil"})
+
+def _set_module_status(module_id: str, status: str, step: str|None=None) -> None:
+    state=_module_state(module_id); state["status"]=status
+    if step is not None: state["step"]=step
+
+def _find_central_value(name: str) -> dict[str,Any]|None:
+    n=normalize(name)
+    for item in st.session_state.get("central_validated_values",[]):
+        if normalize(item.get("nom_final") or item.get("nom") or "")==n: return item
+    return None
+
+def _upsert_central_value(name: str, definition_personnelle: str, source: str, *, definition_clarte360: str="", questionnaire: dict[str,Any]|None=None, protected: bool=False) -> None:
+    item=_find_central_value(name)
+    payload={"nom_final":name.strip(),"definition_personnelle":definition_personnelle.strip(),"definition_clarte360":definition_clarte360.strip(),"source":source,"statut":"validee","questionnaire":questionnaire or {},"protected":protected,"en_reexamen":False,"validee_le":now_iso()}
+    if item:
+        item.setdefault("historique",[]).append({"date":now_iso(),"etat_precedent":deepcopy(item),"motif":"mise_a_jour"}); item.update(payload)
+    else: st.session_state.central_validated_values.append(payload)
+    st.session_state.personal_defs[name]=definition_personnelle.strip()
+    st.session_state.validation[name]={"importante":True,"tres_importante":True,"fondamentale":True,"origine_validation":source}
+    if source=="accompagnateur" and name not in st.session_state.existing_values: st.session_state.existing_values.append(name)
+    if source!="accompagnateur" and name not in st.session_state.validated_app_values: st.session_state.validated_app_values.append(name)
+    register_value_record(name,source,"validee",definition_personnelle,certainty=100)
+    _set_module_status("module_5","disponible","accueil")
+
+def _add_review_item(work: dict[str,Any], reason: str) -> None:
+    item={"id":str(uuid.uuid4()),"terme":work.get("nom_final") or work.get("nom_initial",""),"definition":work.get("definition_personnelle",""),"analyse":work.get("analyse",""),"motif":reason,"statut":"a_revoir_en_seance","date":now_iso()}
+    st.session_state.session_review_items.append(item)
+
+def _new_value_work(source: str="manuel") -> dict[str,Any]:
+    return {"id":str(uuid.uuid4()),"source":source,"stage":"nom","nom_initial":"","nom_normalise":"","nom_final":"","mode_decouverte":"","definition_personnelle":"","definition_clarte360":"","present_referentiel":False,"analyse":"","clarification":"","questionnaire":{},"created_at":now_iso()}
+
+def _normalise_value_name(raw: str) -> str:
+    raw=" ".join(str(raw).strip().split())
+    matches=local_value_matches(raw,limit=1)
+    return matches[0] if matches and SequenceMatcher(None,normalize(raw),normalize(matches[0])).ratio()>=.82 else raw[:1].upper()+raw[1:]
+
+def _ensure_migrated_state() -> None:
+    # Migration non destructive des JSON V2.1.3.7 et états historiques.
+    if not st.session_state.get("central_validated_values"):
+        for name in list(dict.fromkeys(st.session_state.get("existing_values",[])+st.session_state.get("validated_app_values",[]))):
+            if st.session_state.get("validation",{}).get(name,{}).get("fondamentale"):
+                info=value_info(name)
+                st.session_state.central_validated_values.append({"nom_final":name,"definition_personnelle":st.session_state.get("personal_defs",{}).get(name,"") or info.get("definition",""),"definition_clarte360":info.get("definition",""),"source":"accompagnateur" if name in st.session_state.get("existing_values",[]) else "application","statut":"validee","questionnaire":st.session_state.get("validation",{}).get(name,{}),"protected":name in st.session_state.get("existing_values",[]),"en_reexamen":False,"validee_le":now_iso()})
+    if st.session_state.get("prerequisite_confirmed"):
+        _set_module_status("module_1","termine","termine")
+    if st.session_state.get("profile_complete"):
+        _set_module_status("module_2","termine","consultation")
+    if validated_names(): _set_module_status("module_5","disponible","accueil")
+
+def render_module_menu() -> None:
+    with st.sidebar:
+        st.markdown("### Parcours")
+        for mid,label in MODULE_LABELS.items():
+            state=_module_state(mid); status=state.get("status","non_commence")
+            icon={"termine":"✅","en_cours":"▶️","disponible":"○","indisponible":"🔒","non_commence":"○"}.get(status,"○")
+            disabled=(status=="indisponible")
+            if st.button(f"{icon} {label}",key=f"menu_{mid}",use_container_width=True,disabled=disabled):
+                st.session_state.active_module=mid; st.session_state.page="Modules"; st.rerun()
+        st.caption(f"Version {APP_VERSION}")
+
+def render_followup_panel() -> None:
+    vals=validated_names(); pending=st.session_state.get("values_to_examine",[]); review=st.session_state.get("session_review_items",[])
+    opened=st.toggle(f"Afficher le suivi de mes valeurs ({len(vals)})",value=bool(st.session_state.get("followup_panel_open",True)),key="followup_panel_toggle")
+    st.session_state.followup_panel_open=bool(opened)
+    if not opened:
+        st.caption(f"Mes valeurs ({len(vals)}) ▶")
+        return
+    with st.container(border=True):
+        st.markdown("**✅ Valeurs validées**")
+        st.write(", ".join(vals) if vals else "Aucune pour le moment.")
+        st.markdown("**🔎 Valeurs à examiner**")
+        st.write(", ".join(str(x.get("nom_final") or x.get("nom") or x.get("nom_initial") or "") for x in pending) if pending else "Aucune.")
+        st.markdown("**📋 À revoir en séance**")
+        st.write(", ".join(str(x.get("terme") or "") for x in review) if review else "Aucun sujet.")
+
+def _value_definition_choices(work: dict[str,Any], prefix: str) -> tuple[str,str]:
+    personal=work.get("definition_personnelle",""); official=work.get("definition_clarte360","")
+    st.markdown("**Votre définition personnelle**"); st.info(personal or "Non renseignée")
+    if official:
+        st.markdown("**Définition Clarté360**"); st.info(official)
+        choice=st.radio("Quelle définition souhaitez-vous retenir ?",["Ma définition personnelle","La définition Clarté360","Une formulation combinée"],key=f"{prefix}_def_choice")
+        combined=""
+        if choice=="Une formulation combinée": combined=st.text_area("Formulation combinée fidèle",value=personal,key=f"{prefix}_combined")
+        return choice, (personal if choice=="Ma définition personnelle" else official if choice=="La définition Clarté360" else combined.strip())
+    return "Ma définition personnelle", personal
+
+def render_module_1() -> None:
+    st.title("Prérequis — valeurs déjà validées avec l’accompagnateur")
+    state=_module_state("module_1")
+    if state.get("status")=="termine":
+        st.success("Ce prérequis est clôturé. Les valeurs validées avec votre accompagnateur sont protégées.")
+        for item in [x for x in st.session_state.central_validated_values if x.get("source")=="accompagnateur"]:
+            st.markdown(f"### {item['nom_final']}"); st.write(item.get("definition_personnelle") or item.get("definition_clarte360"))
+            if st.button("Je souhaite revoir cette valeur avec mon accompagnateur",key=f"review_accomp_{item['nom_final']}"):
+                _add_review_item(item,"Demande explicite de réexamen avec l’accompagnateur"); st.success("Ajouté à la liste À revoir en séance.")
+        return
+    _set_module_status("module_1","en_cours",state.get("step","intro"))
+    if not st.session_state.get("module1_count"):
+        st.warning("Ce module concerne uniquement les valeurs déjà identifiées et validées humainement avec votre accompagnateur.")
+        count=int(st.number_input("Combien de valeurs avez-vous déjà identifiées et validées avec votre accompagnateur ?",min_value=1,max_value=15,value=1))
+        if st.button("Commencer",type="primary"):
+            st.session_state.module1_count=count; st.session_state.module1_index=0; st.session_state.current_value_work=_new_value_work("accompagnateur"); st.rerun()
+        return
+    idx=int(st.session_state.module1_index); total=int(st.session_state.module1_count)
+    st.progress(min(1.0,idx/max(1,total))); st.caption(f"Valeur {idx+1} sur {total}")
+    work=st.session_state.current_value_work or _new_value_work("accompagnateur")
+    name=open_response_widget("Quelle valeur avez-vous identifiée et validée avec votre accompagnateur ?",f"m1_name_{idx}",value=work.get("nom_initial",""),height=70,allow_reformulation=False)
+    definition=open_response_widget("Que signifie précisément cette valeur pour vous ?",f"m1_def_{idx}",value=work.get("definition_personnelle",""),height=110,dependency_scope="prerequisites",value_name=name)
+    if name and definition:
+        work["nom_initial"]=name; work["nom_normalise"]=_normalise_value_name(name); work["nom_final"]=work["nom_normalise"]; work["definition_personnelle"]=definition
+        info=value_info(work["nom_final"]); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
+        if work["nom_final"]!=name: st.info(f"Formulation normalisée proposée : **{work['nom_final']}**")
+        choice,final_def=_value_definition_choices(work,f"m1_{idx}")
+        confirm=st.checkbox("Je confirme que le mot et la définition retenus correspondent à la valeur déjà validée avec mon accompagnateur.",key=f"m1_confirm_{idx}")
+        if st.button("Valider cette valeur",type="primary",disabled=not(confirm and final_def),key=f"m1_save_{idx}"):
+            _upsert_central_value(work["nom_final"],final_def,"accompagnateur",definition_clarte360=work.get("definition_clarte360",""),protected=True)
+            if not work["present_referentiel"]: notify_new_value(work["nom_final"],final_def)
+            st.session_state.module1_index=idx+1; st.session_state.current_value_work=_new_value_work("accompagnateur")
+            if idx+1>=total: _set_module_status("module_1","termine","termine"); st.session_state.prerequisite_confirmed=True; st.session_state.active_module="module_2"
+            st.rerun()
+
+def render_module_2() -> None:
+    st.title("Faisons connaissance")
+    state=_module_state("module_2"); answers=st.session_state.module2_answers
+    if state.get("status")=="termine":
+        st.success("Vos réponses sont enregistrées. Vous pouvez relire ou modifier uniquement la rubrique souhaitée.")
+        choice=st.selectbox("Choisissez une rubrique",options=[q["id"] for q in MODULE2_QUESTIONS],format_func=lambda x:next(q["rubrique"] for q in MODULE2_QUESTIONS if q["id"]==x))
+        q=next(q for q in MODULE2_QUESTIONS if q["id"]==choice)
+        val=open_response_widget(q["text"],f"m2_{q['id']}",value=answers.get(q["id"],""),height=110,dependency_scope="profile")
+        if val: answers[q["id"]]=val
+        return
+    _set_module_status("module_2","en_cours","questionnaire")
+    idx=int(st.session_state.module2_question_index)
+    q=MODULE2_QUESTIONS[idx]
+    st.progress(idx/len(MODULE2_QUESTIONS)); st.caption(f"Question {idx+1} sur {len(MODULE2_QUESTIONS)} — {q['rubrique']}")
+    val=open_response_widget(q["text"],f"m2_{q['id']}",value=answers.get(q["id"],""),height=110,dependency_scope="profile")
+    if val:
+        answers[q["id"]]=val
+        if st.button("Continuer",type="primary",key=f"m2_next_{idx}"):
+            st.session_state.module2_question_index=idx+1
+            if idx+1>=len(MODULE2_QUESTIONS):
+                _set_module_status("module_2","termine","consultation"); st.session_state.profile_complete=True
+                st.session_state.beneficiary_profile={"questions":deepcopy(answers),"presentation_libre":"\n\n".join(answers.values()),"date":now_iso()}; st.session_state.active_module="module_3"
+            st.rerun()
+
+def _module3_current_work() -> dict[str,Any]:
+    if not st.session_state.current_value_work or st.session_state.current_value_work.get("source")=="accompagnateur": st.session_state.current_value_work=_new_value_work("manuel")
+    return st.session_state.current_value_work
+
+def render_module_3() -> None:
+    st.title("Valider ou revoir une valeur")
+    _set_module_status("module_3","en_cours","travail")
+    if not st.session_state.module3_queue:
+        pending=st.session_state.get("values_to_examine",[])
+        options=["Saisir une nouvelle valeur"]+(["Examiner une valeur proposée par Clarté360"] if pending else [])+(["Réexaminer une valeur déjà validée dans Clarté360"] if any(v.get('source')!='accompagnateur' for v in st.session_state.central_validated_values) else [])
+        mode=st.radio("Que souhaitez-vous faire ?",options,key="m3_entry_mode")
+        if mode=="Saisir une nouvelle valeur":
+            count=int(st.number_input("Combien de valeurs souhaitez-vous explorer ?",1,15,1,key="m3_count"))
+            if st.button("Commencer",type="primary"):
+                st.session_state.module3_declared_count=count; st.session_state.module3_queue=[_new_value_work("manuel") for _ in range(count)]; st.session_state.module3_index=0; st.session_state.current_value_work=st.session_state.module3_queue[0]; st.rerun()
+        elif mode.startswith("Examiner"):
+            if st.button("Ouvrir la première valeur à examiner",type="primary"):
+                st.session_state.module3_queue=[deepcopy(x) for x in pending]; st.session_state.values_to_examine=[]; st.session_state.module3_index=0; st.session_state.current_value_work=st.session_state.module3_queue[0]; st.rerun()
+        else:
+            candidates=[v for v in st.session_state.central_validated_values if v.get("source")!="accompagnateur"]
+            selected=st.selectbox("Valeur à réexaminer",range(len(candidates)),format_func=lambda i:candidates[i]["nom_final"])
+            if st.button("Réexaminer",type="primary"):
+                original=candidates[selected]; original["en_reexamen"]=True
+                w=_new_value_work("reexamen"); w.update({"nom_initial":original["nom_final"],"nom_final":original["nom_final"],"definition_personnelle":original.get("definition_personnelle",""),"definition_clarte360":original.get("definition_clarte360","")})
+                st.session_state.module3_queue=[w]; st.session_state.module3_index=0; st.session_state.current_value_work=w; st.rerun()
+        return
+    idx=int(st.session_state.module3_index); total=len(st.session_state.module3_queue); work=_module3_current_work()
+    st.caption(f"Valeur {idx+1} sur {total}")
+    name=open_response_widget("Quelle valeur avez-vous identifiée ?",f"m3_name_{work['id']}",value=work.get("nom_initial",work.get("nom_final","")),height=70,allow_reformulation=False)
+    modes=["Par introspection","En observant mes réactions ou mes choix","À partir d’une situation vécue","À partir d’un événement marquant","Grâce à un exercice Clarté360","Avec l’aide de la recherche guidée Clarté360","Au cours d’une discussion","À travers une lecture","À travers un film ou une série","À travers un podcast ou une émission","En observant une personne que j’admire","Autre"]
+    default_index=modes.index(work.get("mode_decouverte")) if work.get("mode_decouverte") in modes else 0
+    mode=st.selectbox("Comment avez-vous identifié cette valeur ?",modes,index=default_index,key=f"m3_mode_{work['id']}")
+    definition=open_response_widget("Que signifie cette valeur pour vous ?",f"m3_def_{work['id']}",value=work.get("definition_personnelle",""),height=110,dependency_scope="validation",value_name=name)
+    if not(name and definition): return
+    work.update({"nom_initial":name,"nom_normalise":_normalise_value_name(name),"nom_final":_normalise_value_name(name),"mode_decouverte":mode,"definition_personnelle":definition})
+    info=value_info(work["nom_final"]); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
+    st.info(f"Terme retenu pour l’examen : **{work['nom_final']}**")
+    if info: st.write(f"**Définition Clarté360 :** {info.get('definition','')}")
+    conceptual=st.radio("Cette formulation vous paraît-elle bien correspondre à une valeur ?",["Oui, poursuivre","J’hésite : poser une question de clarification","Je préfère la placer À revoir en séance"],key=f"m3_concept_{work['id']}")
+    if conceptual.startswith("Je préfère"):
+        if st.button("Ajouter à À revoir en séance",type="primary",key=f"m3_review_{work['id']}"):
+            _add_review_item(work,"Doute exprimé sur la nature ou la formulation du concept"); _advance_module3(); st.rerun()
+        return
+    if conceptual.startswith("J’hésite"):
+        clarification=open_response_widget("Qu’est-ce qui, dans cette notion, est indispensable pour vous au point d’orienter durablement vos choix ou vos réactions ?",f"m3_clar_{work['id']}",value=work.get("clarification",""),height=100)
+        work["clarification"]=clarification
+        if not clarification: return
+    choice,final_def=_value_definition_choices(work,f"m3_{work['id']}")
+    work["definition_finale"]=final_def
+    st.markdown("### Questionnaire spécifique Clarté360")
+    important=st.radio("Cette valeur est-elle importante pour vous dans plusieurs domaines ou situations ?",["Choisissez","Oui","Non"],key=f"m3_q1_{work['id']}")
+    very=st.radio("Seriez-vous durablement insatisfait si cette valeur était régulièrement bafouée ?",["Choisissez","Oui","Non"],key=f"m3_q2_{work['id']}") if important=="Oui" else "Non"
+    fundamental=st.radio("Cette valeur influence-t-elle réellement vos choix, vos engagements ou vos refus importants ?",["Choisissez","Oui","Non"],key=f"m3_q3_{work['id']}") if very=="Oui" else "Non"
+    if important=="Choisissez" or (important=="Oui" and very=="Choisissez") or (very=="Oui" and fundamental=="Choisissez"): return
+    decision="validee" if important==very==fundamental=="Oui" else "non_retenue"
+    st.write(f"Décision proposée selon vos réponses : **{'Valeur validée' if decision=='validee' else 'Valeur non retenue'}**")
+    if st.button("Confirmer cette décision",type="primary",key=f"m3_decide_{work['id']}"):
+        work["questionnaire"]={"importante":important=="Oui","tres_importante":very=="Oui","fondamentale":fundamental=="Oui"}; work["decision_finale"]=decision
+        if decision=="validee": _upsert_central_value(work["nom_final"],final_def,work.get("source","manuel"),definition_clarte360=work.get("definition_clarte360",""),questionnaire=work["questionnaire"])
+        else: st.session_state.rejected_values.append({"nom":work["nom_final"],"definition":final_def,"date":now_iso(),"source":work.get("source")})
+        _advance_module3(); st.rerun()
+
+def _advance_module3() -> None:
+    idx=int(st.session_state.module3_index)+1
+    st.session_state.module3_index=idx
+    if idx<len(st.session_state.module3_queue): st.session_state.current_value_work=st.session_state.module3_queue[idx]
+    else:
+        st.session_state.module3_queue=[]; st.session_state.current_value_work={}; _set_module_status("module_3","termine","accueil")
+
+def render_module_4_placeholder() -> None:
+    st.title("Rechercher une nouvelle valeur avec Clarté360")
+    st.info("La nouvelle recherche assistée sera intégrée dans la V2.1.3.9 après validation réelle de la V2.1.3.8. Cette version prépare déjà les listes, la reprise et le transfert vers le module 3.")
+    if st.session_state.get("values_to_examine"):
+        st.success(f"{len(st.session_state.values_to_examine)} valeur(s) sont déjà en attente d’examen dans le module 3.")
+
+def render_module_5() -> None:
+    st.title("Mes rapports")
+    vals=validated_names()
+    if not vals: st.warning("Un rapport provisoire sera disponible dès qu’au moins une valeur sera validée."); return
+    st.success(f"{len(vals)} valeur(s) validée(s) peuvent être restituées.")
+    st.download_button("Télécharger le rapport provisoire",create_pdf("provisoire"),file_name=make_filename("RVC360_rapport_provisoire","pdf"),mime="application/pdf",use_container_width=True,on_click=lambda:st.session_state.report_history.append({"type":"provisoire","date":now_iso(),"valeurs":deepcopy(vals)}))
+    st.download_button("Télécharger le JSON de reprise",payload_bytes(False),file_name=make_filename("RVC360_reprise","json"),mime="application/json",use_container_width=True)
+    st.divider(); confirm=st.checkbox("Je confirme avoir terminé ma recherche et la validation de mes valeurs.")
+    if st.button("Préparer le rapport définitif",type="primary",disabled=not confirm):
+        st.session_state.exploration_complete=True; st.session_state.closure_decision="cloture_volontaire"; st.session_state.page="Cloture definitive"; st.rerun()
+
+def render_business_v218() -> None:
+    if st.session_state.page=="Accueil reprise": render_resume_welcome(); return
+    if st.session_state.page=="Consultation finale" or st.session_state.get("final_mode"): render_final_consultation(); return
+    if st.session_state.page=="Cloture definitive": render_closure_screen(); return
+    _ensure_migrated_state(); display_header(); render_module_menu(); render_followup_panel()
+    module=st.session_state.get("active_module","module_1")
+    {"module_1":render_module_1,"module_2":render_module_2,"module_3":render_module_3,"module_4":render_module_4_placeholder,"module_5":render_module_5}.get(module,render_module_1)()
 
 def start_new_session(nom:str,prenom:str,email:str,consultant:str=""):
     st.session_state.passation_root_id=str(uuid.uuid4()); st.session_state.session_id=str(uuid.uuid4()); st.session_state.passation_id=f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{st.session_state.session_id[:8].upper()}"; st.session_state.started_at=now_iso(); st.session_state.beneficiaire={"nom":nom.strip(),"prenom":prenom.strip(),"email":email.strip(),"consultant":consultant.strip()}; st.session_state.test_started=True; st.session_state.session_history=[]
@@ -1131,6 +1437,14 @@ def build_payload(completed=False)->dict[str,Any]:
         "evenements_dependances":st.session_state.get("dependency_events",[]),
         "derniere_revision_coherente":st.session_state.get("last_consistent_revision",0),
         "audit_cloture":st.session_state.get("closure_audit",{}),
+        "schema_metier":"2.1.3.8",
+        "modules":deepcopy(st.session_state.get("module_states",{})),
+        "module_actif":st.session_state.get("active_module","module_1"),
+        "valeurs_validees_centrales":deepcopy(st.session_state.get("central_validated_values",[])),
+        "valeurs_a_examiner":deepcopy(st.session_state.get("values_to_examine",[])),
+        "a_revoir_en_seance":deepcopy(st.session_state.get("session_review_items",[])),
+        "etat_panneau":{"ouvert":bool(st.session_state.get("followup_panel_open",True))},
+        "historique_rapports":deepcopy(st.session_state.get("report_history",[])),
     }
     if not completed:
         # Copie complète et versionnée de l'état métier pour une reprise exacte de la page,
@@ -1180,6 +1494,13 @@ def restore_from_progress(payload:dict):
     st.session_state.passation_root_id=payload.get("passation_root_id",str(uuid.uuid4())); st.session_state.session_id=str(uuid.uuid4()); st.session_state.passation_id=payload.get("passation_id") or f"CL360-RVC-{datetime.now().strftime('%Y%m%d-%H%M%S')}"; st.session_state.beneficiaire=payload.get("beneficiaire",{}); st.session_state.rgpd_acceptance=payload.get("rgpd_acceptance",{}); st.session_state.access_history=payload.get("access_history",{}); st.session_state.session_history=deepcopy(payload.get("sessions",[])); m=payload.get("metier",{})
     resume_state=m.get("etat_reprise",m)
     for k,v in default_business_state().items(): st.session_state[k]=deepcopy(resume_state.get(k,m.get(k,v)))
+    if m.get("modules"): st.session_state.module_states=deepcopy(m.get("modules"))
+    if m.get("module_actif"): st.session_state.active_module=m.get("module_actif")
+    if m.get("valeurs_validees_centrales"): st.session_state.central_validated_values=deepcopy(m.get("valeurs_validees_centrales"))
+    if m.get("valeurs_a_examiner"): st.session_state.values_to_examine=deepcopy(m.get("valeurs_a_examiner"))
+    if m.get("a_revoir_en_seance"): st.session_state.session_review_items=deepcopy(m.get("a_revoir_en_seance"))
+    if m.get("etat_panneau"): st.session_state.followup_panel_open=bool(m.get("etat_panneau",{}).get("ouvert",True))
+    if m.get("historique_rapports"): st.session_state.report_history=deepcopy(m.get("historique_rapports"))
     repair_all_answer_metadata()
     # Compatibilité avec les JSON 1.3.0 et antérieurs : reconstruire les valeurs application déjà fondamentales.
     if not st.session_state.get("validated_app_values"):
@@ -1198,7 +1519,7 @@ def restore_from_progress(payload:dict):
         st.session_state.resume_target_page=st.session_state.page; st.session_state.resume_welcome_pending=True; st.session_state.page="Accueil reprise"
     init_runtime_session("reprise_json"); business_trace("reprise_json")
 
-def create_pdf()->bytes:
+def create_pdf(report_type: str="provisoire")->bytes:
     from reportlab.platypus import Image, Table, TableStyle, KeepTogether
     buffer=BytesIO(); styles=getSampleStyleSheet()
     styles.add(ParagraphStyle(name="Teal",parent=styles["Heading1"],textColor=colors.HexColor(OFFICIAL_TEAL),spaceAfter=12))
@@ -1216,7 +1537,7 @@ def create_pdf()->bytes:
     story=[]
     if LOGO_PATH.exists():
         story += [Spacer(1,1.2*cm),Image(str(LOGO_PATH),width=3.2*cm,height=3.2*cm),Spacer(1,.5*cm)]
-    story += [Paragraph("CLARTÉ360",styles["Cover"]),Paragraph("Recherche de mes valeurs - Rapport de parcours",styles["Cover"]),Spacer(1,.5*cm),
+    story += [Paragraph("CLARTÉ360",styles["Cover"]),Paragraph(f"Recherche de mes valeurs - Rapport {html.escape(report_type)}",styles["Cover"]),Spacer(1,.5*cm),
               Paragraph(f"<b>Bénéficiaire :</b> {html.escape((b.get('prenom','')+' '+b.get('nom','')).strip())}",styles["Normal"]),
               Paragraph(f"<b>Date :</b> {datetime.now().strftime('%d/%m/%Y')}",styles["Normal"]),
               Paragraph(f"<b>Application :</b> {APP_VERSION} - <b>RVC360 :</b> {RVC360_VERSION} - <b>Framework :</b> {FRAMEWORK_VERSION}",styles["Normal"]),
@@ -2158,7 +2479,7 @@ def main():
     if st.session_state.get("session_expired"): expired_screen(); return
     if st.session_state.get("test_started"):
         if st.session_state.get("exit_json_ready"): exit_prepared_screen(); return
-        timeout_watchdog(); check_session_limit(); render_business(); return
+        timeout_watchdog(); check_session_limit(); render_business_v218(); return
     choice=st.session_state.get("welcome_choice")
     if choice=="import": import_json_screen()
     elif choice=="new": identification_screen()
