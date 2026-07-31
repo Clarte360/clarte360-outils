@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.8b-preproduction"
+APP_VERSION = "2.1.3.8c-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -224,6 +224,20 @@ div.stButton > button[kind="primary"] {{ background-color:{OFFICIAL_TEAL}; borde
 .answer-card {{ border:2px solid #74C9A7; background:#EFFAF4; padding:1rem 1.15rem; border-radius:14px; margin:.65rem 0 1rem; box-shadow:0 2px 9px rgba(50,140,100,.10); }}
 .answer-card .answer-title {{ color:#18794E; font-size:.9rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; margin-bottom:.4rem; }}
 .answer-card .answer-text {{ color:#17352A; font-size:1.08rem; line-height:1.55; white-space:pre-wrap; }}
+/* V2.1.3.8c - navigation plus compacte et professionnelle */
+section[data-testid="stSidebar"] div[data-testid="stButton"] > button {{
+  min-height:2.7rem; padding:.45rem .6rem; border-radius:10px; font-weight:650;
+  text-align:center; justify-content:center; line-height:1.2;
+}}
+section[data-testid="stSidebar"] div[data-testid="stButton"] > button p {{
+  width:100%; text-align:center; margin:0;
+}}
+.module-status-card {{ border:1px solid #D7EAEA; border-radius:14px; padding:1rem 1.15rem; margin:.7rem 0; background:#FBFEFE; }}
+.module-status-title {{ color:#135E5E; font-size:1.06rem; font-weight:750; margin-bottom:.25rem; }}
+.module-status-label {{ color:#617575; font-size:.88rem; }}
+.qr-review-card {{ border:1px solid #D7EAEA; border-radius:14px; padding:1rem 1.15rem; margin:.8rem 0; background:#FFFFFF; }}
+.qr-review-question {{ color:#135E5E; font-weight:750; font-size:1.06rem; margin-bottom:.55rem; }}
+.qr-review-answer {{ white-space:pre-wrap; line-height:1.52; color:#263A3A; }}
 .transcript-card {{ border:1px solid #AFCACA; background:#F7FBFB; padding:.9rem 1rem; border-radius:12px; margin:.5rem 0; }}
 .transcript-card.corrected {{ border-color:#F0C36A; background:#FFF9E9; }}
 .response-mode {{ color:#667; font-size:.82rem; margin-top:.45rem; }}
@@ -1228,15 +1242,17 @@ def _ensure_migrated_state() -> None:
 
 def render_module_menu() -> None:
     with st.sidebar:
-        st.markdown("### Mon parcours")
-        if st.button("🏠 Accueil du parcours",key="menu_accueil_modules",use_container_width=True):
+        st.markdown("<h3 style='text-align:center;margin:.2rem 0 .8rem'>Mon parcours</h3>",unsafe_allow_html=True)
+        if st.button("🏠  Accueil du parcours",key="menu_accueil_modules",use_container_width=True):
             st.session_state.active_module="accueil_modules"; st.session_state.page="Modules"; st.rerun()
+        active=st.session_state.get("active_module","")
         for mid,label in MODULE_LABELS.items():
             state=_module_state(mid); status=state.get("status","non_commence")
-            icon={"termine":"✅","en_cours":"▶️","disponible":"○","indisponible":"🔒","non_commence":"○"}.get(status,"○")
-            if st.button(f"{icon} {label}",key=f"menu_{mid}",use_container_width=True,disabled=status=="indisponible"):
+            icon={"termine":"✅","en_cours":"▶","disponible":"○","indisponible":"🔒","non_commence":"○"}.get(status,"○")
+            active_mark="  •" if active==mid else ""
+            if st.button(f"{icon}  {label}{active_mark}",key=f"menu_{mid}",use_container_width=True,disabled=status=="indisponible"):
                 st.session_state.active_module=mid; st.session_state.page="Modules"; st.rerun()
-        st.caption("✅ terminé · ▶️ en cours · ○ disponible")
+        st.markdown("<div style='text-align:center;color:#6B7D7D;font-size:.78rem;margin-top:.5rem'>✅ Terminé &nbsp;·&nbsp; ▶ En cours &nbsp;·&nbsp; ○ Disponible</div>",unsafe_allow_html=True)
 
 def render_followup_panel() -> None:
     vals=validated_names(); pending=st.session_state.get("values_to_examine",[]); review=st.session_state.get("session_review_items",[])
@@ -1284,25 +1300,34 @@ def render_module_1() -> None:
     st.title("Prérequis — valeurs déjà validées avec l’accompagnateur")
     state=_module_state("module_1")
     if state.get("status")=="termine":
-        st.success("Ce prérequis est clôturé. Les valeurs validées avec votre accompagnateur sont protégées.")
-        for item in [x for x in st.session_state.central_validated_values if x.get("source")=="accompagnateur"]:
-            st.markdown(f"### {item['nom_final']}"); st.write(item.get("definition_personnelle") or item.get("definition_clarte360"))
-            already=any(normalize(x.get("terme", ""))==normalize(item.get("nom_final", "")) for x in st.session_state.get("session_review_items",[]))
-            if already:
-                st.caption("Demande de réexamen déjà enregistrée pour votre prochaine séance.")
-            elif st.button("Je souhaite revoir cette valeur avec mon accompagnateur",key=f"review_accomp_{item['nom_final']}"):
-                if _add_review_item(item,"Demande explicite de réexamen avec l’accompagnateur"):
-                    business_trace("demande_reexamen_accompagnateur",item.get("nom_final", "")); st.rerun()
+        st.success("Ce prérequis est clôturé. Il reste consultable et ne sera pas rejoué automatiquement.")
+        items=[x for x in st.session_state.central_validated_values if x.get("source")=="accompagnateur"]
+        if not items:
+            st.info("Aucune valeur validée avec l’accompagnateur n’est enregistrée.")
+        for item in items:
+            with st.container(border=True):
+                st.markdown(f"### {item.get('nom_final','')}")
+                st.markdown("**Votre définition retenue**")
+                st.write(item.get("definition_personnelle") or "Non renseignée")
+                if item.get("definition_clarte360"):
+                    st.markdown("**Définition Clarté360**")
+                    st.write(item.get("definition_clarte360"))
+                st.caption("Source : validée avec l’accompagnateur")
         st.divider()
-        if st.button("Retour à l’accueil du parcours",use_container_width=True,key="m1_back_home"):
+        if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m1_back_home"):
             st.session_state.active_module="accueil_modules"; st.session_state.page="Modules"; st.rerun()
         return
     _set_module_status("module_1","en_cours",state.get("step","intro"))
     if not st.session_state.get("module1_count"):
         st.warning("Ce module concerne uniquement les valeurs déjà identifiées et validées humainement avec votre accompagnateur.")
         count=int(st.number_input("Combien de valeurs avez-vous déjà identifiées et validées avec votre accompagnateur ?",min_value=1,max_value=15,value=1))
-        if st.button("Commencer",type="primary"):
-            st.session_state.module1_count=count; st.session_state.module1_index=0; st.session_state.current_value_work=_new_value_work("accompagnateur"); st.rerun()
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button("← Retour au parcours",use_container_width=True,key="m1_intro_back"):
+                st.session_state.active_module="accueil_modules"; st.rerun()
+        with c2:
+            if st.button("Commencer",type="primary",use_container_width=True):
+                st.session_state.module1_count=count; st.session_state.module1_index=0; st.session_state.current_value_work=_new_value_work("accompagnateur"); st.rerun()
         return
     idx=int(st.session_state.module1_index); total=int(st.session_state.module1_count)
     st.progress(min(1.0,idx/max(1,total))); st.caption(f"Valeur {idx+1} sur {total}")
@@ -1315,22 +1340,54 @@ def render_module_1() -> None:
         if work["nom_final"]!=name: st.info(f"Formulation normalisée proposée : **{work['nom_final']}**")
         choice,final_def=_value_definition_choices(work,f"m1_{idx}")
         confirm=st.checkbox("Je confirme que le mot et la définition retenus correspondent à la valeur déjà validée avec mon accompagnateur.",key=f"m1_confirm_{idx}")
-        if st.button("Valider cette valeur",type="primary",disabled=not(confirm and final_def),key=f"m1_save_{idx}"):
-            _upsert_central_value(work["nom_final"],final_def,"accompagnateur",definition_clarte360=work.get("definition_clarte360",""),protected=True)
-            if not work["present_referentiel"]: notify_new_value(work["nom_final"],final_def)
-            st.session_state.module1_index=idx+1; st.session_state.current_value_work=_new_value_work("accompagnateur")
-            if idx+1>=total: _set_module_status("module_1","termine","termine"); st.session_state.prerequisite_confirmed=True; st.session_state.active_module="accueil_modules"
-            st.rerun()
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button("← Retour au parcours",use_container_width=True,key=f"m1_work_back_{idx}"):
+                st.session_state.active_module="accueil_modules"; st.rerun()
+        with c2:
+            if st.button("Valider cette valeur",type="primary",disabled=not(confirm and final_def),key=f"m1_save_{idx}",use_container_width=True):
+                _upsert_central_value(work["nom_final"],final_def,"accompagnateur",definition_clarte360=work.get("definition_clarte360",""),protected=True)
+                if not work["present_referentiel"]: notify_new_value(work["nom_final"],final_def)
+                st.session_state.module1_index=idx+1; st.session_state.current_value_work=_new_value_work("accompagnateur")
+                if idx+1>=total: _set_module_status("module_1","termine","termine"); st.session_state.prerequisite_confirmed=True; st.session_state.active_module="accueil_modules"
+                st.rerun()
+
+def _hydrate_module2_answers() -> None:
+    answers=st.session_state.setdefault("module2_answers",{})
+    profile=st.session_state.get("beneficiary_profile",{}) or {}
+    legacy=st.session_state.get("presentation_beneficiaire",{}) or {}
+    stored_questions=profile.get("questions",{}) if isinstance(profile,dict) else {}
+    mapping={
+        "M2-IDENTITE-001": legacy.get("situation_actuelle") or profile.get("situation_actuelle"),
+        "M2-PARCOURS-001": legacy.get("parcours") or profile.get("parcours"),
+        "M2-ENTOURAGE-001": legacy.get("activites_importantes") or profile.get("activites_importantes"),
+        "M2-INTERETS-001": legacy.get("passions") or profile.get("passions"),
+        "M2-PROJETS-001": legacy.get("projets") or profile.get("projets"),
+        "M2-OBJECTIF-001": legacy.get("objectif_demarche") or profile.get("objectif_demarche"),
+    }
+    for q in MODULE2_QUESTIONS:
+        qid=q["id"]
+        if not str(answers.get(qid,"") or "").strip():
+            value=stored_questions.get(qid) or mapping.get(qid) or ""
+            if value: answers[qid]=str(value)
+
 
 def render_module_2() -> None:
     st.title("Faisons connaissance")
+    _hydrate_module2_answers()
     state=_module_state("module_2"); answers=st.session_state.module2_answers
     if state.get("status")=="termine":
-        st.success("Vos réponses sont enregistrées. Vous pouvez relire ou modifier uniquement la rubrique souhaitée.")
-        choice=st.selectbox("Choisissez une rubrique",options=[q["id"] for q in MODULE2_QUESTIONS],format_func=lambda x:next(q["rubrique"] for q in MODULE2_QUESTIONS if q["id"]==x))
-        q=next(q for q in MODULE2_QUESTIONS if q["id"]==choice)
-        val=open_response_widget(q["text"],f"m2_{q['id']}",value=answers.get(q["id"],""),height=110,dependency_scope="profile")
-        if val: answers[q["id"]]=val
+        st.success("Vos réponses sont enregistrées. Elles restent visibles et vous pouvez modifier uniquement celle que vous choisissez.")
+        for index,q in enumerate(MODULE2_QUESTIONS,1):
+            qid=q["id"]; value=str(answers.get(qid,"") or "").strip()
+            st.markdown(f"#### Question {index} — {q['rubrique']}")
+            # open_response_widget affiche la réponse officielle puis n'ouvre l'édition qu'après clic.
+            new_value=open_response_widget(q["text"],f"m2_{qid}",value=value,height=110,dependency_scope="profile")
+            if new_value: answers[qid]=new_value
+            st.divider()
+        st.session_state.beneficiary_profile={"questions":deepcopy(answers),"presentation_libre":"\n\n".join(v for v in answers.values() if v),"date":now_iso()}
+        if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m2_back_home"):
+            st.session_state.active_module="accueil_modules"; st.session_state.page="Modules"; st.rerun()
         return
     _set_module_status("module_2","en_cours","questionnaire")
     idx=int(st.session_state.module2_question_index)
@@ -1339,41 +1396,105 @@ def render_module_2() -> None:
     val=open_response_widget(q["text"],f"m2_{q['id']}",value=answers.get(q["id"],""),height=110,dependency_scope="profile")
     if val:
         answers[q["id"]]=val
-        if st.button("Continuer",type="primary",key=f"m2_next_{idx}"):
-            st.session_state.module2_question_index=idx+1
-            if idx+1>=len(MODULE2_QUESTIONS):
-                _set_module_status("module_2","termine","consultation"); st.session_state.profile_complete=True
-                st.session_state.beneficiary_profile={"questions":deepcopy(answers),"presentation_libre":"\n\n".join(answers.values()),"date":now_iso()}; st.session_state.active_module="accueil_modules"
-            st.rerun()
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button("← Retour au parcours",use_container_width=True,key=f"m2_back_{idx}"):
+                st.session_state.active_module="accueil_modules"; st.rerun()
+        with c2:
+            if st.button("Continuer",type="primary",key=f"m2_next_{idx}",use_container_width=True):
+                st.session_state.module2_question_index=idx+1
+                if idx+1>=len(MODULE2_QUESTIONS):
+                    _set_module_status("module_2","termine","consultation"); st.session_state.profile_complete=True
+                    st.session_state.beneficiary_profile={"questions":deepcopy(answers),"presentation_libre":"\n\n".join(v for v in answers.values() if v),"date":now_iso()}; st.session_state.active_module="accueil_modules"
+                st.rerun()
 
 def _module3_current_work() -> dict[str,Any]:
     if not st.session_state.current_value_work or st.session_state.current_value_work.get("source")=="accompagnateur": st.session_state.current_value_work=_new_value_work("manuel")
     return st.session_state.current_value_work
+
+def _pending_value_summary(work: dict[str,Any]) -> None:
+    with st.container(border=True):
+        st.markdown(f"### {work.get('nom_final') or work.get('nom_initial') or work.get('nom') or 'Valeur à examiner'}")
+        if work.get("nom_initial") and work.get("nom_final") and normalize(work.get("nom_initial"))!=normalize(work.get("nom_final")):
+            st.write(f"**Terme initial :** {work.get('nom_initial')}")
+        st.write(f"**Définition personnelle :** {work.get('definition_personnelle') or work.get('definition') or 'Non renseignée'}")
+        if work.get("mode_decouverte"): st.write(f"**Mode de découverte :** {work.get('mode_decouverte')}")
+        record=st.session_state.get("value_records",{}).get(work.get("nom_initial"),{}) or st.session_state.get("value_records",{}).get(work.get("nom_final"),{}) or {}
+        situations=record.get("situations_associees",[]) or []
+        emotions=record.get("emotions_associees",[]) or []
+        if situations: st.write("**Situation déjà enregistrée :** "+" ; ".join(map(str,situations)))
+        if emotions: st.write("**Réaction ou ressenti déjà enregistré :** "+" ; ".join(map(str,emotions)))
+        if work.get("definition_clarte360"): st.write(f"**Définition Clarté360 :** {work.get('definition_clarte360')}")
+        st.caption("Ces informations seront préremplies. Elles ne vous seront pas redemandées.")
+
+
+def _cancel_module3_work() -> None:
+    work=st.session_state.get("current_value_work",{}) or {}
+    if work.get("source")=="reexamen":
+        original=_find_central_value(work.get("original_name") or work.get("nom_initial") or work.get("nom_final") or "")
+        if original: original["en_reexamen"]=False
+    elif work and work.get("source") in {"migration_v2137","module_4","recherche_guidee"}:
+        existing=st.session_state.get("values_to_examine",[])
+        if not any(normalize(x.get("nom_final") or x.get("nom_initial") or "")==normalize(work.get("nom_final") or work.get("nom_initial") or "") for x in existing):
+            existing.append(deepcopy(work))
+    st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0
+    _set_module_status("module_3","disponible","accueil")
+
 
 def render_module_3() -> None:
     st.title("Valider ou revoir une valeur")
     _set_module_status("module_3","en_cours","travail")
     if not st.session_state.module3_queue:
         pending=st.session_state.get("values_to_examine",[])
-        options=["Saisir une nouvelle valeur"]+(["Examiner une valeur proposée par Clarté360"] if pending else [])+(["Réexaminer une valeur déjà validée dans Clarté360"] if any(v.get('source')!='accompagnateur' for v in st.session_state.central_validated_values) else [])
+        options=["Saisir une nouvelle valeur"]+(["Examiner une valeur en attente"] if pending else [])+(["Réexaminer une valeur déjà validée dans Clarté360"] if any(v.get('source')!='accompagnateur' for v in st.session_state.central_validated_values) else [])
         mode=st.radio("Que souhaitez-vous faire ?",options,key="m3_entry_mode")
         if mode=="Saisir une nouvelle valeur":
             count=int(st.number_input("Combien de valeurs souhaitez-vous explorer ?",1,15,1,key="m3_count"))
-            if st.button("Commencer",type="primary"):
-                st.session_state.module3_declared_count=count; st.session_state.module3_queue=[_new_value_work("manuel") for _ in range(count)]; st.session_state.module3_index=0; st.session_state.current_value_work=st.session_state.module3_queue[0]; st.rerun()
-        elif mode.startswith("Examiner"):
-            if st.button("Ouvrir la première valeur à examiner",type="primary"):
-                st.session_state.module3_queue=[deepcopy(x) for x in pending]; st.session_state.values_to_examine=[]; st.session_state.module3_index=0; st.session_state.current_value_work=st.session_state.module3_queue[0]; st.rerun()
+            c1,c2=st.columns(2)
+            with c1:
+                if st.button("← Retour au parcours",use_container_width=True,key="m3_new_back"):
+                    st.session_state.active_module="accueil_modules"; st.rerun()
+            with c2:
+                if st.button("Commencer",type="primary",use_container_width=True):
+                    st.session_state.module3_declared_count=count; st.session_state.module3_queue=[_new_value_work("manuel") for _ in range(count)]; st.session_state.module3_index=0; st.session_state.current_value_work=st.session_state.module3_queue[0]; st.rerun()
+        elif mode=="Examiner une valeur en attente":
+            selected=st.selectbox("Valeur à examiner",range(len(pending)),format_func=lambda i:pending[i].get("nom_final") or pending[i].get("nom_initial") or "Valeur")
+            chosen=pending[selected]
+            _pending_value_summary(chosen)
+            c1,c2=st.columns(2)
+            with c1:
+                if st.button("← Retour sans modifier",use_container_width=True,key="m3_pending_back"):
+                    st.session_state.active_module="accueil_modules"; st.rerun()
+            with c2:
+                if st.button("Poursuivre l’examen de cette valeur",type="primary",use_container_width=True,key="m3_pending_open"):
+                    work=deepcopy(chosen); st.session_state.values_to_examine=[x for i,x in enumerate(pending) if i!=selected]
+                    st.session_state.module3_queue=[work]; st.session_state.module3_index=0; st.session_state.current_value_work=work; st.rerun()
         else:
             candidates=[v for v in st.session_state.central_validated_values if v.get("source")!="accompagnateur"]
             selected=st.selectbox("Valeur à réexaminer",range(len(candidates)),format_func=lambda i:candidates[i]["nom_final"])
-            if st.button("Réexaminer",type="primary"):
-                original=candidates[selected]; original["en_reexamen"]=True
-                w=_new_value_work("reexamen"); w.update({"nom_initial":original["nom_final"],"nom_final":original["nom_final"],"definition_personnelle":original.get("definition_personnelle",""),"definition_clarte360":original.get("definition_clarte360","")})
-                st.session_state.module3_queue=[w]; st.session_state.module3_index=0; st.session_state.current_value_work=w; st.rerun()
+            original=candidates[selected]
+            with st.container(border=True):
+                st.markdown(f"### {original.get('nom_final','')}")
+                st.write(f"**Définition personnelle actuelle :** {original.get('definition_personnelle') or 'Non renseignée'}")
+                if original.get("definition_clarte360"): st.write(f"**Définition Clarté360 :** {original.get('definition_clarte360')}")
+            st.warning("Réexaminer cette valeur signifie reprendre sa définition et répondre de nouveau au questionnaire spécifique, même si vous ne changez rien. Vous pourrez annuler à tout moment avant la décision finale : la valeur restera alors inchangée.")
+            c1,c2=st.columns(2)
+            with c1:
+                if st.button("← Annuler",use_container_width=True,key="m3_reex_back"):
+                    st.session_state.active_module="accueil_modules"; st.rerun()
+            with c2:
+                if st.button("Commencer le réexamen",type="primary",use_container_width=True,key="m3_reex_start"):
+                    original["en_reexamen"]=True
+                    w=_new_value_work("reexamen"); w.update({"original_name":original["nom_final"],"nom_initial":original["nom_final"],"nom_final":original["nom_final"],"mode_decouverte":original.get("mode_decouverte") or "Par introspection","definition_personnelle":original.get("definition_personnelle",""),"definition_clarte360":original.get("definition_clarte360","")})
+                    st.session_state.module3_queue=[w]; st.session_state.module3_index=0; st.session_state.current_value_work=w; st.rerun()
         return
     idx=int(st.session_state.module3_index); total=len(st.session_state.module3_queue); work=_module3_current_work()
-    st.caption(f"Valeur {idx+1} sur {total}")
+    top1,top2=st.columns([3,1])
+    with top1: st.caption(f"Valeur {idx+1} sur {total}")
+    with top2:
+        if st.button("Quitter sans modifier",use_container_width=True,key=f"m3_cancel_{work['id']}"):
+            _cancel_module3_work(); st.session_state.active_module="module_3"; st.rerun()
+    if work.get("source") in {"migration_v2137","module_4","recherche_guidee"}: _pending_value_summary(work)
     name=open_response_widget("Quelle valeur avez-vous identifiée ?",f"m3_name_{work['id']}",value=work.get("nom_initial",work.get("nom_final","")),height=70,allow_reformulation=False)
     modes=["Par introspection","En observant mes réactions ou mes choix","À partir d’une situation vécue","À partir d’un événement marquant","Grâce à un exercice Clarté360","Avec l’aide de la recherche guidée Clarté360","Au cours d’une discussion","À travers une lecture","À travers un film ou une série","À travers un podcast ou une émission","En observant une personne que j’admire","Autre"]
     default_index=modes.index(work.get("mode_decouverte")) if work.get("mode_decouverte") in modes else 0
@@ -1404,8 +1525,12 @@ def render_module_3() -> None:
     st.write(f"Décision proposée selon vos réponses : **{'Valeur validée' if decision=='validee' else 'Valeur non retenue'}**")
     if st.button("Confirmer cette décision",type="primary",key=f"m3_decide_{work['id']}"):
         work["questionnaire"]={"importante":important=="Oui","tres_importante":very=="Oui","fondamentale":fundamental=="Oui"}; work["decision_finale"]=decision
-        if decision=="validee": _upsert_central_value(work["nom_final"],final_def,work.get("source","manuel"),definition_clarte360=work.get("definition_clarte360",""),questionnaire=work["questionnaire"])
-        else: st.session_state.rejected_values.append({"nom":work["nom_final"],"definition":final_def,"date":now_iso(),"source":work.get("source")})
+        if decision=="validee": _upsert_central_value(work["nom_final"],final_def,"application" if work.get("source")=="reexamen" else work.get("source","manuel"),definition_clarte360=work.get("definition_clarte360",""),questionnaire=work["questionnaire"])
+        else:
+            st.session_state.rejected_values.append({"nom":work["nom_final"],"definition":final_def,"date":now_iso(),"source":work.get("source")})
+            if work.get("source")=="reexamen":
+                original=_find_central_value(work.get("original_name") or work.get("nom_initial") or "")
+                if original: original["statut"]="non_retenue"; original["en_reexamen"]=False
         _advance_module3(); st.rerun()
 
 def _advance_module3() -> None:
@@ -1420,17 +1545,25 @@ def render_module_4_placeholder() -> None:
     st.info("La nouvelle recherche assistée sera intégrée dans la V2.1.3.9 après validation réelle de la V2.1.3.8. Cette version prépare déjà les listes, la reprise et le transfert vers le module 3.")
     if st.session_state.get("values_to_examine"):
         st.success(f"{len(st.session_state.values_to_examine)} valeur(s) sont déjà en attente d’examen dans le module 3.")
+    if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m4_back_home"):
+        st.session_state.active_module="accueil_modules"; st.rerun()
 
 def render_module_5() -> None:
     st.title("Mes rapports")
     vals=validated_names()
-    if not vals: st.warning("Un rapport provisoire sera disponible dès qu’au moins une valeur sera validée."); return
+    if not vals:
+        st.warning("Un rapport provisoire sera disponible dès qu’au moins une valeur sera validée.")
+        if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m5_back_empty"):
+            st.session_state.active_module="accueil_modules"; st.rerun()
+        return
     st.success(f"{len(vals)} valeur(s) validée(s) peuvent être restituées.")
     st.download_button("Télécharger le rapport provisoire",create_pdf("provisoire"),file_name=make_filename("RVC360_rapport_provisoire","pdf"),mime="application/pdf",use_container_width=True,on_click=lambda:st.session_state.report_history.append({"type":"provisoire","date":now_iso(),"valeurs":deepcopy(vals)}))
     st.download_button("Télécharger le JSON de reprise",payload_bytes(False),file_name=make_filename("RVC360_reprise","json"),mime="application/json",use_container_width=True)
     st.divider(); confirm=st.checkbox("Je confirme avoir terminé ma recherche et la validation de mes valeurs.")
     if st.button("Préparer le rapport définitif",type="primary",disabled=not confirm):
         st.session_state.exploration_complete=True; st.session_state.closure_decision="cloture_volontaire"; st.session_state.page="Cloture definitive"; st.rerun()
+    if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m5_back_home"):
+        st.session_state.active_module="accueil_modules"; st.rerun()
 
 def render_business_v218() -> None:
     _ensure_migrated_state()
