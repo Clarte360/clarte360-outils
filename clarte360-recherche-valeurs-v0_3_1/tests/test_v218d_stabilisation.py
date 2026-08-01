@@ -5,7 +5,7 @@ APP=Path(__file__).resolve().parents[1]/'app.py'
 TEXT=APP.read_text(encoding='utf-8')
 
 def test_version_8d_and_single_explicit_validation_engine():
-    assert 'APP_VERSION = "2.1.3.8D-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.8E-preproduction"' in TEXT
     assert 'Retourne uniquement une réponse explicitement validée' in TEXT
     assert 'Saisir une nouvelle réponse' in TEXT
     assert 'Corriger ma réponse actuelle' in TEXT
@@ -24,7 +24,7 @@ def test_concept_nature_and_single_clarification_present():
     assert 'def analyse_concept_nature' in TEXT
     assert 'valeur, besoin, croyance, limite' in TEXT
     assert 'UNE seule question' in TEXT
-    assert 'nature_orientation' in TEXT
+    assert 'nature_decision' in TEXT
 
 def test_report_is_central_list_only_and_old_sections_removed():
     start=TEXT.index('def create_pdf(')

@@ -5,7 +5,7 @@ TEXT = APP.read_text(encoding="utf-8")
 
 
 def test_8c_version_and_removed_useless_accompanist_review():
-    assert 'APP_VERSION = "2.1.3.8D-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.8E-preproduction"' in TEXT
     assert "Je souhaite revoir cette valeur avec mon accompagnateur" not in TEXT
 
 
@@ -19,7 +19,9 @@ def test_module3_pending_preview_and_safe_exit():
     assert "def _pending_value_summary" in TEXT
     assert "Poursuivre l’examen de cette valeur" in TEXT
     assert "Retour sans modifier" in TEXT
-    assert "Quitter sans modifier" in TEXT
+    assert "Quitter sans modifier" not in TEXT
+    assert "Abandonner la valeur en cours" in TEXT
+    assert "Arrêter la saisie des valeurs restantes" in TEXT
 
 
 def test_reexamination_warning_and_cancel():

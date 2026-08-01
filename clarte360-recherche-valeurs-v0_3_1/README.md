@@ -1,3 +1,7 @@
+## Version actuelle
+
+V2.1.3.8E-preproduction
+
 # Clarté360 – Recherche de mes valeurs V2.1.2
 
 Application Streamlit reconstruite depuis la V2.0 puis consolidée selon le Canvas V2.1 et les règles de navigation du Framework Clarté360.

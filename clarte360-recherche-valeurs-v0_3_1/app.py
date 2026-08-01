@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.8D-preproduction"
+APP_VERSION = "2.1.3.8E-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -310,7 +310,7 @@ def default_business_state() -> dict[str, Any]:
         "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
         "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
         "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
-        "json_schema_version":"2.1.3.8b",
+        "json_schema_version":"2.1.3.8E",
         "active_module":"accueil_modules",
         "module_states":{
             "module_1":{"status":"non_commence","step":"intro"},
@@ -385,6 +385,10 @@ def update_runtime_activity(event="heartbeat",user_activity=True):
     if user_activity: sess["derniere_activite"]=txt; st.session_state.session_last_activity=txt
 
 def update_runtime_heartbeat(event="heartbeat"): update_runtime_activity(event,user_activity=False)
+
+def mark_user_activity(event: str="interaction_utilisateur") -> None:
+    """Réinitialise le délai d'inactivité uniquement lors d'une action réelle."""
+    update_runtime_activity(event,user_activity=True)
 def record_save_event(kind: str):
     update_runtime_activity(kind,True); sess=_current_session_record()
     if sess: sess.setdefault("sauvegardes",[]).append({"type":kind,"date_heure":now_iso(),"duree_active_secondes":int(sess.get("duree_active_secondes",0) or 0)})
@@ -811,6 +815,16 @@ def _reset_response_voice_state(base: str) -> None:
     st.session_state[f"{base}_audio_version"]=current_version+1
 
 
+def _clear_response_answer(key: str) -> None:
+    """Efface un brouillon invalide sans toucher aux autres réponses du parcours."""
+    base=_safe_widget_key(key)
+    st.session_state.answer_metadata.pop(base,None)
+    st.session_state.pop(f"{base}_official",None)
+    st.session_state[f"{base}_editing"]=True
+    st.session_state[f"{base}_edit_mode"]=""
+    _reset_response_voice_state(base)
+
+
 def _local_spoken_cleanup(text: str) -> str:
     """Nettoyage conservateur de secours : hésitations et répétitions immédiates."""
     out=str(text or "").strip()
@@ -863,32 +877,43 @@ Retournez uniquement un objet JSON avec la clé texte_corrige."""
         return ""
     return candidate
 
-def analyse_concept_nature(term: str, definition: str) -> dict[str, str]:
-    """Analyse prudemment la nature possible d'un concept avant le questionnaire.
+def analyse_concept_nature(term: str, definition: str, clarification: str="") -> dict[str, str]:
+    """Conclut obligatoirement par l'une des quatre décisions métier de la 8E.
 
-    Résultat attendu : orientation, explication et, uniquement si nécessaire, une
-    question unique de clarification. Aucune conclusion n'est imposée.
+    - valeur_reconnue
+    - clarification_requise (une seule question)
+    - valeur_absente_possible
+    - formulation_non_valeur
     """
-    term=str(term or "").strip(); definition=str(definition or "").strip()
-    fallback={"orientation":"valeur_possible","explication":"Le terme peut être examiné comme une valeur si sa définition décrit un principe durable qui oriente vos choix.","question":""}
+    term=str(term or "").strip(); definition=str(definition or "").strip(); clarification=str(clarification or "").strip()
+    present=bool(value_info(_normalise_value_name(term)))
+    if not _looks_like_value_label(term):
+        return {"decision":"formulation_non_valeur","explication":"Cette proposition ressemble davantage à une phrase, un constat, un ressenti, une aspiration ou un concept important qu'au nom d'une valeur.","question":""}
+    fallback={"decision":"valeur_reconnue" if present else "valeur_absente_possible","explication":("Le terme figure dans le référentiel Clarté360 et peut poursuivre son examen." if present else "Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez."),"question":""}
     if not term or not definition:
         return fallback
-    low=normalize(term+" "+definition)
-    if any(x in low for x in ["peur", "manque", "rassur", "besoin", "protection", "securite financ"]):
-        fallback={"orientation":"ambigu","explication":"Votre formulation semble pouvoir renvoyer à une valeur, mais aussi à un besoin de sécurité ou à une crainte liée au manque. Il est utile de distinguer ce qui oriente durablement vos choix de ce que vous cherchez à obtenir ou à éviter.","question":"Au-delà du besoin d'être rassuré ou protégé, quel principe souhaitez-vous respecter durablement dans vos propres choix et comportements ?"}
+    low=normalize(term+" "+definition+" "+clarification)
+    if not clarification and any(x in low for x in ["peur", "manque", "rassur", "besoin", "protection", "securite financ"]):
+        fallback={"decision":"clarification_requise","explication":"Votre formulation peut renvoyer à une valeur, mais aussi à un besoin de sécurité ou à une crainte liée au manque. Une seule clarification est utile avant de poursuivre.","question":"Au-delà du besoin d'être rassuré ou protégé, quel principe souhaitez-vous respecter durablement dans vos propres choix et comportements ?"}
     if not ai_ready():
         return fallback
-    instructions="""Analysez avec prudence un terme présenté comme une valeur et sa définition personnelle.
-Distinguez uniquement, à titre d'hypothèse : valeur, besoin, croyance, limite, objectif, qualité, compétence, comportement ou autre sujet de coaching.
-Une valeur est un principe durable qui oriente les choix et comportements. Un besoin décrit ce qui doit être satisfait. Une croyance est une conviction tenue pour vraie. Une limite décrit une frontière ou un empêchement.
-Ne dites jamais « ce n'est pas une valeur », ne diagnostiquez pas et ne décidez pas à la place du bénéficiaire.
-Si la cohérence valeur/definition est forte, orientation=valeur_possible et question vide.
-Si un doute significatif existe, orientation=ambigu, expliquez-le brièvement et posez UNE seule question courte pour distinguer les concepts.
-Retournez un JSON strict avec orientation, explication, question."""
-    schema={"type":"object","properties":{"orientation":{"type":"string","enum":["valeur_possible","ambigu"]},"explication":{"type":"string"},"question":{"type":"string"}},"required":["orientation","explication","question"],"additionalProperties":False}
+    instructions="""Analysez avec prudence un terme présenté comme valeur, sa définition personnelle et, s'il existe, l'unique réponse de clarification.
+Vous devez conclure par UNE décision parmi exactement quatre :
+1. valeur_reconnue : terme présent au référentiel et cohérence suffisante ;
+2. clarification_requise : doute réel et significatif, uniquement si aucune clarification n'a encore été donnée ;
+3. valeur_absente_possible : terme absent du référentiel mais pouvant constituer une valeur personnelle ;
+4. formulation_non_valeur : la saisie est une phrase, un constat, un ressenti, une aspiration ou un concept qui ne constitue pas un nom de valeur.
+Distinguez prudemment valeur, besoin, croyance, limite, objectif, qualité, compétence ou comportement.
+Une valeur est un principe durable qui oriente les choix et comportements. Ne diagnostiquez pas, n'imposez rien.
+Si une clarification a déjà été fournie, vous ne devez jamais demander une seconde question : choisissez l'une des trois autres décisions.
+Retournez un JSON strict avec decision, explication et question. La question est vide sauf pour clarification_requise."""
+    schema={"type":"object","properties":{"decision":{"type":"string","enum":["valeur_reconnue","clarification_requise","valeur_absente_possible","formulation_non_valeur"]},"explication":{"type":"string"},"question":{"type":"string"}},"required":["decision","explication","question"],"additionalProperties":False}
     try:
-        out=response_json(instructions,{"terme":term,"definition_personnelle":definition},"analyse_nature_concept",schema,max_tokens=450)
-        return {"orientation":str(out.get("orientation") or fallback["orientation"]),"explication":str(out.get("explication") or fallback["explication"]),"question":str(out.get("question") or "")}
+        out=response_json(instructions,{"terme":term,"definition_personnelle":definition,"present_referentiel":present,"clarification_deja_donnee":clarification},"analyse_nature_concept",schema,max_tokens=500)
+        decision=str(out.get("decision") or fallback["decision"])
+        if clarification and decision=="clarification_requise":
+            decision="valeur_reconnue" if present else "valeur_absente_possible"
+        return {"decision":decision,"explication":str(out.get("explication") or fallback["explication"]),"question":str(out.get("question") or "") if decision=="clarification_requise" else ""}
     except Exception:
         return fallback
 
@@ -1016,7 +1041,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
 
     st.markdown("#### Votre nouvelle réponse" if edit_mode=="new" else "#### Corriger votre réponse actuelle")
     initial_text="" if edit_mode=="new" else official
-    typed=st.text_area("Votre réponse écrite",value=initial_text,height=height,key=f"{base}_typed_{edit_mode}",label_visibility="collapsed",placeholder="Écrivez ou collez votre réponse ici…")
+    typed=st.text_area("Votre réponse écrite",value=initial_text,height=height,key=f"{base}_typed_{edit_mode}",label_visibility="collapsed",placeholder="Écrivez ou collez votre réponse ici…",on_change=mark_user_activity,args=(f"saisie_{base}",))
     proposal_key=f"{base}_typed_proposal_{edit_mode}"; source_key=f"{base}_typed_source_{edit_mode}"
     if typed.strip():
         if not allow_reformulation:
@@ -1054,6 +1079,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         audio_id=_audio_fingerprint(audio)
         already_done=(st.session_state.get(f"{base}_audio_id")==audio_id and bool(st.session_state.get(f"{base}_transcript_raw")))
     if audio and st.button("Transcrire et comparer",key=f"{base}_transcribe",type="primary",use_container_width=True,disabled=already_done):
+        mark_user_activity(f"transcription_{base}")
         try:
             audio_id=_audio_fingerprint(audio)
             st.session_state[f"{base}_audio_id"]=audio_id
@@ -1078,6 +1104,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         if choice=="Réenregistrer":
             if st.button("Ouvrir un nouvel enregistrement",key=f"{base}_voice_redo",use_container_width=True): _reset_response_voice_state(base); st.rerun()
         elif st.button("✓ Valider cette réponse orale",key=f"{base}_validate_voice",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
+            mark_user_activity(f"validation_orale_{base}")
             retained=proposal if choice.startswith("Utiliser") else manual.strip() if choice=="Corriger manuellement" else raw
             if not retained.strip(): st.error("La version choisie est vide.")
             else:
@@ -1204,17 +1231,29 @@ def _find_central_value(name: str) -> dict[str,Any]|None:
         if normalize(item.get("nom_final") or item.get("nom") or "")==n: return item
     return None
 
-def _upsert_central_value(name: str, definition_personnelle: str, source: str, *, definition_clarte360: str="", questionnaire: dict[str,Any]|None=None, protected: bool=False) -> None:
-    item=_find_central_value(name)
-    payload={"nom_final":name.strip(),"definition_personnelle":definition_personnelle.strip(),"definition_clarte360":definition_clarte360.strip(),"source":source,"statut":"validee","questionnaire":questionnaire or {},"protected":protected,"en_reexamen":False,"validee_le":now_iso()}
+def _upsert_central_value(name: str, definition_personnelle: str, source: str, *, definition_clarte360: str="", questionnaire: dict[str,Any]|None=None, protected: bool=False, work: dict[str,Any]|None=None) -> None:
+    canonical=_normalise_value_name(name)
+    item=_find_central_value(canonical)
+    work=work or {}
+    payload={"nom_final":canonical,"definition_personnelle":definition_personnelle.strip(),"definition_clarte360":definition_clarte360.strip(),"source":source,"statut":"validee","questionnaire":questionnaire or {},"protected":protected,"en_reexamen":False,"validee_le":now_iso(),"mode_decouverte":work.get("mode_decouverte",""),"analyse_coherence":work.get("analyse",""),"nature_decision":work.get("nature_decision",""),"clarifications":deepcopy(work.get("clarifications",[]))}
+    old_name=str(work.get("original_name") or "").strip()
+    if not item and old_name:
+        item=_find_central_value(old_name)
     if item:
         item.setdefault("historique",[]).append({"date":now_iso(),"etat_precedent":deepcopy(item),"motif":"mise_a_jour"}); item.update(payload)
-    else: st.session_state.central_validated_values.append(payload)
-    st.session_state.personal_defs[name]=definition_personnelle.strip()
-    st.session_state.validation[name]={"importante":True,"tres_importante":True,"fondamentale":True,"origine_validation":source}
-    if source=="accompagnateur" and name not in st.session_state.existing_values: st.session_state.existing_values.append(name)
-    if source!="accompagnateur" and name not in st.session_state.validated_app_values: st.session_state.validated_app_values.append(name)
-    register_value_record(name,source,"validee",definition_personnelle,certainty=100)
+    else:
+        st.session_state.central_validated_values.append(payload)
+    # Nettoyage atomique des autres listes et des anciens alias.
+    _remove_value_from_active_lists(canonical,keep="validee")
+    if old_name and normalize(old_name)!=normalize(canonical):
+        _remove_value_from_active_lists(old_name,keep="validee")
+        st.session_state.personal_defs.pop(old_name,None); st.session_state.validation.pop(old_name,None)
+        if old_name in st.session_state.validated_app_values: st.session_state.validated_app_values.remove(old_name)
+    st.session_state.personal_defs[canonical]=definition_personnelle.strip()
+    st.session_state.validation[canonical]={"importante":True,"tres_importante":True,"fondamentale":True,"origine_validation":source}
+    if source=="accompagnateur" and canonical not in st.session_state.existing_values: st.session_state.existing_values.append(canonical)
+    if source!="accompagnateur" and canonical not in st.session_state.validated_app_values: st.session_state.validated_app_values.append(canonical)
+    register_value_record(canonical,source,"validee",definition_personnelle,certainty=100)
     _set_module_status("module_5","disponible","accueil")
 
 def _add_review_item(work: dict[str,Any], reason: str) -> bool:
@@ -1224,17 +1263,70 @@ def _add_review_item(work: dict[str,Any], reason: str) -> bool:
     existing=st.session_state.get("session_review_items",[])
     if any(normalize(x.get("terme", "")) == normalize(terme) and x.get("statut") == "a_revoir_en_seance" for x in existing):
         return False
-    item={"id":str(uuid.uuid4()),"terme":terme,"definition":work.get("definition_personnelle","") or work.get("definition", ""),"analyse":work.get("analyse","") or work.get("hypothese", ""),"motif":reason,"statut":"a_revoir_en_seance","date":now_iso(),"source":work.get("source", "")}
+    item={"id":str(uuid.uuid4()),"terme":_normalise_value_name(terme),"definition":work.get("definition_personnelle","") or work.get("definition", ""),"analyse":work.get("analyse","") or work.get("hypothese", ""),"motif":reason,"statut":"a_revoir_en_seance","date":now_iso(),"source":work.get("source", ""),"clarifications":deepcopy(work.get("clarifications",[]))}
+    _remove_value_from_active_lists(terme,keep="a_revoir")
     st.session_state.session_review_items.append(item)
     return True
 
 def _new_value_work(source: str="manuel") -> dict[str,Any]:
-    return {"id":str(uuid.uuid4()),"source":source,"stage":"nom","nom_initial":"","nom_normalise":"","nom_final":"","mode_decouverte":"","definition_personnelle":"","definition_clarte360":"","present_referentiel":False,"analyse":"","clarification":"","questionnaire":{},"created_at":now_iso()}
+    return {"id":str(uuid.uuid4()),"source":source,"stage":"nom","nom_initial":"","nom_normalise":"","nom_final":"","mode_decouverte":"","definition_personnelle":"","definition_clarte360":"","present_referentiel":False,"analyse":"","clarification":"","clarifications":[],"nature_decision":"","questionnaire":{},"created_at":now_iso()}
 
 def _normalise_value_name(raw: str) -> str:
-    raw=" ".join(str(raw).strip().split())
-    matches=local_value_matches(raw,limit=1)
-    return matches[0] if matches and SequenceMatcher(None,normalize(raw),normalize(matches[0])).ratio()>=.82 else raw[:1].upper()+raw[1:]
+    """Normalise un nom de valeur sans en changer le sens.
+
+    Retire les articles purement linguistiques, la ponctuation terminale, harmonise
+    espaces/casse/accents via le référentiel puis renvoie la forme canonique.
+    """
+    text=" ".join(str(raw or "").strip().split())
+    text=re.sub(r"[\s.,;:!?]+$", "", text).strip()
+    text=re.sub(r"(?i)^(?:l['’]|le\s+|la\s+|les\s+|un\s+|une\s+)", "", text).strip()
+    if not text:
+        return ""
+    matches=local_value_matches(text,limit=1)
+    if matches and SequenceMatcher(None,normalize(text),normalize(matches[0])).ratio()>=.72:
+        return matches[0]
+    return text[:1].upper()+text[1:]
+
+def _looks_like_value_label(raw: str) -> bool:
+    """Contrôle de forme : un nom de valeur est un mot ou groupe nominal court, pas une phrase."""
+    text=" ".join(str(raw or "").strip().split())
+    if not text:
+        return False
+    words=re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+",text)
+    if len(words)>6:
+        return False
+    low=normalize(text)
+    phrase_markers=(" je "," j "," nous "," on "," parce que "," afin de "," pour que "," lorsque "," quand "," qui "," que ")
+    padded=f" {low} "
+    return not any(m in padded for m in phrase_markers)
+
+def _active_value_location(name: str, *, exclude_work_id: str="") -> tuple[str,dict[str,Any]|None]:
+    """Retourne l'unique emplacement actif d'un terme déjà connu après normalisation."""
+    n=normalize(_normalise_value_name(name))
+    if not n:
+        return "",None
+    for item in st.session_state.get("central_validated_values",[]):
+        if normalize(_normalise_value_name(item.get("nom_final") or item.get("nom") or ""))==n:
+            return "validee",item
+    for item in st.session_state.get("values_to_examine",[]):
+        if item.get("id")==exclude_work_id:
+            continue
+        if normalize(_normalise_value_name(item.get("nom_final") or item.get("nom_initial") or item.get("nom") or ""))==n:
+            return "a_examiner",item
+    for item in st.session_state.get("session_review_items",[]):
+        if normalize(_normalise_value_name(item.get("terme") or ""))==n and item.get("statut")=="a_revoir_en_seance":
+            return "a_revoir",item
+    return "",None
+
+def _remove_value_from_active_lists(name: str, *, keep: str="validee") -> None:
+    """Garantit : une valeur = un état actuel = une seule liste active."""
+    n=normalize(_normalise_value_name(name))
+    if keep!="a_examiner":
+        st.session_state.values_to_examine=[x for x in st.session_state.get("values_to_examine",[]) if normalize(_normalise_value_name(x.get("nom_final") or x.get("nom_initial") or x.get("nom") or ""))!=n]
+    if keep!="a_revoir":
+        st.session_state.session_review_items=[x for x in st.session_state.get("session_review_items",[]) if normalize(_normalise_value_name(x.get("terme") or ""))!=n]
+    if keep!="validee":
+        st.session_state.central_validated_values=[x for x in st.session_state.get("central_validated_values",[]) if normalize(_normalise_value_name(x.get("nom_final") or x.get("nom") or ""))!=n]
 
 def _ensure_migrated_state() -> None:
     # Migration non destructive des JSON V2.1.3.7 et états historiques.
@@ -1268,6 +1360,10 @@ def _ensure_migrated_state() -> None:
         _set_module_status("module_2","termine","consultation")
     if st.session_state.get("values_to_examine"):
         _set_module_status("module_3","disponible","valeurs_a_examiner")
+    # Une valeur validée ne peut rester simultanément dans « À examiner ».
+    validated_now=[x.get("nom_final","") for x in st.session_state.get("central_validated_values",[])]
+    for validated_name in validated_now:
+        _remove_value_from_active_lists(validated_name,keep="validee")
     if validated_names(): _set_module_status("module_5","disponible","accueil")
 
 def render_module_menu() -> None:
@@ -1458,18 +1554,28 @@ def _pending_value_summary(work: dict[str,Any]) -> None:
         st.caption("Ces informations seront préremplies. Elles ne vous seront pas redemandées.")
 
 
-def _cancel_module3_work() -> None:
+def _abandon_current_module3_value() -> None:
+    """Abandonne seulement la valeur courante ; les valeurs déjà validées restent acquises."""
     work=st.session_state.get("current_value_work",{}) or {}
     if work.get("source")=="reexamen":
         original=_find_central_value(work.get("original_name") or work.get("nom_initial") or work.get("nom_final") or "")
         if original: original["en_reexamen"]=False
-    elif work and work.get("source") in {"migration_v2137","module_4","recherche_guidee"}:
-        existing=st.session_state.get("values_to_examine",[])
-        if not any(normalize(x.get("nom_final") or x.get("nom_initial") or "")==normalize(work.get("nom_final") or work.get("nom_initial") or "") for x in existing):
-            existing.append(deepcopy(work))
+    business_trace("abandon_valeur_courante",work.get("nom_final") or work.get("nom_initial") or "")
+    _advance_module3()
+
+def _stop_module3_series() -> None:
+    """Arrête les valeurs restantes sans supprimer celles déjà complètement validées."""
+    work=st.session_state.get("current_value_work",{}) or {}
+    if work.get("source")=="reexamen":
+        original=_find_central_value(work.get("original_name") or work.get("nom_initial") or work.get("nom_final") or "")
+        if original: original["en_reexamen"]=False
+    business_trace("arret_valeurs_restantes",f"à partir de {int(st.session_state.get('module3_index',0))+1}")
     st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0
     _set_module_status("module_3","disponible","accueil")
 
+def _cancel_module3_work() -> None:
+    """Compatibilité historique : retour sans modifier lors d'un réexamen isolé."""
+    _stop_module3_series()
 
 def render_module_3() -> None:
     st.title("Valider ou revoir une valeur")
@@ -1519,58 +1625,102 @@ def render_module_3() -> None:
                     st.session_state.module3_queue=[w]; st.session_state.module3_index=0; st.session_state.current_value_work=w; st.rerun()
         return
     idx=int(st.session_state.module3_index); total=len(st.session_state.module3_queue); work=_module3_current_work()
-    top1,top2=st.columns([3,1])
-    with top1: st.caption(f"Valeur {idx+1} sur {total}")
-    with top2:
-        if st.button("Quitter sans modifier",use_container_width=True,key=f"m3_cancel_{work['id']}"):
-            _cancel_module3_work(); st.session_state.active_module="module_3"; st.rerun()
+    st.markdown(f"<div style='background:#EAF7F6;border:2px solid #0E7774;border-radius:12px;padding:.75rem 1rem;text-align:center;margin-bottom:1rem'><strong style='font-size:1.45rem;color:#0E7774'>Valeur {idx+1} / {total}</strong></div>",unsafe_allow_html=True)
     if work.get("source") in {"migration_v2137","module_4","recherche_guidee"}: _pending_value_summary(work)
     name=open_response_widget("Quelle valeur avez-vous identifiée ?",f"m3_name_{work['id']}",value=work.get("nom_initial",work.get("nom_final","")),height=70,allow_reformulation=False)
+    if not name:
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button("Abandonner la valeur en cours",use_container_width=True,key=f"m3_abandon_empty_{work['id']}"):
+                _abandon_current_module3_value(); st.rerun()
+        with c2:
+            if st.button("Arrêter la saisie des valeurs restantes",use_container_width=True,key=f"m3_stop_empty_{work['id']}"):
+                _stop_module3_series(); st.rerun()
+        return
+    if not _looks_like_value_label(name):
+        # La réponse technique du widget est effacée : aucune donnée métier n'est enregistrée.
+        _clear_response_answer(f"m3_name_{work['id']}")
+        st.error("Cette proposition ne semble pas correspondre directement au nom d’une valeur. Elle paraît plutôt exprimer une phrase, un constat, un ressenti, une aspiration ou un concept important pour vous. Aucune donnée n’a été enregistrée. Pour approfondir ce sujet, vous pourrez utiliser le module 4 « Rechercher une nouvelle valeur avec Clarté360 ». Saisissez ici une valeur déjà identifiée, sous la forme d’un mot ou d’une expression courte.")
+        return
+    canonical=_normalise_value_name(name)
+    location,_existing=_active_value_location(canonical,exclude_work_id=work.get("id",""))
+    # Un réexamen de sa propre valeur est autorisé ; toute autre duplication est bloquée.
+    own_reexam=work.get("source")=="reexamen" and normalize(canonical)==normalize(_normalise_value_name(work.get("original_name","")))
+    if location and not own_reexam:
+        labels={"validee":"vos valeurs validées","a_examiner":"vos valeurs à examiner","a_revoir":"votre liste À revoir en séance"}
+        st.error(f"La valeur **{canonical}** figure déjà dans {labels.get(location,'votre parcours')}. Elle ne peut pas être ajoutée une seconde fois. Aucune nouvelle valeur n’a été enregistrée.")
+        if location=="validee": st.info("Vous pouvez la consulter ou la réexaminer depuis l’accueil du module 3.")
+        return
+    if canonical!=name.strip():
+        st.info(f"Formulation normalisée : **{canonical}**")
     modes=["Par introspection","En observant mes réactions ou mes choix","À partir d’une situation vécue","À partir d’un événement marquant","Grâce à un exercice Clarté360","Avec l’aide de la recherche guidée Clarté360","Au cours d’une discussion","À travers une lecture","À travers un film ou une série","À travers un podcast ou une émission","En observant une personne que j’admire","Autre"]
     default_index=modes.index(work.get("mode_decouverte")) if work.get("mode_decouverte") in modes else 0
-    mode=st.selectbox("Comment avez-vous identifié cette valeur ?",modes,index=default_index,key=f"m3_mode_{work['id']}")
-    definition=open_response_widget("Que signifie cette valeur pour vous ?",f"m3_def_{work['id']}",value=work.get("definition_personnelle",""),height=110,dependency_scope="validation",value_name=name)
-    if not(name and definition): return
-    work.update({"nom_initial":name,"nom_normalise":_normalise_value_name(name),"nom_final":_normalise_value_name(name),"mode_decouverte":mode,"definition_personnelle":definition})
-    info=value_info(work["nom_final"]); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
-    st.info(f"Terme retenu pour l’examen : **{work['nom_final']}**")
+    mode=st.selectbox("Comment avez-vous identifié cette valeur ?",modes,index=default_index,key=f"m3_mode_{work['id']}",on_change=mark_user_activity,args=("mode_decouverte",))
+    definition=open_response_widget("Que signifie cette valeur pour vous ?",f"m3_def_{work['id']}",value=work.get("definition_personnelle",""),height=110,dependency_scope="validation",value_name=canonical)
+    if not definition: return
+    work.update({"nom_initial":name,"nom_normalise":canonical,"nom_final":canonical,"mode_decouverte":mode,"definition_personnelle":definition})
+    info=value_info(canonical); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
+    st.info(f"Terme retenu pour l’examen : **{canonical}**")
     if info: st.write(f"**Définition Clarté360 :** {info.get('definition','')}")
     analysis_key=f"m3_analysis_{work['id']}"
-    if analysis_key not in st.session_state:
-        st.session_state[analysis_key]=analyse_concept_nature(work["nom_final"],definition)
+    analysis_sig_key=f"{analysis_key}_signature"
+    current_clarification=str(work.get("clarification","") or "")
+    analysis_signature=normalize(canonical+" | "+definition+" | "+current_clarification)
+    if st.session_state.get(analysis_sig_key)!=analysis_signature:
+        st.session_state[analysis_key]=analyse_concept_nature(canonical,definition,current_clarification)
+        st.session_state[analysis_sig_key]=analysis_signature
     nature=st.session_state[analysis_key]
-    work["analyse"]=nature.get("explication",""); work["nature_orientation"]=nature.get("orientation","")
-    if nature.get("orientation")=="ambigu":
+    decision=nature.get("decision",""); work["analyse"]=nature.get("explication",""); work["nature_decision"]=decision
+    if decision=="formulation_non_valeur":
+        st.error((nature.get("explication") or "Cette formulation ne correspond pas au nom d'une valeur.")+" Aucune donnée n’a été enregistrée. Vous pourrez approfondir ce sujet dans le module 4 « Rechercher une nouvelle valeur avec Clarté360 ».")
+        return
+    if decision=="clarification_requise":
         st.warning(nature.get("explication") or "Cette formulation mérite une clarification prudente.")
-        clarification=open_response_widget(nature.get("question") or "Quel principe durable souhaitez-vous respecter dans vos choix et comportements ?",f"m3_clar_{work['id']}",value=work.get("clarification",""),height=100)
-        work["clarification"]=clarification
+        question=nature.get("question") or "Quel principe durable souhaitez-vous respecter dans vos choix et comportements ?"
+        clarification=open_response_widget(question,f"m3_clar_{work['id']}",value=current_clarification,height=100)
         if not clarification: return
-        st.info("Votre réponse est enregistrée. Vous restez seul décisionnaire : vous pouvez poursuivre l’examen comme valeur ou classer ce sujet À revoir en séance.")
-    else:
+        work["clarification"]=clarification
+        if not work.get("clarifications") or work["clarifications"][-1].get("reponse")!=clarification:
+            meta=deepcopy(st.session_state.answer_metadata.get(f"m3_clar_{work['id']}",{}))
+            work.setdefault("clarifications",[]).append({"question":question,"reponse":clarification,"reponse_originale":meta.get("texte_brut") or meta.get("transcription") or clarification,"reformulation_proposee":meta.get("reformulation_proposee",""),"version_retenue":meta.get("version_officielle") or clarification,"date":now_iso(),"contexte":nature.get("explication","")})
+        # Deuxième analyse obligatoire, sans possibilité de deuxième question.
+        nature=analyse_concept_nature(canonical,definition,clarification)
+        st.session_state[analysis_key]=nature; decision=nature.get("decision",""); work["analyse"]=nature.get("explication",""); work["nature_decision"]=decision
+    if decision=="valeur_absente_possible":
+        st.info((nature.get("explication") or "Cette valeur ne figure pas dans le référentiel Clarté360, mais elle peut constituer une valeur personnelle.")+" Vous pouvez poursuivre son examen ; son absence du catalogue n'est pas une erreur.")
+    elif decision=="valeur_reconnue":
         st.success(nature.get("explication") or "Le mot et votre définition paraissent cohérents pour poursuivre l’examen comme valeur.")
-    conceptual=st.radio("Comment souhaitez-vous poursuivre ?",["Poursuivre l’examen comme valeur","Placer ce sujet À revoir en séance"],key=f"m3_concept_{work['id']}")
+    elif decision=="formulation_non_valeur":
+        st.error((nature.get("explication") or "Cette formulation ne correspond pas à une valeur.")+" Aucune donnée n’a été enregistrée. Le module 4 pourra vous aider à approfondir ce sujet.")
+        return
+    conceptual=st.radio("Comment souhaitez-vous poursuivre ?",["Poursuivre l’examen comme valeur","Placer ce sujet À revoir en séance"],key=f"m3_concept_{work['id']}",on_change=mark_user_activity,args=("choix_orientation_valeur",))
     if conceptual.startswith("Placer"):
         if st.button("Ajouter à À revoir en séance",type="primary",key=f"m3_review_{work['id']}"):
-            _add_review_item(work,"Doute sur la nature du concept après analyse et clarification"); business_trace("valeur_a_revoir_en_seance",work.get("nom_final", "")); _advance_module3(); st.rerun()
+            _add_review_item(work,"Doute sur la nature du concept après analyse et clarification"); business_trace("valeur_a_revoir_en_seance",canonical); _advance_module3(); st.rerun()
         return
     choice,final_def=_value_definition_choices(work,f"m3_{work['id']}")
     work["definition_finale"]=final_def
     st.markdown("### Questionnaire spécifique Clarté360")
-    important=st.radio("Cette valeur est-elle importante pour vous dans plusieurs domaines ou situations ?",["Choisissez","Oui","Non"],key=f"m3_q1_{work['id']}")
-    very=st.radio("Seriez-vous durablement insatisfait si cette valeur était régulièrement bafouée ?",["Choisissez","Oui","Non"],key=f"m3_q2_{work['id']}") if important=="Oui" else "Non"
-    fundamental=st.radio("Cette valeur influence-t-elle réellement vos choix, vos engagements ou vos refus importants ?",["Choisissez","Oui","Non"],key=f"m3_q3_{work['id']}") if very=="Oui" else "Non"
-    if important=="Choisissez" or (important=="Oui" and very=="Choisissez") or (very=="Oui" and fundamental=="Choisissez"): return
-    decision="validee" if important==very==fundamental=="Oui" else "non_retenue"
-    st.write(f"Décision proposée selon vos réponses : **{'Valeur validée' if decision=='validee' else 'Valeur non retenue'}**")
-    if st.button("Confirmer cette décision",type="primary",key=f"m3_decide_{work['id']}"):
-        work["questionnaire"]={"importante":important=="Oui","tres_importante":very=="Oui","fondamentale":fundamental=="Oui"}; work["decision_finale"]=decision
-        if decision=="validee": _upsert_central_value(work["nom_final"],final_def,"application" if work.get("source")=="reexamen" else work.get("source","manuel"),definition_clarte360=work.get("definition_clarte360",""),questionnaire=work["questionnaire"])
-        else:
-            st.session_state.rejected_values.append({"nom":work["nom_final"],"definition":final_def,"date":now_iso(),"source":work.get("source")})
-            if work.get("source")=="reexamen":
-                original=_find_central_value(work.get("original_name") or work.get("nom_initial") or "")
-                if original: original["statut"]="non_retenue"; original["en_reexamen"]=False
-        _advance_module3(); st.rerun()
+    important=st.radio("Cette valeur est-elle importante pour vous dans plusieurs domaines ou situations ?",["Choisissez","Oui","Non"],key=f"m3_q1_{work['id']}",on_change=mark_user_activity,args=("questionnaire_valeur_q1",))
+    very=st.radio("Seriez-vous durablement insatisfait si cette valeur était régulièrement bafouée ?",["Choisissez","Oui","Non"],key=f"m3_q2_{work['id']}",on_change=mark_user_activity,args=("questionnaire_valeur_q2",)) if important=="Oui" else "Non"
+    fundamental=st.radio("Cette valeur influence-t-elle réellement vos choix, vos engagements ou vos refus importants ?",["Choisissez","Oui","Non"],key=f"m3_q3_{work['id']}",on_change=mark_user_activity,args=("questionnaire_valeur_q3",)) if very=="Oui" else "Non"
+    if important=="Choisissez" or (important=="Oui" and very=="Choisissez") or (very=="Oui" and fundamental=="Choisissez"):
+        return
+    final_decision="validee" if important==very==fundamental=="Oui" else "non_retenue"
+    st.write(f"Décision proposée selon vos réponses : **{'Valeur validée' if final_decision=='validee' else 'Valeur non retenue'}**")
+    c1,c2=st.columns(2)
+    with c1:
+        if st.button("Abandonner la valeur en cours",use_container_width=True,key=f"m3_abandon_{work['id']}"):
+            _abandon_current_module3_value(); st.rerun()
+    with c2:
+        if st.button("Confirmer cette décision",type="primary",key=f"m3_decide_{work['id']}",use_container_width=True):
+            work["questionnaire"]={"importante":important=="Oui","tres_importante":very=="Oui","fondamentale":fundamental=="Oui"}; work["decision_finale"]=final_decision
+            if final_decision=="validee":
+                _upsert_central_value(canonical,final_def,"application" if work.get("source")=="reexamen" else work.get("source","manuel"),definition_clarte360=work.get("definition_clarte360",""),questionnaire=work["questionnaire"],work=work)
+            else:
+                _remove_value_from_active_lists(canonical,keep="non_retenue")
+                st.session_state.rejected_values.append({"nom":canonical,"definition":final_def,"date":now_iso(),"source":work.get("source"),"analyse":work.get("analyse",""),"clarifications":deepcopy(work.get("clarifications",[])),"questionnaire":deepcopy(work.get("questionnaire",{}))})
+            _advance_module3(); st.rerun()
 
 def _advance_module3() -> None:
     idx=int(st.session_state.module3_index)+1
@@ -1663,7 +1813,7 @@ def build_payload(completed=False)->dict[str,Any]:
         "evenements_dependances":st.session_state.get("dependency_events",[]),
         "derniere_revision_coherente":st.session_state.get("last_consistent_revision",0),
         "audit_cloture":st.session_state.get("closure_audit",{}),
-        "schema_metier":"2.1.3.8b",
+        "schema_metier":"2.1.3.8E",
         "modules":deepcopy(st.session_state.get("module_states",{})),
         "module_actif":st.session_state.get("active_module","module_1"),
         "valeurs_validees_centrales":deepcopy(st.session_state.get("central_validated_values",[])),
