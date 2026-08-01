@@ -27,7 +27,8 @@ def test_normalisation_removes_articles_and_punctuation():
     fn=TEXT[TEXT.index('def _normalise_value_name'):TEXT.index('def _looks_like_value_label')]
     assert "l['’]" in fn
     assert 'le\\s+' in fn and 'la\\s+' in fn
-    assert 'local_value_matches' in fn
+    assert '_referential_value_info' in fn
+    assert 'local_value_matches' not in fn
 
 def test_series_buttons_are_explicit():
     assert 'Abandonner la valeur en cours' in TEXT
@@ -45,3 +46,20 @@ def test_timeout_real_activity_callback():
     assert 'def mark_user_activity' in TEXT
     assert 'on_change=mark_user_activity' in TEXT
     assert 'update_runtime_activity(event,user_activity=True)' in TEXT
+
+
+
+def test_normalisation_ne_substitue_pas_une_valeur_par_une_autre():
+    fn=TEXT[TEXT.index('def _normalise_value_name'):TEXT.index('def _looks_like_value_label')]
+    assert 'Une normalisation ne doit jamais substituer une valeur par une autre' in fn
+    assert 'SequenceMatcher' not in fn
+    assert 'local_value_matches' not in fn
+
+def test_normalisation_adopte_uniquement_equivalence_stricte():
+    assert 'def _referential_value_info' in TEXT
+    helper=TEXT[TEXT.index('def _referential_value_info'):TEXT.index('def value_info')]
+    assert 'normalize(canonical)==target' in helper
+
+def test_presence_referentiel_est_reellement_exacte():
+    assert 'present=bool(_referential_value_info(_normalise_value_name(term)))' in TEXT
+    assert 'info=_referential_value_info(canonical)' in TEXT

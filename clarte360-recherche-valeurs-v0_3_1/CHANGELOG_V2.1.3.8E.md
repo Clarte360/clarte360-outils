@@ -35,3 +35,11 @@ Version de stabilisation issue des essais réels de la V2.1.3.8D.
 - `tests/test_v218d_stabilisation.py`
 - `tests/test_v218e_stabilisation.py` ajouté
 - `README.md`
+
+## Correctif moteur de normalisation — 2026-08-01
+
+- suppression de toute substitution automatique entre deux valeurs différentes ;
+- `Perfectionnisme` reste désormais `Perfectionnisme` et ne peut plus être transformé en `Professionnalisme` ;
+- la normalisation est limitée aux corrections purement formelles : retrait d'article, ponctuation terminale, casse, accents et adoption de la forme canonique uniquement en cas d'équivalence stricte ;
+- distinction corrigée entre valeur réellement présente dans le référentiel et valeur personnelle absente du référentiel ;
+- ajout de tests de non-substitution et de présence référentielle exacte.

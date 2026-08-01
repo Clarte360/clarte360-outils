@@ -634,8 +634,26 @@ def merge_hypotheses(items:list[dict[str,str]])->list[str]:
     return presented
 
 
+def _referential_value_info(name: str) -> dict[str, str]:
+    """Retourne uniquement une valeur réellement présente dans le référentiel.
+
+    La comparaison est tolérante à la casse et aux accents, mais n'effectue jamais
+    de rapprochement sémantique ou phonétique. Ainsi, « Perfectionnisme » ne peut
+    jamais être remplacé automatiquement par « Professionnalisme ».
+    """
+    target=normalize(name)
+    if not target:
+        return {}
+    for canonical, info in VALUE_MAP.items():
+        if normalize(canonical)==target:
+            return info
+    return {}
+
+
 def value_info(name:str)->dict[str,str]:
-    if name in VALUE_MAP: return VALUE_MAP[name]
+    info=_referential_value_info(name)
+    if info:
+        return info
     custom=st.session_state.get("custom_values",{}).get(name,{})
     return {"nom":name,"famille":custom.get("famille","Valeur personnelle"),"definition":custom.get("definition","")}
 
@@ -886,7 +904,7 @@ def analyse_concept_nature(term: str, definition: str, clarification: str="") ->
     - formulation_non_valeur
     """
     term=str(term or "").strip(); definition=str(definition or "").strip(); clarification=str(clarification or "").strip()
-    present=bool(value_info(_normalise_value_name(term)))
+    present=bool(_referential_value_info(_normalise_value_name(term)))
     if not _looks_like_value_label(term):
         return {"decision":"formulation_non_valeur","explication":"Cette proposition ressemble davantage à une phrase, un constat, un ressenti, une aspiration ou un concept important qu'au nom d'une valeur.","question":""}
     fallback={"decision":"valeur_reconnue" if present else "valeur_absente_possible","explication":("Le terme figure dans le référentiel Clarté360 et peut poursuivre son examen." if present else "Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez."),"question":""}
@@ -1282,9 +1300,12 @@ def _normalise_value_name(raw: str) -> str:
     text=re.sub(r"(?i)^(?:l['’]|le\s+|la\s+|les\s+|un\s+|une\s+)", "", text).strip()
     if not text:
         return ""
-    matches=local_value_matches(text,limit=1)
-    if matches and SequenceMatcher(None,normalize(text),normalize(matches[0])).ratio()>=.72:
-        return matches[0]
+    # Une normalisation ne doit jamais substituer une valeur par une autre.
+    # On adopte la forme canonique du référentiel uniquement en cas d'équivalence
+    # stricte après retrait des articles, espaces, casse et accents.
+    info=_referential_value_info(text)
+    if info:
+        return info["nom"]
     return text[:1].upper()+text[1:]
 
 def _looks_like_value_label(raw: str) -> bool:
@@ -1659,7 +1680,7 @@ def render_module_3() -> None:
     definition=open_response_widget("Que signifie cette valeur pour vous ?",f"m3_def_{work['id']}",value=work.get("definition_personnelle",""),height=110,dependency_scope="validation",value_name=canonical)
     if not definition: return
     work.update({"nom_initial":name,"nom_normalise":canonical,"nom_final":canonical,"mode_decouverte":mode,"definition_personnelle":definition})
-    info=value_info(canonical); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
+    info=_referential_value_info(canonical); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
     st.info(f"Terme retenu pour l’examen : **{canonical}**")
     if info: st.write(f"**Définition Clarté360 :** {info.get('definition','')}")
     analysis_key=f"m3_analysis_{work['id']}"
