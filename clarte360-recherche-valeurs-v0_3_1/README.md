@@ -44,3 +44,6 @@ Résultat de fabrication : **11 tests réussis**.
 - Application : 2.1.2
 - Référentiel RVC360 : 2.1
 - Framework déclaré : 4.0
+
+## Stabilisation finale 8F
+Cette livraison stabilise le module 3 et son panier de gestion des valeurs. Les hypothèses du futur module 4 ne constituent pas un quatrième panier : une hypothèse sélectionnée sera envoyée dans le parcours normal de validation d’une nouvelle valeur.

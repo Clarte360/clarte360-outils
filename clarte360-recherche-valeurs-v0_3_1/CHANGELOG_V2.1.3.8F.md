@@ -19,3 +19,11 @@ Version de stabilisation préparant le passage à la version 9.
 ## Nettoyage de la livraison
 
 Les anciens changelogs, rapports d'audit et rapports de tests intermédiaires ont été retirés du ZIP. La livraison conserve uniquement les fichiers utiles à l'exploitation, au déploiement et au contrôle de la version F.
+
+## Correctif reprise d'une valeur en attente
+
+- Une valeur sélectionnée dans « Valeurs à examiner » passe désormais en mode `examen_attente`.
+- Elle peut être renommée, redéfinie et retraitée intégralement sans être bloquée comme son propre doublon.
+- La migration des anciens JSON ne recrée plus la valeur à chaque rerun Streamlit pendant son examen.
+- La décision finale nettoie les anciens marqueurs contradictoires (`abandonnee`, `discarded`, `en_cours_analyse`) afin d'éviter une nouvelle réapparition.
+- Compatibilité maintenue avec les JSON historiques V2.1.3.7, notamment celui de Solange.

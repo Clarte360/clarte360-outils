@@ -1189,6 +1189,9 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
             with st.spinner("Transcription en cours…"):
                 raw=transcribe_audio(audio); proposal=clean_spoken_text(raw, expected_value_label=expected_value_label)
                 st.session_state[f"{base}_transcript_raw"]=raw; st.session_state[f"{base}_transcript_clean"]=proposal
+            # Un seul clic doit suffire : on force immédiatement le rerun qui affiche
+            # la transcription déjà mémorisée, sans relancer ni la transcription ni l'IA.
+            st.rerun()
         except Exception as exc: st.session_state[f"{base}_transcription_error"]=str(exc)
     err=str(st.session_state.pop(f"{base}_transcription_error","") or "")
     if err: st.error(f"La transcription n’a pas pu être réalisée : {err}")
@@ -1357,12 +1360,39 @@ def _upsert_central_value(name: str, definition_personnelle: str, source: str, *
         _remove_value_from_active_lists(old_name,keep="validee")
         st.session_state.personal_defs.pop(old_name,None); st.session_state.validation.pop(old_name,None)
         if old_name in st.session_state.validated_app_values: st.session_state.validated_app_values.remove(old_name)
+    _finalise_pending_history(work,"validee",canonical)
     st.session_state.personal_defs[canonical]=definition_personnelle.strip()
     st.session_state.validation[canonical]={"importante":True,"tres_importante":True,"fondamentale":True,"origine_validation":source}
     if source=="accompagnateur" and canonical not in st.session_state.existing_values: st.session_state.existing_values.append(canonical)
     if source!="accompagnateur" and canonical not in st.session_state.validated_app_values: st.session_state.validated_app_values.append(canonical)
     register_value_record(canonical,source,"validee",definition_personnelle,certainty=100)
     _set_module_status("module_5","disponible","accueil")
+
+def _finalise_pending_history(work: dict[str,Any], final_status: str, final_name: str="") -> None:
+    """Clôture les anciens marqueurs d'une valeur reprise afin qu'elle ne soit pas remigrée."""
+    original=str(work.get("original_name") or work.get("nom_initial") or "").strip()
+    canonical=_normalise_value_name(final_name or work.get("nom_final") or original)
+    for key in {original, canonical}:
+        if not key:
+            continue
+        rec=st.session_state.get("value_records",{}).get(key)
+        if isinstance(rec,dict):
+            rec["statut"]=final_status
+            rec["validation_finale"]=final_status=="validee"
+            rec["nom_final"]=canonical
+            rec["date_mise_a_jour"]=now_iso()
+    # Les anciens tableaux techniques ne doivent plus forcer un statut abandonné/rejeté
+    # lorsque la valeur est remise en traitement ou vient d'être décidée.
+    for list_key in ("discarded","abandoned_hypotheses"):
+        values=list(st.session_state.get(list_key,[]) or [])
+        st.session_state[list_key]=[v for v in values if normalize(_normalise_value_name(v)) not in {normalize(_normalise_value_name(original)),normalize(canonical)}]
+    rejected=st.session_state.get("rejected_values",[])
+    if isinstance(rejected,list):
+        st.session_state.rejected_values=[x for x in rejected if normalize(_normalise_value_name(x.get("nom") if isinstance(x,dict) else x)) not in {normalize(_normalise_value_name(original)),normalize(canonical)}]
+    if original and original in st.session_state.get("hypothesis_status",{}):
+        st.session_state.hypothesis_status[original]=final_status
+    if canonical:
+        st.session_state.hypothesis_status[canonical]=final_status
 
 def _add_review_item(work: dict[str,Any], reason: str) -> bool:
     terme=(work.get("nom_final") or work.get("nom_initial") or work.get("nom") or "").strip()
@@ -1374,6 +1404,7 @@ def _add_review_item(work: dict[str,Any], reason: str) -> bool:
     item={"id":str(uuid.uuid4()),"terme":_normalise_value_name(terme),"definition":work.get("definition_personnelle","") or work.get("definition", ""),"analyse":work.get("analyse","") or work.get("hypothese", ""),"motif":reason,"statut":"a_revoir_en_seance","date":now_iso(),"source":work.get("source", ""),"clarifications":deepcopy(work.get("clarifications",[]))}
     _remove_value_from_active_lists(terme,keep="a_revoir")
     st.session_state.session_review_items.append(item)
+    _finalise_pending_history(work,"a_revoir_en_seance",item["terme"])
     return True
 
 def _new_value_work(source: str="manuel") -> dict[str,Any]:
@@ -1439,6 +1470,105 @@ def _remove_value_from_active_lists(name: str, *, keep: str="validee") -> None:
     if keep!="validee":
         st.session_state.central_validated_values=[x for x in st.session_state.get("central_validated_values",[]) if normalize(_normalise_value_name(x.get("nom_final") or x.get("nom") or ""))!=n]
 
+def _value_alias_norms(*names: str) -> set[str]:
+    aliases=set()
+    for name in names:
+        raw=str(name or "").strip()
+        if not raw:
+            continue
+        aliases.add(normalize(raw))
+        aliases.add(normalize(_normalise_value_name(raw)))
+    return {x for x in aliases if x}
+
+def _purge_value_everywhere(*names: str) -> None:
+    """Supprime définitivement une valeur et toutes ses données métier liées.
+
+    Aucun contenu métier, questionnaire, réponse, historique ou état de reprise
+    rattaché à cette valeur ne doit rester dans le JSON de travail.
+    """
+    aliases=_value_alias_norms(*names)
+    if not aliases:
+        return
+    def match(value: Any) -> bool:
+        if value is None:
+            return False
+        return normalize(_normalise_value_name(str(value))) in aliases or normalize(str(value)) in aliases
+    def item_name(item: Any) -> str:
+        if isinstance(item,dict):
+            for key in ("nom_final","nom_normalise","nom_initial","nom_propose","nom","terme","valeur"):
+                if item.get(key):
+                    return str(item.get(key))
+            return ""
+        return str(item or "")
+
+    for key in ("central_validated_values","values_to_examine","session_review_items","inter_session_values","inter_session_pending"):
+        st.session_state[key]=[x for x in list(st.session_state.get(key,[]) or []) if not match(item_name(x))]
+    for key in ("existing_values","validated_app_values","candidate_names","hypothesis_queue","completed_hypotheses","abandoned_hypotheses","discarded"):
+        st.session_state[key]=[x for x in list(st.session_state.get(key,[]) or []) if not match(x)]
+    rejected=[]
+    for x in list(st.session_state.get("rejected_values",[]) or []):
+        if not match(item_name(x)):
+            rejected.append(x)
+    st.session_state.rejected_values=rejected
+
+    for key in ("validation","personal_defs","comments","value_records","hypothesis_status","hypothesis_decisions","candidate_reasons","candidate_evidence"):
+        data=dict(st.session_state.get(key,{}) or {})
+        st.session_state[key]={k:v for k,v in data.items() if not match(k) and not match(item_name(v) if isinstance(v,dict) else "")}
+
+    # Historique et traces métier : suppression de toute entrée citant explicitement la valeur.
+    for key in ("trace","historique","dependency_events","evenements_dependances","reasoning_evolution","hypothesis_history","analysis_history"):
+        cleaned=[]
+        for event in list(st.session_state.get(key,[]) or []):
+            blob=" ".join(str(v) for v in event.values()) if isinstance(event,dict) else str(event)
+            if any(a and a in normalize(blob) for a in aliases):
+                continue
+            cleaned.append(event)
+        st.session_state[key]=cleaned
+
+    # Réponses structurées / métadonnées de réponses liées à la valeur.
+    metadata=dict(st.session_state.get("answer_metadata",{}) or {})
+    to_remove=[]
+    for key,meta in metadata.items():
+        blob=key+" "+(" ".join(str(v) for v in meta.values()) if isinstance(meta,dict) else str(meta))
+        if any(a and a in normalize(blob) for a in aliases):
+            to_remove.append(key)
+    for key in to_remove:
+        metadata.pop(key,None)
+        for state_key in list(st.session_state.keys()):
+            if str(state_key).startswith(key):
+                st.session_state.pop(state_key,None)
+    st.session_state.answer_metadata=metadata
+
+    st.session_state.module3_queue=[x for x in list(st.session_state.get("module3_queue",[]) or []) if not match(item_name(x))]
+    current=st.session_state.get("current_value_work",{}) or {}
+    if match(item_name(current)) or match(current.get("original_name","")):
+        st.session_state.current_value_work={}
+        st.session_state.module3_index=0
+    st.session_state.data_revision=int(st.session_state.get("data_revision",0))+1
+    st.session_state.completion_check={}
+    st.session_state.exploration_complete=False
+
+def _restore_current_module3_origin(work: dict[str,Any]) -> None:
+    """Restaure sans modification une valeur temporairement sortie de son panier."""
+    source=work.get("source")
+    if source=="examen_attente":
+        restored=deepcopy(work.get("origin_snapshot") or work)
+        restored["source"]=work.get("source_initiale") or restored.get("source") or "migration_v2137"
+        restored.pop("origin_snapshot",None)
+        if not any(normalize(_normalise_value_name(x.get("nom_final") or x.get("nom_initial") or x.get("nom") or ""))==normalize(_normalise_value_name(restored.get("nom_final") or restored.get("nom_initial") or restored.get("nom") or "")) for x in st.session_state.get("values_to_examine",[])):
+            st.session_state.values_to_examine.append(restored)
+    elif source=="examen_seance":
+        restored=deepcopy(work.get("origin_snapshot") or work)
+        restored["statut"]="a_revoir_en_seance"
+        restored["terme"]=restored.get("terme") or restored.get("nom_final") or restored.get("nom_initial")
+        restored.pop("origin_snapshot",None)
+        if not any(normalize(_normalise_value_name(x.get("terme") or ""))==normalize(_normalise_value_name(restored.get("terme") or "")) for x in st.session_state.get("session_review_items",[])):
+            st.session_state.session_review_items.append(restored)
+    elif source=="reexamen":
+        original=_find_central_value(work.get("original_name") or work.get("nom_initial") or work.get("nom_final") or "")
+        if original:
+            original["en_reexamen"]=False
+
 def _ensure_migrated_state() -> None:
     # Migration non destructive des JSON V2.1.3.7 et états historiques.
     if not st.session_state.get("central_validated_values"):
@@ -1450,13 +1580,21 @@ def _ensure_migrated_state() -> None:
     # Priorité à l'état métier détaillé : une valeur restée « en cours d'analyse » dans un ancien JSON
     # devient une valeur à examiner, même si une ancienne liste technique la marquait aussi abandonnée.
     pending_names={normalize(v) for x in st.session_state.get("values_to_examine",[]) for v in (x.get("nom_final"),x.get("nom_initial"),x.get("nom")) if v}
+    # Une valeur déjà ouverte dans le module 3 ne doit jamais être recréée par la migration
+    # à chaque rerun Streamlit. Sinon elle réapparaît dans « À examiner » et se bloque
+    # elle-même comme doublon pendant son propre réexamen.
+    active_work_names=set()
+    for x in list(st.session_state.get("module3_queue",[]) or [])+[st.session_state.get("current_value_work",{}) or {}]:
+        for v in (x.get("original_name"),x.get("nom_final"),x.get("nom_normalise"),x.get("nom_initial"),x.get("nom")):
+            if v:
+                active_work_names.add(normalize(_normalise_value_name(v)))
     validated_norm={normalize(x.get("nom_final") or x.get("nom") or "") for x in st.session_state.get("central_validated_values",[])}
     for name,record in (st.session_state.get("value_records",{}) or {}).items():
         status=str(record.get("statut", "")).lower()
         if status not in {"en_cours_analyse","a_confirmer","a_examiner","terme_a_confirmer","questionnaire_a_realiser"}:
             continue
         candidate_variants={normalize(name), normalize(record.get("nom_propose") or name), normalize(_normalise_value_name(record.get("nom_propose") or name))}
-        if candidate_variants & validated_norm or candidate_variants & pending_names:
+        if candidate_variants & validated_norm or candidate_variants & pending_names or candidate_variants & active_work_names:
             continue
         info=_referential_value_info(name)
         work=_new_value_work("migration_v2137")
@@ -1666,20 +1804,16 @@ def _pending_value_summary(work: dict[str,Any]) -> None:
 
 
 def _abandon_current_module3_value() -> None:
-    """Abandonne seulement la valeur courante ; les valeurs déjà validées restent acquises."""
+    """Quitte la valeur courante sans la modifier et la remet dans son panier d'origine."""
     work=st.session_state.get("current_value_work",{}) or {}
-    if work.get("source")=="reexamen":
-        original=_find_central_value(work.get("original_name") or work.get("nom_initial") or work.get("nom_final") or "")
-        if original: original["en_reexamen"]=False
-    business_trace("abandon_valeur_courante",work.get("nom_final") or work.get("nom_initial") or "")
+    _restore_current_module3_origin(work)
+    business_trace("abandon_valeur_courante",work.get("nom_final") or work.get("nom_initial") or work.get("terme") or "")
     _advance_module3()
 
 def _stop_module3_series() -> None:
-    """Arrête les valeurs restantes sans supprimer celles déjà complètement validées."""
+    """Arrête les valeurs restantes sans supprimer celles déjà complètement validées, et restaure la valeur courante dans son état d'origine."""
     work=st.session_state.get("current_value_work",{}) or {}
-    if work.get("source")=="reexamen":
-        original=_find_central_value(work.get("original_name") or work.get("nom_initial") or work.get("nom_final") or "")
-        if original: original["en_reexamen"]=False
+    _restore_current_module3_origin(work)
     business_trace("arret_valeurs_restantes",f"à partir de {int(st.session_state.get('module3_index',0))+1}")
     st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0
     _set_module_status("module_3","disponible","accueil")
@@ -1693,7 +1827,8 @@ def render_module_3() -> None:
     _set_module_status("module_3","en_cours","travail")
     if not st.session_state.module3_queue:
         pending=st.session_state.get("values_to_examine",[])
-        options=["Saisir une nouvelle valeur"]+(["Examiner une valeur en attente"] if pending else [])+(["Réexaminer une valeur déjà validée dans Clarté360"] if any(v.get('source')!='accompagnateur' for v in st.session_state.central_validated_values) else [])
+        review=st.session_state.get("session_review_items",[])
+        options=["Saisir une nouvelle valeur"]+(["Examiner une valeur en attente"] if pending else [])+(["Reprendre un sujet à revoir en séance"] if review else [])+(["Réexaminer une valeur déjà validée dans Clarté360"] if any(v.get('source')!='accompagnateur' for v in st.session_state.central_validated_values) else [])
         mode=st.radio("Que souhaitez-vous faire ?",options,key="m3_entry_mode")
         if mode=="Saisir une nouvelle valeur":
             count=int(st.number_input("Combien de valeurs souhaitez-vous explorer ?",1,15,1,key="m3_count"))
@@ -1708,14 +1843,59 @@ def render_module_3() -> None:
             selected=st.selectbox("Valeur à examiner",range(len(pending)),format_func=lambda i:pending[i].get("nom_final") or pending[i].get("nom_initial") or "Valeur")
             chosen=pending[selected]
             _pending_value_summary(chosen)
-            c1,c2=st.columns(2)
+            c1,c2,c3=st.columns(3)
             with c1:
                 if st.button("← Retour sans modifier",use_container_width=True,key="m3_pending_back"):
                     st.session_state.active_module="accueil_modules"; st.rerun()
             with c2:
+                if st.button("🗑️ Supprimer définitivement",use_container_width=True,key="m3_pending_delete"):
+                    st.session_state["m3_confirm_delete_pending"]=True; st.rerun()
+            with c3:
                 if st.button("Poursuivre l’examen de cette valeur",type="primary",use_container_width=True,key="m3_pending_open"):
-                    work=deepcopy(chosen); st.session_state.values_to_examine=[x for i,x in enumerate(pending) if i!=selected]
+                    work=deepcopy(chosen)
+                    work["origin_snapshot"]=deepcopy(chosen)
+                    work["source_initiale"]=work.get("source","")
+                    work["source"]="examen_attente"
+                    work["original_name"]=work.get("nom_final") or work.get("nom_normalise") or work.get("nom_initial") or work.get("nom") or ""
+                    work["pending_origin_id"]=work.get("id","")
+                    work["stage"]="nom"
+                    st.session_state.values_to_examine=[x for i,x in enumerate(pending) if i!=selected]
                     st.session_state.module3_queue=[work]; st.session_state.module3_index=0; st.session_state.current_value_work=work; st.rerun()
+            if st.session_state.get("m3_confirm_delete_pending"):
+                st.error("Cette suppression effacera définitivement cette valeur et toutes les informations qui lui sont associées. Cette action est irréversible.")
+                d1,d2=st.columns(2)
+                with d1:
+                    if st.button("Annuler la suppression",use_container_width=True,key="m3_cancel_delete_pending"):
+                        st.session_state.pop("m3_confirm_delete_pending",None); st.rerun()
+                with d2:
+                    if st.button("Confirmer la suppression définitive",type="primary",use_container_width=True,key="m3_do_delete_pending"):
+                        _purge_value_everywhere(chosen.get("nom_final") or chosen.get("nom_initial") or chosen.get("nom") or ""); st.session_state.pop("m3_confirm_delete_pending",None); st.rerun()
+        elif mode=="Reprendre un sujet à revoir en séance":
+            selected=st.selectbox("Sujet à reprendre en séance",range(len(review)),format_func=lambda i:review[i].get("terme") or "Sujet")
+            chosen=review[selected]
+            _pending_value_summary(chosen)
+            c1,c2,c3=st.columns(3)
+            with c1:
+                if st.button("← Retour sans modifier",use_container_width=True,key="m3_review_back"):
+                    st.session_state.active_module="accueil_modules"; st.rerun()
+            with c2:
+                if st.button("🗑️ Supprimer définitivement",use_container_width=True,key="m3_review_delete"):
+                    st.session_state["m3_confirm_delete_review"]=True; st.rerun()
+            with c3:
+                if st.button("Reprendre l’étude en séance",type="primary",use_container_width=True,key="m3_review_open"):
+                    work=_new_value_work("examen_seance")
+                    work.update({"original_name":chosen.get("terme", ""),"nom_initial":chosen.get("terme", ""),"nom_final":chosen.get("terme", ""),"definition_personnelle":chosen.get("definition", ""),"analyse":chosen.get("analyse", ""),"clarifications":deepcopy(chosen.get("clarifications",[])),"origin_snapshot":deepcopy(chosen),"pending_origin_id":chosen.get("id","")})
+                    st.session_state.session_review_items=[x for i,x in enumerate(review) if i!=selected]
+                    st.session_state.module3_queue=[work]; st.session_state.module3_index=0; st.session_state.current_value_work=work; st.rerun()
+            if st.session_state.get("m3_confirm_delete_review"):
+                st.error("Cette suppression effacera définitivement ce sujet et toutes les informations qui lui sont associées. Cette action est irréversible.")
+                d1,d2=st.columns(2)
+                with d1:
+                    if st.button("Annuler la suppression",use_container_width=True,key="m3_cancel_delete_review"):
+                        st.session_state.pop("m3_confirm_delete_review",None); st.rerun()
+                with d2:
+                    if st.button("Confirmer la suppression définitive",type="primary",use_container_width=True,key="m3_do_delete_review"):
+                        _purge_value_everywhere(chosen.get("terme", "")); st.session_state.pop("m3_confirm_delete_review",None); st.rerun()
         else:
             candidates=[v for v in st.session_state.central_validated_values if v.get("source")!="accompagnateur"]
             selected=st.selectbox("Valeur à réexaminer",range(len(candidates)),format_func=lambda i:candidates[i]["nom_final"])
@@ -1725,19 +1905,51 @@ def render_module_3() -> None:
                 st.write(f"**Définition personnelle actuelle :** {original.get('definition_personnelle') or 'Non renseignée'}")
                 if original.get("definition_clarte360"): st.write(f"**Définition Clarté360 :** {original.get('definition_clarte360')}")
             st.warning("Réexaminer cette valeur signifie reprendre sa définition et répondre de nouveau au questionnaire spécifique, même si vous ne changez rien. Vous pourrez annuler à tout moment avant la décision finale : la valeur restera alors inchangée.")
-            c1,c2=st.columns(2)
+            c1,c2,c3=st.columns(3)
             with c1:
                 if st.button("← Annuler",use_container_width=True,key="m3_reex_back"):
                     st.session_state.active_module="accueil_modules"; st.rerun()
             with c2:
+                if st.button("🗑️ Supprimer définitivement",use_container_width=True,key="m3_reex_delete"):
+                    st.session_state["m3_confirm_delete_validated"]=True; st.rerun()
+            with c3:
                 if st.button("Commencer le réexamen",type="primary",use_container_width=True,key="m3_reex_start"):
                     original["en_reexamen"]=True
-                    w=_new_value_work("reexamen"); w.update({"original_name":original["nom_final"],"nom_initial":original["nom_final"],"nom_final":original["nom_final"],"mode_decouverte":original.get("mode_decouverte") or "Par introspection","definition_personnelle":original.get("definition_personnelle",""),"definition_clarte360":original.get("definition_clarte360","")})
+                    w=_new_value_work("reexamen"); w.update({"original_name":original["nom_final"],"nom_initial":original["nom_final"],"nom_final":original["nom_final"],"mode_decouverte":original.get("mode_decouverte") or "Par introspection","definition_personnelle":original.get("definition_personnelle",""),"definition_clarte360":original.get("definition_clarte360",""),"origin_snapshot":deepcopy(original)})
                     st.session_state.module3_queue=[w]; st.session_state.module3_index=0; st.session_state.current_value_work=w; st.rerun()
+            if st.session_state.get("m3_confirm_delete_validated"):
+                st.error("Cette suppression effacera définitivement cette valeur validée et toutes les informations qui lui sont associées. Cette action est irréversible.")
+                d1,d2=st.columns(2)
+                with d1:
+                    if st.button("Annuler la suppression",use_container_width=True,key="m3_cancel_delete_validated"):
+                        st.session_state.pop("m3_confirm_delete_validated",None); st.rerun()
+                with d2:
+                    if st.button("Confirmer la suppression définitive",type="primary",use_container_width=True,key="m3_do_delete_validated"):
+                        _purge_value_everywhere(original.get("nom_final", "")); st.session_state.pop("m3_confirm_delete_validated",None); st.rerun()
         return
     idx=int(st.session_state.module3_index); total=len(st.session_state.module3_queue); work=_module3_current_work()
     st.markdown(f"<div style='background:#EAF7F6;border:2px solid #0E7774;border-radius:12px;padding:.75rem 1rem;text-align:center;margin-bottom:1rem'><strong style='font-size:1.45rem;color:#0E7774'>Valeur {idx+1} / {total}</strong></div>",unsafe_allow_html=True)
-    if work.get("source") in {"migration_v2137","module_4","recherche_guidee"}: _pending_value_summary(work)
+    # Sorties permanentes : aucun écran du module 3 ne peut être une impasse.
+    nav1,nav2,nav3=st.columns(3)
+    with nav1:
+        if st.button("← Retour au choix des valeurs",use_container_width=True,key=f"m3_exit_{work['id']}"):
+            _restore_current_module3_origin(work); st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0; _set_module_status("module_3","disponible","accueil"); st.rerun()
+    with nav2:
+        if st.button("Abandonner ce réexamen",use_container_width=True,key=f"m3_cancel_work_{work['id']}"):
+            _abandon_current_module3_value(); st.rerun()
+    with nav3:
+        if st.button("🗑️ Supprimer définitivement",use_container_width=True,key=f"m3_delete_work_{work['id']}"):
+            st.session_state[f"m3_confirm_delete_work_{work['id']}"]=True; st.rerun()
+    if st.session_state.get(f"m3_confirm_delete_work_{work['id']}"):
+        st.error("Cette suppression effacera définitivement cette valeur et toutes les informations qui lui sont associées. Cette action est irréversible.")
+        d1,d2=st.columns(2)
+        with d1:
+            if st.button("Annuler",use_container_width=True,key=f"m3_cancel_delete_work_{work['id']}"):
+                st.session_state.pop(f"m3_confirm_delete_work_{work['id']}",None); st.rerun()
+        with d2:
+            if st.button("Confirmer la suppression définitive",type="primary",use_container_width=True,key=f"m3_confirm_delete_work_btn_{work['id']}"):
+                _purge_value_everywhere(work.get("original_name",""),work.get("nom_final",""),work.get("nom_initial",""),work.get("terme","")); st.session_state.pop(f"m3_confirm_delete_work_{work['id']}",None); st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0; _set_module_status("module_3","disponible","accueil"); st.rerun()
+    if work.get("source") in {"migration_v2137","module_4","recherche_guidee","examen_attente","examen_seance"}: _pending_value_summary(work)
     name=open_response_widget("Quelle valeur avez-vous identifiée ?",f"m3_name_{work['id']}",value=work.get("nom_initial",work.get("nom_final","")),height=70,allow_reformulation=False,expected_value_label=True)
     if not name:
         c1,c2=st.columns(2)
@@ -1757,7 +1969,10 @@ def render_module_3() -> None:
     location,_existing=_active_value_location(canonical,exclude_work_id=work.get("id",""))
     # Un réexamen de sa propre valeur est autorisé ; toute autre duplication est bloquée.
     own_reexam=work.get("source")=="reexamen" and normalize(canonical)==normalize(_normalise_value_name(work.get("original_name","")))
-    if location and not own_reexam:
+    own_pending=work.get("source")=="examen_attente" and normalize(canonical)==normalize(_normalise_value_name(work.get("original_name","")))
+    own_review=work.get("source")=="examen_seance" and normalize(canonical)==normalize(_normalise_value_name(work.get("original_name","")))
+    # Compatibilité : ancien contrôle = not (own_reexam or own_pending) ; ajout du cas séance.
+    if location and not (own_reexam or own_pending or own_review):
         labels={"validee":"vos valeurs validées","a_examiner":"vos valeurs à examiner","a_revoir":"votre liste À revoir en séance"}
         st.error(f"La valeur **{canonical}** figure déjà dans {labels.get(location,'votre parcours')}. Elle ne peut pas être ajoutée une seconde fois. Aucune nouvelle valeur n’a été enregistrée.")
         if location=="validee": st.info("Vous pouvez la consulter ou la réexaminer depuis l’accueil du module 3.")
@@ -1831,6 +2046,7 @@ def render_module_3() -> None:
             else:
                 _remove_value_from_active_lists(canonical,keep="non_retenue")
                 st.session_state.rejected_values.append({"nom":canonical,"definition":final_def,"date":now_iso(),"source":work.get("source"),"analyse":work.get("analyse",""),"clarifications":deepcopy(work.get("clarifications",[])),"questionnaire":deepcopy(work.get("questionnaire",{}))})
+                _finalise_pending_history(work,"non_retenue",canonical)
             _advance_module3(); st.rerun()
 
 def _advance_module3() -> None:
