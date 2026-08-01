@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.8c-preproduction"
+APP_VERSION = "2.1.3.8D-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -761,13 +761,13 @@ def _contains_oral_hesitations(text: str) -> bool:
 
 
 def _official_answer_from_meta(meta: dict[str, Any]) -> str:
-    """Retourne toujours la meilleure version disponible d'une réponse déjà validée."""
-    for field in ("version_officielle", "transcription_corrigee", "transcription", "texte_brut"):
-        value=str(meta.get(field, "") or "").strip()
-        if value:
-            return value
-    return ""
+    """Retourne uniquement une réponse explicitement validée.
 
+    Les transcriptions et propositions en cours ne deviennent jamais officielles avant
+    le choix explicite du bénéficiaire. Les anciens JSON sont réparés séparément par
+    ``_repair_answer_metadata_entry`` lorsque ``validee_le`` prouve une validation.
+    """
+    return str(meta.get("version_officielle", "") or "").strip()
 
 def _repair_answer_metadata_entry(meta: dict[str, Any]) -> bool:
     """Répare les anciens JSON où une réponse validée existe mais version_officielle est vide."""
@@ -824,33 +824,73 @@ def _local_spoken_cleanup(text: str) -> str:
 
 
 def clean_spoken_text(text: str) -> str:
-    """Transforme une transcription orale en texte écrit fluide, fidèle et naturel."""
-    local=_local_spoken_cleanup(text)
+    """Produit une seule reformulation fidèle, ou signale qu'elle n'apporte rien.
+
+    La fonction ne fabrique jamais une fausse proposition identique à l'original.
+    Elle retourne une chaîne vide lorsque la réponse est déjà claire ou lorsque l'IA
+    n'a pas fourni une amélioration réellement distincte.
+    """
+    original=str(text or "").strip()
+    local=_local_spoken_cleanup(original)
+    if not original:
+        return ""
     if not ai_ready():
-        return local
-    instructions="""Transformez la transcription orale française fournie en un texte écrit naturel, fluide et fidèle.
+        candidate=local
+    else:
+        instructions="""Reformulez la réponse française fournie en une seule version écrite simple, naturelle et strictement fidèle.
 
 Règles impératives :
-- supprimez les hésitations, faux départs, reprises de phrase et répétitions inutiles ;
-- remplacez les tournures purement orales par un français écrit naturel ;
-- réorganisez légèrement les phrases lorsque cela améliore clairement la lecture ;
-- conservez strictement la première personne, tous les faits, les nuances et les réserves ;
-- ne changez jamais le sens ;
-- n'ajoutez aucun fait, aucune interprétation, aucune valeur, aucun diagnostic et aucun conseil ;
-- ne résumez pas excessivement et ne rendez pas le texte plus flatteur qu'il ne l'est ;
-- produisez directement une version exploitable comme réponse écrite du bénéficiaire.
+- conservez exactement le sens, la première personne, les faits, nuances et réserves ;
+- supprimez les hésitations, répétitions accidentelles, faux départs et maladresses ;
+- corrigez la syntaxe et améliorez la lisibilité sans résumer ni enrichir ;
+- n'ajoutez aucune idée, valeur, interprétation, diagnostic ou conseil ;
+- pour un mot, un nom de valeur ou une réponse déjà claire, retournez exactement AUCUNE_REFORMULATION ;
+- si votre proposition serait identique ou presque identique, retournez AUCUNE_REFORMULATION.
 
 Retournez uniquement un objet JSON avec la clé texte_corrige."""
-    schema={"type":"object","properties":{"texte_corrige":{"type":"string"}},"required":["texte_corrige"],"additionalProperties":False}
-    try:
-        result=response_json(instructions,{"transcription":text},"redaction_transcription_clarte360",schema,max_tokens=650)
-        candidate=str(result.get("texte_corrige","") or "").strip()
-        if not candidate or _contains_oral_hesitations(candidate):
-            return local
-        return candidate
-    except Exception:
-        return local
+        schema={"type":"object","properties":{"texte_corrige":{"type":"string"}},"required":["texte_corrige"],"additionalProperties":False}
+        try:
+            result=response_json(instructions,{"reponse":original},"reformulation_clarte360",schema,max_tokens=650)
+            candidate=str(result.get("texte_corrige","") or "").strip()
+        except Exception:
+            candidate=local
+    if not candidate or candidate.upper()=="AUCUNE_REFORMULATION" or _contains_oral_hesitations(candidate):
+        return ""
+    similarity=SequenceMatcher(None,normalize(original),normalize(candidate)).ratio()
+    # Une simple ponctuation, casse ou suppression d'un doublon court n'est pas présentée
+    # comme une « reformulation Clarté360 » distincte.
+    if similarity>=0.96 or normalize(candidate)==normalize(original):
+        return ""
+    return candidate
 
+def analyse_concept_nature(term: str, definition: str) -> dict[str, str]:
+    """Analyse prudemment la nature possible d'un concept avant le questionnaire.
+
+    Résultat attendu : orientation, explication et, uniquement si nécessaire, une
+    question unique de clarification. Aucune conclusion n'est imposée.
+    """
+    term=str(term or "").strip(); definition=str(definition or "").strip()
+    fallback={"orientation":"valeur_possible","explication":"Le terme peut être examiné comme une valeur si sa définition décrit un principe durable qui oriente vos choix.","question":""}
+    if not term or not definition:
+        return fallback
+    low=normalize(term+" "+definition)
+    if any(x in low for x in ["peur", "manque", "rassur", "besoin", "protection", "securite financ"]):
+        fallback={"orientation":"ambigu","explication":"Votre formulation semble pouvoir renvoyer à une valeur, mais aussi à un besoin de sécurité ou à une crainte liée au manque. Il est utile de distinguer ce qui oriente durablement vos choix de ce que vous cherchez à obtenir ou à éviter.","question":"Au-delà du besoin d'être rassuré ou protégé, quel principe souhaitez-vous respecter durablement dans vos propres choix et comportements ?"}
+    if not ai_ready():
+        return fallback
+    instructions="""Analysez avec prudence un terme présenté comme une valeur et sa définition personnelle.
+Distinguez uniquement, à titre d'hypothèse : valeur, besoin, croyance, limite, objectif, qualité, compétence, comportement ou autre sujet de coaching.
+Une valeur est un principe durable qui oriente les choix et comportements. Un besoin décrit ce qui doit être satisfait. Une croyance est une conviction tenue pour vraie. Une limite décrit une frontière ou un empêchement.
+Ne dites jamais « ce n'est pas une valeur », ne diagnostiquez pas et ne décidez pas à la place du bénéficiaire.
+Si la cohérence valeur/definition est forte, orientation=valeur_possible et question vide.
+Si un doute significatif existe, orientation=ambigu, expliquez-le brièvement et posez UNE seule question courte pour distinguer les concepts.
+Retournez un JSON strict avec orientation, explication, question."""
+    schema={"type":"object","properties":{"orientation":{"type":"string","enum":["valeur_possible","ambigu"]},"explication":{"type":"string"},"question":{"type":"string"}},"required":["orientation","explication","question"],"additionalProperties":False}
+    try:
+        out=response_json(instructions,{"terme":term,"definition_personnelle":definition},"analyse_nature_concept",schema,max_tokens=450)
+        return {"orientation":str(out.get("orientation") or fallback["orientation"]),"explication":str(out.get("explication") or fallback["explication"]),"question":str(out.get("question") or "")}
+    except Exception:
+        return fallback
 
 def _clear_application_exploration() -> None:
     """Supprime uniquement les productions dépendantes de l'exploration, jamais les valeurs source."""
@@ -903,7 +943,12 @@ def invalidate_dependencies(scope: str, *, value_name: str="", reason: str="") -
 def open_response_widget(label: str, key: str, *, value: str="", height: int=110,
                          allow_reformulation: bool=True, help_text: str="",
                          listen: bool=True, dependency_scope: str="", value_name: str="") -> str:
-    """Composant uniforme : question visible, réponse validée persistante, clavier/voix et validation."""
+    """Moteur unique texte/voix/modification avec validation explicite.
+
+    Aucune transcription ou proposition ne devient officielle avant le choix du
+    bénéficiaire. Lors d'une modification, trois intentions sont distinguées :
+    nouvelle réponse, correction manuelle de l'actuelle, reformulation directe.
+    """
     base=_safe_widget_key(key)
     meta=st.session_state.answer_metadata.setdefault(base,{"mode_saisie":"","texte_brut":"","transcription":"","transcription_corrigee":"","reformulation_proposee":"","reformulation_retenue":"","version_officielle":"","validee_le":""})
     _repair_answer_metadata_entry(meta)
@@ -911,155 +956,140 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         meta.update({"mode_saisie":"reprise","texte_brut":str(value),"version_officielle":str(value),"validee_le":meta.get("validee_le") or now_iso()})
         st.session_state[f"{base}_official"]=str(value)
 
-    # La question est toujours immédiatement visible et nettement différenciée.
-    st.markdown(
-        f'<div class="question-card"><div class="question-kicker">Question</div>'
-        f'<div class="question-text">{html.escape(str(label))}</div></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f'<div class="question-card"><div class="question-kicker">Question</div><div class="question-text">{html.escape(str(label))}</div></div>',unsafe_allow_html=True)
     if listen: speak_button(label,f"listen_{base}")
     if help_text: st.caption(help_text)
 
     official=_official_answer_from_meta(meta) or str(st.session_state.get(f"{base}_official") or "").strip()
-    if official and not str(meta.get("version_officielle", "") or "").strip():
-        meta["version_officielle"]=official
-        st.session_state[f"{base}_official"]=official
     editing_key=f"{base}_editing"
-    if editing_key not in st.session_state:
-        st.session_state[editing_key]=not bool(official)
+    mode_key=f"{base}_edit_mode"
+    if editing_key not in st.session_state: st.session_state[editing_key]=not bool(official)
 
-    # Une réponse validée reste toujours affichée, même après un rerun Streamlit.
     if official:
-        mode={"voix":"Réponse orale validée","clavier":"Réponse écrite validée","reprise":"Réponse déjà enregistrée"}.get(str(meta.get("mode_saisie","")),"Réponse validée")
-        st.markdown(
-            f'<div class="answer-card"><div class="answer-title">✓ {html.escape(mode)}</div>'
-            f'<div class="answer-text">{html.escape(official)}</div>'
-            f'<div class="response-mode">Enregistrée le {html.escape(str(meta.get("validee_le","") or ""))}</div></div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("✏️ Modifier cette réponse",key=f"{base}_edit_btn",use_container_width=True):
-            _reset_response_voice_state(base)
-            st.session_state[editing_key]=True
-            st.rerun()
+        mode_label={"voix":"Réponse orale validée","clavier":"Réponse écrite validée","reprise":"Réponse déjà enregistrée"}.get(str(meta.get("mode_saisie","")),"Réponse validée")
+        st.markdown(f'<div class="answer-card"><div class="answer-title">✓ {html.escape(mode_label)}</div><div class="answer-text">{html.escape(official)}</div><div class="response-mode">Enregistrée le {html.escape(str(meta.get("validee_le","") or ""))}</div></div>',unsafe_allow_html=True)
+        if not st.session_state.get(editing_key):
+            if allow_reformulation and str(meta.get("reformulation_retenue","") or "") in {"","original","Conserver la transcription initiale"}:
+                st.info("Votre réponse enregistrée correspond à votre formulation initiale. Vous pouvez la conserver, la corriger ou demander une reformulation Clarté360.")
+            if st.button("✏️ Modifier cette réponse",key=f"{base}_edit_btn",use_container_width=True):
+                _reset_response_voice_state(base); st.session_state[editing_key]=True; st.session_state[mode_key]=""; st.rerun()
 
-    if not st.session_state.get(editing_key,True):
+    if not st.session_state.get(editing_key,True): return official
+
+    # Pour une réponse existante, demander l'intention avant d'ouvrir un champ.
+    if official and not st.session_state.get(mode_key):
+        st.markdown("#### Que souhaitez-vous faire ?")
+        c1,c2,c3=st.columns(3)
+        with c1:
+            if st.button("Saisir une nouvelle réponse",key=f"{base}_mode_new",use_container_width=True): st.session_state[mode_key]="new"; st.rerun()
+        with c2:
+            if st.button("Corriger ma réponse actuelle",key=f"{base}_mode_correct",use_container_width=True): st.session_state[mode_key]="correct"; st.rerun()
+        with c3:
+            if st.button("✨ Reformulation Clarté360",key=f"{base}_mode_ai",use_container_width=True,disabled=not allow_reformulation):
+                st.session_state[mode_key]="ai"; st.rerun()
+        if st.button("Annuler",key=f"{base}_mode_cancel",use_container_width=True): st.session_state[editing_key]=False; st.rerun()
         return official
 
-    st.markdown("#### Votre réponse")
-    st.caption("Choisissez le clavier ou la voix. Une réponse n’est enregistrée qu’après validation explicite.")
-    current=official or str(value or "")
-    typed=st.text_area("Votre réponse écrite",value=current,height=height,key=f"{base}_typed",label_visibility="collapsed",placeholder="Écrivez votre réponse ici…")
-    if typed.strip()!=official.strip():
-        st.caption("Cette modification n’est pas encore enregistrée.")
-        proposal_key=f"{base}_typed_proposal"
-        source_key=f"{base}_typed_source"
-        if not allow_reformulation:
-            if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed",type="primary",use_container_width=True,disabled=not typed.strip()):
-                old=official; new_value=typed.strip()
-                meta.setdefault("historique_versions",[])
-                if old: meta["historique_versions"].append({"version":old,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
-                meta.update({"mode_saisie":"clavier","texte_brut":new_value,"reformulation_proposee":"","reformulation_retenue":"original","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
-                st.session_state[f"{base}_official"]=new_value; _reset_response_voice_state(base); st.session_state[editing_key]=False
-                if old and old!=new_value: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
-                st.rerun()
+    edit_mode=st.session_state.get(mode_key) or "new"
+    if edit_mode=="ai":
+        proposal_key=f"{base}_direct_proposal"
+        if proposal_key not in st.session_state:
+            with st.spinner("Préparation d’une reformulation fidèle…"):
+                st.session_state[proposal_key]=clean_spoken_text(official)
+        proposal=str(st.session_state.get(proposal_key) or "").strip()
+        if not proposal:
+            st.success("Votre réponse est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
+            if st.button("Conserver ma réponse actuelle",key=f"{base}_keep_clear",type="primary",use_container_width=True): st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.rerun()
         else:
-            if st.session_state.get(source_key)!=typed.strip():
-                st.session_state.pop(proposal_key,None)
-            if st.button("Préparer ma réponse écrite",key=f"{base}_prepare_typed",type="primary",use_container_width=True,disabled=not typed.strip()):
-                st.session_state[source_key]=typed.strip()
-                try:
-                    st.session_state[proposal_key]=clean_spoken_text(typed.strip())
-                    st.session_state.pop(f"{base}_typed_error",None)
-                except Exception as exc:
-                    st.session_state[proposal_key]=_local_spoken_cleanup(typed.strip())
-                    st.session_state[f"{base}_typed_error"]=str(exc)
+            st.markdown(f'<div class="transcript-card"><b>Réponse actuelle</b><br><br>{html.escape(official)}</div>',unsafe_allow_html=True)
+            st.markdown(f'<div class="transcript-card corrected"><b>Proposition corrigée Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
+            choice=st.radio("Quelle version souhaitez-vous conserver ?",["Choisissez une option","Conserver ma réponse actuelle","Utiliser la proposition Clarté360"],key=f"{base}_direct_choice")
+            if st.button("✓ Valider mon choix",key=f"{base}_direct_validate",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
+                new_value=official if choice.startswith("Conserver") else proposal
+                meta.setdefault("historique_versions",[]); meta["historique_versions"].append({"version":official,"remplacee_le":now_iso(),"motif":"reformulation demandée"})
+                meta.update({"mode_saisie":meta.get("mode_saisie") or "reprise","reformulation_proposee":proposal,"reformulation_retenue":"original" if choice.startswith("Conserver") else "clarte360","version_officielle":new_value,"validee_le":now_iso()})
+                st.session_state[f"{base}_official"]=new_value; st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.session_state.pop(proposal_key,None)
+                if new_value!=official: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} reformulée")
                 st.rerun()
-            proposal=str(st.session_state.get(proposal_key,"") or "").strip()
-            if proposal:
-                if st.session_state.get(f"{base}_typed_error"): st.warning("La reformulation IA n’a pas répondu. Une correction locale légère est proposée ; vous pouvez conserver votre texte initial.")
+        if st.button("← Retour",key=f"{base}_ai_back",use_container_width=True): st.session_state[mode_key]=""; st.session_state.pop(proposal_key,None); st.rerun()
+        return official
+
+    st.markdown("#### Votre nouvelle réponse" if edit_mode=="new" else "#### Corriger votre réponse actuelle")
+    initial_text="" if edit_mode=="new" else official
+    typed=st.text_area("Votre réponse écrite",value=initial_text,height=height,key=f"{base}_typed_{edit_mode}",label_visibility="collapsed",placeholder="Écrivez ou collez votre réponse ici…")
+    proposal_key=f"{base}_typed_proposal_{edit_mode}"; source_key=f"{base}_typed_source_{edit_mode}"
+    if typed.strip():
+        if not allow_reformulation:
+            if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed_{edit_mode}",type="primary",use_container_width=True):
+                new_value=typed.strip(); meta.setdefault("historique_versions",[])
+                if official: meta["historique_versions"].append({"version":official,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
+                meta.update({"mode_saisie":"clavier","texte_brut":new_value,"reformulation_proposee":"","reformulation_retenue":"original","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
+                st.session_state[f"{base}_official"]=new_value; st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.rerun()
+        else:
+            if st.session_state.get(source_key)!=typed.strip(): st.session_state.pop(proposal_key,None)
+            if st.button("Préparer et comparer",key=f"{base}_prepare_typed_{edit_mode}",type="primary",use_container_width=True):
+                st.session_state[source_key]=typed.strip(); st.session_state[proposal_key]=clean_spoken_text(typed.strip()); st.rerun()
+            if source_key in st.session_state:
+                proposal=str(st.session_state.get(proposal_key) or "").strip()
                 st.markdown(f'<div class="transcript-card"><b>Réponse initiale</b><br><br>{html.escape(typed.strip())}</div>',unsafe_allow_html=True)
-                st.markdown(f'<div class="transcript-card corrected"><b>Proposition Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
-                choice=st.radio("Quelle version souhaitez-vous valider ?",["Choisissez une option","Conserver ma réponse initiale","Utiliser la proposition Clarté360"],key=f"{base}_typed_choice")
-                if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
-                    old=official; new_value=typed.strip() if choice.startswith("Conserver") else proposal
-                    meta.setdefault("historique_versions",[])
-                    if old: meta["historique_versions"].append({"version":old,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
-                    meta.update({"mode_saisie":"clavier","texte_brut":typed.strip(),"reformulation_proposee":proposal,"reformulation_retenue":"original" if choice.startswith("Conserver") else "clarte360","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
-                    st.session_state[f"{base}_official"]=new_value; st.session_state.pop(proposal_key,None); st.session_state.pop(source_key,None); _reset_response_voice_state(base); st.session_state[editing_key]=False
-                    if old and old!=new_value: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
+                options=["Choisissez une option","Conserver ma réponse initiale"]
+                if proposal:
+                    st.markdown(f'<div class="transcript-card corrected"><b>Proposition corrigée Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True); options.append("Utiliser la proposition Clarté360")
+                else: st.success("Votre réponse est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
+                choice=st.radio("Quelle version souhaitez-vous valider ?",options,key=f"{base}_typed_choice_{edit_mode}")
+                if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed_{edit_mode}",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
+                    new_value=proposal if choice.startswith("Utiliser") else typed.strip(); meta.setdefault("historique_versions",[])
+                    if official: meta["historique_versions"].append({"version":official,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
+                    meta.update({"mode_saisie":"clavier","texte_brut":typed.strip(),"reformulation_proposee":proposal,"reformulation_retenue":"clarte360" if choice.startswith("Utiliser") else "original","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
+                    st.session_state[f"{base}_official"]=new_value; st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.session_state.pop(proposal_key,None); st.session_state.pop(source_key,None)
+                    if official and official!=new_value: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
                     st.rerun()
 
     st.markdown("#### 🎤 Répondre à l’oral")
-    processing_key=f"{base}_processing_audio"
-    if st.session_state.get(processing_key):
-        # Un rerun ou une interruption ne doit jamais bloquer définitivement ce questionnaire.
-        st.session_state[processing_key]=False
     audio=None
-    if st.session_state.get("voice_enabled",True):
-        if hasattr(st,"audio_input"):
-            audio=st.audio_input("Enregistrer ma réponse",key=f"{base}_audio_{st.session_state.get(base+'_audio_version',0)}",label_visibility="collapsed")
-        else: st.caption("L’enregistrement vocal n’est pas disponible dans cette version de Streamlit.")
+    if st.session_state.get("voice_enabled",True) and hasattr(st,"audio_input"):
+        audio=st.audio_input("Enregistrer ma réponse",key=f"{base}_audio_{st.session_state.get(base+'_audio_version',0)}",label_visibility="collapsed")
+    already_done=False
     if audio:
-        c1,c2=st.columns(2)
-        with c1:
+        audio_id=_audio_fingerprint(audio)
+        already_done=(st.session_state.get(f"{base}_audio_id")==audio_id and bool(st.session_state.get(f"{base}_transcript_raw")))
+    if audio and st.button("Transcrire et comparer",key=f"{base}_transcribe",type="primary",use_container_width=True,disabled=already_done):
+        try:
             audio_id=_audio_fingerprint(audio)
-            already_done=(st.session_state.get(f"{base}_audio_id")==audio_id and bool(st.session_state.get(f"{base}_transcript_raw")))
-            if st.button("Transcrire et comparer les versions",key=f"{base}_transcribe",type="primary",use_container_width=True,disabled=bool(st.session_state.get(processing_key)) or already_done):
-                st.session_state[processing_key]=True
-                st.session_state[f"{base}_audio_id"]=audio_id
-                try:
-                    with st.spinner("Transcription en cours…"):
-                        raw=transcribe_audio(audio)
-                        st.session_state[f"{base}_transcript_raw"]=raw
-                        corrected=clean_spoken_text(raw)
-                        st.session_state[f"{base}_transcript_clean"]=corrected
-                        meta["transcription"]=raw; meta["transcription_corrigee"]=corrected
-                except Exception as exc:
-                    st.session_state[f"{base}_transcription_error"]=str(exc)
-                finally:
-                    st.session_state[processing_key]=False
-                st.rerun()
-        with c2:
-            if st.button("🎤 Réenregistrer",key=f"{base}_rerecord",use_container_width=True):
-                _reset_response_voice_state(base)
-                st.rerun()
-
-    transcription_error=str(st.session_state.pop(f"{base}_transcription_error","") or "")
-    if transcription_error: st.error(f"La transcription n’a pas pu être réalisée : {transcription_error}")
-    raw=str(st.session_state.get(f"{base}_transcript_raw","") or "")
-    cleaned=str(st.session_state.get(f"{base}_transcript_clean","") or "")
+            st.session_state[f"{base}_audio_id"]=audio_id
+            with st.spinner("Transcription en cours…"):
+                raw=transcribe_audio(audio); proposal=clean_spoken_text(raw)
+                st.session_state[f"{base}_transcript_raw"]=raw; st.session_state[f"{base}_transcript_clean"]=proposal
+        except Exception as exc: st.session_state[f"{base}_transcription_error"]=str(exc)
+        st.rerun()
+    err=str(st.session_state.pop(f"{base}_transcription_error","") or "")
+    if err: st.error(f"La transcription n’a pas pu être réalisée : {err}")
+    raw=str(st.session_state.get(f"{base}_transcript_raw","") or ""); proposal=str(st.session_state.get(f"{base}_transcript_clean","") or "")
     if raw:
-        st.info("Comparez les deux versions. La première est la transcription reçue du moteur vocal. La seconde transforme votre réponse orale en un texte écrit naturel, fluide et fidèle, sans ajouter de fait ni changer le sens. Rien n’est enregistré sans votre validation.")
         st.markdown(f'<div class="transcript-card"><b>Transcription initiale</b><br><br>{html.escape(raw)}</div>',unsafe_allow_html=True)
-        st.markdown('<div class="transcript-card corrected"><b>Proposition corrigée Clarté360</b></div>',unsafe_allow_html=True)
-        clean_edit=st.text_area("Vous pouvez corriger cette proposition",value=cleaned or raw,height=height,key=f"{base}_clean_edit")
-        choice=st.radio("Quelle version souhaitez-vous valider ?",["Choisissez une option","Conserver la transcription initiale","Utiliser la proposition corrigée","Utiliser ma correction manuelle","Réenregistrer"],key=f"{base}_voice_choice")
+        options=["Choisissez une option","Conserver la transcription initiale"]
+        if proposal:
+            st.markdown(f'<div class="transcript-card corrected"><b>Proposition corrigée Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True); options.append("Utiliser la proposition Clarté360")
+        else: st.success("Votre transcription est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
+        options += ["Corriger manuellement","Réenregistrer"]
+        choice=st.radio("Quelle version souhaitez-vous valider ?",options,key=f"{base}_voice_choice")
+        manual=""
+        if choice=="Corriger manuellement": manual=st.text_area("Votre correction",value=raw,height=height,key=f"{base}_manual_voice")
         if choice=="Réenregistrer":
-            if st.button("Ouvrir un nouvel enregistrement",key=f"{base}_voice_redo",use_container_width=True):
-                _reset_response_voice_state(base)
-                st.rerun()
-        else:
-            if st.button("✓ Valider cette réponse orale",key=f"{base}_validate_voice",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
-                retained=raw if choice=="Conserver la transcription initiale" else (cleaned if choice=="Utiliser la proposition corrigée" else clean_edit.strip())
-                retained=retained.strip()
-                if not retained:
-                    st.error("La réponse orale ne peut pas être validée car la version choisie est vide.")
-                    return official
-                old=official
-                corrected_for_json=(clean_edit.strip() or cleaned or _local_spoken_cleanup(raw)).strip()
+            if st.button("Ouvrir un nouvel enregistrement",key=f"{base}_voice_redo",use_container_width=True): _reset_response_voice_state(base); st.rerun()
+        elif st.button("✓ Valider cette réponse orale",key=f"{base}_validate_voice",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
+            retained=proposal if choice.startswith("Utiliser") else manual.strip() if choice=="Corriger manuellement" else raw
+            if not retained.strip(): st.error("La version choisie est vide.")
+            else:
                 meta.setdefault("historique_versions",[])
-                if old: meta["historique_versions"].append({"version":old,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
-                meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":corrected_for_json,"reformulation_proposee":corrected_for_json,"reformulation_retenue":choice,"version_officielle":retained,"validee_le":now_iso()})
-                st.session_state[f"{base}_official"]=retained
-                _reset_response_voice_state(base)
-                st.session_state[editing_key]=False
-                if old and old!=retained: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse vocale {base} modifiée")
+                if official: meta["historique_versions"].append({"version":official,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
+                meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":proposal,"reformulation_proposee":proposal,"reformulation_retenue":"clarte360" if choice.startswith("Utiliser") else "manuel" if choice=="Corriger manuellement" else "original","version_officielle":retained.strip(),"validee_le":now_iso()})
+                st.session_state[f"{base}_official"]=retained.strip(); _reset_response_voice_state(base); st.session_state[editing_key]=False; st.session_state[mode_key]=""
+                if official and official!=retained.strip(): invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse vocale {base} modifiée")
                 st.rerun()
 
     if official and st.button("Annuler la modification",key=f"{base}_cancel_edit",use_container_width=True):
-        _reset_response_voice_state(base)
-        st.session_state[editing_key]=False
-        st.rerun()
+        _reset_response_voice_state(base); st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.rerun()
     return official
 
 def mark_data_change(section: str, affects: list[str]|None=None) -> None:
@@ -1505,15 +1535,24 @@ def render_module_3() -> None:
     info=value_info(work["nom_final"]); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
     st.info(f"Terme retenu pour l’examen : **{work['nom_final']}**")
     if info: st.write(f"**Définition Clarté360 :** {info.get('definition','')}")
-    conceptual=st.radio("Cette formulation vous paraît-elle bien correspondre à une valeur ?",["Oui, poursuivre","J’hésite : poser une question de clarification","Je préfère la placer À revoir en séance"],key=f"m3_concept_{work['id']}")
-    if conceptual.startswith("Je préfère"):
-        if st.button("Ajouter à À revoir en séance",type="primary",key=f"m3_review_{work['id']}"):
-            _add_review_item(work,"Doute exprimé sur la nature ou la formulation du concept"); business_trace("valeur_a_revoir_en_seance",work.get("nom_final", "")); _advance_module3(); st.rerun()
-        return
-    if conceptual.startswith("J’hésite"):
-        clarification=open_response_widget("Qu’est-ce qui, dans cette notion, est indispensable pour vous au point d’orienter durablement vos choix ou vos réactions ?",f"m3_clar_{work['id']}",value=work.get("clarification",""),height=100)
+    analysis_key=f"m3_analysis_{work['id']}"
+    if analysis_key not in st.session_state:
+        st.session_state[analysis_key]=analyse_concept_nature(work["nom_final"],definition)
+    nature=st.session_state[analysis_key]
+    work["analyse"]=nature.get("explication",""); work["nature_orientation"]=nature.get("orientation","")
+    if nature.get("orientation")=="ambigu":
+        st.warning(nature.get("explication") or "Cette formulation mérite une clarification prudente.")
+        clarification=open_response_widget(nature.get("question") or "Quel principe durable souhaitez-vous respecter dans vos choix et comportements ?",f"m3_clar_{work['id']}",value=work.get("clarification",""),height=100)
         work["clarification"]=clarification
         if not clarification: return
+        st.info("Votre réponse est enregistrée. Vous restez seul décisionnaire : vous pouvez poursuivre l’examen comme valeur ou classer ce sujet À revoir en séance.")
+    else:
+        st.success(nature.get("explication") or "Le mot et votre définition paraissent cohérents pour poursuivre l’examen comme valeur.")
+    conceptual=st.radio("Comment souhaitez-vous poursuivre ?",["Poursuivre l’examen comme valeur","Placer ce sujet À revoir en séance"],key=f"m3_concept_{work['id']}")
+    if conceptual.startswith("Placer"):
+        if st.button("Ajouter à À revoir en séance",type="primary",key=f"m3_review_{work['id']}"):
+            _add_review_item(work,"Doute sur la nature du concept après analyse et clarification"); business_trace("valeur_a_revoir_en_seance",work.get("nom_final", "")); _advance_module3(); st.rerun()
+        return
     choice,final_def=_value_definition_choices(work,f"m3_{work['id']}")
     work["definition_finale"]=final_def
     st.markdown("### Questionnaire spécifique Clarté360")
@@ -1717,52 +1756,42 @@ def create_pdf(report_type: str="provisoire")->bytes:
     styles.add(ParagraphStyle(name="Small",parent=styles["Normal"],fontSize=8,leading=10,textColor=colors.HexColor("#666666")))
     styles.add(ParagraphStyle(name="Cover",parent=styles["Title"],fontSize=24,leading=29,textColor=colors.HexColor(OFFICIAL_TEAL),alignment=1,spaceAfter=18))
     def footer(canvas,doc):
-        canvas.saveState(); canvas.setStrokeColor(colors.HexColor("#D7EAEA")); canvas.line(1.5*cm,1.05*cm,A4[0]-1.5*cm,1.05*cm)
-        canvas.setFont("Helvetica",7.5); canvas.setFillColor(colors.HexColor("#666666"))
-        canvas.drawString(1.5*cm,.65*cm,"Clarté360 - 60 rue François 1er - 75008 Paris - Document confidentiel")
-        canvas.drawRightString(A4[0]-1.5*cm,.65*cm,f"Page {doc.page}")
-        canvas.restoreState()
+        canvas.saveState(); canvas.setStrokeColor(colors.HexColor("#D7EAEA")); canvas.line(1.5*cm,1.05*cm,A4[0]-1.5*cm,1.05*cm); canvas.setFont("Helvetica",7.5); canvas.setFillColor(colors.HexColor("#666666")); canvas.drawString(1.5*cm,.65*cm,"Clarté360 - 60 rue François 1er - 75008 Paris - Document confidentiel"); canvas.drawRightString(A4[0]-1.5*cm,.65*cm,f"Page {doc.page}"); canvas.restoreState()
     doc=SimpleDocTemplate(buffer,pagesize=A4,rightMargin=1.7*cm,leftMargin=1.7*cm,topMargin=1.5*cm,bottomMargin=1.4*cm,title="Rapport RVC360 - Recherche de mes valeurs")
-    b=st.session_state.get("beneficiaire",{}); validated=validated_names(); records=st.session_state.get("value_records",{})
+    b=st.session_state.get("beneficiaire",{}); values=[v for v in st.session_state.get("central_validated_values",[]) if v.get("statut")=="validee" and not v.get("en_reexamen")]
     story=[]
-    if LOGO_PATH.exists():
-        story += [Spacer(1,1.2*cm),Image(str(LOGO_PATH),width=3.2*cm,height=3.2*cm),Spacer(1,.5*cm)]
-    story += [Paragraph("CLARTÉ360",styles["Cover"]),Paragraph(f"Recherche de mes valeurs - Rapport {html.escape(report_type)}",styles["Cover"]),Spacer(1,.5*cm),
-              Paragraph(f"<b>Bénéficiaire :</b> {html.escape((b.get('prenom','')+' '+b.get('nom','')).strip())}",styles["Normal"]),
-              Paragraph(f"<b>Date :</b> {datetime.now().strftime('%d/%m/%Y')}",styles["Normal"]),
-              Paragraph(f"<b>Application :</b> {APP_VERSION} - <b>RVC360 :</b> {RVC360_VERSION} - <b>Framework :</b> {FRAMEWORK_VERSION}",styles["Normal"]),
-              Spacer(1,1.2*cm),Paragraph("Ce document restitue les éléments exprimés et validés par le bénéficiaire. Il complète le travail réalisé avec l’accompagnateur et ne constitue ni un diagnostic, ni une analyse de personnalité, ni une décision d’orientation.",styles["Italic"]),PageBreak()]
-    story += [Paragraph("1. Contexte et finalité",styles["Teal"]),
-              Paragraph("L’application aide à identifier, vérifier et consolider les valeurs personnelles. Elle ne remplace jamais l’accompagnateur. Les hypothèses proposées par l’IA restent des mots à examiner ; seules les validations du bénéficiaire sont retenues comme valeurs.",styles["Normal"])]
+    if LOGO_PATH.exists(): story += [Spacer(1,1.2*cm),Image(str(LOGO_PATH),width=3.2*cm,height=3.2*cm),Spacer(1,.5*cm)]
+    title_type="provisoire" if report_type=="provisoire" else "définitif"
+    story += [Paragraph("CLARTÉ360",styles["Cover"]),Paragraph(f"Recherche de mes valeurs - Rapport {title_type}",styles["Cover"]),Spacer(1,.5*cm),Paragraph(f"<b>Bénéficiaire :</b> {html.escape((b.get('prenom','')+' '+b.get('nom','')).strip())}",styles["Normal"]),Paragraph(f"<b>Date :</b> {datetime.now().strftime('%d/%m/%Y')}",styles["Normal"]),Paragraph(f"<b>Application :</b> {APP_VERSION} - <b>RVC360 :</b> {RVC360_VERSION} - <b>Framework :</b> {FRAMEWORK_VERSION}",styles["Normal"]),Spacer(1,1.2*cm),Paragraph("Ce document restitue uniquement les valeurs actuellement validées. Il ne constitue ni un diagnostic, ni une analyse de personnalité, ni une décision d’orientation.",styles["Italic"]),PageBreak()]
     profile=st.session_state.get("beneficiary_profile",{})
-    if profile:
-        story += [Paragraph("2. Présentation du bénéficiaire",styles["Teal"]),Paragraph(html.escape(profile.get("presentation_libre","")),styles["Normal"])]
-        if profile.get("objectif_demarche"): story += [Paragraph(f"<b>Attente exprimée :</b> {html.escape(profile['objectif_demarche'])}",styles["Normal"])]
-    story += [Paragraph("3. Synthèse du parcours",styles["Teal"])]
-    data=[["Élément","État"],["Valeurs validées",str(len(validated))],["Domaines explorés",", ".join(st.session_state.get("domains_explored",{}).keys()) or "Non renseigné"],["Hypothèses examinées",str(len(st.session_state.get("hypothesis_history",[])))]]
-    t=Table(data,colWidths=[6*cm,10*cm]); t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor(LIGHT_TEAL)),('TEXTCOLOR',(0,0),(-1,0),colors.HexColor(DARK_TEXT)),('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('GRID',(0,0),(-1,-1),.3,colors.HexColor('#CFE6E6')),('VALIGN',(0,0),(-1,-1),'TOP'),('LEFTPADDING',(0,0),(-1,-1),6),('RIGHTPADDING',(0,0),(-1,-1),6)])); story += [t,Spacer(1,10)]
-    sections=[("4. Valeurs déjà identifiées avec l’accompagnateur",[r for r in records.values() if r.get("source")=="accompagnateur"]),("5. Valeurs repérées entre les séances",st.session_state.get("inter_session_values",[])),("6. Valeurs explorées avec l’application",[records.get(n,{"nom_propose":n,"source":"application","statut":"validee"}) for n in validated if n not in st.session_state.existing_values])]
-    for title,items in sections:
-        story += [Paragraph(title,styles["Teal"])]
-        if not items: story += [Paragraph("Aucun élément enregistré.",styles["Normal"])]
-        for r in items:
-            name=r.get("nom_propose") or r.get("nom") or "Valeur"
-            definition=r.get("definition_personnelle") or r.get("definition") or st.session_state.personal_defs.get(name,"") or value_info(name).get("definition","")
-            situations=r.get("situations_associees") or r.get("situations") or []
-            emotions=r.get("emotions_associees") or r.get("emotions") or []
-            block=[Paragraph(html.escape(name),styles["Teal2"]),Paragraph(f"<b>Source :</b> {html.escape(str(r.get('source','')))} - <b>Statut :</b> {html.escape(str(r.get('statut','')))}",styles["Normal"]),Paragraph(f"<b>Définition personnelle :</b> {html.escape(definition or 'Non renseignée')}",styles["Normal"])]
-            if situations: block.append(Paragraph(f"<b>Situations associées :</b> {html.escape(' ; '.join(map(str,situations)))}",styles["Normal"]))
-            if emotions: block.append(Paragraph(f"<b>Émotions ou réactions :</b> {html.escape(' ; '.join(map(str,emotions)))}",styles["Normal"]))
-            story += [KeepTogether(block),Spacer(1,5)]
-    story += [Paragraph("7. Liste finale des valeurs validées",styles["Teal"])]
-    if validated:
-        for i,name in enumerate(validated,1): story += [Paragraph(f"{i}. <b>{html.escape(name)}</b> - {html.escape(st.session_state.personal_defs.get(name,'') or value_info(name).get('definition',''))}",styles["Normal"])]
-    else: story += [Paragraph("Aucune valeur n’a encore été validée.",styles["Normal"])]
-    rejected=list(dict.fromkeys(st.session_state.get("discarded",[])+st.session_state.get("abandoned_hypotheses",[])))
-    story += [Paragraph("8. Hypothèses non retenues ou à revoir",styles["Teal"]),Paragraph(html.escape(", ".join(rejected) if rejected else "Aucune."),styles["Normal"])]
-    comp=st.session_state.get("completion_check",{})
-    story += [Paragraph("9. Contrôle de complétude",styles["Teal"]),Paragraph(f"<b>Appréciation du bénéficiaire :</b> {html.escape(str(comp.get('representation','Non réalisé')))}",styles["Normal"]),Paragraph(f"<b>Domaines non explorés :</b> {html.escape(', '.join(comp.get('domaines_non_explores',[])) or 'Aucun identifié')}",styles["Normal"]),Paragraph(f"<b>Points à reprendre avec l’accompagnateur :</b> {html.escape(comp.get('angles_a_reprendre','') or 'Aucun point particulier renseigné')}",styles["Normal"])]
-    story += [Paragraph("10. Conclusion",styles["Teal"]),Paragraph("Les valeurs présentées dans ce rapport sont celles que le bénéficiaire a validées. Elles pourront être relues, différenciées ou consolidées avec l’accompagnateur. Le fichier JSON permet de reprendre ultérieurement le parcours sans recommencer les étapes déjà réalisées.",styles["Normal"]),Spacer(1,12),Paragraph("Document confidentiel - diffusion réservée au bénéficiaire et, avec son accord, à son accompagnateur.",styles["Small"])]
+    story += [Paragraph("1. Présentation du bénéficiaire",styles["Teal"])]
+    presentation=profile.get("presentation_libre","") or "Aucune présentation enregistrée."
+    story += [Paragraph(html.escape(presentation),styles["Normal"])]
+    if profile.get("objectif_demarche"): story += [Paragraph(f"<b>Attente exprimée :</b> {html.escape(profile['objectif_demarche'])}",styles["Normal"])]
+    story += [Paragraph("2. Synthèse",styles["Teal"])]
+    data=[["Élément","État"],["Valeurs validées",str(len(values))],["Type de rapport",title_type.capitalize()],["Date de génération",datetime.now().strftime('%d/%m/%Y %H:%M')]]
+    t=Table(data,colWidths=[6*cm,10*cm]); t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor(LIGHT_TEAL)),('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('GRID',(0,0),(-1,-1),.3,colors.HexColor('#CFE6E6')),('VALIGN',(0,0),(-1,-1),'TOP')])); story += [t,Spacer(1,10)]
+    accompagnateur=[v for v in values if v.get("source")=="accompagnateur"]
+    application=[v for v in values if v.get("source")!="accompagnateur"]
+    for number,title,items in [(3,"Valeurs validées avec l’accompagnateur",accompagnateur),(4,"Valeurs découvertes et validées dans Clarté360",application)]:
+        story += [Paragraph(f"{number}. {title}",styles["Teal"])]
+        if not items: story += [Paragraph("Aucune.",styles["Normal"])]
+        for v in items:
+            name=_normalise_value_name(v.get("nom_final") or v.get("nom") or "Valeur")
+            personal=v.get("definition_personnelle") or "Non renseignée"
+            official=v.get("definition_clarte360") or value_info(name).get("definition","")
+            source="Validée avec l’accompagnateur" if v.get("source")=="accompagnateur" else (v.get("mode_decouverte") or v.get("source") or "Clarté360")
+            q=v.get("questionnaire") or {}
+            q_result="Questionnaire spécifique validé" if q.get("fondamentale") else "Validation issue du prérequis" if v.get("source")=="accompagnateur" else "Validée"
+            block=[Paragraph(html.escape(name),styles["Teal2"]),Paragraph(f"<b>Statut :</b> Validée",styles["Normal"]),Paragraph(f"<b>Source / mode de découverte :</b> {html.escape(str(source))}",styles["Normal"]),Paragraph(f"<b>Définition personnelle retenue :</b> {html.escape(personal)}",styles["Normal"])]
+            if official: block.append(Paragraph(f"<b>Définition Clarté360 :</b> {html.escape(official)}",styles["Normal"]))
+            block += [Paragraph(f"<b>Résultat :</b> {html.escape(q_result)}",styles["Normal"]),Paragraph(f"<b>Date de validation :</b> {html.escape(str(v.get('validee_le','') or 'Non renseignée'))}",styles["Normal"])]
+            story += [KeepTogether(block),Spacer(1,6)]
+    story += [Paragraph("5. Liste centrale des valeurs validées",styles["Teal"])]
+    if values:
+        for i,v in enumerate(values,1): story += [Paragraph(f"{i}. <b>{html.escape(_normalise_value_name(v.get('nom_final') or ''))}</b> - {html.escape(v.get('definition_personnelle') or '')}",styles["Normal"])]
+    else: story += [Paragraph("Aucune valeur validée.",styles["Normal"])]
+    story += [Paragraph("6. Suite du parcours Clarté360",styles["Teal"]),Paragraph("Cette liste centrale peut servir de base à la Boussole des valeurs professionnelles pour hiérarchiser les valeurs dans le contexte professionnel, ou à la Roue des valeurs pour évaluer leur niveau de satisfaction et leur cohérence dans la vie actuelle.",styles["Normal"]),Paragraph("7. Conclusion",styles["Teal"]),Paragraph("Les valeurs présentées sont uniquement celles actuellement validées. Les valeurs à examiner, non retenues ou à revoir en séance ne sont pas présentées comme des valeurs du bénéficiaire.",styles["Normal"]),Spacer(1,12),Paragraph("Document confidentiel - diffusion réservée au bénéficiaire et, avec son accord, à son accompagnateur.",styles["Small"])]
     doc.build(story,onFirstPage=footer,onLaterPages=footer); return buffer.getvalue()
 
 def display_header():
