@@ -1,9 +1,0 @@
-Référentiel métier applicable : RVC360 V1.3
-
-Architecture officielle :
-1. IA-550 - analyse structurée des propos, sans recherche ni nomination de valeur.
-2. IA-600 / IA-650 - projection de la fiche structurée sur le référentiel RVC360, classement interne et gestion séquentielle des hypothèses.
-
-Principes obligatoires : zéro interprétation, validation humaine, questionnaire spécifique HEC, hypothèses réversibles, rapport et JSON final limités aux valeurs fondamentales validées.
-
-Documents officiels intégrés dans docs/rvc360_v1_3.

@@ -43,7 +43,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
-from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import CondPageBreak, PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
 try:
     from openai import OpenAI
@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.8E-preproduction"
+APP_VERSION = "2.1.3.8F-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -309,7 +309,7 @@ def default_business_state() -> dict[str, Any]:
         "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
         "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
         "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
-        "json_schema_version":"2.1.3.8E",
+        "json_schema_version":"2.1.3.8F",
         "active_module":"accueil_modules",
         "module_states":{
             "module_1":{"status":"non_commence","step":"intro"},
@@ -854,7 +854,58 @@ def _local_spoken_cleanup(text: str) -> str:
     return out.strip()
 
 
-def clean_spoken_text(text: str) -> str:
+def _clean_value_label_input(text: str) -> str:
+    """Nettoie un nom de valeur dicté sans lui substituer arbitrairement un autre concept.
+
+    Les articles, répétitions orales et expressions comme « je répète » sont retirés.
+    Un rapprochement vers le référentiel n'est proposé que lorsqu'un seul candidat est
+    nettement dominant. Le bénéficiaire conserve toujours la validation finale.
+    """
+    raw=str(text or "").strip()
+    if not raw:
+        return ""
+    cleaned=re.sub(r"(?i)\b(?:je\s+répète|je\s+redis|encore\s+une\s+fois)\b", " ", raw)
+    cleaned=re.sub(r"[,:;.!?]+", " ", cleaned)
+    cleaned=re.sub(r"\s+", " ", cleaned).strip()
+    normalized_cleaned=" "+normalize(cleaned)+" "
+    mentioned=[]
+    for name in VALUE_NAMES:
+        n=normalize(name)
+        if n and (f" {n} " in normalized_cleaned or normalized_cleaned.strip()==n):
+            mentioned.append(name)
+    mentioned=list(dict.fromkeys(mentioned))
+    if len(mentioned)==1:
+        return mentioned[0]
+    chunks=[]
+    for part in re.split(r"\s+(?:et|ou)\s+", cleaned):
+        candidate=_normalise_value_name(part)
+        if candidate:
+            chunks.append(candidate)
+    # Une répétition du même terme doit devenir un seul nom de valeur.
+    unique=[]
+    for item in chunks:
+        if normalize(item) not in {normalize(x) for x in unique}:
+            unique.append(item)
+    if len(unique)==1:
+        candidate=unique[0]
+    else:
+        words=re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+", cleaned)
+        candidate=_normalise_value_name(" ".join(words))
+    exact=_referential_value_info(candidate)
+    if exact:
+        return exact.get("nom", candidate)
+    matches=local_value_matches(candidate, limit=3)
+    if matches:
+        best=matches[0]
+        score=SequenceMatcher(None,normalize(candidate),normalize(best)).ratio()
+        second=SequenceMatcher(None,normalize(candidate),normalize(matches[1])).ratio() if len(matches)>1 else 0.0
+        # Correction prudente des erreurs de transcription évidentes, ex. Loopisme -> Optimisme.
+        if score>=0.68 and score-second>=0.08:
+            return best
+    return candidate
+
+
+def clean_spoken_text(text: str, *, expected_value_label: bool=False) -> str:
     """Corrige systématiquement la langue, puis reformule seulement si cela aide.
 
     La correction orthographique, grammaticale et typographique est obligatoire.
@@ -863,6 +914,9 @@ def clean_spoken_text(text: str) -> str:
     déjà correct et qu'aucune amélioration fidèle n'est nécessaire.
     """
     original=str(text or "").strip()
+    if expected_value_label:
+        candidate=_clean_value_label_input(original)
+        return candidate if normalize(candidate)!=normalize(_normalise_value_name(original)) or candidate.strip()!=original.strip() else ""
     local=_local_spoken_cleanup(original)
     if not original:
         return ""
@@ -1009,7 +1063,8 @@ def invalidate_dependencies(scope: str, *, value_name: str="", reason: str="") -
 
 def open_response_widget(label: str, key: str, *, value: str="", height: int=110,
                          allow_reformulation: bool=True, help_text: str="",
-                         listen: bool=True, dependency_scope: str="", value_name: str="") -> str:
+                         listen: bool=True, dependency_scope: str="", value_name: str="",
+                         expected_value_label: bool=False) -> str:
     """Moteur unique texte/voix/modification avec validation explicite.
 
     Aucune transcription ou proposition ne devient officielle avant le choix du
@@ -1062,7 +1117,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         proposal_key=f"{base}_direct_proposal"
         if proposal_key not in st.session_state:
             with st.spinner("Préparation d’une reformulation fidèle…"):
-                st.session_state[proposal_key]=clean_spoken_text(official)
+                st.session_state[proposal_key]=clean_spoken_text(official, expected_value_label=expected_value_label)
         proposal=str(st.session_state.get(proposal_key) or "").strip()
         if not proposal:
             st.success("Votre réponse est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
@@ -1086,7 +1141,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
     typed=st.text_area("Votre réponse écrite",value=initial_text,height=height,key=f"{base}_typed_{edit_mode}",label_visibility="collapsed",placeholder="Écrivez ou collez votre réponse ici…",on_change=mark_user_activity,args=(f"saisie_{base}",))
     proposal_key=f"{base}_typed_proposal_{edit_mode}"; source_key=f"{base}_typed_source_{edit_mode}"
     if typed.strip():
-        if not allow_reformulation:
+        if not allow_reformulation and not expected_value_label:
             if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed_{edit_mode}",type="primary",use_container_width=True):
                 new_value=typed.strip(); meta.setdefault("historique_versions",[])
                 if official: meta["historique_versions"].append({"version":official,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
@@ -1095,14 +1150,20 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         else:
             if st.session_state.get(source_key)!=typed.strip(): st.session_state.pop(proposal_key,None)
             if st.button("Préparer et comparer",key=f"{base}_prepare_typed_{edit_mode}",type="primary",use_container_width=True):
-                st.session_state[source_key]=typed.strip(); st.session_state[proposal_key]=clean_spoken_text(typed.strip()); st.rerun()
+                st.session_state[source_key]=typed.strip(); st.session_state[proposal_key]=clean_spoken_text(typed.strip(), expected_value_label=expected_value_label); st.rerun()
             if source_key in st.session_state:
                 proposal=str(st.session_state.get(proposal_key) or "").strip()
                 st.markdown(f'<div class="transcript-card"><b>Réponse initiale</b><br><br>{html.escape(typed.strip())}</div>',unsafe_allow_html=True)
-                options=["Choisissez une option","Conserver ma réponse initiale"]
+                options=["Choisissez une option"]
+                if not (expected_value_label and proposal):
+                    options.append("Conserver ma réponse initiale")
                 if proposal:
                     st.markdown(f'<div class="transcript-card corrected"><b>Proposition corrigée Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True); options.append("Utiliser la proposition Clarté360")
-                else: st.success("Votre réponse est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
+                else:
+                    if expected_value_label:
+                        st.success("Le nom de la valeur est déjà correctement écrit.")
+                    else:
+                        st.success("Votre réponse est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
                 choice=st.radio("Quelle version souhaitez-vous valider ?",options,key=f"{base}_typed_choice_{edit_mode}")
                 if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed_{edit_mode}",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
                     new_value=proposal if choice.startswith("Utiliser") else typed.strip(); meta.setdefault("historique_versions",[])
@@ -1126,19 +1187,24 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
             audio_id=_audio_fingerprint(audio)
             st.session_state[f"{base}_audio_id"]=audio_id
             with st.spinner("Transcription en cours…"):
-                raw=transcribe_audio(audio); proposal=clean_spoken_text(raw)
+                raw=transcribe_audio(audio); proposal=clean_spoken_text(raw, expected_value_label=expected_value_label)
                 st.session_state[f"{base}_transcript_raw"]=raw; st.session_state[f"{base}_transcript_clean"]=proposal
         except Exception as exc: st.session_state[f"{base}_transcription_error"]=str(exc)
-        st.rerun()
     err=str(st.session_state.pop(f"{base}_transcription_error","") or "")
     if err: st.error(f"La transcription n’a pas pu être réalisée : {err}")
     raw=str(st.session_state.get(f"{base}_transcript_raw","") or ""); proposal=str(st.session_state.get(f"{base}_transcript_clean","") or "")
     if raw:
         st.markdown(f'<div class="transcript-card"><b>Transcription initiale</b><br><br>{html.escape(raw)}</div>',unsafe_allow_html=True)
-        options=["Choisissez une option","Conserver la transcription initiale"]
+        options=["Choisissez une option"]
+        if not (expected_value_label and proposal):
+            options.append("Conserver la transcription initiale")
         if proposal:
             st.markdown(f'<div class="transcript-card corrected"><b>Proposition corrigée Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True); options.append("Utiliser la proposition Clarté360")
-        else: st.success("Votre transcription est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
+        else:
+            if expected_value_label:
+                st.success("Le nom de la valeur est déjà correctement transcrit.")
+            else:
+                st.success("Votre transcription est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
         options += ["Corriger manuellement","Réenregistrer"]
         choice=st.radio("Quelle version souhaitez-vous valider ?",options,key=f"{base}_voice_choice")
         manual=""
@@ -1503,7 +1569,7 @@ def render_module_1() -> None:
     idx=int(st.session_state.module1_index); total=int(st.session_state.module1_count)
     st.progress(min(1.0,idx/max(1,total))); st.caption(f"Valeur {idx+1} sur {total}")
     work=st.session_state.current_value_work or _new_value_work("accompagnateur")
-    name=open_response_widget("Quelle valeur avez-vous identifiée et validée avec votre accompagnateur ?",f"m1_name_{idx}",value=work.get("nom_initial",""),height=70,allow_reformulation=False)
+    name=open_response_widget("Quelle valeur avez-vous identifiée et validée avec votre accompagnateur ?",f"m1_name_{idx}",value=work.get("nom_initial",""),height=70,allow_reformulation=False,expected_value_label=True)
     definition=open_response_widget("Que signifie précisément cette valeur pour vous ?",f"m1_def_{idx}",value=work.get("definition_personnelle",""),height=110,dependency_scope="prerequisites",value_name=name)
     if name and definition:
         work["nom_initial"]=name; work["nom_normalise"]=_normalise_value_name(name); work["nom_final"]=work["nom_normalise"]; work["definition_personnelle"]=definition
@@ -1672,7 +1738,7 @@ def render_module_3() -> None:
     idx=int(st.session_state.module3_index); total=len(st.session_state.module3_queue); work=_module3_current_work()
     st.markdown(f"<div style='background:#EAF7F6;border:2px solid #0E7774;border-radius:12px;padding:.75rem 1rem;text-align:center;margin-bottom:1rem'><strong style='font-size:1.45rem;color:#0E7774'>Valeur {idx+1} / {total}</strong></div>",unsafe_allow_html=True)
     if work.get("source") in {"migration_v2137","module_4","recherche_guidee"}: _pending_value_summary(work)
-    name=open_response_widget("Quelle valeur avez-vous identifiée ?",f"m3_name_{work['id']}",value=work.get("nom_initial",work.get("nom_final","")),height=70,allow_reformulation=False)
+    name=open_response_widget("Quelle valeur avez-vous identifiée ?",f"m3_name_{work['id']}",value=work.get("nom_initial",work.get("nom_final","")),height=70,allow_reformulation=False,expected_value_label=True)
     if not name:
         c1,c2=st.columns(2)
         with c1:
@@ -1946,8 +2012,8 @@ def restore_from_progress(payload:dict):
 def create_pdf(report_type: str="provisoire")->bytes:
     from reportlab.platypus import Image, Table, TableStyle, KeepTogether
     buffer=BytesIO(); styles=getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="Teal",parent=styles["Heading1"],textColor=colors.HexColor(OFFICIAL_TEAL),spaceAfter=12))
-    styles.add(ParagraphStyle(name="Teal2",parent=styles["Heading2"],textColor=colors.HexColor(OFFICIAL_TEAL),spaceBefore=10,spaceAfter=6))
+    styles.add(ParagraphStyle(name="Teal",parent=styles["Heading1"],textColor=colors.HexColor(OFFICIAL_TEAL),spaceBefore=8,spaceAfter=12,keepWithNext=True))
+    styles.add(ParagraphStyle(name="Teal2",parent=styles["Heading2"],textColor=colors.HexColor(OFFICIAL_TEAL),spaceBefore=10,spaceAfter=6,keepWithNext=True))
     styles.add(ParagraphStyle(name="Small",parent=styles["Normal"],fontSize=8,leading=10,textColor=colors.HexColor("#666666")))
     styles.add(ParagraphStyle(name="Cover",parent=styles["Title"],fontSize=24,leading=29,textColor=colors.HexColor(OFFICIAL_TEAL),alignment=1,spaceAfter=18))
     def footer(canvas,doc):
@@ -1969,7 +2035,7 @@ def create_pdf(report_type: str="provisoire")->bytes:
     accompagnateur=[v for v in values if v.get("source")=="accompagnateur"]
     application=[v for v in values if v.get("source")!="accompagnateur"]
     for number,title,items in [(3,"Valeurs validées avec l’accompagnateur",accompagnateur),(4,"Valeurs découvertes et validées dans Clarté360",application)]:
-        story += [Paragraph(f"{number}. {title}",styles["Teal"])]
+        story += [CondPageBreak(3.8*cm),Paragraph(f"{number}. {title}",styles["Teal"])]
         if not items: story += [Paragraph("Aucune.",styles["Normal"])]
         for v in items:
             name=_normalise_value_name(v.get("nom_final") or v.get("nom") or "Valeur")
@@ -1982,11 +2048,11 @@ def create_pdf(report_type: str="provisoire")->bytes:
             if official: block.append(Paragraph(f"<b>Définition Clarté360 :</b> {html.escape(official)}",styles["Normal"]))
             block += [Paragraph(f"<b>Résultat :</b> {html.escape(q_result)}",styles["Normal"]),Paragraph(f"<b>Date de validation :</b> {html.escape(str(v.get('validee_le','') or 'Non renseignée'))}",styles["Normal"])]
             story += [KeepTogether(block),Spacer(1,6)]
-    story += [Paragraph("5. Liste centrale des valeurs validées",styles["Teal"])]
+    story += [CondPageBreak(4.2*cm),Paragraph("5. Liste centrale des valeurs validées",styles["Teal"])]
     if values:
         for i,v in enumerate(values,1): story += [Paragraph(f"{i}. <b>{html.escape(_normalise_value_name(v.get('nom_final') or ''))}</b> - {html.escape(v.get('definition_personnelle') or '')}",styles["Normal"])]
     else: story += [Paragraph("Aucune valeur validée.",styles["Normal"])]
-    story += [Paragraph("6. Suite du parcours Clarté360",styles["Teal"]),Paragraph("Cette liste centrale peut servir de base à la Boussole des valeurs professionnelles pour hiérarchiser les valeurs dans le contexte professionnel, ou à la Roue des valeurs pour évaluer leur niveau de satisfaction et leur cohérence dans la vie actuelle.",styles["Normal"]),Paragraph("7. Conclusion",styles["Teal"]),Paragraph("Les valeurs présentées sont uniquement celles actuellement validées. Les valeurs à examiner, non retenues ou à revoir en séance ne sont pas présentées comme des valeurs du bénéficiaire.",styles["Normal"]),Spacer(1,12),Paragraph("Document confidentiel - diffusion réservée au bénéficiaire et, avec son accord, à son accompagnateur.",styles["Small"])]
+    story += [CondPageBreak(3.2*cm),Paragraph("6. Suite du parcours Clarté360",styles["Teal"]),Paragraph("Cette liste centrale peut servir de base à la Boussole des valeurs professionnelles pour hiérarchiser les valeurs dans le contexte professionnel, ou à la Roue des valeurs pour évaluer leur niveau de satisfaction et leur cohérence dans la vie actuelle.",styles["Normal"]),CondPageBreak(3.0*cm),Paragraph("7. Conclusion",styles["Teal"]),Paragraph("Les valeurs présentées sont uniquement celles actuellement validées. Les valeurs à examiner, non retenues ou à revoir en séance ne sont pas présentées comme des valeurs du bénéficiaire.",styles["Normal"]),Spacer(1,12),Paragraph("Document confidentiel - diffusion réservée au bénéficiaire et, avec son accord, à son accompagnateur.",styles["Small"])]
     doc.build(story,onFirstPage=footer,onLaterPages=footer); return buffer.getvalue()
 
 def display_header():
@@ -2456,7 +2522,7 @@ def render_business():
         st.session_state.prerequisite_count=count
         entries=[]
         for i in range(count):
-            val=open_response_widget(f"Valeur déjà identifiée n°{i+1}",f"prereq_free_{i}",height=70,allow_reformulation=False,dependency_scope="prerequisites")
+            val=open_response_widget(f"Valeur déjà identifiée n°{i+1}",f"prereq_free_{i}",height=70,allow_reformulation=False,dependency_scope="prerequisites",expected_value_label=True)
             if val.strip(): entries.append(val.strip())
         if st.button("Examiner mes formulations",type="primary",disabled=len(entries)!=count):
             st.session_state.prerequisite_pending=[resolve_prerequisite(x) for x in entries]
@@ -2478,12 +2544,12 @@ def render_business():
                     info=value_info(choice); st.write(info.get("definition","")); own=open_response_widget("Conservez cette définition ou écrivez la vôtre",f"propdef_{i}",value=info.get("definition",""),height=110,dependency_scope="prerequisites",value_name=choice)
                     if own.strip(): confirmed_values.append((choice,own.strip(),False))
                 else:
-                    custom_name=open_response_widget("Nom de votre valeur",f"customname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites")
+                    custom_name=open_response_widget("Nom de votre valeur",f"customname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites",expected_value_label=True)
                     custom_def=open_response_widget("Que signifie cette valeur pour vous ?",f"customdef_{i}",height=110,dependency_scope="prerequisites",value_name=custom_name.strip())
                     if custom_name.strip() and custom_def.strip(): confirmed_values.append((custom_name.strip(),custom_def.strip(),True))
             else:
                 st.write("Cette formulation n'existe pas telle quelle dans le référentiel. Elle peut néanmoins être retenue pour vous.")
-                custom_name=open_response_widget("Nom de votre valeur",f"newname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites")
+                custom_name=open_response_widget("Nom de votre valeur",f"newname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites",expected_value_label=True)
                 custom_def=open_response_widget("Que signifie cette valeur pour vous ?",f"newdef_{i}",height=110,dependency_scope="prerequisites",value_name=custom_name.strip())
                 if custom_name.strip() and custom_def.strip(): confirmed_values.append((custom_name.strip(),custom_def.strip(),True))
         pending_count=len(st.session_state.get("prerequisite_pending",[]))
@@ -2559,7 +2625,7 @@ def render_business():
             for i in range(count):
                 st.markdown(f"### Valeur repérée n°{i+1}")
                 previous=existing_inter[i] if i < len(existing_inter) else {}
-                name=open_response_widget("Nom proposé",f"inter_name_{i}",value=previous.get("nom",""),height=70,allow_reformulation=False,dependency_scope="personal_values")
+                name=open_response_widget("Nom proposé",f"inter_name_{i}",value=previous.get("nom",""),height=70,allow_reformulation=False,dependency_scope="personal_values",expected_value_label=True)
                 source=st.selectbox("Comment l’avez-vous découverte ?",sources,key=f"inter_source_{i}")
                 meaning=open_response_widget("Que signifie ce mot pour vous ?",f"inter_meaning_{i}",value=previous.get("definition",""),height=100,dependency_scope="personal_values",value_name=name.strip())
                 situations=open_response_widget("Dans quelles situations l’avez-vous reconnue ?",f"inter_situations_{i}",value=" ; ".join(previous.get("situations",[]) or []),height=100,dependency_scope="personal_values",value_name=name.strip())
