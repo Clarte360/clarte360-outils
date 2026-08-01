@@ -261,7 +261,6 @@ def get_secret(section: str, key: str, default: Any = "") -> Any:
     try: return st.secrets.get(section, {}).get(key, default)
     except Exception: return default
 
-@st.cache_data(show_spinner=False)
 def load_referentiel() -> list[dict[str, str]]:
     if not REFERENTIEL_PATH.exists(): return []
     xls = pd.ExcelFile(REFERENTIEL_PATH)
@@ -937,7 +936,26 @@ Retournez un JSON strict avec decision, explication et question. La question est
         decision=str(out.get("decision") or fallback["decision"])
         if clarification and decision=="clarification_requise":
             decision="valeur_reconnue" if present else "valeur_absente_possible"
-        return {"decision":decision,"explication":str(out.get("explication") or fallback["explication"]),"question":str(out.get("question") or "") if decision=="clarification_requise" else ""}
+
+        # La présence dans le référentiel est un fait calculé par Python, jamais une
+        # appréciation laissée à l'IA. L'IA peut analyser la nature du concept ou
+        # demander une clarification, mais elle ne peut pas contredire le catalogue.
+        if present and decision=="valeur_absente_possible":
+            decision="valeur_reconnue"
+        elif not present and decision=="valeur_reconnue":
+            decision="valeur_absente_possible"
+
+        ai_explanation=str(out.get("explication") or "").strip()
+        if decision=="valeur_reconnue":
+            catalogue_fact="Le terme figure dans le référentiel Clarté360."
+        elif decision=="valeur_absente_possible":
+            catalogue_fact="Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez."
+        else:
+            catalogue_fact=""
+        explanation=(catalogue_fact + (" " + ai_explanation if ai_explanation else "")).strip()
+        if not explanation:
+            explanation=fallback["explication"]
+        return {"decision":decision,"explication":explanation,"question":str(out.get("question") or "") if decision=="clarification_requise" else ""}
     except Exception:
         return fallback
 
@@ -1374,7 +1392,7 @@ def _ensure_migrated_state() -> None:
         candidate_variants={normalize(name), normalize(record.get("nom_propose") or name), normalize(_normalise_value_name(record.get("nom_propose") or name))}
         if candidate_variants & validated_norm or candidate_variants & pending_names:
             continue
-        info=value_info(name)
+        info=_referential_value_info(name)
         work=_new_value_work("migration_v2137")
         final_name=_normalise_value_name(record.get("nom_propose") or name)
         work.update({"nom_initial":record.get("nom_propose") or name,"nom_normalise":final_name,"nom_final":final_name,"definition_personnelle":record.get("definition_personnelle") or st.session_state.get("personal_defs",{}).get(name,""),"definition_clarte360":info.get("definition", ""),"present_referentiel":bool(info),"mode_decouverte":"À partir d’une situation vécue" if record.get("situations_associees") else "Par introspection","stage":"nom","migration_status_initial":status})
@@ -1489,7 +1507,7 @@ def render_module_1() -> None:
     definition=open_response_widget("Que signifie précisément cette valeur pour vous ?",f"m1_def_{idx}",value=work.get("definition_personnelle",""),height=110,dependency_scope="prerequisites",value_name=name)
     if name and definition:
         work["nom_initial"]=name; work["nom_normalise"]=_normalise_value_name(name); work["nom_final"]=work["nom_normalise"]; work["definition_personnelle"]=definition
-        info=value_info(work["nom_final"]); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
+        info=_referential_value_info(work["nom_final"]); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
         if work["nom_final"]!=name: st.info(f"Formulation normalisée proposée : **{work['nom_final']}**")
         choice,final_def=_value_definition_choices(work,f"m1_{idx}")
         confirm=st.checkbox("Je confirme que le mot et la définition retenus correspondent à la valeur déjà validée avec mon accompagnateur.",key=f"m1_confirm_{idx}")
