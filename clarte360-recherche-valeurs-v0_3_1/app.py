@@ -856,11 +856,12 @@ def _local_spoken_cleanup(text: str) -> str:
 
 
 def clean_spoken_text(text: str) -> str:
-    """Produit une seule reformulation fidèle, ou signale qu'elle n'apporte rien.
+    """Corrige systématiquement la langue, puis reformule seulement si cela aide.
 
-    La fonction ne fabrique jamais une fausse proposition identique à l'original.
-    Elle retourne une chaîne vide lorsque la réponse est déjà claire ou lorsque l'IA
-    n'a pas fourni une amélioration réellement distincte.
+    La correction orthographique, grammaticale et typographique est obligatoire.
+    Une proposition peut donc être très proche de l'original lorsqu'elle corrige une
+    faute réelle. La fonction retourne une chaîne vide uniquement lorsque le texte est
+    déjà correct et qu'aucune amélioration fidèle n'est nécessaire.
     """
     original=str(text or "").strip()
     local=_local_spoken_cleanup(original)
@@ -869,15 +870,19 @@ def clean_spoken_text(text: str) -> str:
     if not ai_ready():
         candidate=local
     else:
-        instructions="""Reformulez la réponse française fournie en une seule version écrite simple, naturelle et strictement fidèle.
+        instructions="""Mettez au propre la réponse française fournie.
+
+Ordre obligatoire :
+1. Corrigez toujours les fautes d'orthographe, d'accord, de conjugaison, de ponctuation et de typographie.
+2. Supprimez les hésitations, répétitions accidentelles et faux départs.
+3. Ne reformulez le style que si cela améliore réellement la clarté ou la fluidité.
 
 Règles impératives :
 - conservez exactement le sens, la première personne, les faits, nuances et réserves ;
-- supprimez les hésitations, répétitions accidentelles, faux départs et maladresses ;
-- corrigez la syntaxe et améliorez la lisibilité sans résumer ni enrichir ;
 - n'ajoutez aucune idée, valeur, interprétation, diagnostic ou conseil ;
-- pour un mot, un nom de valeur ou une réponse déjà claire, retournez exactement AUCUNE_REFORMULATION ;
-- si votre proposition serait identique ou presque identique, retournez AUCUNE_REFORMULATION.
+- ne résumez pas et ne rendez pas la phrase plus générale ;
+- si le texte est déjà correct et ne nécessite aucune modification, retournez exactement AUCUNE_REFORMULATION ;
+- une correction purement orthographique ou grammaticale doit être retournée, même si elle est très proche de l'original.
 
 Retournez uniquement un objet JSON avec la clé texte_corrige."""
         schema={"type":"object","properties":{"texte_corrige":{"type":"string"}},"required":["texte_corrige"],"additionalProperties":False}
@@ -888,10 +893,11 @@ Retournez uniquement un objet JSON avec la clé texte_corrige."""
             candidate=local
     if not candidate or candidate.upper()=="AUCUNE_REFORMULATION" or _contains_oral_hesitations(candidate):
         return ""
-    similarity=SequenceMatcher(None,normalize(original),normalize(candidate)).ratio()
-    # Une simple ponctuation, casse ou suppression d'un doublon court n'est pas présentée
-    # comme une « reformulation Clarté360 » distincte.
-    if similarity>=0.96 or normalize(candidate)==normalize(original):
+    # Ne pas éliminer une correction au seul motif qu'elle est très proche du texte initial.
+    # Seule une proposition strictement identique après nettoyage des espaces est ignorée.
+    compact_original=re.sub(r"\s+", " ", original).strip()
+    compact_candidate=re.sub(r"\s+", " ", candidate).strip()
+    if compact_candidate==compact_original:
         return ""
     return candidate
 
