@@ -40,8 +40,8 @@ def seed(mod,st):
 
 def test_version_and_dynamic_referential():
     mod,st=load_app()
-    assert mod.APP_VERSION=='2.1.3.9B-preproduction'
-    assert len(mod.CATALOGUE)>=241
+    assert mod.APP_VERSION=='2.1.3.9C-preproduction'
+    assert len(mod.CATALOGUE)==204
     assert mod.value_info('Clarté')['code']=='RVC360-241'
 
 

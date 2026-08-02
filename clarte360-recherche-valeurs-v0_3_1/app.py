@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9B-preproduction"
+APP_VERSION = "2.1.3.9C-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -267,7 +267,11 @@ def load_referentiel() -> list[dict[str, str]]:
     candidates = [name for name in xls.sheet_names if normalize(name).startswith("referentiel")]
     sheet = candidates[0] if candidates else xls.sheet_names[0]
     df = pd.read_excel(REFERENTIEL_PATH, sheet_name=sheet)
-    df = df.rename(columns={"Code":"code", "Valeur":"nom", "Famille":"famille", "Définition Clarté360 - base de travail":"definition"})
+    df = df.rename(columns={
+        "Code":"code", "Valeur":"nom", "Famille":"famille",
+        "Définition Clarté360 - base de travail":"definition",
+        "Définition Clarté360":"definition",
+    })
     out=[]
     for _, row in df.iterrows():
         if pd.isna(row.get("nom")): continue
@@ -2269,7 +2273,7 @@ def _module4_context_payload() -> dict[str,Any]:
 def _module4_new_cycle(voie:str) -> None:
     st.session_state.module4_current_cycle={
         "id":str(uuid.uuid4()), "voie":voie, "stage":"initial", "started_at":now_iso(),
-        "question":"", "exchanges":[], "candidate_options":[], "result":"",
+        "question":"", "exchanges":[], "candidate_options":[], "result":"", "candidate_rounds":0, "reorientation_count":0,
     }
     st.session_state.module4_candidate_options=[]
     business_trace("module4_cycle_demarre",voie)
@@ -2340,9 +2344,11 @@ Règles :
 - ne transformez pas automatiquement un besoin, une émotion, une croyance, une limite, un objectif ou un comportement en valeur ;
 - une idée explorée = une seule hypothèse éventuellement retenue ;
 - ne proposez que des valeurs présentes dans la liste fournie ;
-- si rien n’est suffisamment plausible, retournez une liste vide."""
+- si rien n’est suffisamment plausible, retournez une liste vide ;
+- relisez toute la situation et le contexte déjà connu : un mot comme « reconnaissance » ne doit pas masquer un autre enjeu distinct déjà exprimé, par exemple le travail, l’engagement, la qualité, la contribution ou la responsabilité ;
+- lorsqu’une précédente série de candidats a été refusée, cherchez un axe de sens réellement différent et non de simples synonymes."""
     schema={"type":"object","properties":{"candidats":{"type":"array","maxItems":3,"items":{"type":"object","properties":{"nom":{"type":"string"},"definition":{"type":"string"},"raison":{"type":"string"}},"required":["nom","definition","raison"],"additionalProperties":False}}},"required":["candidats"],"additionalProperties":False}
-    payload={"mot_beneficiaire":word,"echanges":cycle.get("exchanges",[]),"candidats_referentiel":pool,"valeurs_deja_connues":list(known)}
+    payload={"mot_beneficiaire":word,"echanges":cycle.get("exchanges",[]),"candidats_referentiel":pool,"valeurs_deja_connues":list(known),"contexte_beneficiaire":_module4_context_payload(),"candidats_deja_refuses":cycle.get("candidate_round_history",[])}
     try:
         out=response_json(instructions,payload,"module4_hypotheses_candidates",schema,max_tokens=650)
         valid=[]
@@ -2353,6 +2359,23 @@ Règles :
         return valid[:3]
     except Exception:
         return [{"nom":x["nom"],"definition":x.get("definition","")} for x in pool[:3]]
+
+
+def _module4_generate_reorientation_question(cycle:dict[str,Any]) -> str:
+    fallback="Dans cette même situation, vous avez aussi évoqué votre investissement ou votre travail. Qu’est-ce qui était important pour vous dans cet aspect précis ?"
+    if not ai_ready(): return fallback
+    instructions="""Vous poursuivez avec modestie un questionnement vertical Clarté360 après le refus de plusieurs mots candidats.
+Le refus d’une hypothèse ne signifie pas que la situation est épuisée. Relisez tous les couples questions-réponses et repérez UN aspect significatif encore peu exploré.
+Posez UNE question ouverte, courte, ancrée dans les mots du bénéficiaire, afin d’approfondir cet autre aspect.
+Ne proposez aucun mot de valeur dans la question. Ne répétez pas l’axe déjà refusé et ne cherchez pas un simple synonyme.
+Vous pouvez notamment revenir sur un élément concret passé au second plan : travail, investissement, effort, qualité, utilité, responsabilité, relation, choix ou autre élément réellement présent dans le récit.
+Aucune analyse psychologique, aucune conclusion et aucun conseil. Retournez seulement la question."""
+    schema={"type":"object","properties":{"question":{"type":"string"}},"required":["question"],"additionalProperties":False}
+    payload={"echanges":cycle.get("exchanges",[]),"candidats_deja_refuses":cycle.get("candidate_round_history",[]),"contexte_beneficiaire":_module4_context_payload()}
+    try:
+        return str(response_json(instructions,payload,"module4_reorientation_apres_refus",schema,max_tokens=260).get("question") or fallback).strip()
+    except Exception:
+        return fallback
 
 
 def _module4_add_hypothesis(cycle:dict[str,Any], candidate:dict[str,str]) -> None:
@@ -2398,7 +2421,9 @@ def _module4_render_cycle(voie:str) -> None:
             cycle["pending_answer_processed"]=True
             if role=="recherche_mot":
                 candidates=_module4_word_candidates(cycle,answer)
-                cycle["candidate_options"]=candidates; cycle["stage"]="candidats" if candidates else "proposition_permission"
+                cycle["candidate_options"]=candidates
+                if candidates: cycle["candidate_rounds"]=int(cycle.get("candidate_rounds",0))+1
+                cycle["stage"]="candidats" if candidates else "proposition_permission"
             else:
                 progress=_module4_analyse_progress(cycle)
                 if progress.get("action")=="aucune_piste": cycle["stage"]="termine"; cycle["result"]="aucune_piste"
@@ -2417,7 +2442,9 @@ def _module4_render_cycle(voie:str) -> None:
         consent=st.radio("Souhaitez-vous que Clarté360 vous propose quelques mots comme simples hypothèses ?",["Choisissez","Oui","Non"],key=f"m4_consent_{cycle['id']}")
         if consent=="Oui":
             candidates=_module4_word_candidates(cycle," ".join(x.get("reponse_validee","") for x in cycle.get("exchanges",[]) if x.get("role")=="recherche_mot"))
-            cycle["candidate_options"]=candidates; cycle["stage"]="candidats" if candidates else "termine"; cycle["result"]="aucune_piste" if not candidates else ""; st.rerun()
+            cycle["candidate_options"]=candidates
+            if candidates: cycle["candidate_rounds"]=int(cycle.get("candidate_rounds",0))+1
+            cycle["stage"]="candidats" if candidates else "termine"; cycle["result"]="aucune_piste" if not candidates else ""; st.rerun()
         if consent=="Non": cycle["stage"]="termine"; cycle["result"]="aucune_piste"; st.rerun()
 
     if cycle.get("stage")=="candidats":
@@ -2430,14 +2457,35 @@ def _module4_render_cycle(voie:str) -> None:
         labels=[x["nom"] for x in options]+["Aucune ne correspond"]
         selected=st.radio("Laquelle correspond le mieux à ce que vous vouliez exprimer ?",labels,key=f"m4_select_{cycle['id']}")
         if st.button("Confirmer mon choix",type="primary",use_container_width=True,key=f"m4_confirm_{cycle['id']}"):
-            if selected=="Aucune ne correspond": cycle["stage"]="termine"; cycle["result"]="hypotheses_refusees"
+            if selected=="Aucune ne correspond":
+                history=cycle.setdefault("candidate_round_history",[])
+                history.append({"date_heure":now_iso(),"candidats":[x.get("nom","") for x in options],"decision":"aucune_ne_correspond"})
+                cycle["candidate_options"]=[]
+                if int(cycle.get("reorientation_count",0))<2:
+                    cycle["stage"]="reorientation_apres_refus"
+                else:
+                    cycle["stage"]="termine"; cycle["result"]="hypotheses_refusees_apres_approfondissement"
             else: _module4_add_hypothesis(cycle,next(x for x in options if x["nom"]==selected))
             st.rerun()
+
+    if cycle.get("stage")=="reorientation_apres_refus":
+        st.info("Aucun de ces mots ne vous correspond. Cela ne signifie pas forcément que la situation est épuisée : un autre aspect de ce que vous avez raconté peut encore être exploré.")
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button("Approfondir un autre aspect de cette situation",type="primary",use_container_width=True,key=f"m4_reorient_{cycle['id']}_{cycle.get('reorientation_count',0)}"):
+                cycle["reorientation_count"]=int(cycle.get("reorientation_count",0))+1
+                cycle["question"]=_module4_generate_reorientation_question(cycle)
+                cycle["stage"]="question"
+                cycle["pending_answer_processed"]=False
+                st.rerun()
+        with c2:
+            if st.button("Arrêter cette piste",use_container_width=True,key=f"m4_stop_after_refusal_{cycle['id']}"):
+                cycle["stage"]="termine"; cycle["result"]="hypotheses_refusees"; st.rerun()
 
 
 def _module4_render_way1() -> None:
     st.title("Partir d’une situation observée")
-    instruction="Décrivez une situation réelle. Clarté360 vous posera quelques questions verticales, puis cherchera avec vous un mot. Le résultat restera une simple hypothèse et une idée explorée ne pourra produire qu’une seule hypothèse retenue."
+    instruction="Décrivez une situation réelle. Clarté360 vous posera quelques questions verticales, puis cherchera avec vous un mot. Le résultat restera une simple hypothèse et une idée explorée ne pourra produire qu’une seule hypothèse retenue. Si les premiers mots proposés ne correspondent pas, Clarté360 pourra approfondir brièvement un autre aspect de la même situation avant de clore la piste."
     st.info(instruction); speak_button(instruction,"m4_way1_instruction")
     _module4_render_cycle("situation")
     if st.button("← Changer de voie",use_container_width=True,key="m4_way1_change"):
