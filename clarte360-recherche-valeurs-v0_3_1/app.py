@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9A-preproduction"
+APP_VERSION = "2.1.3.9B-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -309,7 +309,7 @@ def default_business_state() -> dict[str, Any]:
         "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
         "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
         "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
-        "json_schema_version":"2.1.3.9A",
+        "json_schema_version":"2.1.3.9B",
         "active_module":"accueil_modules",
         "module_states":{
             "module_1":{"status":"non_commence","step":"intro"},
@@ -328,6 +328,7 @@ def default_business_state() -> dict[str, Any]:
         "module4_knowledge_completed_at":"", "module4_knowledge_index":0,
         "module4_knowledge_answers":{}, "module4_knowledge_version":"M4-CC-1.0",
         "module4_route":"", "module4_intro_acknowledged":False,
+        "module4_current_cycle":{}, "module4_question_memory":[], "module4_candidate_options":[],
     }
 
 def init_state() -> None:
@@ -2243,42 +2244,215 @@ def _module4_render_choice() -> None:
         st.session_state.active_module="accueil_modules"; st.rerun()
 
 
+def _module4_all_known_names() -> set[str]:
+    names={normalize(x) for x in _module4_validated_value_labels()}
+    for item in st.session_state.get("values_to_examine",[]): names.add(normalize(item.get("nom_final") or item.get("nom_normalise") or item.get("nom_initial") or ""))
+    for item in st.session_state.get("session_review_items",[]): names.add(normalize(item.get("nom") or item.get("nom_final") or ""))
+    for item in st.session_state.get("hypothesis_basket",[]): names.add(normalize(item.get("nom") or ""))
+    for item in st.session_state.get("rejected_values",[]): names.add(normalize(item.get("nom") or ""))
+    return {x for x in names if x}
+
+
+def _module4_context_payload() -> dict[str,Any]:
+    return {
+        "module2":deepcopy(st.session_state.get("module2_answers") or st.session_state.get("beneficiary_profile",{}).get("questions",{})),
+        "complement_connaissance":deepcopy(st.session_state.get("module4_knowledge_answers",{})),
+        "valeurs_validees":_module4_validated_value_labels(),
+        "valeurs_a_examiner":[x.get("nom_final") or x.get("nom_normalise") or x.get("nom_initial") for x in st.session_state.get("values_to_examine",[])],
+        "a_revoir_en_seance":[x.get("nom") or x.get("nom_final") for x in st.session_state.get("session_review_items",[])],
+        "panier_hypotheses":[x.get("nom") for x in st.session_state.get("hypothesis_basket",[])],
+        "hypotheses_refusees":[x.get("nom") for x in st.session_state.get("rejected_values",[])],
+        "memoire_questions_reponses":deepcopy(st.session_state.get("module4_question_memory",[])),
+    }
+
+
+def _module4_new_cycle(voie:str) -> None:
+    st.session_state.module4_current_cycle={
+        "id":str(uuid.uuid4()), "voie":voie, "stage":"initial", "started_at":now_iso(),
+        "question":"", "exchanges":[], "candidate_options":[], "result":"",
+    }
+    st.session_state.module4_candidate_options=[]
+    business_trace("module4_cycle_demarre",voie)
+
+
+def _module4_record_exchange(cycle:dict[str,Any], question:str, answer:str, role:str="exploration") -> None:
+    meta=deepcopy(st.session_state.get("answer_metadata",{}).get(f"m4_cycle_{cycle['id']}_{len(cycle.get('exchanges',[]))}",{}))
+    item={"cycle_id":cycle["id"],"voie":cycle["voie"],"question":question,"reponse_validee":answer,"role":role,"date_heure":now_iso(),"metadata":meta}
+    cycle.setdefault("exchanges",[]).append(item)
+    st.session_state.module4_question_memory.append(deepcopy(item))
+    st.session_state.module4_exploration_history.append(deepcopy(item))
+    business_trace("module4_question_reponse",f"{cycle['voie']}:{role}")
+
+
+def _module4_generate_way2_question() -> str:
+    fallback="Pensez à un moment récent où vous vous êtes senti particulièrement satisfait, contrarié ou touché. Qu’est-ce qui s’est passé concrètement ?"
+    if not ai_ready(): return fallback
+    instructions="""Vous êtes le moteur de questionnement du module 4 Clarté360. Produisez UNE question ouverte, courte et concrète, destinée à aider le bénéficiaire à faire émerger une nouvelle piste de valeur.
+Respectez impérativement : aucune conclusion psychologique, aucun profil, aucune valeur attribuée, aucun conseil. Tenez compte des questions-réponses déjà enregistrées dans les deux voies, des valeurs validées et des pistes déjà connues afin d’éviter les répétitions. Ne citez pas directement le nom d’une valeur attendue. La question doit rechercher un fait, une réaction, une admiration, une gêne, une satisfaction ou un choix concret. Retournez seulement la question."""
+    schema={"type":"object","properties":{"question":{"type":"string"}},"required":["question"],"additionalProperties":False}
+    try:
+        return str(response_json(instructions,_module4_context_payload(),"module4_question_personnalisee",schema,max_tokens=220).get("question") or fallback).strip()
+    except Exception:
+        return fallback
+
+
+def _module4_analyse_progress(cycle:dict[str,Any]) -> dict[str,Any]:
+    exchanges=cycle.get("exchanges",[])
+    last=exchanges[-1]["reponse_validee"] if exchanges else ""
+    fallback_action="demander_mot" if len(exchanges)>=2 else "relance_verticale"
+    fallback={"action":fallback_action,"question":("Si vous deviez mettre un mot qui résume ce que vous ressentez, ce serait lequel ?" if fallback_action=="demander_mot" else "Qu’est-ce qui était réellement important pour vous dans cette situation ?"),"raison":"","idee_principale":""}
+    if not ai_ready(): return fallback
+    instructions="""Analysez la progression d’un questionnement vertical Clarté360, sans attribuer de valeur et sans établir de profil.
+Décidez d’une seule action :
+- relance_verticale : si une précision réellement utile manque ;
+- demander_mot : dès qu’un enjeu susceptible de correspondre à une valeur commence à émerger ;
+- aucune_piste : si la réponse tourne en boucle, reste inexploitable ou ne permet pas une exploration utile.
+Maximum absolu : deux relances verticales avant la recherche du mot. Restez proche des mots du bénéficiaire. Une idée explorée ne pourra produire qu’une seule hypothèse retenue.
+La question de recherche du mot doit être exactement ou très proche de : « Si vous deviez mettre un mot qui résume ce que vous ressentez, ce serait lequel ? »"""
+    schema={"type":"object","properties":{"action":{"type":"string","enum":["relance_verticale","demander_mot","aucune_piste"]},"question":{"type":"string"},"raison":{"type":"string"},"idee_principale":{"type":"string"}},"required":["action","question","raison","idee_principale"],"additionalProperties":False}
+    payload={"voie":cycle.get("voie"),"echanges":exchanges,"valeurs_deja_connues":list(_module4_all_known_names())}
+    try:
+        out=response_json(instructions,payload,"module4_progression_verticale",schema,max_tokens=420)
+        vertical_count=sum(1 for x in exchanges if x.get("role")=="relance_verticale")
+        if vertical_count>=2 and out.get("action")=="relance_verticale":
+            out["action"]="demander_mot"; out["question"]="Si vous deviez mettre un mot qui résume ce que vous ressentez, ce serait lequel ?"
+        return out
+    except Exception:
+        return fallback
+
+
+def _module4_word_candidates(cycle:dict[str,Any], word:str) -> list[dict[str,str]]:
+    texts=[word]+[x.get("reponse_validee","") for x in cycle.get("exchanges",[])]
+    pool=lexical_prefilter(texts,limit=24)
+    known=_module4_all_known_names()
+    pool=[x for x in pool if normalize(x.get("nom","")) not in known]
+    exact=_referential_value_info(_normalise_value_name(word))
+    if exact and normalize(exact.get("nom","")) not in known:
+        return [{"nom":exact["nom"],"definition":exact.get("definition","")}]
+    if not ai_ready():
+        return [{"nom":x["nom"],"definition":x.get("definition","")} for x in pool[:3]]
+    instructions="""À partir du mot du bénéficiaire, de sa signification dans le questionnement vertical et d’un sous-ensemble du référentiel Clarté360, proposez zéro à trois mots candidats maximum.
+Règles :
+- ce sont de simples hypothèses, jamais des conclusions ;
+- comparez surtout le sens exprimé, pas seulement la ressemblance lexicale ;
+- repartez de la définition HEC d’une valeur : un principe durable susceptible d’orienter les choix et comportements d’un individu ;
+- utilisez silencieusement comme garde-fou la possibilité que ce principe puisse se manifester dans plusieurs domaines de vie, sans demander au bénéficiaire de le prouver ;
+- ne transformez pas automatiquement un besoin, une émotion, une croyance, une limite, un objectif ou un comportement en valeur ;
+- une idée explorée = une seule hypothèse éventuellement retenue ;
+- ne proposez que des valeurs présentes dans la liste fournie ;
+- si rien n’est suffisamment plausible, retournez une liste vide."""
+    schema={"type":"object","properties":{"candidats":{"type":"array","maxItems":3,"items":{"type":"object","properties":{"nom":{"type":"string"},"definition":{"type":"string"},"raison":{"type":"string"}},"required":["nom","definition","raison"],"additionalProperties":False}}},"required":["candidats"],"additionalProperties":False}
+    payload={"mot_beneficiaire":word,"echanges":cycle.get("exchanges",[]),"candidats_referentiel":pool,"valeurs_deja_connues":list(known)}
+    try:
+        out=response_json(instructions,payload,"module4_hypotheses_candidates",schema,max_tokens=650)
+        valid=[]
+        allowed={normalize(x["nom"]):x for x in pool}
+        for c in out.get("candidats",[]):
+            src=allowed.get(normalize(c.get("nom","")))
+            if src: valid.append({"nom":src["nom"],"definition":src.get("definition","") or c.get("definition","")})
+        return valid[:3]
+    except Exception:
+        return [{"nom":x["nom"],"definition":x.get("definition","")} for x in pool[:3]]
+
+
+def _module4_add_hypothesis(cycle:dict[str,Any], candidate:dict[str,str]) -> None:
+    item={"id":str(uuid.uuid4()),"nom":candidate["nom"],"definition_clarte360":candidate.get("definition",""),"source":"module_4","voie":cycle.get("voie"),"cycle_id":cycle.get("id"),"statut":"hypothese","created_at":now_iso(),"question_reponses":deepcopy(cycle.get("exchanges",[]))}
+    st.session_state.hypothesis_basket.append(item)
+    cycle["result"]="hypothese_retenue"; cycle["selected_hypothesis"]=candidate["nom"]; cycle["stage"]="termine"
+    business_trace("module4_hypothese_panier",candidate["nom"])
+
+
+def _module4_threshold_invitation() -> None:
+    validated=len(_module4_validated_value_labels()); hypotheses=len(st.session_state.get("hypothesis_basket",[]))
+    if hypotheses>=3 and validated+hypotheses>=8:
+        st.info(f"Vous avez maintenant {validated} valeur(s) validée(s) et {hypotheses} hypothèse(s), soit {validated+hypotheses} éléments au total. Il peut être utile d’examiner vos hypothèses dans le module 3. Vous restez libre de continuer votre recherche.")
+        if st.button("Examiner mes hypothèses dans le module 3",use_container_width=True,key="m4_go_module3_threshold"):
+            st.session_state.active_module="module_3"; st.session_state.module4_route=""; st.rerun()
+
+
+def _module4_render_cycle(voie:str) -> None:
+    cycle=st.session_state.get("module4_current_cycle") or {}
+    if not cycle or cycle.get("voie")!=voie or cycle.get("stage")=="termine":
+        if cycle.get("stage")=="termine":
+            if cycle.get("result")=="hypothese_retenue": st.success(f"L’hypothèse **{cycle.get('selected_hypothesis','')}** a été ajoutée uniquement au panier Hypothèses.")
+            else: st.info("Ce cycle est terminé sans hypothèse retenue. Cela est parfaitement normal.")
+            _module4_threshold_invitation()
+            if st.button("Rechercher une autre valeur",type="primary",use_container_width=True,key=f"m4_restart_{voie}"):
+                _module4_new_cycle(voie); st.rerun()
+            return
+        _module4_new_cycle(voie); cycle=st.session_state.module4_current_cycle
+
+    if voie=="questions_personnalisees" and not cycle.get("question"):
+        cycle["question"]=_module4_generate_way2_question(); cycle["stage"]="question"
+    elif voie=="situation" and not cycle.get("question"):
+        cycle["question"]="Avez-vous repéré récemment une situation qui vous a fait agir, réagir, vous réjouir, vous déranger ou vous toucher ?"; cycle["stage"]="question"
+
+    if cycle.get("stage") in {"question","mot"}:
+        question=cycle.get("question","")
+        st.markdown(f"### {question}"); speak_button(question,f"m4_q_{cycle['id']}_{len(cycle.get('exchanges',[]))}")
+        widget_key=f"m4_cycle_{cycle['id']}_{len(cycle.get('exchanges',[]))}"
+        answer=open_response_widget("Votre réponse",widget_key,height=140,allow_reformulation=True,listen=True,dependency_scope="exploration")
+        if answer and not cycle.get("pending_answer_processed"):
+            role="initial" if not cycle.get("exchanges") else ("recherche_mot" if cycle.get("stage")=="mot" else "relance_verticale")
+            _module4_record_exchange(cycle,question,answer,role)
+            cycle["pending_answer_processed"]=True
+            if role=="recherche_mot":
+                candidates=_module4_word_candidates(cycle,answer)
+                cycle["candidate_options"]=candidates; cycle["stage"]="candidats" if candidates else "proposition_permission"
+            else:
+                progress=_module4_analyse_progress(cycle)
+                if progress.get("action")=="aucune_piste": cycle["stage"]="termine"; cycle["result"]="aucune_piste"
+                elif progress.get("action")=="demander_mot": cycle["stage"]="mot"; cycle["question"]="Si vous deviez mettre un mot qui résume ce que vous ressentez, ce serait lequel ?"
+                else: cycle["stage"]="question"; cycle["question"]=progress.get("question") or "Qu’est-ce qui était réellement important pour vous dans cette situation ?"
+            st.rerun()
+        if cycle.get("pending_answer_processed"):
+            cycle.pop("pending_answer_processed",None)
+
+    if cycle.get("stage")=="proposition_permission":
+        st.warning("Le mot proposé ne correspond pas assez clairement à une valeur du référentiel. Une seconde recherche du mot est possible.")
+        if sum(1 for x in cycle.get("exchanges",[]) if x.get("role")=="recherche_mot")<2:
+            q="Quel autre mot pourrait mieux résumer ce qui était important pour vous dans cette situation ?"
+            if st.button("Approfondir une seconde fois",type="primary",use_container_width=True,key=f"m4_second_word_{cycle['id']}"):
+                cycle["question"]=q; cycle["stage"]="mot"; st.rerun()
+        consent=st.radio("Souhaitez-vous que Clarté360 vous propose quelques mots comme simples hypothèses ?",["Choisissez","Oui","Non"],key=f"m4_consent_{cycle['id']}")
+        if consent=="Oui":
+            candidates=_module4_word_candidates(cycle," ".join(x.get("reponse_validee","") for x in cycle.get("exchanges",[]) if x.get("role")=="recherche_mot"))
+            cycle["candidate_options"]=candidates; cycle["stage"]="candidats" if candidates else "termine"; cycle["result"]="aucune_piste" if not candidates else ""; st.rerun()
+        if consent=="Non": cycle["stage"]="termine"; cycle["result"]="aucune_piste"; st.rerun()
+
+    if cycle.get("stage")=="candidats":
+        options=cycle.get("candidate_options",[])
+        st.info("Ces mots sont de simples hypothèses. Clarté360 peut se tromper. Une seule hypothèse peut être retenue pour l’idée explorée.")
+        for item in options:
+            with st.container(border=True):
+                st.markdown(f"**{item['nom']}**")
+                st.write(item.get("definition","") or "Définition non disponible.")
+        labels=[x["nom"] for x in options]+["Aucune ne correspond"]
+        selected=st.radio("Laquelle correspond le mieux à ce que vous vouliez exprimer ?",labels,key=f"m4_select_{cycle['id']}")
+        if st.button("Confirmer mon choix",type="primary",use_container_width=True,key=f"m4_confirm_{cycle['id']}"):
+            if selected=="Aucune ne correspond": cycle["stage"]="termine"; cycle["result"]="hypotheses_refusees"
+            else: _module4_add_hypothesis(cycle,next(x for x in options if x["nom"]==selected))
+            st.rerun()
+
+
 def _module4_render_way1() -> None:
     st.title("Partir d’une situation observée")
-    instruction="Pensez à une situation récente ou marquante qui vous a fait agir, réagir, vous réjouir, vous déranger ou vous toucher. Décrivez simplement ce qui s’est passé. Pour le moment, ne cherchez pas vous-même le nom d’une valeur."
+    instruction="Décrivez une situation réelle. Clarté360 vous posera quelques questions verticales, puis cherchera avec vous un mot. Le résultat restera une simple hypothèse et une idée explorée ne pourra produire qu’une seule hypothèse retenue."
     st.info(instruction); speak_button(instruction,"m4_way1_instruction")
-    answer=open_response_widget(
-        "Avez-vous repéré récemment une situation qui vous a fait agir, réagir, vous réjouir, vous déranger ou vous toucher ?",
-        "m4_way1_situation_001",height=150,allow_reformulation=True,listen=True,dependency_scope="exploration"
-    )
-    if answer:
-        st.success("Votre situation est enregistrée. Elle sera utilisée uniquement dans sa version validée pour préparer la première question de clarification.")
-        st.caption("Aucune hypothèse n’est encore formulée à ce stade.")
-    c1,c2=st.columns(2)
-    with c1:
-        if st.button("← Changer de voie",use_container_width=True,key="m4_way1_change"):
-            st.session_state.module4_route=""; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
-    with c2:
-        if st.button("Retour au parcours",use_container_width=True,key="m4_way1_home"):
-            st.session_state.active_module="accueil_modules"; st.rerun()
+    _module4_render_cycle("situation")
+    if st.button("← Changer de voie",use_container_width=True,key="m4_way1_change"):
+        st.session_state.module4_route=""; st.session_state.module4_current_cycle={}; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
 
 
 def _module4_render_way2() -> None:
     st.title("Aidez-moi à trouver une piste")
-    instruction="Nous allons utiliser ce que vous avez déjà partagé pour choisir quelques questions qui pourront ouvrir un angle encore peu exploré. Vos réponses au complément de connaissance ne constituent pas un profil. Elles servent uniquement à personnaliser le questionnement et à éviter les répétitions."
+    instruction="Clarté360 choisira une question à partir de tout ce qui est déjà connu, y compris les couples questions-réponses issus des deux voies. Cette mémoire reste descriptive : elle ne constitue ni un profil ni une conclusion sur vous."
     st.info(instruction); speak_button(instruction,"m4_way2_instruction")
     values=_module4_validated_value_labels()
-    if values:
-        st.markdown("**Valeurs déjà validées prises en compte :** "+", ".join(values))
-    st.warning("Cette version prépare la voie personnalisée. La génération adaptative des questions et leur enchaînement seront activés dans la prochaine petite version après validation de cet écran et de ses règles.")
-    c1,c2=st.columns(2)
-    with c1:
-        if st.button("← Changer de voie",use_container_width=True,key="m4_way2_change"):
-            st.session_state.module4_route=""; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
-    with c2:
-        if st.button("Retour au parcours",use_container_width=True,key="m4_way2_home"):
-            st.session_state.active_module="accueil_modules"; st.rerun()
-
+    if values: st.markdown("**Valeurs déjà validées prises en compte :** "+", ".join(values))
+    _module4_render_cycle("questions_personnalisees")
+    if st.button("← Changer de voie",use_container_width=True,key="m4_way2_change"):
+        st.session_state.module4_route=""; st.session_state.module4_current_cycle={}; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
 
 def render_module_4_placeholder() -> None:
     completed=bool(st.session_state.get("module4_knowledge_completed",False))

@@ -3,7 +3,7 @@ from pathlib import Path
 TEXT=Path(__file__).resolve().parents[1].joinpath('app.py').read_text(encoding='utf-8')
 
 def test_version_139a_and_two_routes():
-    assert 'APP_VERSION = "2.1.3.9A-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.9B-preproduction"' in TEXT
     assert 'module4_route' in TEXT
     assert 'Partir d’une situation que j’ai observée' in TEXT
     assert 'Aidez-moi à trouver une piste' in TEXT
@@ -20,6 +20,6 @@ def test_large_instructions_are_listenable():
 
 def test_way1_uses_shared_text_voice_validation_engine():
     assert 'open_response_widget(' in TEXT
-    assert '"m4_way1_situation_001"' in TEXT
+    assert 'widget_key=f"m4_cycle_{cycle[' in TEXT
     assert 'allow_reformulation=True' in TEXT
     assert 'listen=True' in TEXT
