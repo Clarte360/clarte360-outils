@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9C-preproduction"
+APP_VERSION = "2.1.3.9D-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -313,7 +313,7 @@ def default_business_state() -> dict[str, Any]:
         "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
         "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
         "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
-        "json_schema_version":"2.1.3.9B",
+        "json_schema_version":"2.1.3.9D",
         "active_module":"accueil_modules",
         "module_states":{
             "module_1":{"status":"non_commence","step":"intro"},
@@ -323,7 +323,7 @@ def default_business_state() -> dict[str, Any]:
             "module_5":{"status":"indisponible","step":"accueil"},
         },
         "central_validated_values":[], "values_to_examine":[], "session_review_items":[],
-        "hypothesis_basket":[], "module4_exploration_history":[],
+        "clarification_tracks":[], "hypothesis_basket":[], "module4_exploration_history":[],
         "current_value_work":{}, "module1_count":0, "module1_index":0,
         "module2_question_index":0, "module2_answers":{},
         "module3_declared_count":0, "module3_index":0, "module3_queue":[],
@@ -980,8 +980,21 @@ def analyse_concept_nature(term: str, definition: str, clarification: str="") ->
     if not term or not definition:
         return fallback
     low=normalize(term+" "+definition+" "+clarification)
-    if not clarification and any(x in low for x in ["peur", "manque", "rassur", "besoin", "protection", "securite financ"]):
-        fallback={"decision":"clarification_requise","explication":"Votre formulation peut renvoyer à une valeur, mais aussi à un besoin de sécurité ou à une crainte liée au manque. Une seule clarification est utile avant de poursuivre.","question":"Au-delà du besoin d'être rassuré ou protégé, quel principe souhaitez-vous respecter durablement dans vos propres choix et comportements ?"}
+    # Barrière métier déterministe : le Module 3 ne transforme jamais un besoin, une peur,
+    # une émotion ou un objectif en valeur. Ces cas sont envoyés vers les Pistes à clarifier du Module 4.
+    non_value_markers={
+        "besoin_ou_peur":["peur", "manque", "rassur", "besoin", "protection", "securite financ", "detresse", "angoiss"],
+        "emotion_ou_etat":["colere", "trist", "frustr", "stress", "mal etre", "perdue", "heureux", "tranquill"],
+        "objectif_ou_resultat":["reussir", "gagner plus", "avoir plus", "obtenir", "objectif", "resultat"],
+    }
+    for category,markers in non_value_markers.items():
+        if any(x in low for x in markers):
+            return {
+                "decision":"formulation_non_valeur",
+                "categorie":category,
+                "explication":"La formulation donnée décrit principalement un besoin, une peur, une émotion, un état recherché ou un résultat attendu, et non encore un principe durable guidant les choix et les actions. Son examen comme valeur doit s'arrêter ici.",
+                "question":""
+            }
     if not ai_ready():
         return fallback
     instructions="""Analysez avec prudence un terme présenté comme valeur, sa définition personnelle et, s'il existe, l'unique réponse de clarification.
@@ -989,8 +1002,8 @@ Vous devez conclure par UNE décision parmi exactement quatre :
 1. valeur_reconnue : terme présent au référentiel et cohérence suffisante ;
 2. clarification_requise : doute réel et significatif, uniquement si aucune clarification n'a encore été donnée ;
 3. valeur_absente_possible : terme absent du référentiel mais pouvant constituer une valeur personnelle ;
-4. formulation_non_valeur : la saisie est une phrase, un constat, un ressenti, une aspiration ou un concept qui ne constitue pas un nom de valeur.
-Distinguez prudemment valeur, besoin, croyance, limite, objectif, qualité, compétence ou comportement.
+4. formulation_non_valeur : la saisie ou surtout sa définition personnelle décrit principalement un besoin, une peur, une émotion, un état recherché, un objectif, une croyance, une limite, une qualité, une compétence ou un comportement.
+La définition personnelle prime sur le libellé. Une importance durable accordée à un besoin ne suffit jamais à en faire une valeur. Distinguez strictement valeur, besoin, croyance, limite, objectif, qualité, compétence, émotion, peur et comportement.
 Une valeur est un principe durable qui oriente les choix et comportements. Ne diagnostiquez pas, n'imposez rien.
 Si une clarification a déjà été fournie, vous ne devez jamais demander une seconde question : choisissez l'une des trois autres décisions.
 Retournez un JSON strict avec decision, explication et question. La question est vide sauf pour clarification_requise."""
@@ -2101,7 +2114,23 @@ def render_module_3() -> None:
     nature=st.session_state[analysis_key]
     decision=nature.get("decision",""); work["analyse"]=nature.get("explication",""); work["nature_decision"]=decision
     if decision=="formulation_non_valeur":
-        st.error((nature.get("explication") or "Cette formulation ne correspond pas au nom d'une valeur.")+" Aucune donnée n’a été enregistrée. Vous pourrez approfondir ce sujet dans le module 4 « Rechercher une nouvelle valeur avec Clarté360 ».")
+        st.error((nature.get("explication") or "Cette formulation ne correspond pas encore à une valeur.")+" Le questionnaire spécifique est donc bloqué.")
+        st.info("Vous pouvez envoyer cette formulation dans les **Pistes à clarifier** du Module 4, la supprimer définitivement ou la réserver à un échange avec votre accompagnateur.")
+        c1,c2,c3=st.columns(3)
+        with c1:
+            if st.button("Envoyer vers Pistes à clarifier",type="primary",use_container_width=True,key=f"m3_to_clarify_{work['id']}"):
+                item={"id":str(uuid.uuid4()),"terme_initial":canonical,"definition_personnelle":definition,"classification_provisoire":nature.get("categorie","non_valeur"),"origine":"module_3","situation":work.get("situation") or work.get("situation_deja_enregistree") or "","ressenti":work.get("ressenti") or work.get("reaction") or "","elements_source":deepcopy(work),"statut":"piste_a_clarifier","created_at":now_iso()}
+                st.session_state.clarification_tracks.append(item)
+                _remove_value_from_active_lists(canonical,keep="piste_a_clarifier")
+                business_trace("piste_a_clarifier_module4",canonical)
+                st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0
+                _set_module_status("module_3","disponible","accueil"); st.rerun()
+        with c2:
+            if st.button("Supprimer définitivement",use_container_width=True,key=f"m3_delete_nonvalue_{work['id']}"):
+                _purge_value_everywhere(work.get("original_name",""),canonical); st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0; st.rerun()
+        with c3:
+            if st.button("À revoir en séance",use_container_width=True,key=f"m3_review_nonvalue_{work['id']}"):
+                _add_review_item(work,"La formulation ne correspond pas encore à une valeur"); _advance_module3(); st.rerun()
         return
     if decision=="clarification_requise":
         st.warning(nature.get("explication") or "Cette formulation mérite une clarification prudente.")
@@ -2233,6 +2262,15 @@ def _module4_render_choice() -> None:
             st.write(txt); speak_button(txt,"m4_choice_way2")
             if st.button("Choisir cette voie",type="primary",use_container_width=True,key="m4_choose_way2"):
                 st.session_state.module4_route="questions_personnalisees"; _set_module_status("module_4","en_cours","voie_2_preparation"); business_trace("module4_voie_choisie","questions_personnalisees"); st.rerun()
+    tracks=st.session_state.get("clarification_tracks",[])
+    if tracks:
+        st.markdown("### Reprendre une piste mise en attente")
+        with st.container(border=True):
+            st.markdown("#### 3. Explorer une piste à clarifier")
+            st.write("Reprenez une formulation qui n’a pas pu être examinée comme valeur dans le Module 3. Clarté360 utilisera les éléments déjà saisis et le même moteur de questionnement vertical que dans les deux autres voies.")
+            if st.button("Choisir cette voie",type="primary",use_container_width=True,key="m4_choose_way3"):
+                st.session_state.module4_route="piste_clarifier"; st.session_state.module4_current_cycle={}; _set_module_status("module_4","en_cours","voie_3_piste_clarifier"); business_trace("module4_voie_choisie","piste_clarifier"); st.rerun()
+
     with st.expander("Consulter mes réponses au complément de connaissance",expanded=False):
         answers=st.session_state.get("module4_knowledge_answers",{})
         for exercise in MODULE4_KNOWLEDGE_EXERCISES:
@@ -2302,28 +2340,32 @@ Respectez impérativement : aucune conclusion psychologique, aucun profil, aucun
 
 def _module4_analyse_progress(cycle:dict[str,Any]) -> dict[str,Any]:
     exchanges=cycle.get("exchanges",[])
-    last=exchanges[-1]["reponse_validee"] if exchanges else ""
-    fallback_action="demander_mot" if len(exchanges)>=2 else "relance_verticale"
-    fallback={"action":fallback_action,"question":("Si vous deviez mettre un mot qui résume ce que vous ressentez, ce serait lequel ?" if fallback_action=="demander_mot" else "Qu’est-ce qui était réellement important pour vous dans cette situation ?"),"raison":"","idee_principale":""}
+    vertical_count=sum(1 for x in exchanges if x.get("role")=="relance_verticale")
+    fallback_action="demander_mot" if vertical_count>=3 else "relance_verticale"
+    fallback={"action":fallback_action,"question":("Si vous deviez mettre un mot sur ce qui était le plus important pour vous dans cette situation, lequel serait-il ?" if fallback_action=="demander_mot" else "Qu’est-ce qui était réellement important pour vous dans cette situation ?"),"raison":"","idee_principale":""}
     if not ai_ready(): return fallback
     instructions="""Analysez la progression d’un questionnement vertical Clarté360, sans attribuer de valeur et sans établir de profil.
 Décidez d’une seule action :
-- relance_verticale : si une précision réellement utile manque ;
-- demander_mot : dès qu’un enjeu susceptible de correspondre à une valeur commence à émerger ;
-- aucune_piste : si la réponse tourne en boucle, reste inexploitable ou ne permet pas une exploration utile.
-Maximum absolu : deux relances verticales avant la recherche du mot. Restez proche des mots du bénéficiaire. Une idée explorée ne pourra produire qu’une seule hypothèse retenue.
-La question de recherche du mot doit être exactement ou très proche de : « Si vous deviez mettre un mot qui résume ce que vous ressentez, ce serait lequel ? »"""
+- relance_verticale : tant qu'il manque une étape utile entre le fait raconté, ce qui a été attendu ou refusé, ce qui comptait réellement et le principe durable sous-jacent ;
+- demander_mot : uniquement lorsque les réponses permettent déjà de comprendre clairement ce qui était important, au-delà de la seule émotion ou du seul besoin ;
+- aucune_piste : si la réponse tourne en boucle ou si le bénéficiaire ne souhaite plus avancer.
+
+Ne demandez jamais un mot immédiatement après le seul récit initial. Posez normalement entre trois et cinq relances utiles, sans dépasser cinq. Chaque nouvelle question doit s'appuyer sur la dernière réponse et apporter un angle réellement nouveau. Ne répétez jamais une question presque identique.
+La recherche du mot doit viser ce qui était important, pas seulement le ressenti. Formulation recommandée : « Si vous deviez mettre un mot sur ce qui était le plus important pour vous dans cette situation, lequel serait-il ? »
+Une idée explorée ne pourra produire qu’une seule hypothèse retenue."""
     schema={"type":"object","properties":{"action":{"type":"string","enum":["relance_verticale","demander_mot","aucune_piste"]},"question":{"type":"string"},"raison":{"type":"string"},"idee_principale":{"type":"string"}},"required":["action","question","raison","idee_principale"],"additionalProperties":False}
     payload={"voie":cycle.get("voie"),"echanges":exchanges,"valeurs_deja_connues":list(_module4_all_known_names())}
     try:
         out=response_json(instructions,payload,"module4_progression_verticale",schema,max_tokens=420)
-        vertical_count=sum(1 for x in exchanges if x.get("role")=="relance_verticale")
-        if vertical_count>=2 and out.get("action")=="relance_verticale":
-            out["action"]="demander_mot"; out["question"]="Si vous deviez mettre un mot qui résume ce que vous ressentez, ce serait lequel ?"
+        if len(exchanges)<=1 and out.get("action")=="demander_mot":
+            out["action"]="relance_verticale"; out["question"]="Qu’est-ce qui vous a le plus touché ou dérangé dans cette situation, précisément ?"
+        if vertical_count<2 and out.get("action")=="demander_mot":
+            out["action"]="relance_verticale"; out["question"]="Qu’auriez-vous voulu voir respecté, compris ou préservé dans cette situation ?"
+        if vertical_count>=5 and out.get("action")=="relance_verticale":
+            out["action"]="demander_mot"; out["question"]="Si vous deviez mettre un mot sur ce qui était le plus important pour vous dans cette situation, lequel serait-il ?"
         return out
     except Exception:
         return fallback
-
 
 def _module4_word_candidates(cycle:dict[str,Any], word:str) -> list[dict[str,str]]:
     texts=[word]+[x.get("reponse_validee","") for x in cycle.get("exchanges",[])]
@@ -2409,6 +2451,8 @@ def _module4_render_cycle(voie:str) -> None:
         cycle["question"]=_module4_generate_way2_question(); cycle["stage"]="question"
     elif voie=="situation" and not cycle.get("question"):
         cycle["question"]="Avez-vous repéré récemment une situation qui vous a fait agir, réagir, vous réjouir, vous déranger ou vous toucher ?"; cycle["stage"]="question"
+    elif voie=="piste_clarifier" and not cycle.get("question"):
+        cycle["question"]="Derrière cette formulation, qu’est-ce qui est réellement important pour vous ?"; cycle["stage"]="question"
 
     if cycle.get("stage") in {"question","mot"}:
         question=cycle.get("question","")
@@ -2427,7 +2471,7 @@ def _module4_render_cycle(voie:str) -> None:
             else:
                 progress=_module4_analyse_progress(cycle)
                 if progress.get("action")=="aucune_piste": cycle["stage"]="termine"; cycle["result"]="aucune_piste"
-                elif progress.get("action")=="demander_mot": cycle["stage"]="mot"; cycle["question"]="Si vous deviez mettre un mot qui résume ce que vous ressentez, ce serait lequel ?"
+                elif progress.get("action")=="demander_mot": cycle["stage"]="mot"; cycle["question"]="Si vous deviez mettre un mot sur ce qui était le plus important pour vous dans cette situation, lequel serait-il ?"
                 else: cycle["stage"]="question"; cycle["question"]=progress.get("question") or "Qu’est-ce qui était réellement important pour vous dans cette situation ?"
             st.rerun()
         if cycle.get("pending_answer_processed"):
@@ -2502,12 +2546,44 @@ def _module4_render_way2() -> None:
     if st.button("← Changer de voie",use_container_width=True,key="m4_way2_change"):
         st.session_state.module4_route=""; st.session_state.module4_current_cycle={}; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
 
+def _module4_render_way3() -> None:
+    st.title("Explorer une piste à clarifier")
+    tracks=st.session_state.get("clarification_tracks",[])
+    if not tracks:
+        st.info("Aucune piste à clarifier n’est actuellement enregistrée.")
+        if st.button("← Retour au choix des voies",use_container_width=True,key="m4_way3_empty_back"):
+            st.session_state.module4_route=""; st.rerun()
+        return
+    selected=st.selectbox("Piste à reprendre",range(len(tracks)),format_func=lambda i:tracks[i].get("terme_initial") or "Piste",key="m4_way3_track")
+    track=tracks[selected]
+    with st.container(border=True):
+        st.write(f"**Terme initial :** {track.get('terme_initial','')}")
+        st.write(f"**Définition personnelle :** {track.get('definition_personnelle','')}")
+        if track.get("situation"): st.write(f"**Situation déjà enregistrée :** {track.get('situation')}")
+        if track.get("ressenti"): st.write(f"**Réaction ou ressenti déjà enregistré :** {track.get('ressenti')}")
+    cycle=st.session_state.get("module4_current_cycle") or {}
+    if not cycle or cycle.get("voie")!="piste_clarifier" or cycle.get("track_id")!=track.get("id"):
+        _module4_new_cycle("piste_clarifier")
+        cycle=st.session_state.module4_current_cycle
+        cycle["track_id"]=track.get("id")
+        cycle["question"]="Derrière cette formulation, qu’est-ce que vous cherchez surtout à préserver, respecter ou rendre possible dans votre manière de vivre et de décider ?"
+        cycle["stage"]="question"
+        cycle["source_track"]=deepcopy(track)
+    _module4_render_cycle("piste_clarifier")
+    cycle=st.session_state.get("module4_current_cycle") or {}
+    if cycle.get("stage")=="termine":
+        st.session_state.clarification_tracks=[x for x in tracks if x.get("id")!=track.get("id")]
+    if st.button("← Changer de voie",use_container_width=True,key="m4_way3_change"):
+        st.session_state.module4_route=""; st.session_state.module4_current_cycle={}; st.rerun()
+
+
 def render_module_4_placeholder() -> None:
     completed=bool(st.session_state.get("module4_knowledge_completed",False))
     if completed:
         route=str(st.session_state.get("module4_route","") or "")
         if route=="situation": _module4_render_way1(); return
         if route=="questions_personnalisees": _module4_render_way2(); return
+        if route=="piste_clarifier": _module4_render_way3(); return
         _module4_render_choice(); return
 
     st.title("Rechercher une nouvelle valeur avec Clarté360")
@@ -2627,6 +2703,7 @@ def build_payload(completed=False)->dict[str,Any]:
             "absence_score_profil_conclusion":True,
         },
         "panier_hypotheses":deepcopy(st.session_state.get("hypothesis_basket",[])),
+        "pistes_a_clarifier":deepcopy(st.session_state.get("clarification_tracks",[])),
         "preferences_interaction":st.session_state.get("interaction_preferences",{}),
         "valeurs_accompagnateur":[v for v in st.session_state.get("value_records",{}).values() if v.get("source")=="accompagnateur"],
         "valeurs_observations_personnelles":st.session_state.get("inter_session_values",[]),
@@ -2710,6 +2787,7 @@ def restore_from_progress(payload:dict):
     if m.get("valeurs_validees_centrales"): st.session_state.central_validated_values=deepcopy(m.get("valeurs_validees_centrales"))
     if m.get("valeurs_a_examiner"): st.session_state.values_to_examine=deepcopy(m.get("valeurs_a_examiner"))
     if m.get("a_revoir_en_seance"): st.session_state.session_review_items=deepcopy(m.get("a_revoir_en_seance"))
+    if m.get("pistes_a_clarifier"): st.session_state.clarification_tracks=deepcopy(m.get("pistes_a_clarifier"))
     if m.get("etat_panneau"): st.session_state.followup_panel_open=bool(m.get("etat_panneau",{}).get("ouvert",True))
     if m.get("historique_rapports"): st.session_state.report_history=deepcopy(m.get("historique_rapports"))
     repair_all_answer_metadata()

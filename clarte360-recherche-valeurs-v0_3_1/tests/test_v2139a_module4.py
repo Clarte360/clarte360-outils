@@ -3,7 +3,7 @@ from pathlib import Path
 TEXT=Path(__file__).resolve().parents[1].joinpath('app.py').read_text(encoding='utf-8')
 
 def test_version_139a_and_two_routes():
-    assert 'APP_VERSION = "2.1.3.9C-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.9D-preproduction"' in TEXT
     assert 'module4_route' in TEXT
     assert 'Partir d’une situation que j’ai observée' in TEXT
     assert 'Aidez-moi à trouver une piste' in TEXT
