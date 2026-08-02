@@ -1,21 +1,29 @@
 ## Version actuelle
 
-V2.1.3.9B-preproduction
+**V2.1.3.9E3-preproduction**
 
-# Clarté360 – Recherche de mes valeurs V2.1.2
+# Clarté360 – Recherche de mes valeurs
 
-Application Streamlit reconstruite depuis la V2.0 puis consolidée selon le Canvas V2.1 et les règles de navigation du Framework Clarté360.
+Application Streamlit de recherche, clarification et validation progressive des valeurs selon le référentiel RVC360 et le Framework Clarté360.
 
-## Évolutions centrales de cette version
+## Architecture métier actuelle
 
-- suppression de la numérotation visible des écrans ;
-- navigation libre vers toutes les étapes déjà ouvertes ;
-- recalcul et invalidation automatique des données dépendantes après modification ;
-- reprise exacte de la page, des files de validation, de la navigation et des états métier depuis le JSON de travail ;
-- composant unique pour toutes les questions ouvertes : écoute, clavier, voix, transcription, correction, validation et reformulation facultative ;
-- nettoyage des hésitations, répétitions involontaires et reprises de phrase avant validation ;
-- questionnaire bénéficiaire structuré en plusieurs questions courtes ;
-- audit de cohérence bloquant avant clôture définitive.
+- le Module 3 permet d’examiner volontairement une hypothèse conservée ;
+- le Module 4 recherche et formule des hypothèses sans jamais valider une valeur ;
+- les hypothèses acceptées sont enregistrées exclusivement dans le **Panier Hypothèses** ;
+- aucun transfert automatique vers « Valeurs à examiner » n’est autorisé ;
+- les pistes à clarifier, les hypothèses et les valeurs à examiner sont synchronisées sans doublon actif.
+
+## Correctif 9E1
+
+Cette version corrige l’audit de la 9E :
+
+- véritable raccourci **Ctrl + Entrée** sur les réponses écrites pour déclencher le même traitement que « Préparer et comparer » ;
+- application immédiate de la distinction **texte identique / correction légère / reformulation réelle** lors de la première saisie écrite ;
+- même distinction appliquée dès la première transcription vocale ;
+- une correction purement grammaticale ou typographique n’est plus présentée comme une reformulation différente ;
+- tests dédiés au raccourci clavier et au classement réel des différences ;
+- suppression des mentions documentaires devenues incompatibles avec le Panier Hypothèses.
 
 ## Installation
 
@@ -37,21 +45,14 @@ python -m py_compile app.py
 python -m pytest -q
 ```
 
-Résultat de fabrication : **11 tests réussis**.
+## Versions déclarées
 
-## Versions
-
-- Application : 2.1.2
+- Application : **2.1.3.9E3-preproduction**
 - Référentiel RVC360 : 2.1
 - Framework déclaré : 4.0
 
-## Stabilisation finale 8F
-Cette livraison stabilise le module 3 et son panier de gestion des valeurs. Les hypothèses du futur module 4 ne constituent pas un quatrième panier : une hypothèse sélectionnée sera envoyée dans le parcours normal de validation d’une nouvelle valeur.
+## Correctif 9E2
 
-
-## V2.1.3.9
-Cette version introduit uniquement le complément de connaissance du Module 4, réalisé une seule fois, sans score ni profil. Voir `CHANGELOG_V2.1.3.9.md`.
-
-
-## V2.1.3.9A
-Cette version ajoute l’introduction prudente du Module 4, le choix entre les deux voies, l’écoute des grandes consignes et la première saisie texte/voix validée de la Voie 1. Voir `CHANGELOG_V2.1.3.9A.md`.
+- Le bénéficiaire peut toujours conserver sa formulation initiale, y compris pour le nom d’une valeur, à l’écrit comme à l’oral.
+- Ctrl + Entrée est disponible sur tous les champs écrits. Il déclenche le bouton principal visible, avec ou sans comparaison Clarté360.
+- Deux tests comportementaux ciblés vérifient ces règles.
