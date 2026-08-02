@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.8F-preproduction"
+APP_VERSION = "2.1.3.9-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -309,20 +309,24 @@ def default_business_state() -> dict[str, Any]:
         "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
         "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
         "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
-        "json_schema_version":"2.1.3.8F",
+        "json_schema_version":"2.1.3.9",
         "active_module":"accueil_modules",
         "module_states":{
             "module_1":{"status":"non_commence","step":"intro"},
             "module_2":{"status":"non_commence","step":"questionnaire"},
             "module_3":{"status":"disponible","step":"accueil"},
-            "module_4":{"status":"disponible","step":"attente_v2139"},
+            "module_4":{"status":"disponible","step":"complement_connaissance"},
             "module_5":{"status":"indisponible","step":"accueil"},
         },
         "central_validated_values":[], "values_to_examine":[], "session_review_items":[],
+        "hypothesis_basket":[], "module4_exploration_history":[],
         "current_value_work":{}, "module1_count":0, "module1_index":0,
         "module2_question_index":0, "module2_answers":{},
         "module3_declared_count":0, "module3_index":0, "module3_queue":[],
         "followup_panel_open":True, "report_history":[], "answer_history":{},
+        "module4_knowledge_completed":False, "module4_knowledge_started_at":"",
+        "module4_knowledge_completed_at":"", "module4_knowledge_index":0,
+        "module4_knowledge_answers":{}, "module4_knowledge_version":"M4-CC-1.0",
     }
 
 def init_state() -> None:
@@ -1320,6 +1324,97 @@ MODULE_LABELS = {
     "module_3":"3. Valider ou revoir une valeur", "module_4":"4. Rechercher une nouvelle valeur",
     "module_5":"5. Mes rapports",
 }
+MODULE4_KNOWLEDGE_VERSION = "M4-CC-1.0"
+
+# Complément de connaissance du module 4.
+# Ces micro-exercices ne produisent ni score, ni profil, ni valeur supposée.
+# Ils sont réalisés une seule fois et servent seulement à personnaliser les futures questions.
+MODULE4_KNOWLEDGE_EXERCISES = [
+    {
+        "id":"M4-CC-001", "version":"1.0", "type":"choix_binaire",
+        "title":"Quand une journée se libère au dernier moment",
+        "prompt":"Quelle réaction vous ressemble le plus spontanément ?",
+        "options":[
+            "Je profite de l'occasion pour faire quelque chose que je n'avais pas prévu.",
+            "Je préfère utiliser ce temps pour avancer sur quelque chose déjà important pour moi.",
+        ],
+        "intention":"Repérer le type de situations concrètes qui pourront être proposées ensuite, sans conclure sur une valeur.",
+    },
+    {
+        "id":"M4-CC-002", "version":"1.0", "type":"choix_binaire",
+        "title":"Dans un projet collectif",
+        "prompt":"Quelle contribution vous attire le plus naturellement ?",
+        "options":[
+            "Faire émerger une idée nouvelle et donner l'impulsion de départ.",
+            "Faire en sorte que chacun sache clairement comment avancer.",
+        ],
+        "intention":"Adapter les futurs exemples de questionnement à des situations de lancement ou de structuration.",
+    },
+    {
+        "id":"M4-CC-003", "version":"1.0", "type":"micro_situation",
+        "title":"Une personne vous demande de l'aide",
+        "prompt":"Quelle première réaction vous vient le plus facilement ?",
+        "options":[
+            "L'écouter d'abord pour comprendre précisément ce qu'elle traverse.",
+            "Chercher rapidement avec elle une manière concrète d'avancer.",
+            "L'aider à identifier les personnes ou ressources qui pourraient aussi intervenir.",
+        ],
+        "intention":"Choisir ultérieurement des relances centrées sur l'écoute, l'action ou la mobilisation de ressources, sans attribuer de trait.",
+    },
+    {
+        "id":"M4-CC-004", "version":"1.0", "type":"choix_binaire",
+        "title":"Vous découvrez une nouvelle activité",
+        "prompt":"Qu'est-ce qui vous donne le plus envie de continuer ?",
+        "options":[
+            "Comprendre progressivement comment tout fonctionne.",
+            "Pouvoir rapidement essayer, ajuster et voir un résultat concret.",
+        ],
+        "intention":"Adapter le rythme et la forme des futures questions à des situations d'apprentissage ou d'expérimentation.",
+    },
+    {
+        "id":"M4-CC-005", "version":"1.0", "type":"choix_binaire",
+        "title":"Deux options sont possibles",
+        "prompt":"Quand les deux solutions se valent, qu'est-ce qui vous aide le plus à décider ?",
+        "options":[
+            "Pouvoir comparer calmement les conséquences de chaque option.",
+            "Sentir qu'une option correspond davantage à ce que je veux vivre maintenant.",
+        ],
+        "intention":"Choisir des formulations de relance plus factuelles ou plus expérientielles, sans conclure sur le fonctionnement de la personne.",
+    },
+    {
+        "id":"M4-CC-006", "version":"1.0", "type":"micro_situation",
+        "title":"Un moment dont vous êtes satisfait",
+        "prompt":"Lequel de ces moments vous semblerait le plus agréable ?",
+        "options":[
+            "Avoir mené quelque chose jusqu'au bout malgré les difficultés.",
+            "Avoir partagé un moment simple mais vraiment réussi avec d'autres personnes.",
+            "Avoir découvert une possibilité à laquelle je n'avais pas pensé.",
+        ],
+        "intention":"Diversifier les futurs points de départ entre accomplissement, expérience partagée et découverte.",
+    },
+    {
+        "id":"M4-CC-007", "version":"1.0", "type":"choix_binaire",
+        "title":"Quelqu'un n'est pas d'accord avec vous",
+        "prompt":"Quelle suite vous paraît la plus utile ?",
+        "options":[
+            "Prendre le temps de comprendre ce qui explique son point de vue.",
+            "Revenir aux faits et chercher une solution acceptable pour avancer.",
+        ],
+        "intention":"Préparer des questions futures portant sur le sens de la relation ou sur les critères concrets de décision.",
+    },
+    {
+        "id":"M4-CC-008", "version":"1.0", "type":"classement_court",
+        "title":"Dans une période agréable",
+        "prompt":"Classez ces trois situations de celle qui vous attire le plus à celle qui vous attire le moins.",
+        "options":[
+            "Pouvoir consacrer du temps à un projet personnel.",
+            "Vivre davantage de moments de qualité avec des personnes importantes.",
+            "Découvrir de nouveaux lieux, idées ou façons de faire.",
+        ],
+        "intention":"Sélectionner de futurs domaines d'exploration sans transformer le classement en résultat ou en profil.",
+    },
+]
+
 MODULE2_QUESTIONS = [
     {"id":"M2-IDENTITE-001","rubrique":"Votre situation","text":"Quelle est votre situation actuelle ? Vous pouvez préciser, si vous le souhaitez, votre âge, votre situation familiale, votre métier et vos principales activités."},
     {"id":"M2-PARCOURS-001","rubrique":"Votre parcours","text":"Quels éléments de votre parcours vous semblent importants ?"},
@@ -1630,7 +1725,7 @@ def render_module_menu() -> None:
         st.markdown("<div style='text-align:center;color:#6B7D7D;font-size:.78rem;margin-top:.5rem'>✅ Terminé &nbsp;·&nbsp; ▶ En cours &nbsp;·&nbsp; ○ Disponible</div>",unsafe_allow_html=True)
 
 def render_followup_panel() -> None:
-    vals=validated_names(); pending=st.session_state.get("values_to_examine",[]); review=st.session_state.get("session_review_items",[])
+    vals=validated_names(); pending=st.session_state.get("values_to_examine",[]); review=st.session_state.get("session_review_items",[]); hypotheses=st.session_state.get("hypothesis_basket",[])
     opened=st.toggle(f"Afficher le suivi de mes valeurs ({len(vals)})",value=bool(st.session_state.get("followup_panel_open",True)),key="followup_panel_toggle")
     st.session_state.followup_panel_open=bool(opened)
     if not opened:
@@ -1639,6 +1734,8 @@ def render_followup_panel() -> None:
     with st.container(border=True):
         st.markdown("**✅ Valeurs validées**")
         st.write(", ".join(vals) if vals else "Aucune pour le moment.")
+        st.markdown("**💡 Panier Hypothèses**")
+        st.write(", ".join(str(x.get("nom") or x.get("nom_final") or "") for x in hypotheses) if hypotheses else "Aucune hypothèse conservée.")
         st.markdown("**🔎 Valeurs à examiner**")
         st.write(", ".join(str(x.get("nom_final") or x.get("nom") or x.get("nom_initial") or "") for x in pending) if pending else "Aucune.")
         st.markdown("**📋 À revoir en séance**")
@@ -2056,13 +2153,106 @@ def _advance_module3() -> None:
     else:
         st.session_state.module3_queue=[]; st.session_state.current_value_work={}; _set_module_status("module_3","termine","accueil")
 
+def _module4_knowledge_answer(exercise: dict[str,Any]) -> dict[str,Any]:
+    return deepcopy(st.session_state.get("module4_knowledge_answers",{}).get(exercise["id"],{}))
+
+def _module4_save_knowledge_answer(exercise: dict[str,Any], answer: Any, status: str="termine") -> None:
+    answers=deepcopy(st.session_state.get("module4_knowledge_answers",{}))
+    previous=answers.get(exercise["id"],{})
+    answers[exercise["id"]]={
+        "id":exercise["id"], "version":exercise["version"], "type":exercise["type"],
+        "titre":exercise["title"], "question":exercise["prompt"],
+        "propositions":deepcopy(exercise["options"]), "reponse":deepcopy(answer),
+        "statut":status, "date_heure":now_iso(), "modifiee":bool(previous),
+    }
+    st.session_state.module4_knowledge_answers=answers
+    st.session_state.data_revision=int(st.session_state.get("data_revision",0))+1
+    business_trace("module4_complement_reponse",f"{exercise['id']}:{status}")
+
+def _module4_complete_knowledge() -> None:
+    st.session_state.module4_knowledge_completed=True
+    st.session_state.module4_knowledge_completed_at=now_iso()
+    st.session_state.module4_knowledge_index=len(MODULE4_KNOWLEDGE_EXERCISES)
+    _set_module_status("module_4","en_cours","choix_voie")
+    business_trace("module4_complement_termine",MODULE4_KNOWLEDGE_VERSION)
+
 def render_module_4_placeholder() -> None:
     st.title("Rechercher une nouvelle valeur avec Clarté360")
-    st.info("La nouvelle recherche assistée sera intégrée dans la V2.1.3.9 après validation réelle de la V2.1.3.8. Cette version prépare déjà les listes, la reprise et le transfert vers le module 3.")
-    if st.session_state.get("values_to_examine"):
-        st.success(f"{len(st.session_state.values_to_examine)} valeur(s) sont déjà en attente d’examen dans le module 3.")
-    if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m4_back_home"):
-        st.session_state.active_module="accueil_modules"; st.rerun()
+    completed=bool(st.session_state.get("module4_knowledge_completed",False))
+    if completed:
+        st.success("Le complément de connaissance a déjà été réalisé. Il ne sera pas rejoué automatiquement.")
+        st.info("La prochaine petite version intégrera les deux voies de recherche assistée. Vos réponses sont déjà conservées dans le JSON de reprise pour personnaliser cette future exploration.")
+        with st.expander("Consulter mes réponses au complément de connaissance",expanded=False):
+            answers=st.session_state.get("module4_knowledge_answers",{})
+            for exercise in MODULE4_KNOWLEDGE_EXERCISES:
+                item=answers.get(exercise["id"],{})
+                with st.container(border=True):
+                    st.markdown(f"**{exercise['title']}**")
+                    response=item.get("reponse")
+                    if isinstance(response,list):
+                        for i,value in enumerate(response,1): st.write(f"{i}. {value}")
+                    else: st.write(response or "Non répondu")
+                    st.caption("Cette réponse n'est ni un score, ni un profil, ni une valeur attribuée.")
+        if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m4_done_back_home"):
+            st.session_state.active_module="accueil_modules"; st.rerun()
+        return
+
+    _set_module_status("module_4","en_cours","complement_connaissance")
+    if not st.session_state.get("module4_knowledge_started_at"):
+        st.markdown("### Quelques questions pour mieux vous connaître")
+        st.info("Nous avons maintenant une première connaissance de votre parcours. Avant de poursuivre votre recherche de valeurs, nous allons vous proposer quelques questions très simples pour mieux vous connaître encore. Il ne s’agit ni d’un test, ni d’une évaluation. Il n’y a pas de bonne ou de mauvaise réponse. Vos réponses serviront uniquement à personnaliser les prochaines questions.")
+        st.warning("Cette étape ne produit aucun score, aucun profil et aucune conclusion. Elle est réalisée une seule fois.")
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button("← Retour au parcours",use_container_width=True,key="m4_cc_intro_back"):
+                st.session_state.active_module="accueil_modules"; st.rerun()
+        with c2:
+            if st.button("Commencer",type="primary",use_container_width=True,key="m4_cc_start"):
+                st.session_state.module4_knowledge_started_at=now_iso(); st.session_state.module4_knowledge_index=0; business_trace("module4_complement_demarre",MODULE4_KNOWLEDGE_VERSION); st.rerun()
+        return
+
+    idx=min(int(st.session_state.get("module4_knowledge_index",0)),len(MODULE4_KNOWLEDGE_EXERCISES)-1)
+    exercise=MODULE4_KNOWLEDGE_EXERCISES[idx]
+    st.progress(idx/len(MODULE4_KNOWLEDGE_EXERCISES))
+    st.caption(f"Question {idx+1} sur {len(MODULE4_KNOWLEDGE_EXERCISES)} · aucune bonne ou mauvaise réponse")
+    with st.container(border=True):
+        st.markdown(f"### {exercise['title']}")
+        st.write(exercise["prompt"])
+        existing=_module4_knowledge_answer(exercise).get("reponse")
+        if exercise["type"]=="classement_court":
+            st.caption("Attribuez 1 à la situation qui vous attire le plus, puis 2 et 3 sans utiliser deux fois le même rang.")
+            ranks=[]
+            cols=st.columns(3)
+            for i,option in enumerate(exercise["options"]):
+                default_rank=(existing.index(option)+1) if isinstance(existing,list) and option in existing else i+1
+                with cols[i]:
+                    st.write(option)
+                    ranks.append(int(st.selectbox("Rang",[1,2,3],index=default_rank-1,key=f"m4_rank_{exercise['id']}_{i}")))
+            answer=None
+            if len(set(ranks))==3:
+                answer=[x for _,x in sorted(zip(ranks,exercise["options"]))]
+            else:
+                st.warning("Utilisez une seule fois chacun des rangs 1, 2 et 3.")
+        else:
+            index=None
+            if existing in exercise["options"]: index=exercise["options"].index(existing)
+            answer=st.radio("Votre choix",exercise["options"],index=index,key=f"m4_choice_{exercise['id']}")
+    c1,c2,c3=st.columns([1,1,1])
+    with c1:
+        if st.button("← Précédent",use_container_width=True,disabled=idx==0,key=f"m4_prev_{idx}"):
+            st.session_state.module4_knowledge_index=max(0,idx-1); st.rerun()
+    with c2:
+        if st.button("Passer cette question",use_container_width=True,key=f"m4_skip_{idx}"):
+            _module4_save_knowledge_answer(exercise,None,"ignore")
+            if idx+1>=len(MODULE4_KNOWLEDGE_EXERCISES): _module4_complete_knowledge()
+            else: st.session_state.module4_knowledge_index=idx+1
+            st.rerun()
+    with c3:
+        if st.button("Valider et continuer" if idx+1<len(MODULE4_KNOWLEDGE_EXERCISES) else "Terminer",type="primary",use_container_width=True,disabled=answer is None,key=f"m4_next_{idx}"):
+            _module4_save_knowledge_answer(exercise,answer,"termine")
+            if idx+1>=len(MODULE4_KNOWLEDGE_EXERCISES): _module4_complete_knowledge()
+            else: st.session_state.module4_knowledge_index=idx+1
+            st.rerun()
 
 def render_module_5() -> None:
     st.title("Mes rapports")
@@ -2119,6 +2309,15 @@ def build_payload(completed=False)->dict[str,Any]:
         "exploration_complete":bool(completed or st.session_state.exploration_complete),
         "presentation_beneficiaire":st.session_state.get("beneficiary_profile",{}),
         "presentation_assistant":{"effectuee":st.session_state.get("assistant_presented",False)},
+        "complement_connaissance_module_4":{
+            "version":st.session_state.get("module4_knowledge_version",MODULE4_KNOWLEDGE_VERSION),
+            "commence_le":st.session_state.get("module4_knowledge_started_at",""),
+            "termine":bool(st.session_state.get("module4_knowledge_completed",False)),
+            "termine_le":st.session_state.get("module4_knowledge_completed_at",""),
+            "reponses":deepcopy(st.session_state.get("module4_knowledge_answers",{})),
+            "absence_score_profil_conclusion":True,
+        },
+        "panier_hypotheses":deepcopy(st.session_state.get("hypothesis_basket",[])),
         "preferences_interaction":st.session_state.get("interaction_preferences",{}),
         "valeurs_accompagnateur":[v for v in st.session_state.get("value_records",{}).values() if v.get("source")=="accompagnateur"],
         "valeurs_observations_personnelles":st.session_state.get("inter_session_values",[]),

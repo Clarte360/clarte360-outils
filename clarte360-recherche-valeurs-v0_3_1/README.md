@@ -1,6 +1,6 @@
 ## Version actuelle
 
-V2.1.3.8F-preproduction
+V2.1.3.9-preproduction
 
 # Clarté360 – Recherche de mes valeurs V2.1.2
 
@@ -47,3 +47,7 @@ Résultat de fabrication : **11 tests réussis**.
 
 ## Stabilisation finale 8F
 Cette livraison stabilise le module 3 et son panier de gestion des valeurs. Les hypothèses du futur module 4 ne constituent pas un quatrième panier : une hypothèse sélectionnée sera envoyée dans le parcours normal de validation d’une nouvelle valeur.
+
+
+## V2.1.3.9
+Cette version introduit uniquement le complément de connaissance du Module 4, réalisé une seule fois, sans score ni profil. Voir `CHANGELOG_V2.1.3.9.md`.
