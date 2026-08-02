@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9-preproduction"
+APP_VERSION = "2.1.3.9A-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -309,7 +309,7 @@ def default_business_state() -> dict[str, Any]:
         "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
         "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
         "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
-        "json_schema_version":"2.1.3.9",
+        "json_schema_version":"2.1.3.9A",
         "active_module":"accueil_modules",
         "module_states":{
             "module_1":{"status":"non_commence","step":"intro"},
@@ -327,6 +327,7 @@ def default_business_state() -> dict[str, Any]:
         "module4_knowledge_completed":False, "module4_knowledge_started_at":"",
         "module4_knowledge_completed_at":"", "module4_knowledge_index":0,
         "module4_knowledge_answers":{}, "module4_knowledge_version":"M4-CC-1.0",
+        "module4_route":"", "module4_intro_acknowledged":False,
     }
 
 def init_state() -> None:
@@ -2176,32 +2177,125 @@ def _module4_complete_knowledge() -> None:
     _set_module_status("module_4","en_cours","choix_voie")
     business_trace("module4_complement_termine",MODULE4_KNOWLEDGE_VERSION)
 
-def render_module_4_placeholder() -> None:
+def _module4_validated_value_labels() -> list[str]:
+    """Liste dédupliquée des valeurs déjà validées, sans interprétation."""
+    names=[]
+    for item in st.session_state.get("central_validated_values",[]) or []:
+        name=str(item.get("nom_final","") or "").strip()
+        if name and normalize(name) not in {normalize(x) for x in names}: names.append(name)
+    if not names:
+        for name in validated_names():
+            if name and normalize(name) not in {normalize(x) for x in names}: names.append(name)
+    return names
+
+
+def _module4_intro_text() -> str:
+    values=_module4_validated_value_labels()
+    values_text=", ".join(values) if values else "certaines valeurs déjà identifiées"
+    return (
+        f"Vous avez déjà identifié et validé plusieurs valeurs importantes pour vous, notamment : {values_text}. "
+        "Dans cette nouvelle étape, nous allons vous aider à explorer d’autres pistes possibles. "
+        "À partir de ce que vous racontez, de ce que vous ressentez et de ce que vous avez déjà partagé, "
+        "Clarté360 pourra vous proposer une ou plusieurs hypothèses de valeurs. "
+        "Ces propositions ne sont jamais des conclusions. Nous ne pouvons pas savoir à votre place si une valeur vous correspond réellement. "
+        "Vous restez libre d’accepter une hypothèse, de la conserver pour plus tard ou de la refuser. "
+        "Une hypothèse acceptée sera enregistrée uniquement dans votre panier Hypothèses. "
+        "Elle ne deviendra pas automatiquement une valeur. Plus tard, depuis le module 3, vous pourrez décider de l’examiner et, seulement si elle vous correspond réellement, de la valider."
+    )
+
+
+def _module4_render_choice() -> None:
     st.title("Rechercher une nouvelle valeur avec Clarté360")
+    st.success("Le complément de connaissance a déjà été réalisé. Il ne sera pas rejoué automatiquement.")
+    intro=_module4_intro_text()
+    st.markdown("### Avant de commencer")
+    st.info(intro)
+    speak_button(intro,"m4_intro_hypotheses")
+    st.caption("Il est tout à fait possible qu’aucune nouvelle valeur n’émerge. Ce n’est ni un échec ni une obligation d’en trouver une.")
+    st.markdown("### Comment souhaitez-vous poursuivre ?")
+    c1,c2=st.columns(2)
+    with c1:
+        with st.container(border=True):
+            st.markdown("#### 1. Partir d’une situation que j’ai observée")
+            txt="Racontez une situation récente ou marquante qui vous a fait agir, réagir, vous réjouir, vous déranger ou vous toucher. Nous chercherons ensuite, avec prudence, si elle fait apparaître une autre piste que vos valeurs déjà validées."
+            st.write(txt); speak_button(txt,"m4_choice_way1")
+            if st.button("Choisir cette voie",type="primary",use_container_width=True,key="m4_choose_way1"):
+                st.session_state.module4_route="situation"; _set_module_status("module_4","en_cours","voie_1_situation"); business_trace("module4_voie_choisie","situation"); st.rerun()
+    with c2:
+        with st.container(border=True):
+            st.markdown("#### 2. Aidez-moi à trouver une piste")
+            txt="Clarté360 utilisera ce que vous avez déjà partagé, le complément de connaissance, vos valeurs validées et les pistes déjà explorées pour vous proposer quelques questions personnalisées, sans établir de profil et sans vous attribuer de valeur."
+            st.write(txt); speak_button(txt,"m4_choice_way2")
+            if st.button("Choisir cette voie",type="primary",use_container_width=True,key="m4_choose_way2"):
+                st.session_state.module4_route="questions_personnalisees"; _set_module_status("module_4","en_cours","voie_2_preparation"); business_trace("module4_voie_choisie","questions_personnalisees"); st.rerun()
+    with st.expander("Consulter mes réponses au complément de connaissance",expanded=False):
+        answers=st.session_state.get("module4_knowledge_answers",{})
+        for exercise in MODULE4_KNOWLEDGE_EXERCISES:
+            item=answers.get(exercise["id"],{})
+            with st.container(border=True):
+                st.markdown(f"**{exercise['title']}**")
+                response=item.get("reponse")
+                if isinstance(response,list):
+                    for i,value in enumerate(response,1): st.write(f"{i}. {value}")
+                else: st.write(response or "Non répondu")
+                st.caption("Cette réponse n’est ni un score, ni un profil, ni une valeur attribuée.")
+    if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m4_choice_back_home"):
+        st.session_state.active_module="accueil_modules"; st.rerun()
+
+
+def _module4_render_way1() -> None:
+    st.title("Partir d’une situation observée")
+    instruction="Pensez à une situation récente ou marquante qui vous a fait agir, réagir, vous réjouir, vous déranger ou vous toucher. Décrivez simplement ce qui s’est passé. Pour le moment, ne cherchez pas vous-même le nom d’une valeur."
+    st.info(instruction); speak_button(instruction,"m4_way1_instruction")
+    answer=open_response_widget(
+        "Avez-vous repéré récemment une situation qui vous a fait agir, réagir, vous réjouir, vous déranger ou vous toucher ?",
+        "m4_way1_situation_001",height=150,allow_reformulation=True,listen=True,dependency_scope="exploration"
+    )
+    if answer:
+        st.success("Votre situation est enregistrée. Elle sera utilisée uniquement dans sa version validée pour préparer la première question de clarification.")
+        st.caption("Aucune hypothèse n’est encore formulée à ce stade.")
+    c1,c2=st.columns(2)
+    with c1:
+        if st.button("← Changer de voie",use_container_width=True,key="m4_way1_change"):
+            st.session_state.module4_route=""; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
+    with c2:
+        if st.button("Retour au parcours",use_container_width=True,key="m4_way1_home"):
+            st.session_state.active_module="accueil_modules"; st.rerun()
+
+
+def _module4_render_way2() -> None:
+    st.title("Aidez-moi à trouver une piste")
+    instruction="Nous allons utiliser ce que vous avez déjà partagé pour choisir quelques questions qui pourront ouvrir un angle encore peu exploré. Vos réponses au complément de connaissance ne constituent pas un profil. Elles servent uniquement à personnaliser le questionnement et à éviter les répétitions."
+    st.info(instruction); speak_button(instruction,"m4_way2_instruction")
+    values=_module4_validated_value_labels()
+    if values:
+        st.markdown("**Valeurs déjà validées prises en compte :** "+", ".join(values))
+    st.warning("Cette version prépare la voie personnalisée. La génération adaptative des questions et leur enchaînement seront activés dans la prochaine petite version après validation de cet écran et de ses règles.")
+    c1,c2=st.columns(2)
+    with c1:
+        if st.button("← Changer de voie",use_container_width=True,key="m4_way2_change"):
+            st.session_state.module4_route=""; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
+    with c2:
+        if st.button("Retour au parcours",use_container_width=True,key="m4_way2_home"):
+            st.session_state.active_module="accueil_modules"; st.rerun()
+
+
+def render_module_4_placeholder() -> None:
     completed=bool(st.session_state.get("module4_knowledge_completed",False))
     if completed:
-        st.success("Le complément de connaissance a déjà été réalisé. Il ne sera pas rejoué automatiquement.")
-        st.info("La prochaine petite version intégrera les deux voies de recherche assistée. Vos réponses sont déjà conservées dans le JSON de reprise pour personnaliser cette future exploration.")
-        with st.expander("Consulter mes réponses au complément de connaissance",expanded=False):
-            answers=st.session_state.get("module4_knowledge_answers",{})
-            for exercise in MODULE4_KNOWLEDGE_EXERCISES:
-                item=answers.get(exercise["id"],{})
-                with st.container(border=True):
-                    st.markdown(f"**{exercise['title']}**")
-                    response=item.get("reponse")
-                    if isinstance(response,list):
-                        for i,value in enumerate(response,1): st.write(f"{i}. {value}")
-                    else: st.write(response or "Non répondu")
-                    st.caption("Cette réponse n'est ni un score, ni un profil, ni une valeur attribuée.")
-        if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m4_done_back_home"):
-            st.session_state.active_module="accueil_modules"; st.rerun()
-        return
+        route=str(st.session_state.get("module4_route","") or "")
+        if route=="situation": _module4_render_way1(); return
+        if route=="questions_personnalisees": _module4_render_way2(); return
+        _module4_render_choice(); return
 
+    st.title("Rechercher une nouvelle valeur avec Clarté360")
     _set_module_status("module_4","en_cours","complement_connaissance")
     if not st.session_state.get("module4_knowledge_started_at"):
         st.markdown("### Quelques questions pour mieux vous connaître")
-        st.info("Nous avons maintenant une première connaissance de votre parcours. Avant de poursuivre votre recherche de valeurs, nous allons vous proposer quelques questions très simples pour mieux vous connaître encore. Il ne s’agit ni d’un test, ni d’une évaluation. Il n’y a pas de bonne ou de mauvaise réponse. Vos réponses serviront uniquement à personnaliser les prochaines questions.")
-        st.warning("Cette étape ne produit aucun score, aucun profil et aucune conclusion. Elle est réalisée une seule fois.")
+        intro="Nous avons maintenant une première connaissance de votre parcours. Avant de poursuivre votre recherche de valeurs, nous allons vous proposer quelques questions très simples pour mieux vous connaître encore. Il ne s’agit ni d’un test, ni d’une évaluation. Il n’y a pas de bonne ou de mauvaise réponse. Vos réponses serviront uniquement à personnaliser les prochaines questions."
+        st.info(intro); speak_button(intro,"m4_cc_intro_listen")
+        warning="Cette étape ne produit aucun score, aucun profil et aucune conclusion. Elle est réalisée une seule fois."
+        st.warning(warning); speak_button(warning,"m4_cc_warning_listen")
         c1,c2=st.columns(2)
         with c1:
             if st.button("← Retour au parcours",use_container_width=True,key="m4_cc_intro_back"):
@@ -2217,25 +2311,18 @@ def render_module_4_placeholder() -> None:
     st.caption(f"Question {idx+1} sur {len(MODULE4_KNOWLEDGE_EXERCISES)} · aucune bonne ou mauvaise réponse")
     with st.container(border=True):
         st.markdown(f"### {exercise['title']}")
-        st.write(exercise["prompt"])
+        st.write(exercise["prompt"]); speak_button(exercise["prompt"],f"m4_cc_q_{idx}")
         existing=_module4_knowledge_answer(exercise).get("reponse")
         if exercise["type"]=="classement_court":
             st.caption("Attribuez 1 à la situation qui vous attire le plus, puis 2 et 3 sans utiliser deux fois le même rang.")
-            ranks=[]
-            cols=st.columns(3)
+            ranks=[]; cols=st.columns(3)
             for i,option in enumerate(exercise["options"]):
                 default_rank=(existing.index(option)+1) if isinstance(existing,list) and option in existing else i+1
-                with cols[i]:
-                    st.write(option)
-                    ranks.append(int(st.selectbox("Rang",[1,2,3],index=default_rank-1,key=f"m4_rank_{exercise['id']}_{i}")))
-            answer=None
-            if len(set(ranks))==3:
-                answer=[x for _,x in sorted(zip(ranks,exercise["options"]))]
-            else:
-                st.warning("Utilisez une seule fois chacun des rangs 1, 2 et 3.")
+                with cols[i]: st.write(option); ranks.append(int(st.selectbox("Rang",[1,2,3],index=default_rank-1,key=f"m4_rank_{exercise['id']}_{i}")))
+            answer=[x for _,x in sorted(zip(ranks,exercise["options"]))] if len(set(ranks))==3 else None
+            if answer is None: st.warning("Utilisez une seule fois chacun des rangs 1, 2 et 3.")
         else:
-            index=None
-            if existing in exercise["options"]: index=exercise["options"].index(existing)
+            index=exercise["options"].index(existing) if existing in exercise["options"] else None
             answer=st.radio("Votre choix",exercise["options"],index=index,key=f"m4_choice_{exercise['id']}")
     c1,c2,c3=st.columns([1,1,1])
     with c1:

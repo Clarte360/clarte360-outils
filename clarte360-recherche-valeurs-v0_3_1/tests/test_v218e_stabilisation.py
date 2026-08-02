@@ -5,7 +5,7 @@ APP=Path(__file__).resolve().parents[1]/'app.py'
 TEXT=APP.read_text(encoding='utf-8')
 
 def test_version_8e():
-    assert 'APP_VERSION = "2.1.3.8F-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.9A-preproduction"' in TEXT
 
 def test_four_mandatory_decisions():
     for token in ['valeur_reconnue','clarification_requise','valeur_absente_possible','formulation_non_valeur']:

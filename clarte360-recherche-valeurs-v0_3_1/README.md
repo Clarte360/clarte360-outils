@@ -1,6 +1,6 @@
 ## Version actuelle
 
-V2.1.3.9-preproduction
+V2.1.3.9A-preproduction
 
 # Clarté360 – Recherche de mes valeurs V2.1.2
 
@@ -51,3 +51,7 @@ Cette livraison stabilise le module 3 et son panier de gestion des valeurs. Les 
 
 ## V2.1.3.9
 Cette version introduit uniquement le complément de connaissance du Module 4, réalisé une seule fois, sans score ni profil. Voir `CHANGELOG_V2.1.3.9.md`.
+
+
+## V2.1.3.9A
+Cette version ajoute l’introduction prudente du Module 4, le choix entre les deux voies, l’écoute des grandes consignes et la première saisie texte/voix validée de la Voie 1. Voir `CHANGELOG_V2.1.3.9A.md`.
