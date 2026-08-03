@@ -5,14 +5,14 @@ TEXT = APP.read_text(encoding="utf-8")
 
 
 def test_8c_version_and_removed_useless_accompanist_review():
-    assert 'APP_VERSION = "2.1.3.9F-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.9F1-preproduction"' in TEXT
     assert "Je souhaite revoir cette valeur avec mon accompagnateur" not in TEXT
 
 
 def test_module2_shows_all_questions_and_hydrates_legacy_answers():
     assert "def _hydrate_module2_answers" in TEXT
-    assert "for index,q in enumerate(MODULE2_QUESTIONS[:idx],1)" in TEXT
-    assert "Vos réponses sont enregistrées. Vous pouvez modifier chacune d’elles à tout moment." in TEXT
+    assert "for q in MODULE2_QUESTIONS[:idx]" in TEXT
+    assert "Vos réponses sont enregistrées. Vous pouvez modifier chacune d’elles à tout moment" in TEXT
 
 
 def test_module3_pending_preview_and_safe_exit():

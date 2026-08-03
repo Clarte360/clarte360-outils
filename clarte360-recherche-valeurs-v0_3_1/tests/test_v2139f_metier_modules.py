@@ -2,7 +2,7 @@ from pathlib import Path
 TEXT=Path('app.py').read_text(encoding='utf-8')
 
 def test_version_9f():
-    assert 'APP_VERSION = "2.1.3.9F-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.9F1-preproduction"' in TEXT
 
 def test_module3_no_vertical_clarification():
     module3=TEXT[TEXT.index('def render_module_3'):TEXT.index('def _advance_module3')]
@@ -17,12 +17,13 @@ def test_recognized_value_name_has_priority():
     assert 'alerte_definition' in fn
     assert 'un mot isolé' in fn
 
-def test_module2_chat_and_editable():
-    fn=TEXT[TEXT.index('def _m2_chat_bubble'):TEXT.index('def _module3_current_work')]
-    assert '_m2_chat_bubble("assistant"' in fn
-    assert '_m2_chat_bubble("user"' in fn
-    assert 'Modifier cette réponse' in fn
-    assert 'IA intervient uniquement pour mettre votre réponse en forme, jamais pour vous analyser' in fn
+def test_module2_uses_module3_response_style_and_stays_editable():
+    fn=TEXT[TEXT.index('def render_module_2'):TEXT.index('def _module3_current_work')]
+    assert '_m2_chat_bubble' not in fn
+    assert 'open_response_widget(' in fn
+    assert 'allow_reformulation=True' in fn
+    assert 'corriger ou reformuler votre réponse, jamais pour vous analyser' in fn
+    assert 'Vous pouvez modifier chacune d’elles à tout moment' in fn
 
 def test_reports_include_time_and_sessions():
     fn=TEXT[TEXT.index('def create_pdf'):TEXT.index('def display_header')]

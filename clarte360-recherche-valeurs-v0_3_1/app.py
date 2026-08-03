@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9F-preproduction"
+APP_VERSION = "2.1.3.9F1-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -1991,60 +1991,55 @@ def _hydrate_module2_answers() -> None:
             if value: answers[qid]=str(value)
 
 
-def _m2_chat_bubble(role: str, text: str) -> None:
-    is_user=role=="user"
-    align="flex-end" if is_user else "flex-start"
-    bg="#EAF7F6" if is_user else "#F4F6F8"
-    border="#0E7774" if is_user else "#D9E1E5"
-    label="Vous" if is_user else "Clarté360"
-    st.markdown(f"""<div style='display:flex;justify-content:{align};margin:.35rem 0 .55rem 0'>
-    <div style='max-width:82%;background:{bg};border:1px solid {border};border-radius:14px;padding:.65rem .85rem'>
-    <div style='font-size:.78rem;font-weight:700;color:#0E7774;margin-bottom:.2rem'>{label}</div>
-    <div>{html.escape(str(text)).replace(chr(10),'<br>')}</div></div></div>""",unsafe_allow_html=True)
-
-
 def render_module_2() -> None:
     st.title("Faisons connaissance")
-    st.caption("Un échange simple, une question à la fois. L’IA intervient uniquement pour mettre votre réponse en forme, jamais pour vous analyser.")
+    st.caption("Une question à la fois. L’IA intervient uniquement pour corriger ou reformuler votre réponse, jamais pour vous analyser.")
     _hydrate_module2_answers()
-    state=_module_state("module_2"); answers=st.session_state.module2_answers
-    editing_qid=st.session_state.get("module2_editing_qid","")
+    state=_module_state("module_2")
+    answers=st.session_state.module2_answers
     completed=state.get("status")=="termine"
     if not completed:
         _set_module_status("module_2","en_cours","questionnaire")
     idx=int(st.session_state.get("module2_question_index",0))
+    idx=max(0,min(idx,len(MODULE2_QUESTIONS)))
     if completed:
         idx=len(MODULE2_QUESTIONS)
-    # Fil déjà validé
-    for index,q in enumerate(MODULE2_QUESTIONS[:idx],1):
-        qid=q["id"]; value=str(answers.get(qid,"") or "").strip()
-        if not value: continue
-        _m2_chat_bubble("assistant",q["text"])
-        _m2_chat_bubble("user",value)
-        if completed:
-            if editing_qid==qid:
-                new_value=open_response_widget("Modifiez votre réponse",f"m2_edit_{qid}",value=value,height=110,dependency_scope="profile")
-                e1,e2=st.columns(2)
-                with e1:
-                    if st.button("Annuler",use_container_width=True,key=f"m2_edit_cancel_{qid}"):
-                        st.session_state.module2_editing_qid=""; st.rerun()
-                with e2:
-                    if new_value and st.button("Confirmer la modification",type="primary",use_container_width=True,key=f"m2_edit_confirm_{qid}"):
-                        answers[qid]=new_value; st.session_state.module2_editing_qid=""
-                        st.session_state.beneficiary_profile={"questions":deepcopy(answers),"presentation_libre":"\n\n".join(v for v in answers.values() if v),"date":now_iso()}
-                        business_trace("module2_reponse_modifiee",qid); st.rerun()
-            elif st.button("Modifier cette réponse",key=f"m2_edit_open_{qid}"):
-                st.session_state.module2_editing_qid=qid; st.rerun()
+
+    # Les questions déjà traitées utilisent exactement le même composant que le Module 3 :
+    # grande question, réponse enregistrée et modification permanente (nouvelle saisie,
+    # correction manuelle ou reformulation Clarté360).
+    for q in MODULE2_QUESTIONS[:idx]:
+        qid=q["id"]
+        value=str(answers.get(qid,"") or "").strip()
+        if not value:
+            continue
+        retained=open_response_widget(
+            q["text"], f"m2_{qid}", value=value, height=110,
+            dependency_scope="profile", allow_reformulation=True,
+        )
+        if retained and retained!=value:
+            answers[qid]=retained
+            st.session_state.beneficiary_profile={
+                "questions":deepcopy(answers),
+                "presentation_libre":"\n\n".join(v for v in answers.values() if v),
+                "date":now_iso(),
+            }
+            business_trace("module2_reponse_modifiee",qid)
+
     if completed:
-        st.success("Vos réponses sont enregistrées. Vous pouvez modifier chacune d’elles à tout moment.")
+        st.success("Vos réponses sont enregistrées. Vous pouvez modifier chacune d’elles à tout moment, manuellement ou avec une reformulation Clarté360.")
         if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m2_back_home"):
             st.session_state.active_module="accueil_modules"; st.session_state.page="Modules"; st.rerun()
         return
+
     q=MODULE2_QUESTIONS[idx]
-    st.progress(idx/len(MODULE2_QUESTIONS)); st.caption(f"Question {idx+1} sur {len(MODULE2_QUESTIONS)} — {q['rubrique']}")
-    _m2_chat_bubble("assistant",q["text"])
-    st.info("Prenez votre temps. Vous pouvez répondre à l’écrit ou à l’oral, même si vous cherchez vos mots ou vous reprenez. L’objectif est simplement de mieux comprendre votre situation et votre parcours.")
-    val=open_response_widget("Votre réponse",f"m2_{q['id']}",value=answers.get(q["id"],""),height=110,dependency_scope="profile")
+    st.progress(idx/len(MODULE2_QUESTIONS))
+    st.caption(f"Question {idx+1} sur {len(MODULE2_QUESTIONS)} — {q['rubrique']}")
+    val=open_response_widget(
+        q["text"], f"m2_{q['id']}", value=answers.get(q["id"],""), height=110,
+        dependency_scope="profile", allow_reformulation=True,
+        help_text="Prenez votre temps. Vous pouvez répondre à l’écrit ou à l’oral, même si vous cherchez vos mots ou vous reprenez. L’objectif est simplement de mieux comprendre votre situation et votre parcours.",
+    )
     if val:
         answers[q["id"]]=val
         c1,c2=st.columns(2)
@@ -2054,9 +2049,15 @@ def render_module_2() -> None:
         with c2:
             if st.button("Continuer",type="primary",key=f"m2_next_{idx}",use_container_width=True):
                 st.session_state.module2_question_index=idx+1
+                st.session_state.beneficiary_profile={
+                    "questions":deepcopy(answers),
+                    "presentation_libre":"\n\n".join(v for v in answers.values() if v),
+                    "date":now_iso(),
+                }
                 if idx+1>=len(MODULE2_QUESTIONS):
-                    _set_module_status("module_2","termine","consultation"); st.session_state.profile_complete=True
-                    st.session_state.beneficiary_profile={"questions":deepcopy(answers),"presentation_libre":"\n\n".join(v for v in answers.values() if v),"date":now_iso()}; st.session_state.active_module="accueil_modules"
+                    _set_module_status("module_2","termine","consultation")
+                    st.session_state.profile_complete=True
+                    st.session_state.active_module="accueil_modules"
                 st.rerun()
 
 def _module3_current_work() -> dict[str,Any]:
@@ -2298,10 +2299,22 @@ def render_module_3() -> None:
         st.session_state[analysis_key]=analyse_concept_nature(canonical,definition,current_clarification)
         st.session_state[analysis_sig_key]=analysis_signature
     nature=st.session_state[analysis_key]
+    # En réexamen d'une valeur déjà reconnue, le nom de la valeur prime toujours.
+    # La définition personnelle peut être conservée, légèrement ajustée ou reformulée,
+    # mais elle ne bloque jamais le questionnaire spécifique.
+    if work.get("source")=="reexamen" and info:
+        alert=str(nature.get("alerte_definition","") or "").strip()
+        nature={
+            "decision":"valeur_reconnue",
+            "explication":"Cette valeur figure dans le référentiel Clarté360. Vous pouvez conserver votre définition actuelle, la modifier légèrement ou demander une reformulation avant de poursuivre.",
+            "question":"",
+            "alerte_definition":alert,
+        }
+        st.session_state[analysis_key]=nature
     decision=nature.get("decision",""); work["analyse"]=nature.get("explication",""); work["nature_decision"]=decision
     if decision=="formulation_non_valeur":
-        st.error((nature.get("explication") or "Cette formulation ne correspond pas encore à une valeur.")+" Le questionnaire spécifique est donc bloqué.")
-        st.info("Vous pouvez envoyer cette formulation dans les **Pistes à clarifier** du Module 4, la supprimer définitivement ou la réserver à un échange avec votre accompagnateur.")
+        st.warning(nature.get("explication") or "Cette formulation semble surtout décrire un besoin, un état recherché ou un résultat.")
+        st.info("Ce constat n'est pas un jugement sur votre réponse. Vous pouvez conserver votre formulation, la retravailler, explorer ce sujet dans le Module 4 ou en parler avec votre accompagnateur.")
         c1,c2,c3=st.columns(3)
         with c1:
             if st.button("Envoyer vers Pistes à clarifier",type="primary",use_container_width=True,key=f"m3_to_clarify_{work['id']}"):
@@ -2325,7 +2338,7 @@ def render_module_3() -> None:
         if nature.get("alerte_definition"):
             st.warning(nature.get("alerte_definition"))
     elif decision=="formulation_non_valeur":
-        st.error((nature.get("explication") or "Cette formulation ne correspond pas à une valeur.")+" Aucune donnée n’a été enregistrée. Le module 4 pourra vous aider à approfondir ce sujet.")
+        st.warning(nature.get("explication") or "Cette formulation mérite peut-être d’être précisée.")
         return
     st.markdown("### Choisissez la suite la plus utile")
     st.caption("Chaque choix correspond à un parcours différent. Votre terme ne sera placé que dans un seul panier actif.")
