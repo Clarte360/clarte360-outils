@@ -5,12 +5,12 @@ APP=Path(__file__).resolve().parents[1]/'app.py'
 TEXT=APP.read_text(encoding='utf-8')
 
 def test_version_8e():
-    assert 'APP_VERSION = "2.1.3.9E4-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.9F-preproduction"' in TEXT
 
 def test_four_mandatory_decisions():
-    for token in ['valeur_reconnue','clarification_requise','valeur_absente_possible','formulation_non_valeur']:
+    for token in ['valeur_reconnue','valeur_absente_possible','formulation_non_valeur']:
         assert token in TEXT
-    assert 'Conclut obligatoirement par l\'une des quatre décisions métier de la 8E' in TEXT
+    assert "Qualifie un terme sans lancer d'exploration verticale dans le Module 3" in TEXT
 
 def test_duplicate_and_single_active_list_guards():
     assert 'def _active_value_location' in TEXT
@@ -39,7 +39,6 @@ def test_series_buttons_are_explicit():
 def test_clarification_context_is_persisted():
     assert '"clarifications":deepcopy(work.get("clarifications",[]))' in TEXT
     assert '"question":question' in TEXT
-    assert '"reponse_originale"' in TEXT
     assert '"reformulation_proposee"' in TEXT
 
 def test_timeout_real_activity_callback():
@@ -61,5 +60,5 @@ def test_normalisation_adopte_uniquement_equivalence_stricte():
     assert 'normalize(canonical)==target' in helper
 
 def test_presence_referentiel_est_reellement_exacte():
-    assert 'present=bool(_referential_value_info(_normalise_value_name(term)))' in TEXT
+    assert 'present=bool(_referential_value_info(canonical))' in TEXT
     assert 'info=_referential_value_info(canonical)' in TEXT

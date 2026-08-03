@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9E4-preproduction"
+APP_VERSION = "2.1.3.9F-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -965,74 +965,45 @@ Retournez uniquement un objet JSON avec la clé texte_corrige."""
     return candidate
 
 def analyse_concept_nature(term: str, definition: str, clarification: str="") -> dict[str, str]:
-    """Conclut obligatoirement par l'une des quatre décisions métier de la 8E.
+    """Qualifie un terme sans lancer d'exploration verticale dans le Module 3.
 
-    - valeur_reconnue
-    - clarification_requise (une seule question)
-    - valeur_absente_possible
-    - formulation_non_valeur
+    Règle 9F :
+    - le nom de la valeur est prioritaire ;
+    - un terme reconnu au référentiel reste une valeur reconnue ;
+    - sa définition peut produire une alerte non bloquante, jamais un rejet automatique ;
+    - pour un terme absent, le nom et la définition sont comparés pour décider entre
+      valeur personnelle plausible et formulation non-valeur ;
+    - aucune question de clarification n'est produite ici : l'exploration appartient au Module 4.
     """
-    term=str(term or "").strip(); definition=str(definition or "").strip(); clarification=str(clarification or "").strip()
-    present=bool(_referential_value_info(_normalise_value_name(term)))
+    term=str(term or "").strip(); definition=str(definition or "").strip()
+    canonical=_normalise_value_name(term)
+    present=bool(_referential_value_info(canonical))
     if not _looks_like_value_label(term):
-        return {"decision":"formulation_non_valeur","explication":"Cette proposition ressemble davantage à une phrase, un constat, un ressenti, une aspiration ou un concept important qu'au nom d'une valeur.","question":""}
-    fallback={"decision":"valeur_reconnue" if present else "valeur_absente_possible","explication":("Le terme figure dans le référentiel Clarté360 et peut poursuivre son examen." if present else "Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez."),"question":""}
-    if not term or not definition:
+        return {"decision":"formulation_non_valeur","explication":"Cette proposition ressemble davantage à une phrase, un constat, un ressenti, une aspiration ou un concept qu'au nom d'une valeur.","question":"","alerte_definition":""}
+    if present:
+        warning=""
+        low=normalize(definition)
+        indicators=["peur", "manque", "besoin", "detresse", "angoiss", "stress", "objectif", "resultat", "obtenir"]
+        if definition and any(marker in low for marker in indicators):
+            warning="Votre définition personnelle évoque aussi un besoin, une peur, un état ou un résultat. Cela n'annule pas la valeur reconnue ; vous pouvez conserver votre formulation, la modifier ou choisir de l'explorer dans le Module 4."
+        return {"decision":"valeur_reconnue","explication":"Le terme figure dans le référentiel Clarté360 et peut poursuivre son examen.","question":"","alerte_definition":warning}
+    fallback={"decision":"valeur_absente_possible","explication":"Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez.","question":"","alerte_definition":""}
+    if not term or not definition or not ai_ready():
         return fallback
-    low=normalize(term+" "+definition+" "+clarification)
-    # Barrière métier déterministe : le Module 3 ne transforme jamais un besoin, une peur,
-    # une émotion ou un objectif en valeur. Ces cas sont envoyés vers les Pistes à clarifier du Module 4.
-    non_value_markers={
-        "besoin_ou_peur":["peur", "manque", "rassur", "besoin", "protection", "securite financ", "detresse", "angoiss"],
-        "emotion_ou_etat":["colere", "trist", "frustr", "stress", "mal etre", "perdue", "heureux", "tranquill"],
-        "objectif_ou_resultat":["reussir", "gagner plus", "avoir plus", "obtenir", "objectif", "resultat"],
-    }
-    for category,markers in non_value_markers.items():
-        if any(x in low for x in markers):
-            return {
-                "decision":"formulation_non_valeur",
-                "categorie":category,
-                "explication":"La formulation donnée décrit principalement un besoin, une peur, une émotion, un état recherché ou un résultat attendu, et non encore un principe durable guidant les choix et les actions. Son examen comme valeur doit s'arrêter ici.",
-                "question":""
-            }
-    if not ai_ready():
-        return fallback
-    instructions="""Analysez avec prudence un terme présenté comme valeur, sa définition personnelle et, s'il existe, l'unique réponse de clarification.
-Vous devez conclure par UNE décision parmi exactement quatre :
-1. valeur_reconnue : terme présent au référentiel et cohérence suffisante ;
-2. clarification_requise : doute réel et significatif, uniquement si aucune clarification n'a encore été donnée ;
-3. valeur_absente_possible : terme absent du référentiel mais pouvant constituer une valeur personnelle ;
-4. formulation_non_valeur : la saisie ou surtout sa définition personnelle décrit principalement un besoin, une peur, une émotion, un état recherché, un objectif, une croyance, une limite, une qualité, une compétence ou un comportement.
-La définition personnelle prime sur le libellé. Une importance durable accordée à un besoin ne suffit jamais à en faire une valeur. Distinguez strictement valeur, besoin, croyance, limite, objectif, qualité, compétence, émotion, peur et comportement.
-Une valeur est un principe durable qui oriente les choix et comportements. Ne diagnostiquez pas, n'imposez rien.
-Si une clarification a déjà été fournie, vous ne devez jamais demander une seconde question : choisissez l'une des trois autres décisions.
-Retournez un JSON strict avec decision, explication et question. La question est vide sauf pour clarification_requise."""
-    schema={"type":"object","properties":{"decision":{"type":"string","enum":["valeur_reconnue","clarification_requise","valeur_absente_possible","formulation_non_valeur"]},"explication":{"type":"string"},"question":{"type":"string"}},"required":["decision","explication","question"],"additionalProperties":False}
+    instructions="""Analysez un NOUVEAU terme absent du référentiel Clarté360 en comparant son nom et sa définition personnelle.
+Le Module 3 ne doit poser aucune question exploratoire. Concluez obligatoirement par UNE décision :
+1. valeur_absente_possible : le terme peut constituer une valeur personnelle, c'est-à-dire un principe durable orientant les choix et les comportements ;
+2. formulation_non_valeur : le terme désigne principalement un besoin, une peur, une émotion, un état recherché, un objectif, une croyance, une limite, une qualité, une compétence ou un comportement.
+N'utilisez jamais un mot isolé de la définition comme preuve suffisante. Analysez le sens global du nom et de la définition. Ne diagnostiquez pas et n'ajoutez aucune question.
+Retournez un JSON strict avec decision et explication."""
+    schema={"type":"object","properties":{"decision":{"type":"string","enum":["valeur_absente_possible","formulation_non_valeur"]},"explication":{"type":"string"}},"required":["decision","explication"],"additionalProperties":False}
     try:
-        out=response_json(instructions,{"terme":term,"definition_personnelle":definition,"present_referentiel":present,"clarification_deja_donnee":clarification},"analyse_nature_concept",schema,max_tokens=500)
+        out=response_json(instructions,{"terme":term,"definition_personnelle":definition,"present_referentiel":False},"analyse_nature_concept",schema,max_tokens=450)
         decision=str(out.get("decision") or fallback["decision"])
-        if clarification and decision=="clarification_requise":
-            decision="valeur_reconnue" if present else "valeur_absente_possible"
-
-        # La présence dans le référentiel est un fait calculé par Python, jamais une
-        # appréciation laissée à l'IA. L'IA peut analyser la nature du concept ou
-        # demander une clarification, mais elle ne peut pas contredire le catalogue.
-        if present and decision=="valeur_absente_possible":
-            decision="valeur_reconnue"
-        elif not present and decision=="valeur_reconnue":
-            decision="valeur_absente_possible"
-
-        ai_explanation=str(out.get("explication") or "").strip()
-        if decision=="valeur_reconnue":
-            catalogue_fact="Le terme figure dans le référentiel Clarté360."
-        elif decision=="valeur_absente_possible":
-            catalogue_fact="Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez."
-        else:
-            catalogue_fact=""
-        explanation=(catalogue_fact + (" " + ai_explanation if ai_explanation else "")).strip()
-        if not explanation:
-            explanation=fallback["explication"]
-        return {"decision":decision,"explication":explanation,"question":str(out.get("question") or "") if decision=="clarification_requise" else ""}
+        explanation=str(out.get("explication") or fallback["explication"]).strip()
+        if decision=="valeur_absente_possible":
+            explanation=("Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez. "+explanation).strip()
+        return {"decision":decision,"explication":explanation,"question":"","alerte_definition":""}
     except Exception:
         return fallback
 
@@ -1428,7 +1399,7 @@ def value_reminder()->None:
 def validated_names()->list[str]:
     central = st.session_state.get("central_validated_values", [])
     if central:
-        return [str(v.get("nom_final") or v.get("nom") or "").strip() for v in central if v.get("statut") == "validee" and not v.get("en_reexamen") and str(v.get("nom_final") or v.get("nom") or "").strip()]
+        return [str(v.get("nom_final") or v.get("nom") or "").strip() for v in central if v.get("statut") == "validee" and str(v.get("nom_final") or v.get("nom") or "").strip()]
     names=list(dict.fromkeys(st.session_state.existing_values+st.session_state.get("validated_app_values",[])))
     return [n for n in names if st.session_state.validation.get(n,{}).get("fondamentale")]
 
@@ -1895,7 +1866,12 @@ def render_followup_panel() -> None:
         st.write(", ".join(vals) if vals else "Aucune pour le moment.")
         st.markdown("**💡 Panier Hypothèses**")
         st.write(", ".join(str(x.get("nom") or x.get("nom_final") or "") for x in hypotheses) if hypotheses else "Aucune hypothèse conservée.")
-        st.markdown("**🧭 À explorer — Module 4**")
+        c_title,c_info=st.columns([8,1])
+        with c_title:
+            st.markdown("**🧭 À explorer — Module 4**")
+        with c_info:
+            with st.popover("ⓘ", help="Comprendre l’exploration du Module 4"):
+                st.write("Le Module 4 approfondit un terme grâce à un questionnement guidé et vertical. Utilisez-le lorsque le mot ou sa signification restent flous, ou pour rechercher la valeur éventuellement cachée derrière un besoin, une peur, une émotion, une situation ou un objectif. Le Module 3 sert uniquement à identifier et valider une valeur déjà formulée.")
         if tracks:
             for track in tracks:
                 nature=track.get("nature_provisoire") or track.get("nature") or "formulation ambiguë"
@@ -2015,28 +1991,60 @@ def _hydrate_module2_answers() -> None:
             if value: answers[qid]=str(value)
 
 
+def _m2_chat_bubble(role: str, text: str) -> None:
+    is_user=role=="user"
+    align="flex-end" if is_user else "flex-start"
+    bg="#EAF7F6" if is_user else "#F4F6F8"
+    border="#0E7774" if is_user else "#D9E1E5"
+    label="Vous" if is_user else "Clarté360"
+    st.markdown(f"""<div style='display:flex;justify-content:{align};margin:.35rem 0 .55rem 0'>
+    <div style='max-width:82%;background:{bg};border:1px solid {border};border-radius:14px;padding:.65rem .85rem'>
+    <div style='font-size:.78rem;font-weight:700;color:#0E7774;margin-bottom:.2rem'>{label}</div>
+    <div>{html.escape(str(text)).replace(chr(10),'<br>')}</div></div></div>""",unsafe_allow_html=True)
+
+
 def render_module_2() -> None:
     st.title("Faisons connaissance")
+    st.caption("Un échange simple, une question à la fois. L’IA intervient uniquement pour mettre votre réponse en forme, jamais pour vous analyser.")
     _hydrate_module2_answers()
     state=_module_state("module_2"); answers=st.session_state.module2_answers
-    if state.get("status")=="termine":
-        st.success("Vos réponses sont enregistrées. Elles restent visibles et vous pouvez modifier uniquement celle que vous choisissez.")
-        for index,q in enumerate(MODULE2_QUESTIONS,1):
-            qid=q["id"]; value=str(answers.get(qid,"") or "").strip()
-            st.markdown(f"#### Question {index} — {q['rubrique']}")
-            # open_response_widget affiche la réponse officielle puis n'ouvre l'édition qu'après clic.
-            new_value=open_response_widget(q["text"],f"m2_{qid}",value=value,height=110,dependency_scope="profile")
-            if new_value: answers[qid]=new_value
-            st.divider()
-        st.session_state.beneficiary_profile={"questions":deepcopy(answers),"presentation_libre":"\n\n".join(v for v in answers.values() if v),"date":now_iso()}
+    editing_qid=st.session_state.get("module2_editing_qid","")
+    completed=state.get("status")=="termine"
+    if not completed:
+        _set_module_status("module_2","en_cours","questionnaire")
+    idx=int(st.session_state.get("module2_question_index",0))
+    if completed:
+        idx=len(MODULE2_QUESTIONS)
+    # Fil déjà validé
+    for index,q in enumerate(MODULE2_QUESTIONS[:idx],1):
+        qid=q["id"]; value=str(answers.get(qid,"") or "").strip()
+        if not value: continue
+        _m2_chat_bubble("assistant",q["text"])
+        _m2_chat_bubble("user",value)
+        if completed:
+            if editing_qid==qid:
+                new_value=open_response_widget("Modifiez votre réponse",f"m2_edit_{qid}",value=value,height=110,dependency_scope="profile")
+                e1,e2=st.columns(2)
+                with e1:
+                    if st.button("Annuler",use_container_width=True,key=f"m2_edit_cancel_{qid}"):
+                        st.session_state.module2_editing_qid=""; st.rerun()
+                with e2:
+                    if new_value and st.button("Confirmer la modification",type="primary",use_container_width=True,key=f"m2_edit_confirm_{qid}"):
+                        answers[qid]=new_value; st.session_state.module2_editing_qid=""
+                        st.session_state.beneficiary_profile={"questions":deepcopy(answers),"presentation_libre":"\n\n".join(v for v in answers.values() if v),"date":now_iso()}
+                        business_trace("module2_reponse_modifiee",qid); st.rerun()
+            elif st.button("Modifier cette réponse",key=f"m2_edit_open_{qid}"):
+                st.session_state.module2_editing_qid=qid; st.rerun()
+    if completed:
+        st.success("Vos réponses sont enregistrées. Vous pouvez modifier chacune d’elles à tout moment.")
         if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m2_back_home"):
             st.session_state.active_module="accueil_modules"; st.session_state.page="Modules"; st.rerun()
         return
-    _set_module_status("module_2","en_cours","questionnaire")
-    idx=int(st.session_state.module2_question_index)
     q=MODULE2_QUESTIONS[idx]
     st.progress(idx/len(MODULE2_QUESTIONS)); st.caption(f"Question {idx+1} sur {len(MODULE2_QUESTIONS)} — {q['rubrique']}")
-    val=open_response_widget(q["text"],f"m2_{q['id']}",value=answers.get(q["id"],""),height=110,dependency_scope="profile")
+    _m2_chat_bubble("assistant",q["text"])
+    st.info("Prenez votre temps. Vous pouvez répondre à l’écrit ou à l’oral, même si vous cherchez vos mots ou vous reprenez. L’objectif est simplement de mieux comprendre votre situation et votre parcours.")
+    val=open_response_widget("Votre réponse",f"m2_{q['id']}",value=answers.get(q["id"],""),height=110,dependency_scope="profile")
     if val:
         answers[q["id"]]=val
         c1,c2=st.columns(2)
@@ -2209,7 +2217,6 @@ def render_module_3() -> None:
                     st.session_state["m3_confirm_delete_validated"]=True; st.rerun()
             with c3:
                 if st.button("Commencer le réexamen",type="primary",use_container_width=True,key="m3_reex_start"):
-                    original["en_reexamen"]=True
                     w=_new_value_work("reexamen"); w.update({"original_name":original["nom_final"],"nom_initial":original["nom_final"],"nom_final":original["nom_final"],"mode_decouverte":original.get("mode_decouverte") or "Par introspection","definition_personnelle":original.get("definition_personnelle",""),"definition_clarte360":original.get("definition_clarte360",""),"origin_snapshot":deepcopy(original)})
                     st.session_state.module3_queue=[w]; st.session_state.module3_index=0; st.session_state.current_value_work=w; st.rerun()
             if st.session_state.get("m3_confirm_delete_validated"):
@@ -2311,22 +2318,12 @@ def render_module_3() -> None:
             if st.button("À revoir en séance",use_container_width=True,key=f"m3_review_nonvalue_{work['id']}"):
                 _add_review_item(work,"La formulation ne correspond pas encore à une valeur"); _advance_module3(); st.rerun()
         return
-    if decision=="clarification_requise":
-        st.warning(nature.get("explication") or "Cette formulation mérite une clarification prudente.")
-        question=nature.get("question") or "Quel principe durable souhaitez-vous respecter dans vos choix et comportements ?"
-        clarification=open_response_widget(question,f"m3_clar_{work['id']}",value=current_clarification,height=100)
-        if not clarification: return
-        work["clarification"]=clarification
-        if not work.get("clarifications") or work["clarifications"][-1].get("reponse")!=clarification:
-            meta=deepcopy(st.session_state.answer_metadata.get(f"m3_clar_{work['id']}",{}))
-            work.setdefault("clarifications",[]).append({"question":question,"reponse":clarification,"reponse_originale":meta.get("texte_brut") or meta.get("transcription") or clarification,"reformulation_proposee":meta.get("reformulation_proposee",""),"version_retenue":meta.get("version_officielle") or clarification,"date":now_iso(),"contexte":nature.get("explication","")})
-        # Deuxième analyse obligatoire, sans possibilité de deuxième question.
-        nature=analyse_concept_nature(canonical,definition,clarification)
-        st.session_state[analysis_key]=nature; decision=nature.get("decision",""); work["analyse"]=nature.get("explication",""); work["nature_decision"]=decision
     if decision=="valeur_absente_possible":
         st.info((nature.get("explication") or "Cette valeur ne figure pas dans le référentiel Clarté360, mais elle peut constituer une valeur personnelle.")+" Vous pouvez poursuivre son examen ; son absence du catalogue n'est pas une erreur.")
     elif decision=="valeur_reconnue":
-        st.success(nature.get("explication") or "Le mot et votre définition paraissent cohérents pour poursuivre l’examen comme valeur.")
+        st.success(nature.get("explication") or "Le nom correspond à une valeur reconnue et peut poursuivre son examen.")
+        if nature.get("alerte_definition"):
+            st.warning(nature.get("alerte_definition"))
     elif decision=="formulation_non_valeur":
         st.error((nature.get("explication") or "Cette formulation ne correspond pas à une valeur.")+" Aucune donnée n’a été enregistrée. Le module 4 pourra vous aider à approfondir ce sujet.")
         return
@@ -3142,7 +3139,7 @@ def create_pdf(report_type: str="provisoire")->bytes:
     def footer(canvas,doc):
         canvas.saveState(); canvas.setStrokeColor(colors.HexColor("#D7EAEA")); canvas.line(1.5*cm,1.05*cm,A4[0]-1.5*cm,1.05*cm); canvas.setFont("Helvetica",7.5); canvas.setFillColor(colors.HexColor("#666666")); canvas.drawString(1.5*cm,.65*cm,"Clarté360 - 60 rue François 1er - 75008 Paris - Document confidentiel"); canvas.drawRightString(A4[0]-1.5*cm,.65*cm,f"Page {doc.page}"); canvas.restoreState()
     doc=SimpleDocTemplate(buffer,pagesize=A4,rightMargin=1.7*cm,leftMargin=1.7*cm,topMargin=1.5*cm,bottomMargin=1.4*cm,title="Rapport RVC360 - Recherche de mes valeurs")
-    b=st.session_state.get("beneficiaire",{}); values=[v for v in st.session_state.get("central_validated_values",[]) if v.get("statut")=="validee" and not v.get("en_reexamen")]
+    b=st.session_state.get("beneficiaire",{}); values=[v for v in st.session_state.get("central_validated_values",[]) if v.get("statut")=="validee"]
     story=[]
     if LOGO_PATH.exists(): story += [Spacer(1,1.2*cm),Image(str(LOGO_PATH),width=3.2*cm,height=3.2*cm),Spacer(1,.5*cm)]
     title_type="provisoire" if report_type=="provisoire" else "définitif"
@@ -3155,6 +3152,16 @@ def create_pdf(report_type: str="provisoire")->bytes:
     story += [Paragraph("2. Synthèse",styles["Teal"])]
     data=[["Élément","État"],["Valeurs validées",str(len(values))],["Type de rapport",title_type.capitalize()],["Date de génération",datetime.now().strftime('%d/%m/%Y %H:%M')]]
     t=Table(data,colWidths=[6*cm,10*cm]); t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor(LIGHT_TEAL)),('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('GRID',(0,0),(-1,-1),.3,colors.HexColor('#CFE6E6')),('VALIGN',(0,0),(-1,-1),'TOP')])); story += [t,Spacer(1,10)]
+    sessions=st.session_state.get("session_history",[]) or []
+    total_seconds=sum(int(x.get("duree_active_secondes",0) or 0) for x in sessions)
+    story += [Paragraph("Temps consacré à l’application",styles["Teal2"]),Paragraph(f"<b>Temps cumulé actif :</b> {html.escape(format_duration(total_seconds))}",styles["Normal"])]
+    if sessions:
+        session_rows=[["Date","Début","Dernière activité","Durée active","Accès"]]
+        for sess in sessions:
+            debut=str(sess.get("debut","") or "")
+            last=str(sess.get("derniere_activite","") or "")
+            session_rows.append([debut[:10],debut[11:16] if len(debut)>=16 else "",last[11:16] if len(last)>=16 else "",format_duration(sess.get("duree_active_secondes",0)),str(sess.get("motif_ouverture","") or "")])
+        ts=Table(session_rows,colWidths=[3*cm,2.2*cm,3*cm,3*cm,4.8*cm]); ts.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor(LIGHT_TEAL)),('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('GRID',(0,0),(-1,-1),.3,colors.HexColor('#CFE6E6')),('VALIGN',(0,0),(-1,-1),'TOP'),('FONTSIZE',(0,0),(-1,-1),8)])); story += [ts,Spacer(1,10)]
     accompagnateur=[v for v in values if v.get("source")=="accompagnateur"]
     application=[v for v in values if v.get("source")!="accompagnateur"]
     for number,title,items in [(3,"Valeurs validées avec l’accompagnateur",accompagnateur),(4,"Valeurs découvertes et validées dans Clarté360",application)]:

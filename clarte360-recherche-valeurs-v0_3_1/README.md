@@ -1,6 +1,6 @@
 ## Version actuelle
 
-**V2.1.3.9E4-preproduction**
+**V2.1.3.9F-preproduction**
 
 # Clarté360 – Recherche de mes valeurs
 
@@ -47,7 +47,7 @@ python -m pytest -q
 
 ## Versions déclarées
 
-- Application : **2.1.3.9E4-preproduction**
+- Application : **2.1.3.9F-preproduction**
 - Référentiel RVC360 : 2.1
 - Framework déclaré : 4.0
 
