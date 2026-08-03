@@ -5,8 +5,8 @@ TEXT=Path(__file__).resolve().parents[1].joinpath("app.py").read_text(encoding="
 def _module3():
     return TEXT[TEXT.index("def render_module_3"):TEXT.index("def _advance_module3")]
 
-def test_version_9f2():
-    assert 'APP_VERSION = "2.1.3.9F2-preproduction"' in TEXT
+def test_version_9f3():
+    assert 'APP_VERSION = "2.1.3.9F3-preproduction"' in TEXT
 
 def test_non_value_analysis_never_blocks_module3():
     fn=_module3()
@@ -19,7 +19,8 @@ def test_reexamen_goes_directly_to_definition_and_questionnaire():
     fn=_module3()
     assert 'direct_to_questionnaire = work.get("source")=="reexamen"' in fn
     assert 'if not direct_to_questionnaire:' in fn
-    assert fn.index('choice,final_def=_value_definition_choices') < fn.index('Questionnaire spécifique Clarté360')
+    assert fn.index('choice,final_def,definition_confirmed=_value_definition_choices') < fn.index('Questionnaire spécifique Clarté360')
+    assert 'if not definition_confirmed:' in fn
 
 def test_absent_value_can_receive_ai_definition():
     assert 'definition_proposee' in TEXT
