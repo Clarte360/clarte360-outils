@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9F1-preproduction"
+APP_VERSION = "2.1.3.9F2-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -987,7 +987,7 @@ def analyse_concept_nature(term: str, definition: str, clarification: str="") ->
         if definition and any(marker in low for marker in indicators):
             warning="Votre définition personnelle évoque aussi un besoin, une peur, un état ou un résultat. Cela n'annule pas la valeur reconnue ; vous pouvez conserver votre formulation, la modifier ou choisir de l'explorer dans le Module 4."
         return {"decision":"valeur_reconnue","explication":"Le terme figure dans le référentiel Clarté360 et peut poursuivre son examen.","question":"","alerte_definition":warning}
-    fallback={"decision":"valeur_absente_possible","explication":"Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez.","question":"","alerte_definition":""}
+    fallback={"decision":"valeur_absente_possible","explication":"Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez.","question":"","alerte_definition":"","definition_proposee":""}
     if not term or not definition or not ai_ready():
         return fallback
     instructions="""Analysez un NOUVEAU terme absent du référentiel Clarté360 en comparant son nom et sa définition personnelle.
@@ -995,15 +995,16 @@ Le Module 3 ne doit poser aucune question exploratoire. Concluez obligatoirement
 1. valeur_absente_possible : le terme peut constituer une valeur personnelle, c'est-à-dire un principe durable orientant les choix et les comportements ;
 2. formulation_non_valeur : le terme désigne principalement un besoin, une peur, une émotion, un état recherché, un objectif, une croyance, une limite, une qualité, une compétence ou un comportement.
 N'utilisez jamais un mot isolé de la définition comme preuve suffisante. Analysez le sens global du nom et de la définition. Ne diagnostiquez pas et n'ajoutez aucune question.
-Retournez un JSON strict avec decision et explication."""
-    schema={"type":"object","properties":{"decision":{"type":"string","enum":["valeur_absente_possible","formulation_non_valeur"]},"explication":{"type":"string"}},"required":["decision","explication"],"additionalProperties":False}
+Proposez aussi une définition courte, neutre et fidèle au sens exprimé, formulée comme un principe durable, sans imposer cette formulation au bénéficiaire.
+Retournez un JSON strict avec decision, explication et definition_proposee."""
+    schema={"type":"object","properties":{"decision":{"type":"string","enum":["valeur_absente_possible","formulation_non_valeur"]},"explication":{"type":"string"},"definition_proposee":{"type":"string"}},"required":["decision","explication","definition_proposee"],"additionalProperties":False}
     try:
         out=response_json(instructions,{"terme":term,"definition_personnelle":definition,"present_referentiel":False},"analyse_nature_concept",schema,max_tokens=450)
         decision=str(out.get("decision") or fallback["decision"])
         explanation=str(out.get("explication") or fallback["explication"]).strip()
         if decision=="valeur_absente_possible":
             explanation=("Le terme ne figure pas dans le référentiel Clarté360, mais il peut néanmoins constituer une valeur personnelle selon le sens que vous lui donnez. "+explanation).strip()
-        return {"decision":decision,"explication":explanation,"question":"","alerte_definition":""}
+        return {"decision":decision,"explication":explanation,"question":"","alerte_definition":"","definition_proposee":str(out.get("definition_proposee") or "").strip()}
     except Exception:
         return fallback
 
@@ -2295,82 +2296,73 @@ def render_module_3() -> None:
     analysis_sig_key=f"{analysis_key}_signature"
     current_clarification=str(work.get("clarification","") or "")
     analysis_signature=normalize(canonical+" | "+definition+" | "+current_clarification)
-    if st.session_state.get(analysis_sig_key)!=analysis_signature:
-        st.session_state[analysis_key]=analyse_concept_nature(canonical,definition,current_clarification)
-        st.session_state[analysis_sig_key]=analysis_signature
-    nature=st.session_state[analysis_key]
-    # En réexamen d'une valeur déjà reconnue, le nom de la valeur prime toujours.
-    # La définition personnelle peut être conservée, légèrement ajustée ou reformulée,
-    # mais elle ne bloque jamais le questionnaire spécifique.
-    if work.get("source")=="reexamen" and info:
-        alert=str(nature.get("alerte_definition","") or "").strip()
+    # Une valeur reconnue au référentiel poursuit toujours son examen.
+    # Sa définition personnelle ne peut jamais bloquer le questionnaire spécifique.
+    if info:
         nature={
             "decision":"valeur_reconnue",
-            "explication":"Cette valeur figure dans le référentiel Clarté360. Vous pouvez conserver votre définition actuelle, la modifier légèrement ou demander une reformulation avant de poursuivre.",
+            "explication":"Cette valeur figure dans le référentiel Clarté360. Vous pouvez conserver votre définition personnelle, la modifier ou demander une reformulation avant de poursuivre.",
             "question":"",
-            "alerte_definition":alert,
+            "alerte_definition":"",
+            "definition_proposee":"",
         }
         st.session_state[analysis_key]=nature
-    decision=nature.get("decision",""); work["analyse"]=nature.get("explication",""); work["nature_decision"]=decision
+        st.session_state[analysis_sig_key]=analysis_signature
+    else:
+        if st.session_state.get(analysis_sig_key)!=analysis_signature:
+            st.session_state[analysis_key]=analyse_concept_nature(canonical,definition,current_clarification)
+            st.session_state[analysis_sig_key]=analysis_signature
+        nature=st.session_state[analysis_key]
+    decision=nature.get("decision","")
+    work["analyse"]=nature.get("explication","")
+    work["nature_decision"]=decision
+    if not info and nature.get("definition_proposee"):
+        work["definition_clarte360"]=str(nature.get("definition_proposee") or "").strip()
+        st.markdown("**Définition proposée par Clarté360**")
+        st.info(work["definition_clarte360"])
     if decision=="formulation_non_valeur":
-        st.warning(nature.get("explication") or "Cette formulation semble surtout décrire un besoin, un état recherché ou un résultat.")
-        st.info("Ce constat n'est pas un jugement sur votre réponse. Vous pouvez conserver votre formulation, la retravailler, explorer ce sujet dans le Module 4 ou en parler avec votre accompagnateur.")
-        c1,c2,c3=st.columns(3)
-        with c1:
-            if st.button("Envoyer vers Pistes à clarifier",type="primary",use_container_width=True,key=f"m3_to_clarify_{work['id']}"):
-                item={"id":str(uuid.uuid4()),"terme_initial":canonical,"definition_personnelle":definition,"classification_provisoire":nature.get("categorie","non_valeur"),"origine":"module_3","situation":work.get("situation") or work.get("situation_deja_enregistree") or "","ressenti":work.get("ressenti") or work.get("reaction") or "","elements_source":deepcopy(work),"statut":"piste_a_clarifier","created_at":now_iso()}
-                st.session_state.clarification_tracks.append(item)
-                _remove_value_from_active_lists(canonical,keep="piste_a_clarifier")
-                business_trace("piste_a_clarifier_module4",canonical)
-                st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0
-                _set_module_status("module_3","disponible","accueil"); st.rerun()
-        with c2:
-            if st.button("Supprimer définitivement",use_container_width=True,key=f"m3_delete_nonvalue_{work['id']}"):
-                _purge_value_everywhere(work.get("original_name",""),canonical); st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0; st.rerun()
-        with c3:
-            if st.button("À revoir en séance",use_container_width=True,key=f"m3_review_nonvalue_{work['id']}"):
-                _add_review_item(work,"La formulation ne correspond pas encore à une valeur"); _advance_module3(); st.rerun()
-        return
-    if decision=="valeur_absente_possible":
+        st.warning(nature.get("explication") or "Votre définition semble actuellement mettre davantage l’accent sur un besoin, un état recherché ou un résultat.")
+        st.info("Cette observation est uniquement une invitation à préciser votre formulation. Elle ne bloque jamais votre parcours : vous pouvez conserver votre définition, la modifier ou poursuivre directement vers le questionnaire spécifique.")
+    elif decision=="valeur_absente_possible":
         st.info((nature.get("explication") or "Cette valeur ne figure pas dans le référentiel Clarté360, mais elle peut constituer une valeur personnelle.")+" Vous pouvez poursuivre son examen ; son absence du catalogue n'est pas une erreur.")
     elif decision=="valeur_reconnue":
         st.success(nature.get("explication") or "Le nom correspond à une valeur reconnue et peut poursuivre son examen.")
-        if nature.get("alerte_definition"):
-            st.warning(nature.get("alerte_definition"))
-    elif decision=="formulation_non_valeur":
-        st.warning(nature.get("explication") or "Cette formulation mérite peut-être d’être précisée.")
-        return
-    st.markdown("### Choisissez la suite la plus utile")
-    st.caption("Chaque choix correspond à un parcours différent. Votre terme ne sera placé que dans un seul panier actif.")
-    conceptual=st.radio(
-        "Comment souhaitez-vous poursuivre ?",
-        [
-            "Poursuivre l’examen maintenant dans le Module 3",
-            "Conserver dans Valeurs à examiner",
-            "Envoyer vers À explorer — Module 4",
-            "Placer dans À revoir en séance",
-        ],
-        key=f"m3_concept_{work['id']}",on_change=mark_user_activity,args=("choix_orientation_valeur",)
-    )
-    explanations={
-        "Poursuivre l’examen maintenant dans le Module 3":"Vous continuez immédiatement la définition et le questionnaire spécifique du Module 3.",
-        "Conserver dans Valeurs à examiner":"Vous reprendrez plus tard ce même examen, seul, dans le Module 3.",
-        "Envoyer vers À explorer — Module 4":"Le Module 4 reprendra ce terme avec un questionnement vertical pour comprendre ce qu'il recouvre réellement.",
-        "Placer dans À revoir en séance":"Vous préférez en discuter avec votre accompagnateur, qui pourra ensuite le remettre dans le parcours le plus adapté.",
-    }
-    st.info(explanations[conceptual])
-    if conceptual=="Conserver dans Valeurs à examiner":
-        if st.button("Confirmer : conserver pour plus tard",type="primary",use_container_width=True,key=f"m3_pending_{work['id']}"):
-            _save_work_for_later(work); _finish_module3_orientation(); st.rerun()
-        return
-    if conceptual=="Envoyer vers À explorer — Module 4":
-        if st.button("Confirmer : explorer dans le Module 4",type="primary",use_container_width=True,key=f"m3_explore_{work['id']}"):
-            _send_work_to_explore(work); _finish_module3_orientation(); st.rerun()
-        return
-    if conceptual=="Placer dans À revoir en séance":
-        if st.button("Confirmer : revoir avec mon accompagnateur",type="primary",use_container_width=True,key=f"m3_review_{work['id']}"):
-            _add_review_item(work,"Décision du bénéficiaire : en discuter avec l’accompagnateur avant de poursuivre"); business_trace("valeur_a_revoir_en_seance",canonical); _finish_module3_orientation(); st.rerun()
-        return
+
+    # En réexamen, le panier et la valeur sont déjà choisis : aucune nouvelle orientation
+    # n'est imposée. On passe directement au choix de définition puis au questionnaire.
+    direct_to_questionnaire = work.get("source")=="reexamen"
+    if not direct_to_questionnaire:
+        st.markdown("### Choisissez la suite la plus utile")
+        st.caption("Chaque choix correspond à un parcours différent. Votre terme ne sera placé que dans un seul panier actif.")
+        conceptual=st.radio(
+            "Comment souhaitez-vous poursuivre ?",
+            [
+                "Poursuivre l’examen maintenant dans le Module 3",
+                "Conserver dans Valeurs à examiner",
+                "Envoyer vers À explorer — Module 4",
+                "Placer dans À revoir en séance",
+            ],
+            key=f"m3_concept_{work['id']}",on_change=mark_user_activity,args=("choix_orientation_valeur",)
+        )
+        explanations={
+            "Poursuivre l’examen maintenant dans le Module 3":"Vous continuez immédiatement la définition et le questionnaire spécifique du Module 3.",
+            "Conserver dans Valeurs à examiner":"Vous reprendrez plus tard ce même examen, seul, dans le Module 3.",
+            "Envoyer vers À explorer — Module 4":"Le Module 4 reprendra ce terme avec un questionnement vertical pour comprendre ce qu'il recouvre réellement.",
+            "Placer dans À revoir en séance":"Vous préférez en discuter avec votre accompagnateur, qui pourra ensuite le remettre dans le parcours le plus adapté.",
+        }
+        st.info(explanations[conceptual])
+        if conceptual=="Conserver dans Valeurs à examiner":
+            if st.button("Confirmer : conserver pour plus tard",type="primary",use_container_width=True,key=f"m3_pending_{work['id']}"):
+                _save_work_for_later(work); _finish_module3_orientation(); st.rerun()
+            return
+        if conceptual=="Envoyer vers À explorer — Module 4":
+            if st.button("Confirmer : explorer dans le Module 4",type="primary",use_container_width=True,key=f"m3_explore_{work['id']}"):
+                _send_work_to_explore(work); _finish_module3_orientation(); st.rerun()
+            return
+        if conceptual=="Placer dans À revoir en séance":
+            if st.button("Confirmer : revoir avec mon accompagnateur",type="primary",use_container_width=True,key=f"m3_review_{work['id']}"):
+                _add_review_item(work,"Décision du bénéficiaire : en discuter avec l’accompagnateur avant de poursuivre"); business_trace("valeur_a_revoir_en_seance",canonical); _finish_module3_orientation(); st.rerun()
+            return
     choice,final_def=_value_definition_choices(work,f"m3_{work['id']}")
     work["definition_finale"]=final_def
     st.markdown("### Questionnaire spécifique Clarté360")
