@@ -1,6 +1,6 @@
 ## Version actuelle
 
-**V2.1.3.9E3-preproduction**
+**V2.1.3.9E4-preproduction**
 
 # Clarté360 – Recherche de mes valeurs
 
@@ -47,7 +47,7 @@ python -m pytest -q
 
 ## Versions déclarées
 
-- Application : **2.1.3.9E3-preproduction**
+- Application : **2.1.3.9E4-preproduction**
 - Référentiel RVC360 : 2.1
 - Framework déclaré : 4.0
 
@@ -56,3 +56,11 @@ python -m pytest -q
 - Le bénéficiaire peut toujours conserver sa formulation initiale, y compris pour le nom d’une valeur, à l’écrit comme à l’oral.
 - Ctrl + Entrée est disponible sur tous les champs écrits. Il déclenche le bouton principal visible, avec ou sans comparaison Clarté360.
 - Deux tests comportementaux ciblés vérifient ces règles.
+
+## Évolutions 9E4
+
+- Consignes adaptées au type de question : développement encouragé pour les questions ouvertes ; possibilité explicite de répondre « Je ne sais pas » ou « Je ne vois pas » seulement lorsqu’un mot ou une courte expression est attendu.
+- Quatre orientations distinctes après la saisie et l’analyse d’un terme dans le Module 3 : poursuivre maintenant, conserver dans Valeurs à examiner, envoyer vers À explorer — Module 4, ou placer dans À revoir en séance.
+- Transitions atomiques entre les paniers actifs, incluant désormais les pistes du Module 4 et le nettoyage des états de reprise.
+- Résolution renforcée des pistes provenant d’anciennes sauvegardes : suppression par identifiant source et par alias afin d’empêcher la réapparition d’un ancien terme comme « Sécurité financière ».
+- Présentation des modules restructurée : numéro du module, titre sur une ligne distincte, statut et alignement homogènes.

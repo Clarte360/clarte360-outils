@@ -2,7 +2,7 @@ from pathlib import Path
 TEXT=(Path(__file__).parents[1]/'app.py').read_text(encoding='utf-8')
 
 def test_version_9d_and_clarification_tracks():
-    assert 'APP_VERSION = "2.1.3.9E3-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.9E4-preproduction"' in TEXT
     assert 'clarification_tracks' in TEXT
     assert 'Envoyer vers Pistes à clarifier' in TEXT
     assert 'piste_clarifier' in TEXT

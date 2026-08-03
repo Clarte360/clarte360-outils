@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9E3-preproduction"
+APP_VERSION = "2.1.3.9E4-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -915,7 +915,7 @@ def _clean_value_label_input(text: str) -> str:
     return candidate
 
 
-def clean_spoken_text(text: str, *, expected_value_label: bool=False) -> str:
+def clean_spoken_text(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> str:
     """Corrige systématiquement la langue, puis reformule seulement si cela aide.
 
     La correction orthographique, grammaticale et typographique est obligatoire.
@@ -1151,7 +1151,7 @@ def _install_ctrl_enter_bridge() -> None:
 def open_response_widget(label: str, key: str, *, value: str="", height: int=110,
                          allow_reformulation: bool=True, help_text: str="",
                          listen: bool=True, dependency_scope: str="", value_name: str="",
-                         expected_value_label: bool=False) -> str:
+                         expected_value_label: bool=False, question_kind: str="open") -> str:
     """Moteur unique texte/voix/modification avec validation explicite.
 
     Aucune transcription ou proposition ne devient officielle avant le choix du
@@ -1167,7 +1167,12 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
 
     st.markdown(f'<div class="question-card"><div class="question-kicker">Question</div><div class="question-text">{html.escape(str(label))}</div></div>',unsafe_allow_html=True)
     if listen: speak_button(label,f"listen_{base}")
-    if help_text: st.caption(help_text)
+    if help_text:
+        st.caption(help_text)
+    elif question_kind == "word":
+        st.caption("Nous recherchons un mot ou une courte expression. Si rien ne vous vient, vous pouvez répondre « Je ne sais pas » ou « Je ne vois pas » ; Clarté360 pourra ensuite vous proposer quelques hypothèses.")
+    else:
+        st.caption("Prenez votre temps et cherchez une réponse personnelle. N'hésitez pas à répondre à l'oral, même si vous hésitez ou vous reprenez : votre explication nous aide à comprendre ce qui est important pour vous.")
 
     official=_official_answer_from_meta(meta) or str(st.session_state.get(f"{base}_official") or "").strip()
     editing_key=f"{base}_editing"
@@ -1611,6 +1616,35 @@ def _add_review_item(work: dict[str,Any], reason: str) -> bool:
     _finalise_pending_history(work,"a_revoir_en_seance",item["terme"])
     return True
 
+def _send_work_to_explore(work: dict[str,Any], reason: str="Exploration verticale demandée par le bénéficiaire") -> bool:
+    terme=_normalise_value_name(work.get("nom_final") or work.get("nom_initial") or work.get("nom") or "")
+    if not terme:
+        return False
+    item={"id":str(uuid.uuid4()),"terme_initial":terme,"definition_personnelle":work.get("definition_personnelle","") or work.get("definition", ""),"classification_provisoire":work.get("nature_decision") or "formulation_ambigue","nature_provisoire":work.get("nature_decision") or "formulation ambiguë","origine":"module_3","elements_source":deepcopy(work),"motif":reason,"statut":"piste_a_clarifier","created_at":now_iso()}
+    _remove_value_from_active_lists(terme,keep="a_explorer")
+    st.session_state.clarification_tracks.append(item)
+    _finalise_pending_history(work,"piste_a_clarifier",terme)
+    business_trace("piste_a_clarifier_module4",terme)
+    return True
+
+def _save_work_for_later(work: dict[str,Any]) -> bool:
+    terme=_normalise_value_name(work.get("nom_final") or work.get("nom_initial") or work.get("nom") or "")
+    if not terme:
+        return False
+    item=deepcopy(work)
+    item.update({"nom_initial":work.get("nom_initial") or terme,"nom_normalise":terme,"nom_final":terme,"stage":"nom","statut":"a_examiner","created_at":work.get("created_at") or now_iso()})
+    _remove_value_from_active_lists(terme,keep="a_examiner")
+    st.session_state.values_to_examine.append(item)
+    _finalise_pending_history(work,"a_examiner",terme)
+    business_trace("valeur_conservee_a_examiner",terme)
+    return True
+
+def _finish_module3_orientation() -> None:
+    st.session_state.module3_queue=[]
+    st.session_state.current_value_work={}
+    st.session_state.module3_index=0
+    _set_module_status("module_3","disponible","accueil")
+
 def _new_value_work(source: str="manuel") -> dict[str,Any]:
     return {"id":str(uuid.uuid4()),"source":source,"stage":"nom","nom_initial":"","nom_normalise":"","nom_final":"","mode_decouverte":"","definition_personnelle":"","definition_clarte360":"","present_referentiel":False,"analyse":"","clarification":"","clarifications":[],"nature_decision":"","questionnaire":{},"created_at":now_iso()}
 
@@ -1659,6 +1693,9 @@ def _active_value_location(name: str, *, exclude_work_id: str="") -> tuple[str,d
             continue
         if normalize(_normalise_value_name(item.get("nom_final") or item.get("nom_initial") or item.get("nom") or ""))==n:
             return "a_examiner",item
+    for item in st.session_state.get("clarification_tracks",[]):
+        if normalize(_normalise_value_name(item.get("terme_initial") or item.get("terme") or ""))==n and item.get("statut")=="piste_a_clarifier":
+            return "a_explorer",item
     for item in st.session_state.get("session_review_items",[]):
         if normalize(_normalise_value_name(item.get("terme") or ""))==n and item.get("statut")=="a_revoir_en_seance":
             return "a_revoir",item
@@ -1669,10 +1706,19 @@ def _remove_value_from_active_lists(name: str, *, keep: str="validee") -> None:
     n=normalize(_normalise_value_name(name))
     if keep!="a_examiner":
         st.session_state.values_to_examine=[x for x in st.session_state.get("values_to_examine",[]) if normalize(_normalise_value_name(x.get("nom_final") or x.get("nom_initial") or x.get("nom") or ""))!=n]
+    if keep!="a_explorer":
+        st.session_state.clarification_tracks=[x for x in st.session_state.get("clarification_tracks",[]) if normalize(_normalise_value_name(x.get("terme_initial") or x.get("terme") or ""))!=n]
     if keep!="a_revoir":
         st.session_state.session_review_items=[x for x in st.session_state.get("session_review_items",[]) if normalize(_normalise_value_name(x.get("terme") or ""))!=n]
     if keep!="validee":
         st.session_state.central_validated_values=[x for x in st.session_state.get("central_validated_values",[]) if normalize(_normalise_value_name(x.get("nom_final") or x.get("nom") or ""))!=n]
+    # Nettoyage des états de reprise actifs : ils ne doivent jamais recréer un ancien panier.
+    reprise=st.session_state.get("resume_state",{})
+    if isinstance(reprise,dict):
+        for key in ("values_to_examine","inter_session_pending","pistes_a_clarifier","a_revoir_en_seance"):
+            values=reprise.get(key)
+            if isinstance(values,list):
+                reprise[key]=[x for x in values if normalize(_normalise_value_name((x.get("nom_final") or x.get("nom_initial") or x.get("nom") or x.get("terme_initial") or x.get("terme") or "") if isinstance(x,dict) else x))!=n]
 
 def _value_alias_norms(*names: str) -> set[str]:
     aliases=set()
@@ -1874,15 +1920,21 @@ def _value_definition_choices(work: dict[str,Any], prefix: str) -> tuple[str,str
 def render_modules_home() -> None:
     st.title("Mon parcours de recherche de valeurs")
     st.info("Choisissez librement le module dans lequel vous souhaitez travailler. Une reprise exacte peut être proposée, mais elle n'est jamais imposée.")
-    labels={"module_1":"Prérequis — valeurs validées avec l’accompagnateur","module_2":"Faisons connaissance","module_3":"Valider ou revoir une valeur","module_4":"Rechercher une nouvelle valeur avec Clarté360","module_5":"Mes rapports"}
+    labels={"module_1":("MODULE 1","Prérequis"),"module_2":("MODULE 2","Faisons connaissance"),"module_3":("MODULE 3","Valider ou revoir une valeur"),"module_4":("MODULE 4","Rechercher une nouvelle valeur"),"module_5":("MODULE 5","Mes rapports")}
+    st.markdown("""<style>
+    .cl360-module-card{min-height:126px;padding:18px 22px;border:1px solid #d9e2ec;border-radius:14px;background:#fff;display:flex;flex-direction:column;justify-content:center;margin-bottom:8px}
+    .cl360-module-number{font-size:.78rem;font-weight:800;letter-spacing:.12em;color:#556575;margin-bottom:7px}
+    .cl360-module-title{font-size:1.18rem;font-weight:750;line-height:1.25;color:#14213d;margin-bottom:8px}
+    .cl360-module-status{font-size:.86rem;color:#5f6b78}
+    </style>""",unsafe_allow_html=True)
     for mid in MODULE_LABELS:
         state=_module_state(mid); status=state.get("status","non_commence")
-        status_label={"termine":"Terminé","en_cours":"En cours","disponible":"Disponible","indisponible":"Indisponible","non_commence":"Non commencé"}.get(status,status)
-        with st.container(border=True):
-            c1,c2=st.columns([4,1])
+        status_label={"termine":"✓ Terminé","en_cours":"● En cours","disponible":"Disponible","indisponible":"Indisponible","non_commence":"Non commencé"}.get(status,status)
+        number,title=labels[mid]
+        with st.container(border=False):
+            c1,c2=st.columns([4,1],vertical_alignment="center")
             with c1:
-                st.markdown(f"### {labels[mid]}")
-                st.caption(status_label)
+                st.markdown(f'<div class="cl360-module-card"><div class="cl360-module-number">{number}</div><div class="cl360-module-title">{html.escape(title)}</div><div class="cl360-module-status">{status_label}</div></div>',unsafe_allow_html=True)
             with c2:
                 if st.button("Ouvrir",key=f"home_open_{mid}",use_container_width=True,disabled=status=="indisponible"):
                     st.session_state.active_module=mid; st.session_state.page="Modules"; st.rerun()
@@ -1923,7 +1975,7 @@ def render_module_1() -> None:
     idx=int(st.session_state.module1_index); total=int(st.session_state.module1_count)
     st.progress(min(1.0,idx/max(1,total))); st.caption(f"Valeur {idx+1} sur {total}")
     work=st.session_state.current_value_work or _new_value_work("accompagnateur")
-    name=open_response_widget("Quelle valeur avez-vous identifiée et validée avec votre accompagnateur ?",f"m1_name_{idx}",value=work.get("nom_initial",""),height=70,allow_reformulation=False,expected_value_label=True)
+    name=open_response_widget("Quelle valeur avez-vous identifiée et validée avec votre accompagnateur ?",f"m1_name_{idx}",value=work.get("nom_initial",""),height=70,allow_reformulation=False,expected_value_label=True, question_kind="word")
     definition=open_response_widget("Que signifie précisément cette valeur pour vous ?",f"m1_def_{idx}",value=work.get("definition_personnelle",""),height=110,dependency_scope="prerequisites",value_name=name)
     if name and definition:
         work["nom_initial"]=name; work["nom_normalise"]=_normalise_value_name(name); work["nom_final"]=work["nom_normalise"]; work["definition_personnelle"]=definition
@@ -2193,7 +2245,7 @@ def render_module_3() -> None:
             if st.button("Confirmer la suppression définitive",type="primary",use_container_width=True,key=f"m3_confirm_delete_work_btn_{work['id']}"):
                 _purge_value_everywhere(work.get("original_name",""),work.get("nom_final",""),work.get("nom_initial",""),work.get("terme","")); st.session_state.pop(f"m3_confirm_delete_work_{work['id']}",None); st.session_state.module3_queue=[]; st.session_state.current_value_work={}; st.session_state.module3_index=0; _set_module_status("module_3","disponible","accueil"); st.rerun()
     if work.get("source") in {"migration_v2137","module_4","recherche_guidee","examen_attente","examen_seance"}: _pending_value_summary(work)
-    name=open_response_widget("Quelle valeur avez-vous identifiée ?",f"m3_name_{work['id']}",value=work.get("nom_initial",work.get("nom_final","")),height=70,allow_reformulation=False,expected_value_label=True)
+    name=open_response_widget("Quelle valeur avez-vous identifiée ?",f"m3_name_{work['id']}",value=work.get("nom_initial",work.get("nom_final","")),height=70,allow_reformulation=False,expected_value_label=True, question_kind="word")
     if not name:
         c1,c2=st.columns(2)
         with c1:
@@ -2216,7 +2268,7 @@ def render_module_3() -> None:
     own_review=work.get("source")=="examen_seance" and normalize(canonical)==normalize(_normalise_value_name(work.get("original_name","")))
     # Compatibilité : ancien contrôle = not (own_reexam or own_pending) ; ajout du cas séance.
     if location and not (own_reexam or own_pending or own_review):
-        labels={"validee":"vos valeurs validées","a_examiner":"vos valeurs à examiner","a_revoir":"votre liste À revoir en séance"}
+        labels={"validee":"vos valeurs validées","a_examiner":"vos valeurs à examiner","a_explorer":"vos pistes À explorer — Module 4","a_revoir":"votre liste À revoir en séance"}
         st.error(f"La valeur **{canonical}** figure déjà dans {labels.get(location,'votre parcours')}. Elle ne peut pas être ajoutée une seconde fois. Aucune nouvelle valeur n’a été enregistrée.")
         if location=="validee": st.info("Vous pouvez la consulter ou la réexaminer depuis l’accueil du module 3.")
         return
@@ -2278,10 +2330,36 @@ def render_module_3() -> None:
     elif decision=="formulation_non_valeur":
         st.error((nature.get("explication") or "Cette formulation ne correspond pas à une valeur.")+" Aucune donnée n’a été enregistrée. Le module 4 pourra vous aider à approfondir ce sujet.")
         return
-    conceptual=st.radio("Comment souhaitez-vous poursuivre ?",["Poursuivre l’examen comme valeur","Placer ce sujet À revoir en séance"],key=f"m3_concept_{work['id']}",on_change=mark_user_activity,args=("choix_orientation_valeur",))
-    if conceptual.startswith("Placer"):
-        if st.button("Ajouter à À revoir en séance",type="primary",key=f"m3_review_{work['id']}"):
-            _add_review_item(work,"Doute sur la nature du concept après analyse et clarification"); business_trace("valeur_a_revoir_en_seance",canonical); _advance_module3(); st.rerun()
+    st.markdown("### Choisissez la suite la plus utile")
+    st.caption("Chaque choix correspond à un parcours différent. Votre terme ne sera placé que dans un seul panier actif.")
+    conceptual=st.radio(
+        "Comment souhaitez-vous poursuivre ?",
+        [
+            "Poursuivre l’examen maintenant dans le Module 3",
+            "Conserver dans Valeurs à examiner",
+            "Envoyer vers À explorer — Module 4",
+            "Placer dans À revoir en séance",
+        ],
+        key=f"m3_concept_{work['id']}",on_change=mark_user_activity,args=("choix_orientation_valeur",)
+    )
+    explanations={
+        "Poursuivre l’examen maintenant dans le Module 3":"Vous continuez immédiatement la définition et le questionnaire spécifique du Module 3.",
+        "Conserver dans Valeurs à examiner":"Vous reprendrez plus tard ce même examen, seul, dans le Module 3.",
+        "Envoyer vers À explorer — Module 4":"Le Module 4 reprendra ce terme avec un questionnement vertical pour comprendre ce qu'il recouvre réellement.",
+        "Placer dans À revoir en séance":"Vous préférez en discuter avec votre accompagnateur, qui pourra ensuite le remettre dans le parcours le plus adapté.",
+    }
+    st.info(explanations[conceptual])
+    if conceptual=="Conserver dans Valeurs à examiner":
+        if st.button("Confirmer : conserver pour plus tard",type="primary",use_container_width=True,key=f"m3_pending_{work['id']}"):
+            _save_work_for_later(work); _finish_module3_orientation(); st.rerun()
+        return
+    if conceptual=="Envoyer vers À explorer — Module 4":
+        if st.button("Confirmer : explorer dans le Module 4",type="primary",use_container_width=True,key=f"m3_explore_{work['id']}"):
+            _send_work_to_explore(work); _finish_module3_orientation(); st.rerun()
+        return
+    if conceptual=="Placer dans À revoir en séance":
+        if st.button("Confirmer : revoir avec mon accompagnateur",type="primary",use_container_width=True,key=f"m3_review_{work['id']}"):
+            _add_review_item(work,"Décision du bénéficiaire : en discuter avec l’accompagnateur avant de poursuivre"); business_trace("valeur_a_revoir_en_seance",canonical); _finish_module3_orientation(); st.rerun()
         return
     choice,final_def=_value_definition_choices(work,f"m3_{work['id']}")
     work["definition_finale"]=final_def
@@ -2490,11 +2568,20 @@ def _module4_resolve_source_track(cycle: dict[str,Any], outcome: str, new_hypoth
     source=cycle.get("source_track") or {}
     track_id=cycle.get("track_id") or source.get("id")
     old_name=source.get("terme_initial") or source.get("nom_initial") or ""
+    source_work=source.get("elements_source") if isinstance(source.get("elements_source"),dict) else {}
+    source_id=source_work.get("pending_origin_id") or source_work.get("id") or source.get("source_value_id")
+    aliases=_value_alias_norms(old_name,source_work.get("original_name"),source_work.get("nom_initial"),source_work.get("nom_normalise"),source_work.get("nom_final"))
     if track_id:
         st.session_state.clarification_tracks=[x for x in st.session_state.get("clarification_tracks", []) if x.get("id") != track_id]
-    if old_name:
-        aliases=_value_alias_norms(old_name)
-        st.session_state.values_to_examine=[x for x in st.session_state.get("values_to_examine", []) if normalize(_normalise_value_name(x.get("nom_final") or x.get("nom_initial") or x.get("nom") or "")) not in aliases]
+    if old_name or source_id:
+        st.session_state.values_to_examine=[x for x in st.session_state.get("values_to_examine", []) if not ((source_id and x.get("id")==source_id) or normalize(_normalise_value_name(x.get("nom_final") or x.get("nom_initial") or x.get("nom") or "")) in aliases)]
+        # Nettoyer aussi les anciennes listes de reprise qui pourraient ressusciter la piste.
+        reprise=st.session_state.get("resume_state",{})
+        if isinstance(reprise,dict):
+            for key in ("values_to_examine","inter_session_pending"):
+                vals=reprise.get(key)
+                if isinstance(vals,list):
+                    reprise[key]=[x for x in vals if not ((source_id and isinstance(x,dict) and x.get("id")==source_id) or normalize(_normalise_value_name((x.get("nom_final") or x.get("nom_initial") or x.get("nom") or "") if isinstance(x,dict) else x)) in aliases)]
     history=st.session_state.setdefault("clarification_history", [])
     history.append({"date_heure":now_iso(),"track":deepcopy(source),"issue":outcome,"nouvelle_hypothese":new_hypothesis})
     business_trace("module4_piste_resolue",f"{old_name}:{outcome}:{new_hypothesis}")
@@ -2672,7 +2759,7 @@ def _module4_render_cycle(voie:str) -> None:
         question=cycle.get("question","")
         st.markdown(f"### {question}"); speak_button(question,f"m4_q_{cycle['id']}_{len(cycle.get('exchanges',[]))}")
         widget_key=f"m4_cycle_{cycle['id']}_{len(cycle.get('exchanges',[]))}"
-        answer=open_response_widget("Votre réponse",widget_key,height=140,allow_reformulation=True,listen=True,dependency_scope="exploration")
+        answer=open_response_widget("Votre réponse",widget_key,height=140,allow_reformulation=True,listen=True,dependency_scope="exploration",question_kind="word" if cycle.get("stage")=="mot" else "open")
         if answer and not cycle.get("pending_answer_processed"):
             role="initial" if not cycle.get("exchanges") else ("recherche_mot" if cycle.get("stage")=="mot" else "relance_verticale")
             _module4_record_exchange(cycle,question,answer,role)
@@ -3558,7 +3645,7 @@ def render_business():
         st.session_state.prerequisite_count=count
         entries=[]
         for i in range(count):
-            val=open_response_widget(f"Valeur déjà identifiée n°{i+1}",f"prereq_free_{i}",height=70,allow_reformulation=False,dependency_scope="prerequisites",expected_value_label=True)
+            val=open_response_widget(f"Valeur déjà identifiée n°{i+1}",f"prereq_free_{i}",height=70,allow_reformulation=False,dependency_scope="prerequisites",expected_value_label=True, question_kind="word")
             if val.strip(): entries.append(val.strip())
         if st.button("Examiner mes formulations",type="primary",disabled=len(entries)!=count):
             st.session_state.prerequisite_pending=[resolve_prerequisite(x) for x in entries]
@@ -3580,12 +3667,12 @@ def render_business():
                     info=value_info(choice); st.write(info.get("definition","")); own=open_response_widget("Conservez cette définition ou écrivez la vôtre",f"propdef_{i}",value=info.get("definition",""),height=110,dependency_scope="prerequisites",value_name=choice)
                     if own.strip(): confirmed_values.append((choice,own.strip(),False))
                 else:
-                    custom_name=open_response_widget("Nom de votre valeur",f"customname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites",expected_value_label=True)
+                    custom_name=open_response_widget("Nom de votre valeur",f"customname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites",expected_value_label=True, question_kind="word")
                     custom_def=open_response_widget("Que signifie cette valeur pour vous ?",f"customdef_{i}",height=110,dependency_scope="prerequisites",value_name=custom_name.strip())
                     if custom_name.strip() and custom_def.strip(): confirmed_values.append((custom_name.strip(),custom_def.strip(),True))
             else:
                 st.write("Cette formulation n'existe pas telle quelle dans le référentiel. Elle peut néanmoins être retenue pour vous.")
-                custom_name=open_response_widget("Nom de votre valeur",f"newname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites",expected_value_label=True)
+                custom_name=open_response_widget("Nom de votre valeur",f"newname_{i}",value=item['raw'],height=70,allow_reformulation=False,dependency_scope="prerequisites",expected_value_label=True, question_kind="word")
                 custom_def=open_response_widget("Que signifie cette valeur pour vous ?",f"newdef_{i}",height=110,dependency_scope="prerequisites",value_name=custom_name.strip())
                 if custom_name.strip() and custom_def.strip(): confirmed_values.append((custom_name.strip(),custom_def.strip(),True))
         pending_count=len(st.session_state.get("prerequisite_pending",[]))
@@ -3661,7 +3748,7 @@ def render_business():
             for i in range(count):
                 st.markdown(f"### Valeur repérée n°{i+1}")
                 previous=existing_inter[i] if i < len(existing_inter) else {}
-                name=open_response_widget("Nom proposé",f"inter_name_{i}",value=previous.get("nom",""),height=70,allow_reformulation=False,dependency_scope="personal_values",expected_value_label=True)
+                name=open_response_widget("Nom proposé",f"inter_name_{i}",value=previous.get("nom",""),height=70,allow_reformulation=False,dependency_scope="personal_values",expected_value_label=True, question_kind="word")
                 source=st.selectbox("Comment l’avez-vous découverte ?",sources,key=f"inter_source_{i}")
                 meaning=open_response_widget("Que signifie ce mot pour vous ?",f"inter_meaning_{i}",value=previous.get("definition",""),height=100,dependency_scope="personal_values",value_name=name.strip())
                 situations=open_response_widget("Dans quelles situations l’avez-vous reconnue ?",f"inter_situations_{i}",value=" ; ".join(previous.get("situations",[]) or []),height=100,dependency_scope="personal_values",value_name=name.strip())
