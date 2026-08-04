@@ -17,7 +17,7 @@ def _widget_source() -> str:
 
 
 def test_version_9e3_declared():
-    assert 'APP_VERSION = "2.1.9A-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.9B-preproduction"' in TEXT
 
 
 def test_ctrl_enter_uses_unique_marker_for_each_response_widget():

@@ -2,7 +2,7 @@ from pathlib import Path
 TEXT=Path('app.py').read_text(encoding='utf-8')
 
 def test_version_9f():
-    assert 'APP_VERSION = "2.1.9A-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.9B-preproduction"' in TEXT
 
 def test_module3_no_vertical_clarification():
     module3=TEXT[TEXT.index('def render_module_3'):TEXT.index('def _advance_module3')]

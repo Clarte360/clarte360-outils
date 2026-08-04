@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.9A-preproduction"
+APP_VERSION = "2.1.9B-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -314,7 +314,7 @@ def default_business_state() -> dict[str, Any]:
         "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
         "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
         "json_schema_version":"2.1.3.9D",
-        "active_module":"accueil_modules",
+        "active_module":"accueil_modules","pending_module_entry":"",
         "module_states":{
             "module_1":{"status":"non_commence","step":"intro"},
             "module_2":{"status":"indisponible","step":"questionnaire"},
@@ -1181,7 +1181,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         proposal_key=f"{base}_direct_proposal"
         if proposal_key not in st.session_state:
             with st.spinner("Préparation d’une reformulation fidèle…"):
-                st.session_state[proposal_key]=clean_spoken_text(official, expected_value_label=expected_value_label)
+                st.session_state[proposal_key]=reliable_clean_spoken_text(official, expected_value_label=expected_value_label)
         proposal=str(st.session_state.get(proposal_key) or "").strip()
         if not proposal:
             st.success("Votre réponse est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
@@ -1192,7 +1192,8 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
                 st.success("Votre réponse est déjà claire et correctement formulée. Aucune modification n’est nécessaire.")
                 choice=st.radio("Validation",["Choisissez une option","Conserver ma réponse actuelle"],key=f"{base}_direct_choice")
             elif difference_kind=="correction_legere":
-                st.info("Votre réponse est claire. Clarté360 propose uniquement une légère correction de forme.")
+                st.info("Clarté360 propose une légère correction de forme, sans modifier le sens. Comparez les deux versions avant de choisir.")
+                st.markdown(f'<div class="transcript-card"><b>Formulation initiale</b><br><br>{html.escape(official)}</div>',unsafe_allow_html=True)
                 st.markdown(f'<div class="transcript-card corrected"><b>Correction de forme proposée</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
                 choice=st.radio("Quelle version souhaitez-vous conserver ?",["Choisissez une option","Conserver ma formulation","Utiliser la correction de forme"],key=f"{base}_direct_choice")
             else:
@@ -1230,7 +1231,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
         else:
             if st.session_state.get(source_key)!=typed.strip(): st.session_state.pop(proposal_key,None)
             if st.button("Préparer et comparer",key=f"{base}_prepare_typed_{edit_mode}",type="primary",use_container_width=True):
-                st.session_state[source_key]=typed.strip(); st.session_state[proposal_key]=clean_spoken_text(typed.strip(), expected_value_label=expected_value_label); st.rerun()
+                st.session_state[source_key]=typed.strip(); st.session_state[proposal_key]=reliable_clean_spoken_text(typed.strip(), expected_value_label=expected_value_label); st.rerun()
             if source_key in st.session_state:
                 proposal=str(st.session_state.get(proposal_key) or "").strip()
                 difference_kind=_text_difference_kind(typed.strip(),proposal)
@@ -1240,7 +1241,8 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
                     st.success("Votre réponse est déjà claire et correctement formulée. Aucune modification n’est nécessaire.")
                     options.append("Conserver ma réponse initiale")
                 elif difference_kind=="correction_legere":
-                    st.info("Votre réponse est claire. Clarté360 propose uniquement une légère correction de forme, sans modifier le sens.")
+                    st.info("Clarté360 propose une légère correction de forme, sans modifier le sens. Comparez les deux versions avant de choisir.")
+                    st.markdown(f'<div class="transcript-card"><b>Réponse initiale</b><br><br>{html.escape(typed.strip())}</div>',unsafe_allow_html=True)
                     st.markdown(f'<div class="transcript-card corrected"><b>Version légèrement corrigée</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
                     options.extend(["Conserver ma réponse initiale","Utiliser la correction de forme"])
                 else:
@@ -1282,7 +1284,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
                         st.caption("Nouvelle tentative automatique de transcription…")
                 if not raw.strip():
                     raise RuntimeError(str(last_error or "Aucune transcription n’a été retournée."))
-                proposal=clean_spoken_text(raw, expected_value_label=expected_value_label)
+                proposal=reliable_clean_spoken_text(raw, expected_value_label=expected_value_label)
                 st.session_state[f"{base}_transcript_raw"]=raw; st.session_state[f"{base}_transcript_clean"]=proposal
             # Un seul clic doit suffire : on force immédiatement le rerun qui affiche
             # la transcription déjà mémorisée, sans relancer ni la transcription ni l'IA.
@@ -1299,7 +1301,8 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
             st.success("Votre transcription est déjà claire et correctement formulée. Aucune modification n’est nécessaire.")
             options.append("Conserver la transcription initiale")
         elif difference_kind=="correction_legere":
-            st.info("Votre réponse est claire. Clarté360 propose uniquement une légère correction de forme, sans modifier le sens.")
+            st.info("Clarté360 propose une légère correction de forme, sans modifier le sens. Comparez les deux versions avant de choisir.")
+            st.markdown(f'<div class="transcript-card"><b>Transcription initiale</b><br><br>{html.escape(raw)}</div>',unsafe_allow_html=True)
             st.markdown(f'<div class="transcript-card corrected"><b>Version légèrement corrigée</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
             options.append("Conserver la transcription initiale")
             options.append("Utiliser la correction de forme")
@@ -1852,6 +1855,49 @@ def _ensure_migrated_state() -> None:
         _remove_value_from_active_lists(validated_name,keep="validee")
     if validated_names(): _set_module_status("module_5","disponible","accueil")
 
+def _module_has_temporary_work(module_id: str) -> bool:
+    if module_id == "module_3":
+        work = st.session_state.get("current_value_work") or {}
+        return bool(work and not work.get("completed") and work.get("stage") not in {"", "termine"})
+    if module_id == "module_4":
+        cycle = st.session_state.get("module4_current_cycle") or {}
+        return bool(cycle and cycle.get("stage") not in {"", "termine"})
+    return False
+
+def _abandon_module_temporary_work(module_id: str) -> None:
+    if module_id == "module_3":
+        st.session_state.current_value_work = {}
+        st.session_state.module3_queue = []
+        st.session_state.module3_index = 0
+    elif module_id == "module_4":
+        cycle = st.session_state.get("module4_current_cycle") or {}
+        cycle_id = str(cycle.get("id") or "")
+        if cycle_id:
+            st.session_state.module4_exploration_history = [x for x in st.session_state.get("module4_exploration_history", []) if str(x.get("cycle_id") or "") != cycle_id]
+            st.session_state.module4_question_memory = [x for x in st.session_state.get("module4_question_memory", []) if str(x.get("cycle_id") or "") != cycle_id]
+            prefix = f"m4_cycle_{cycle_id}_"
+            for store_name in ("answer_metadata",):
+                store = st.session_state.get(store_name, {})
+                for key in list(store.keys()):
+                    if str(key).startswith(prefix):
+                        store.pop(key, None)
+        st.session_state.module4_current_cycle = {}
+        st.session_state.module4_candidate_options = []
+        st.session_state.module4_route = ""
+        st.session_state.pipeline_status = "idle"
+        st.session_state.pipeline_error = ""
+        st.session_state.pending_pipeline_answer = ""
+        st.session_state.pending_analysis_card = {}
+        st.session_state.pending_submission = {}
+    _set_module_status(module_id, "disponible", "accueil" if module_id != "module_4" else "choix_voie")
+
+def _request_module_entry(module_id: str) -> None:
+    current = st.session_state.get("active_module", "")
+    if module_id != current and _module_has_temporary_work(module_id):
+        st.session_state.pending_module_entry = module_id
+    else:
+        st.session_state.active_module = module_id
+
 def render_module_menu() -> None:
     with st.sidebar:
         st.markdown("<h3 style='text-align:center;margin:.2rem 0 .8rem'>Mon parcours</h3>",unsafe_allow_html=True)
@@ -1863,7 +1909,7 @@ def render_module_menu() -> None:
             icon={"termine":"✅","en_cours":"▶","disponible":"○","indisponible":"🔒","non_commence":"○"}.get(status,"○")
             active_mark="  •" if active==mid else ""
             if st.button(f"{icon}  {label}{active_mark}",key=f"menu_{mid}",use_container_width=True,disabled=status=="indisponible"):
-                st.session_state.active_module=mid; st.session_state.page="Modules"; st.rerun()
+                _request_module_entry(mid); st.session_state.page="Modules"; st.rerun()
         st.markdown("<div style='text-align:center;color:#6B7D7D;font-size:.78rem;margin-top:.5rem'>✅ Terminé &nbsp;·&nbsp; ▶ En cours &nbsp;·&nbsp; ○ Disponible</div>",unsafe_allow_html=True)
 
 def render_followup_panel() -> None:
@@ -2627,6 +2673,18 @@ def _module4_resolve_source_track(cycle: dict[str,Any], outcome: str, new_hypoth
     business_trace("module4_piste_resolue",f"{old_name}:{outcome}:{new_hypothesis}")
 
 
+def reliable_clean_spoken_text(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> str:
+    """Exécute la correction en un seul clic, avec une seconde tentative interne si l'API ne renvoie rien."""
+    last = ""
+    for _ in range(2):
+        try:
+            last = str(clean_spoken_text(text, expected_value_label=expected_value_label, question_kind=question_kind) or "").strip()
+            if last:
+                return last
+        except Exception:
+            continue
+    return str(text or "").strip()
+
 def _text_difference_kind(original: str, proposal: str) -> str:
     """Classe la différence afin d'éviter deux blocs artificiellement identiques."""
     import difflib
@@ -3099,6 +3157,18 @@ def render_business_v218() -> None:
     display_header()
     if st.session_state.page=="Accueil reprise": render_resume_welcome(); return
     render_followup_panel()
+    pending_entry=st.session_state.get("pending_module_entry")
+    if pending_entry:
+        st.title("Travail en cours")
+        st.info("Un travail non finalisé existe dans ce module. Souhaitez-vous le reprendre ou l'abandonner ?")
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button("Reprendre exactement où j'en étais",type="primary",use_container_width=True,key="resume_pending_module"):
+                st.session_state.active_module=pending_entry; st.session_state.pending_module_entry=""; st.rerun()
+        with c2:
+            if st.button("Abandonner ce travail et revenir au menu du module",use_container_width=True,key="abandon_pending_module"):
+                _abandon_module_temporary_work(pending_entry); st.session_state.active_module=pending_entry; st.session_state.pending_module_entry=""; st.rerun()
+        return
     module=st.session_state.get("active_module","accueil_modules")
     {"accueil_modules":render_modules_home,"module_1":render_module_1,"module_2":render_module_2,"module_3":render_module_3,"module_4":render_module_4_placeholder,"module_5":render_module_5}.get(module,render_modules_home)()
 
@@ -3428,7 +3498,13 @@ def sidebar_progress():
         _ensure_migrated_state()
         render_module_menu()
         st.sidebar.markdown("---")
-        st.sidebar.download_button("💾 Sauvegarder mon travail (JSON)",data=payload_bytes(False),file_name=make_filename("rvc360_sauvegarde","json"),mime="application/json",use_container_width=True,on_click=lambda:record_save_event("sauvegarde_manuelle"))
+        if st.sidebar.button("💾 Préparer ma sauvegarde JSON",use_container_width=True,key="prepare_sidebar_json"):
+            with st.sidebar.spinner("Préparation de votre fichier…"):
+                st.session_state.prepared_sidebar_json=payload_bytes(False)
+                st.session_state.prepared_sidebar_json_name=make_filename("rvc360_sauvegarde","json")
+            record_save_event("sauvegarde_manuelle")
+        if st.session_state.get("prepared_sidebar_json"):
+            st.sidebar.download_button("Télécharger mon fichier JSON",data=st.session_state.prepared_sidebar_json,file_name=st.session_state.get("prepared_sidebar_json_name") or make_filename("rvc360_sauvegarde","json"),mime="application/json",use_container_width=True)
         if st.sidebar.button("🚪 Quitter et préparer mon JSON",use_container_width=True): record_save_event("sortie_preparee"); close_runtime_session("sortie_preparee"); st.session_state.exit_json_ready=True; st.session_state.exit_mode="quit"; st.rerun()
         st.sidebar.caption(f"Temps cumulé : {format_duration(total_session_seconds())}")
     else: st.sidebar.markdown("### Session")

@@ -3,7 +3,7 @@ from pathlib import Path
 TEXT=(Path(__file__).parents[1]/'app.py').read_text(encoding='utf-8')
 
 def test_version_9e():
-    assert 'APP_VERSION = "2.1.9A-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.9B-preproduction"' in TEXT
 
 def test_module3_can_open_hypothesis_voluntarily():
     assert 'Examiner une hypothèse conservée' in TEXT

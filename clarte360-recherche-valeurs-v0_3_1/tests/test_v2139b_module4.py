@@ -2,7 +2,7 @@ from pathlib import Path
 TEXT=Path(__file__).resolve().parents[1].joinpath('app.py').read_text(encoding='utf-8')
 
 def test_version_9b():
-    assert 'APP_VERSION = "2.1.9A-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.9B-preproduction"' in TEXT
 
 def test_both_paths_are_active():
     assert 'def _module4_generate_way2_question' in TEXT
