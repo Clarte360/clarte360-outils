@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9F4-preproduction"
+APP_VERSION = "2.1.9A-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -1271,7 +1271,18 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
             audio_id=_audio_fingerprint(audio)
             st.session_state[f"{base}_audio_id"]=audio_id
             with st.spinner("Transcription en cours…"):
-                raw=transcribe_audio(audio); proposal=clean_spoken_text(raw, expected_value_label=expected_value_label)
+                raw=""; last_error=None
+                for attempt in range(2):
+                    try:
+                        raw=transcribe_audio(audio)
+                        if raw.strip(): break
+                    except Exception as exc:
+                        last_error=exc
+                    if attempt==0:
+                        st.caption("Nouvelle tentative automatique de transcription…")
+                if not raw.strip():
+                    raise RuntimeError(str(last_error or "Aucune transcription n’a été retournée."))
+                proposal=clean_spoken_text(raw, expected_value_label=expected_value_label)
                 st.session_state[f"{base}_transcript_raw"]=raw; st.session_state[f"{base}_transcript_clean"]=proposal
             # Un seul clic doit suffire : on force immédiatement le rerun qui affiche
             # la transcription déjà mémorisée, sans relancer ni la transcription ni l'IA.
@@ -1895,8 +1906,6 @@ def _value_definition_choices(work: dict[str,Any], prefix: str, allow_ai_rewrite
     if official:
         options += ["Adopter la définition Clarté360", "Créer une formulation combinée"]
     options += ["Modifier manuellement ma définition"]
-    if allow_ai_rewrite:
-        options += ["Demander une reformulation Clarté360"]
     choice=st.radio("Comment souhaitez-vous traiter votre définition ?",options,key=f"{prefix}_def_choice")
     final_def=personal
     if choice=="Adopter la définition Clarté360":
@@ -1906,13 +1915,6 @@ def _value_definition_choices(work: dict[str,Any], prefix: str, allow_ai_rewrite
         final_def=st.text_area("Votre formulation combinée",value=seed,key=f"{prefix}_combined",height=110)
     elif choice=="Modifier manuellement ma définition":
         final_def=st.text_area("Votre définition modifiée",value=personal,key=f"{prefix}_manual",height=110)
-    elif choice=="Demander une reformulation Clarté360":
-        proposal_key=f"{prefix}_ai_proposal"
-        if st.button("✨ Proposer une reformulation Clarté360",key=f"{prefix}_ask_ai",use_container_width=True):
-            st.session_state[proposal_key]=rewrite_text(personal, purpose="definition") or personal
-        final_def=str(st.session_state.get(proposal_key,personal) or personal)
-        if final_def:
-            st.markdown("**Proposition Clarté360**"); st.info(final_def)
     signature=normalize(choice+" | "+final_def)
     confirmed_key=f"{prefix}_definition_confirmed"; signature_key=f"{prefix}_definition_signature"
     if st.session_state.get(signature_key)!=signature:
@@ -1986,10 +1988,11 @@ def render_module_1() -> None:
     info=_referential_value_info(work["nom_final"]); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
     choice,final_def,definition_confirmed=_value_definition_choices(work,f"m1_{idx}",allow_ai_rewrite=False)
     if not definition_confirmed: return
-    st.markdown("### Questionnaire spécifique Clarté360")
-    important=st.radio("Cette valeur est-elle importante pour vous dans plusieurs domaines ou situations ?",["Choisissez","Oui","Non"],key=f"m1_q1_{idx}")
-    very=st.radio("Seriez-vous durablement insatisfait si cette valeur était régulièrement bafouée ?",["Choisissez","Oui","Non"],key=f"m1_q2_{idx}") if important=="Oui" else "Non"
-    fundamental=st.radio("Cette valeur influence-t-elle réellement vos choix, vos engagements ou vos refus importants ?",["Choisissez","Oui","Non"],key=f"m1_q3_{idx}") if very=="Oui" else "Non"
+    st.markdown("### Questionnaire spécifique HEC")
+    value_label=work.get("nom_final") or work.get("nom_normalise") or work.get("nom_initial") or "cette valeur"
+    important=st.radio(f'Pour vous, la valeur « {value_label} » est-elle importante ?', ["Choisissez","Oui","Non"],key=f"m1_q1_{idx}")
+    very=st.radio(f'Pour vous, la valeur « {value_label} » est-elle très importante ?', ["Choisissez","Oui","Non"],key=f"m1_q2_{idx}") if important=="Oui" else "Non"
+    fundamental=st.radio(f'Pour vous, la valeur « {value_label} » est-elle fondamentale ?', ["Choisissez","Oui","Non"],key=f"m1_q3_{idx}") if very=="Oui" else "Non"
     complete=not (important=="Choisissez" or (important=="Oui" and very=="Choisissez") or (very=="Oui" and fundamental=="Choisissez"))
     if st.button("Valider cette valeur et poursuivre",type="primary",disabled=not complete,key=f"m1_save_{idx}",use_container_width=True):
         q={"importante":important=="Oui","tres_importante":very=="Oui","fondamentale":fundamental=="Oui"}
@@ -2399,10 +2402,11 @@ def render_module_3() -> None:
     work["definition_finale"]=final_def
     if not definition_confirmed:
         return
-    st.markdown("### Questionnaire spécifique Clarté360")
-    important=st.radio("Cette valeur est-elle importante pour vous dans plusieurs domaines ou situations ?",["Choisissez","Oui","Non"],key=f"m3_q1_{work['id']}",on_change=mark_user_activity,args=("questionnaire_valeur_q1",))
-    very=st.radio("Seriez-vous durablement insatisfait si cette valeur était régulièrement bafouée ?",["Choisissez","Oui","Non"],key=f"m3_q2_{work['id']}",on_change=mark_user_activity,args=("questionnaire_valeur_q2",)) if important=="Oui" else "Non"
-    fundamental=st.radio("Cette valeur influence-t-elle réellement vos choix, vos engagements ou vos refus importants ?",["Choisissez","Oui","Non"],key=f"m3_q3_{work['id']}",on_change=mark_user_activity,args=("questionnaire_valeur_q3",)) if very=="Oui" else "Non"
+    st.markdown("### Questionnaire spécifique HEC")
+    value_label=canonical or work.get("nom_final") or work.get("nom_normalise") or work.get("nom_initial") or "cette valeur"
+    important=st.radio(f'Pour vous, la valeur « {value_label} » est-elle importante ?', ["Choisissez","Oui","Non"],key=f"m3_q1_{work['id']}",on_change=mark_user_activity,args=("questionnaire_valeur_q1",))
+    very=st.radio(f'Pour vous, la valeur « {value_label} » est-elle très importante ?', ["Choisissez","Oui","Non"],key=f"m3_q2_{work['id']}",on_change=mark_user_activity,args=("questionnaire_valeur_q2",)) if important=="Oui" else "Non"
+    fundamental=st.radio(f'Pour vous, la valeur « {value_label} » est-elle fondamentale ?', ["Choisissez","Oui","Non"],key=f"m3_q3_{work['id']}",on_change=mark_user_activity,args=("questionnaire_valeur_q3",)) if very=="Oui" else "Non"
     if important=="Choisissez" or (important=="Oui" and very=="Choisissez") or (very=="Oui" and fundamental=="Choisissez"):
         return
     final_decision="validee" if important==very==fundamental=="Oui" else "non_retenue"
@@ -2640,7 +2644,7 @@ def _module4_new_cycle(voie:str) -> None:
     st.session_state.module4_current_cycle={
         "id":str(uuid.uuid4()), "voie":voie, "stage":"initial", "started_at":now_iso(),
         "question":"", "exchanges":[], "candidate_options":[], "result":"", "candidate_rounds":0, "reorientation_count":0,
-        "word_question_asked":False, "word_no_answer":False, "axis_closed":False,
+        "word_question_asked":False, "word_no_answer":False, "axis_closed":False, "hypothesis_checkpoint_shown":False,
     }
     st.session_state.module4_candidate_options=[]
     business_trace("module4_cycle_demarre",voie)
@@ -2654,6 +2658,21 @@ def _module4_record_exchange(cycle:dict[str,Any], question:str, answer:str, role
     st.session_state.module4_exploration_history.append(deepcopy(item))
     business_trace("module4_question_reponse",f"{cycle['voie']}:{role}")
 
+
+
+def _module4_generate_way1_question() -> str:
+    questions=[
+        "Racontez une situation récente qui vous a particulièrement satisfait ou contrarié. Que s’est-il passé concrètement ?",
+        "Pensez à une décision récente que vous avez prise sans hésiter. Qu’est-ce qui a compté le plus pour vous ?",
+        "Racontez un moment récent où vous avez admiré ou désapprouvé la manière d’agir de quelqu’un. Qu’est-ce qui vous a marqué ?",
+        "Pensez à une situation où vous avez accepté un effort ou un compromis. Pour préserver quoi l’avez-vous fait ?",
+        "Racontez un moment où vous vous êtes senti vraiment à votre place. Qu’est-ce qui rendait ce moment important ?",
+    ]
+    used={_module4_question_signature(x.get("question","")) for x in st.session_state.get("module4_question_memory",[])}
+    for question in questions:
+        if _module4_question_signature(question) not in used:
+            return question
+    return "Racontez une autre situation, différente de celles déjà explorées, qui vous a fait réagir fortement. Que s’est-il passé ?"
 
 def _module4_generate_way2_question() -> str:
     fallback="Pensez à un moment récent où vous vous êtes senti particulièrement satisfait, contrarié ou touché. Qu’est-ce qui s’est passé concrètement ?"
@@ -2670,6 +2689,12 @@ Respectez impérativement : aucune conclusion psychologique, aucun profil, aucun
 def _module4_analyse_progress(cycle:dict[str,Any]) -> dict[str,Any]:
     exchanges=cycle.get("exchanges",[])
     vertical_count=sum(1 for x in exchanges if x.get("role")=="relance_verticale")
+    last_answer=normalize(exchanges[-1].get("reponse_validee","") if exchanges else "")
+    stop_markers=("deja repondu","déjà répondu","je ne sais plus","tourne en rond","rien d autre","rien d'autre","arreter","arrêter")
+    if any(marker in last_answer for marker in stop_markers):
+        return {"action":"proposer_hypotheses","question":"","raison":"Le bénéficiaire indique que l’axe est suffisamment exploré.","idee_principale":""}
+    if len(exchanges)>=3:
+        return {"action":"proposer_hypotheses","question":"","raison":"Point d’étape après trois échanges utiles.","idee_principale":""}
     fallback_action="demander_mot" if vertical_count>=3 or _module4_vertical_count(cycle)>=MODULE4_MAX_VERTICAL_QUESTIONS else "relance_verticale"
     fallback={"action":fallback_action,"question":("Si vous deviez mettre un mot sur ce qui était le plus important pour vous dans cette situation, lequel serait-il ?" if fallback_action=="demander_mot" else "Qu’est-ce qui était réellement important pour vous dans cette situation ?"),"raison":"","idee_principale":""}
     if not ai_ready(): return fallback
@@ -2677,12 +2702,13 @@ def _module4_analyse_progress(cycle:dict[str,Any]) -> dict[str,Any]:
 Décidez d’une seule action :
 - relance_verticale : tant qu'il manque une étape utile entre le fait raconté, ce qui a été attendu ou refusé, ce qui comptait réellement et le principe durable sous-jacent ;
 - demander_mot : uniquement lorsque les réponses permettent déjà de comprendre clairement ce qui était important, au-delà de la seule émotion ou du seul besoin ;
-- aucune_piste : si la réponse tourne en boucle ou si le bénéficiaire ne souhaite plus avancer.
+- proposer_hypotheses : dès que trois échanges utiles ont eu lieu, qu’une ou plusieurs pistes deviennent plausibles, ou que le bénéficiaire indique avoir déjà répondu ;
+- aucune_piste : uniquement si aucune matière exploitable n’existe réellement.
 
 Ne demandez jamais un mot immédiatement après le seul récit initial. Posez normalement entre trois et cinq relances utiles, sans dépasser cinq. Chaque nouvelle question doit s'appuyer sur la dernière réponse et apporter un angle réellement nouveau. Ne répétez jamais une question presque identique.
 La recherche du mot doit viser ce qui était important, pas seulement le ressenti. Formulation recommandée : « Si vous deviez mettre un mot sur ce qui était le plus important pour vous dans cette situation, lequel serait-il ? »
 Une idée explorée ne pourra produire qu’une seule hypothèse retenue."""
-    schema={"type":"object","properties":{"action":{"type":"string","enum":["relance_verticale","demander_mot","aucune_piste"]},"question":{"type":"string"},"raison":{"type":"string"},"idee_principale":{"type":"string"}},"required":["action","question","raison","idee_principale"],"additionalProperties":False}
+    schema={"type":"object","properties":{"action":{"type":"string","enum":["relance_verticale","demander_mot","proposer_hypotheses","aucune_piste"]},"question":{"type":"string"},"raison":{"type":"string"},"idee_principale":{"type":"string"}},"required":["action","question","raison","idee_principale"],"additionalProperties":False}
     payload={"voie":cycle.get("voie"),"echanges":exchanges,"valeurs_deja_connues":list(_module4_all_known_names())}
     try:
         out=response_json(instructions,payload,"module4_progression_verticale",schema,max_tokens=420)
@@ -2770,6 +2796,14 @@ def _module4_threshold_invitation() -> None:
             st.session_state.active_module="module_3"; st.session_state.module4_route=""; st.rerun()
 
 
+def _module4_candidates_from_dialogue(cycle: dict[str,Any]) -> list[dict[str,str]]:
+    """Fait émerger des hypothèses depuis tout le dialogue, sans exiger un mot préalable."""
+    joined=" ".join(x.get("reponse_validee","") for x in cycle.get("exchanges",[]))
+    return _module4_word_candidates(cycle, joined)
+
+def _module4_module2_completed() -> bool:
+    return _module_state("module_2").get("status")=="termine"
+
 def _module4_render_cycle(voie:str) -> None:
     cycle=st.session_state.get("module4_current_cycle") or {}
     if not cycle or cycle.get("voie")!=voie or cycle.get("stage")=="termine":
@@ -2785,7 +2819,7 @@ def _module4_render_cycle(voie:str) -> None:
     if voie=="questions_personnalisees" and not cycle.get("question"):
         cycle["question"]=_module4_generate_way2_question(); cycle["stage"]="question"
     elif voie=="situation" and not cycle.get("question"):
-        cycle["question"]="Avez-vous repéré récemment une situation qui vous a fait agir, réagir, vous réjouir, vous déranger ou vous toucher ?"; cycle["stage"]="question"
+        cycle["question"]=_module4_generate_way1_question(); cycle["stage"]="question"
     elif voie=="piste_clarifier" and not cycle.get("question"):
         cycle["question"]="Derrière cette formulation, qu’est-ce qui est réellement important pour vous ?"; cycle["stage"]="question"
 
@@ -2812,7 +2846,13 @@ def _module4_render_cycle(voie:str) -> None:
                     cycle["stage"]="candidats" if candidates else "proposition_permission"
             else:
                 progress=_module4_analyse_progress(cycle)
-                if progress.get("action")=="aucune_piste": cycle["stage"]="termine"; cycle["result"]="aucune_piste"
+                if progress.get("action")=="aucune_piste":
+                    cycle["candidate_options"]=_module4_candidates_from_dialogue(cycle)
+                    cycle["stage"]="checkpoint_hypotheses" if cycle.get("exchanges") else "termine"
+                    cycle["result"]="aucune_piste" if not cycle.get("exchanges") else ""
+                elif progress.get("action")=="proposer_hypotheses":
+                    cycle["candidate_options"]=_module4_candidates_from_dialogue(cycle)
+                    cycle["stage"]="checkpoint_hypotheses"
                 elif progress.get("action")=="demander_mot":
                     if cycle.get("word_question_asked") and cycle.get("word_no_answer"):
                         cycle["stage"]="proposition_permission"
@@ -2829,6 +2869,33 @@ def _module4_render_cycle(voie:str) -> None:
             st.rerun()
         if cycle.get("pending_answer_processed"):
             cycle.pop("pending_answer_processed",None)
+
+    if cycle.get("stage")=="checkpoint_hypotheses":
+        st.info("Faisons un point : ce dialogue peut déjà faire émerger plusieurs pistes. Vous gardez la main sur la suite.")
+        options=cycle.get("candidate_options",[])
+        if options:
+            st.markdown("**Hypothèses repérées par Clarté360**")
+            for item in options:
+                st.write(f"• **{item.get('nom','')}** — {item.get('definition','')}")
+        own=st.text_input("Une autre valeur vous est-elle venue à l’esprit ?",key=f"m4_own_hypothesis_{cycle['id']}",placeholder="Vous pouvez saisir un mot, ou laisser vide.")
+        actions=["Choisissez","Examiner une hypothèse","Continuer le questionnement","Arrêter ce dialogue"]
+        action=st.radio("Que souhaitez-vous faire maintenant ?",actions,key=f"m4_checkpoint_action_{cycle['id']}")
+        if action=="Examiner une hypothèse":
+            labels=[x.get("nom","") for x in options]
+            if own.strip(): labels.append(_normalise_value_name(own.strip()))
+            if not labels:
+                st.warning("Aucune hypothèse n’est encore disponible. Vous pouvez saisir votre propre proposition ou poursuivre le dialogue.")
+            else:
+                selected=st.radio("Quelle hypothèse souhaitez-vous examiner ?",labels,key=f"m4_checkpoint_select_{cycle['id']}")
+                if st.button("Conserver cette hypothèse",type="primary",use_container_width=True,key=f"m4_checkpoint_keep_{cycle['id']}"):
+                    item=next((x for x in options if x.get("nom")==selected),{"nom":selected,"definition":(_referential_value_info(selected) or {}).get("definition","")})
+                    _module4_add_hypothesis(cycle,item); st.rerun()
+        elif action=="Continuer le questionnement":
+            if st.button("Continuer avec une nouvelle question",type="primary",use_container_width=True,key=f"m4_checkpoint_continue_{cycle['id']}"):
+                cycle["question"]=_module4_generate_reorientation_question(cycle); cycle["stage"]="question"; cycle["pending_answer_processed"]=False; st.rerun()
+        elif action=="Arrêter ce dialogue":
+            if st.button("Arrêter et conserver le travail réalisé",type="primary",use_container_width=True,key=f"m4_checkpoint_stop_{cycle['id']}"):
+                cycle["stage"]="termine"; cycle["result"]="dialogue_arrete_sans_hypothese"; st.rerun()
 
     if cycle.get("stage")=="proposition_permission":
         if cycle.get("word_no_answer"):
@@ -2894,6 +2961,16 @@ def _module4_render_way1() -> None:
 
 def _module4_render_way2() -> None:
     st.title("Aidez-moi à trouver une piste")
+    if not _module4_module2_completed():
+        st.warning("La voie 2 utilise les réponses du Module 2 pour personnaliser les questions. Terminez d’abord le Module 2, ou choisissez la voie 1.")
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button("Aller au Module 2",type="primary",use_container_width=True,key="m4_way2_go_m2"):
+                st.session_state.active_module="module_2"; st.session_state.page="Modules"; st.rerun()
+        with c2:
+            if st.button("Choisir la voie 1",use_container_width=True,key="m4_way2_go_way1"):
+                st.session_state.module4_route="situation"; st.session_state.module4_current_cycle={}; st.rerun()
+        return
     instruction="Clarté360 choisira une question à partir de tout ce qui est déjà connu, y compris les couples questions-réponses issus des deux voies. Cette mémoire reste descriptive : elle ne constitue ni un profil ni une conclusion sur vous."
     st.info(instruction); speak_button(instruction,"m4_way2_instruction")
     values=_module4_validated_value_labels()
@@ -3133,7 +3210,9 @@ def build_payload(completed=False)->dict[str,Any]:
         "completed":completed,"acces_autorise":bool(st.session_state.get("access_authorized")),"exporte_le":now_iso(),
     }
 
-def payload_bytes(completed=False)->bytes: return json.dumps(build_payload(completed),ensure_ascii=False,indent=2).encode("utf-8")
+def payload_bytes(completed=False)->bytes:
+    with st.spinner("Préparation de votre sauvegarde JSON…"):
+        return json.dumps(build_payload(completed),ensure_ascii=False,indent=2).encode("utf-8")
 def make_filename(prefix="rvc360",ext="json"):
     b=st.session_state.get("beneficiaire",{}); return f"{prefix}_{sanitize_filename((b.get('prenom','')+'_'+b.get('nom','')).strip())}_{datetime.now().strftime('%Y%m%d_%H%M')}.{ext}"
 

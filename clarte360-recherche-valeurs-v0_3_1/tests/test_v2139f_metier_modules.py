@@ -2,13 +2,13 @@ from pathlib import Path
 TEXT=Path('app.py').read_text(encoding='utf-8')
 
 def test_version_9f():
-    assert 'APP_VERSION = "2.1.3.9F4-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.9A-preproduction"' in TEXT
 
 def test_module3_no_vertical_clarification():
     module3=TEXT[TEXT.index('def render_module_3'):TEXT.index('def _advance_module3')]
     assert 'decision=="clarification_requise"' not in module3
     assert 'm3_clar_' not in module3
-    assert 'Questionnaire spécifique Clarté360' in module3
+    assert 'Questionnaire spécifique HEC' in module3
 
 def test_recognized_value_name_has_priority():
     fn=TEXT[TEXT.index('def analyse_concept_nature'):TEXT.index('def _clear_application_exploration')]
