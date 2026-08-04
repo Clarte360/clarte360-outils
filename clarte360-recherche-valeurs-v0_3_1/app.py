@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.9C-preproduction"
+APP_VERSION = "2.1.9D-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -307,7 +307,7 @@ def default_business_state() -> dict[str, Any]:
         "current_domain":"", "subject_depth":0, "saturated_subjects":[],
         "completion_check":{}, "closure_decision":"", "resume_message":"",
         "value_records":{}, "rejected_values":[],
-        "access_authorized":False, "resume_welcome_pending":False, "resume_target_page":"",
+        "access_authorized":False, "resume_welcome_pending":False, "resume_target_page":"", "resume_target_module":"",
         "final_mode":False, "final_payload":{}, "final_pdf_download_offered":False, "final_json_download_offered":False,
         "final_transmission_choice":"", "final_transmission_status":{}, "closure_confirm_step":0,
         "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
@@ -2741,6 +2741,63 @@ def _module4_record_exchange(cycle:dict[str,Any], question:str, answer:str, role
     business_trace("module4_question_reponse",f"{cycle['voie']}:{role}")
 
 
+def _module4_reconcile_cycle(cycle: dict[str,Any]) -> bool:
+    """Répare un cycle repris et empêche qu'une question déjà répondue soit reposée.
+
+    Retourne True si l'état a été modifié. Cette règle est commune aux voies 1, 2 et 3.
+    """
+    if not isinstance(cycle, dict) or not cycle:
+        return False
+    changed=False
+    exchanges=list(cycle.get("exchanges",[]) or [])
+
+    # Supprimer uniquement les doublons consécutifs stricts créés par un ancien bug
+    # (même question ET même réponse). Le premier échange reste conservé.
+    cleaned=[]
+    for item in exchanges:
+        if cleaned and _module4_question_signature(item.get("question","")) == _module4_question_signature(cleaned[-1].get("question","")) and normalize(item.get("reponse_validee","")) == normalize(cleaned[-1].get("reponse_validee","")):
+            changed=True
+            continue
+        cleaned.append(item)
+    if len(cleaned) != len(exchanges):
+        cycle["exchanges"]=cleaned
+        exchanges=cleaned
+        cycle["duplicate_repair_at"]=now_iso()
+
+        cycle_id=str(cycle.get("id") or "")
+        def _dedupe_memory(items):
+            out=[]
+            for x in items or []:
+                if str(x.get("cycle_id") or "") != cycle_id:
+                    out.append(x); continue
+                if out and str(out[-1].get("cycle_id") or "") == cycle_id and _module4_question_signature(x.get("question","")) == _module4_question_signature(out[-1].get("question","")) and normalize(x.get("reponse_validee","")) == normalize(out[-1].get("reponse_validee","")):
+                    continue
+                out.append(x)
+            return out
+        st.session_state.module4_question_memory=_dedupe_memory(st.session_state.get("module4_question_memory",[]))
+        st.session_state.module4_exploration_history=_dedupe_memory(st.session_state.get("module4_exploration_history",[]))
+
+    # Si la question courante est déjà la dernière question répondue, elle ne doit
+    # jamais être réaffichée. On avance vers un nouvel angle ou vers le point d'étape.
+    if exchanges and cycle.get("stage") in {"question","mot"}:
+        current_sig=_module4_question_signature(cycle.get("question",""))
+        last_sig=_module4_question_signature(exchanges[-1].get("question",""))
+        if current_sig and current_sig == last_sig:
+            changed=True
+            cycle.pop("pending_answer_processed",None)
+            if len(exchanges) >= 3:
+                cycle["candidate_options"]=_module4_candidates_from_dialogue(cycle)
+                cycle["stage"]="checkpoint_hypotheses"
+                cycle["question"]=""
+            else:
+                cycle["stage"]="question"
+                cycle["question"]=_module4_distinct_followup(cycle)
+                if cycle["question"] == MODULE4_WORD_QUESTION:
+                    cycle["stage"]="mot"
+                    cycle["word_question_asked"]=True
+    return changed
+
+
 
 def _module4_generate_way1_question() -> str:
     questions=[
@@ -2895,6 +2952,8 @@ def _module4_module2_completed() -> bool:
 
 def _module4_render_cycle(voie:str) -> None:
     cycle=st.session_state.get("module4_current_cycle") or {}
+    if cycle and cycle.get("voie")==voie and cycle.get("stage")!="termine":
+        _module4_reconcile_cycle(cycle)
     if not cycle or cycle.get("voie")!=voie or cycle.get("stage")=="termine":
         if cycle.get("stage")=="termine":
             if cycle.get("result")=="hypothese_retenue": st.success(f"L’hypothèse **{cycle.get('selected_hypothesis','')}** a été ajoutée uniquement au panier Hypothèses.")
@@ -2960,6 +3019,9 @@ def _module4_render_cycle(voie:str) -> None:
                         cycle["stage"]="mot"; cycle["question"]=MODULE4_WORD_QUESTION; cycle["word_question_asked"]=True
                     else:
                         cycle["stage"]="question"; cycle["question"]=next_question
+            # Garde-fou global : quelle que soit la voie, une question déjà répondue
+            # ne peut jamais rester la question courante après validation.
+            _module4_reconcile_cycle(cycle)
             st.rerun()
         if cycle.get("pending_answer_processed"):
             cycle.pop("pending_answer_processed",None)
@@ -3348,7 +3410,11 @@ def restore_from_progress(payload:dict):
     if payload.get("statut")=="parcours_cloture" or payload.get("completed") is True and payload.get("type_export")=="final":
         st.session_state.final_mode=True; st.session_state.final_payload=deepcopy(payload); st.session_state.page="Consultation finale"
     else:
-        st.session_state.resume_target_page=st.session_state.page; st.session_state.resume_welcome_pending=True; st.session_state.page="Accueil reprise"
+        st.session_state.resume_target_page=st.session_state.page
+        st.session_state.resume_target_module=st.session_state.get("active_module") or "accueil_modules"
+        # Réparer immédiatement les anciens JSON ayant conservé une question déjà répondue.
+        _module4_reconcile_cycle(st.session_state.get("module4_current_cycle") or {})
+        st.session_state.resume_welcome_pending=True; st.session_state.page="Accueil reprise"
     init_runtime_session("reprise_json"); business_trace("reprise_json")
 
 def create_pdf(report_type: str="provisoire")->bytes:
@@ -3794,13 +3860,13 @@ def render_resume_welcome():
     vals=validated_names()
     prenom=st.session_state.get("beneficiary_profile",{}).get("prenom_usage") or st.session_state.get("beneficiaire",{}).get("prenom","")
     target=st.session_state.get("resume_target_page") or ""
-    target_label=PAGE_LABELS.get(target,target) if target else "votre parcours"
+    target_label=PAGE_LABELS.get(target,target) if target and target!="Modules" else {"module_1":"Module 1 — Prérequis","module_2":"Module 2 — Faisons connaissance","module_3":"Module 3 — Valider ou revoir une valeur","module_4":"Module 4 — Rechercher une nouvelle valeur","module_5":"Module 5 — Mes rapports"}.get(st.session_state.get("resume_target_module"),"votre parcours")
     pending=st.session_state.get("values_to_examine",[])
     summary=(f"Bonjour {prenom}, je suis heureux de vous retrouver. Votre travail a bien été retrouvé. Vous vous étiez arrêté à l’étape « {target_label} ». {len(vals)} valeur(s) étaient déjà validée(s)" + (f" et {len(pending)} valeur(s) restent à examiner." if pending else "."))
     st.markdown(f'<div class="clarte-box">{summary}</div>',unsafe_allow_html=True)
     speak_button(summary,"resume_welcome")
     st.markdown("### Que souhaitez-vous faire maintenant ?")
-    target_module={"Prerequis":"module_1","Presentation beneficiaire":"module_2","Presentation assistant":"module_2","Valeurs interseances":"module_3","Validation":"module_3","Mots a examiner":"module_3","Exploration IA":"module_4","Decision exploration":"module_4","Controle completude":"module_5","Resultats":"module_5"}.get(target,"accueil_modules")
+    target_module=st.session_state.get("resume_target_module") or {"Prerequis":"module_1","Presentation beneficiaire":"module_2","Presentation assistant":"module_2","Valeurs interseances":"module_3","Validation":"module_3","Mots a examiner":"module_3","Exploration IA":"module_4","Decision exploration":"module_4","Controle completude":"module_5","Resultats":"module_5"}.get(target,"accueil_modules")
     # Une valeur inachevée est prioritaire sur l'ancienne page générique d'exploration.
     if pending:
         target_module="module_3"
