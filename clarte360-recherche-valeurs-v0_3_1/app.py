@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.9B-preproduction"
+APP_VERSION = "2.1.9C-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -1284,8 +1284,12 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
                         st.caption("Nouvelle tentative automatique de transcription…")
                 if not raw.strip():
                     raise RuntimeError(str(last_error or "Aucune transcription n’a été retournée."))
+                # Mémoriser immédiatement la transcription : même si la correction IA
+                # tarde ou échoue, le premier clic affiche toujours la version originale.
+                st.session_state[f"{base}_transcript_raw"]=raw
+                st.session_state[f"{base}_transcript_clean"]=raw
                 proposal=reliable_clean_spoken_text(raw, expected_value_label=expected_value_label)
-                st.session_state[f"{base}_transcript_raw"]=raw; st.session_state[f"{base}_transcript_clean"]=proposal
+                st.session_state[f"{base}_transcript_clean"]=proposal or raw
             # Un seul clic doit suffire : on force immédiatement le rerun qui affiche
             # la transcription déjà mémorisée, sans relancer ni la transcription ni l'IA.
             st.rerun()
@@ -2611,18 +2615,38 @@ def _module4_question_signature(text: str) -> str:
 
 
 def _module4_question_already_asked(cycle: dict[str,Any], question: str) -> bool:
+    """Bloque une répétition dans le cycle courant et dans la mémoire du module 4."""
     signature=_module4_question_signature(question)
     if not signature:
         return False
     previous=[_module4_question_signature(x.get("question", "")) for x in cycle.get("exchanges", [])]
+    previous += [_module4_question_signature(x.get("question", "")) for x in st.session_state.get("module4_question_memory", [])]
+    current_question=_module4_question_signature(cycle.get("question", ""))
+    if current_question:
+        previous.append(current_question)
     if signature in previous:
         return True
     current=set(signature.split())
     for old in previous:
         old_words=set(old.split())
-        if current and old_words and len(current & old_words) / max(1, len(current | old_words)) >= .82:
+        if current and old_words and len(current & old_words) / max(1, len(current | old_words)) >= .72:
             return True
     return False
+
+
+def _module4_distinct_followup(cycle: dict[str,Any]) -> str:
+    """Retourne une relance réellement différente lorsque l'IA répète une question."""
+    candidates=[
+        "Qu'est-ce qui vous a le plus marqué dans cette situation, au-delà du résultat obtenu ?",
+        "Qu'auriez-vous voulu rendre possible pour les personnes concernées ?",
+        "Qu'est-ce qui aurait été difficilement acceptable pour vous dans la situation inverse ?",
+        "Dans votre manière d'agir, qu'est-ce qui comptait le plus pour vous personnellement ?",
+        "Retrouvez-vous cette même importance dans d'autres situations de votre vie ? Donnez un exemple concret.",
+    ]
+    for candidate in candidates:
+        if not _module4_question_already_asked(cycle,candidate):
+            return candidate
+    return MODULE4_WORD_QUESTION
 
 
 def _module4_no_word_answer(answer: str) -> bool:
@@ -2777,9 +2801,16 @@ Une idée explorée ne pourra produire qu’une seule hypothèse retenue."""
         if _module4_vertical_count(cycle)>=MODULE4_MAX_VERTICAL_QUESTIONS and out.get("action")=="relance_verticale":
             out["action"]="demander_mot"; out["question"]=MODULE4_WORD_QUESTION
         if out.get("action")=="relance_verticale" and _module4_question_already_asked(cycle,out.get("question","")):
-            out["action"]="demander_mot"; out["question"]=MODULE4_WORD_QUESTION
+            replacement=_module4_distinct_followup(cycle)
+            if replacement==MODULE4_WORD_QUESTION:
+                out["action"]="demander_mot"
+            out["question"]=replacement
         return out
     except Exception:
+        if fallback.get("action")=="relance_verticale" and _module4_question_already_asked(cycle,fallback.get("question","")):
+            fallback["question"]=_module4_distinct_followup(cycle)
+            if fallback["question"]==MODULE4_WORD_QUESTION:
+                fallback["action"]="demander_mot"
         return fallback
 
 def _module4_word_candidates(cycle:dict[str,Any], word:str) -> list[dict[str,str]]:
@@ -2869,8 +2900,13 @@ def _module4_render_cycle(voie:str) -> None:
             if cycle.get("result")=="hypothese_retenue": st.success(f"L’hypothèse **{cycle.get('selected_hypothesis','')}** a été ajoutée uniquement au panier Hypothèses.")
             else: st.info("Ce cycle est terminé sans hypothèse retenue. Cela est parfaitement normal.")
             _module4_threshold_invitation()
-            if st.button("Rechercher une autre valeur",type="primary",use_container_width=True,key=f"m4_restart_{voie}"):
-                _module4_new_cycle(voie); st.rerun()
+            c1,c2=st.columns(2)
+            with c1:
+                if st.button("Rechercher une autre valeur",type="primary",use_container_width=True,key=f"m4_restart_{voie}"):
+                    _module4_new_cycle(voie); st.rerun()
+            with c2:
+                if st.button("Retour au choix des voies",use_container_width=True,key=f"m4_back_routes_{voie}"):
+                    st.session_state.module4_route=""; st.session_state.module4_current_cycle={}; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
             return
         _module4_new_cycle(voie); cycle=st.session_state.module4_current_cycle
 
@@ -3013,8 +3049,6 @@ def _module4_render_way1() -> None:
     instruction="Décrivez une situation réelle. Clarté360 vous posera quelques questions verticales, puis cherchera avec vous un mot. Le résultat restera une simple hypothèse et une idée explorée ne pourra produire qu’une seule hypothèse retenue. Si les premiers mots proposés ne correspondent pas, Clarté360 pourra approfondir brièvement un autre aspect de la même situation avant de clore la piste."
     st.info(instruction); speak_button(instruction,"m4_way1_instruction")
     _module4_render_cycle("situation")
-    if st.button("← Changer de voie",use_container_width=True,key="m4_way1_change"):
-        st.session_state.module4_route=""; st.session_state.module4_current_cycle={}; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
 
 
 def _module4_render_way2() -> None:
@@ -3034,8 +3068,6 @@ def _module4_render_way2() -> None:
     values=_module4_validated_value_labels()
     if values: st.markdown("**Valeurs déjà validées prises en compte :** "+", ".join(values))
     _module4_render_cycle("questions_personnalisees")
-    if st.button("← Changer de voie",use_container_width=True,key="m4_way2_change"):
-        st.session_state.module4_route=""; st.session_state.module4_current_cycle={}; _set_module_status("module_4","en_cours","choix_voie"); st.rerun()
 
 def _module4_render_way3() -> None:
     st.title("Explorer une piste à clarifier")
