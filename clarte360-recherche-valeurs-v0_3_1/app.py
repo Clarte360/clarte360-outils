@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.3.9F3-preproduction"
+APP_VERSION = "2.1.3.9F4-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -317,9 +317,9 @@ def default_business_state() -> dict[str, Any]:
         "active_module":"accueil_modules",
         "module_states":{
             "module_1":{"status":"non_commence","step":"intro"},
-            "module_2":{"status":"non_commence","step":"questionnaire"},
-            "module_3":{"status":"disponible","step":"accueil"},
-            "module_4":{"status":"disponible","step":"complement_connaissance"},
+            "module_2":{"status":"indisponible","step":"questionnaire"},
+            "module_3":{"status":"indisponible","step":"accueil"},
+            "module_4":{"status":"indisponible","step":"complement_connaissance"},
             "module_5":{"status":"indisponible","step":"accueil"},
         },
         "central_validated_values":[], "values_to_examine":[], "session_review_items":[],
@@ -1089,7 +1089,7 @@ def _install_ctrl_enter_bridge() -> None:
       doc.addEventListener('keydown', (event) => {
         if (!(event.ctrlKey && event.key === 'Enter')) return;
         const active = doc.activeElement;
-        if (!active || active.tagName !== 'TEXTAREA') return;
+        if (!active || !['TEXTAREA','INPUT'].includes(active.tagName)) return;
 
         const markers = Array.from(doc.querySelectorAll('[data-clarte360-response-key]'));
         const currentIndex = markers.reduce((found, marker, index) =>
@@ -1883,13 +1883,7 @@ def render_followup_panel() -> None:
         st.markdown("**📋 À revoir en séance**")
         st.write(", ".join(str(x.get("terme") or "") for x in review) if review else "Aucun sujet.")
 
-def _value_definition_choices(work: dict[str,Any], prefix: str) -> tuple[str,str,bool]:
-    """Traitement explicite de la définition avant tout questionnaire spécifique.
-
-    Cette étape est commune au Module 1 et à toutes les entrées du Module 3.
-    Le questionnaire ne peut apparaître qu'après validation explicite de la
-    définition retenue par le bénéficiaire.
-    """
+def _value_definition_choices(work: dict[str,Any], prefix: str, allow_ai_rewrite: bool=True) -> tuple[str,str,bool]:
     personal=str(work.get("definition_personnelle","") or "").strip()
     official=str(work.get("definition_clarte360","") or "").strip()
     st.markdown("**Votre définition personnelle**")
@@ -1897,55 +1891,43 @@ def _value_definition_choices(work: dict[str,Any], prefix: str) -> tuple[str,str
     if official:
         st.markdown("**Définition Clarté360**")
         st.info(official)
-
     options=["Conserver ma définition personnelle"]
     if official:
         options += ["Adopter la définition Clarté360", "Créer une formulation combinée"]
-    options += ["Modifier manuellement ma définition", "Demander une reformulation Clarté360"]
+    options += ["Modifier manuellement ma définition"]
+    if allow_ai_rewrite:
+        options += ["Demander une reformulation Clarté360"]
     choice=st.radio("Comment souhaitez-vous traiter votre définition ?",options,key=f"{prefix}_def_choice")
-
-    if choice=="Conserver ma définition personnelle":
-        final_def=personal
-    elif choice=="Adopter la définition Clarté360":
+    final_def=personal
+    if choice=="Adopter la définition Clarté360":
         final_def=official
     elif choice=="Créer une formulation combinée":
-        final_def=st.text_area("Votre formulation combinée",value=st.session_state.get(f"{prefix}_combined",personal),key=f"{prefix}_combined").strip()
+        seed=personal if normalize(personal)==normalize(official) else (personal + (" — " + official if official else ""))
+        final_def=st.text_area("Votre formulation combinée",value=seed,key=f"{prefix}_combined",height=110)
     elif choice=="Modifier manuellement ma définition":
-        final_def=st.text_area("Modifiez votre définition",value=st.session_state.get(f"{prefix}_manual",personal),key=f"{prefix}_manual").strip()
-    else:
+        final_def=st.text_area("Votre définition modifiée",value=personal,key=f"{prefix}_manual",height=110)
+    elif choice=="Demander une reformulation Clarté360":
         proposal_key=f"{prefix}_ai_proposal"
         if st.button("✨ Proposer une reformulation Clarté360",key=f"{prefix}_ask_ai",use_container_width=True):
-            proposal=clean_spoken_text(personal)
-            st.session_state[proposal_key]=proposal or personal
-            st.rerun()
-        proposal=str(st.session_state.get(proposal_key,"") or "").strip()
-        if proposal:
-            st.markdown("**Proposition Clarté360**")
-            st.info(proposal)
-        else:
-            st.caption("Demandez une reformulation pour obtenir une proposition fidèle à votre sens.")
-        final_def=proposal
-
+            st.session_state[proposal_key]=rewrite_text(personal, purpose="definition") or personal
+        final_def=str(st.session_state.get(proposal_key,personal) or personal)
+        if final_def:
+            st.markdown("**Proposition Clarté360**"); st.info(final_def)
     signature=normalize(choice+" | "+final_def)
-    confirmed_key=f"{prefix}_definition_confirmed"
-    signature_key=f"{prefix}_definition_signature"
+    confirmed_key=f"{prefix}_definition_confirmed"; signature_key=f"{prefix}_definition_signature"
     if st.session_state.get(signature_key)!=signature:
-        st.session_state[confirmed_key]=False
-        st.session_state[signature_key]=signature
+        st.session_state[confirmed_key]=False; st.session_state[signature_key]=signature
     if st.button("Valider la définition retenue",type="primary",disabled=not bool(final_def.strip()),key=f"{prefix}_confirm_definition",use_container_width=True):
-        st.session_state[confirmed_key]=True
-        st.session_state[signature_key]=signature
-        st.rerun()
+        st.session_state[confirmed_key]=True; st.session_state[signature_key]=signature; st.rerun()
     confirmed=bool(st.session_state.get(confirmed_key,False) and st.session_state.get(signature_key)==signature)
-    if confirmed:
-        st.success("Définition retenue et validée. Le questionnaire spécifique peut maintenant commencer.")
-    else:
-        st.info("Validez explicitement la définition que vous souhaitez retenir avant de poursuivre.")
     return choice,final_def,confirmed
 
 def render_modules_home() -> None:
+    if not st.session_state.get("prerequisite_confirmed"):
+        st.session_state.active_module="module_1"
+        render_module_1()
+        return
     st.title("Mon parcours de recherche de valeurs")
-    st.info("Choisissez librement le module dans lequel vous souhaitez travailler. Une reprise exacte peut être proposée, mais elle n'est jamais imposée.")
     labels={"module_1":("MODULE 1","Prérequis"),"module_2":("MODULE 2","Faisons connaissance"),"module_3":("MODULE 3","Valider ou revoir une valeur"),"module_4":("MODULE 4","Rechercher une nouvelle valeur"),"module_5":("MODULE 5","Mes rapports")}
     st.markdown("""<style>
     .cl360-module-card{min-height:126px;padding:18px 22px;border:1px solid #d9e2ec;border-radius:14px;background:#fff;display:flex;flex-direction:column;justify-content:center;margin-bottom:8px}
@@ -1969,65 +1951,58 @@ def render_module_1() -> None:
     st.title("Prérequis — valeurs déjà validées avec l’accompagnateur")
     state=_module_state("module_1")
     if state.get("status")=="termine":
-        st.success("Ce prérequis est clôturé. Il reste consultable et ne sera pas rejoué automatiquement.")
-        items=[x for x in st.session_state.central_validated_values if x.get("source")=="accompagnateur"]
-        if not items:
-            st.info("Aucune valeur validée avec l’accompagnateur n’est enregistrée.")
-        for item in items:
+        st.success("Ce prérequis est clôturé.")
+        for item in [x for x in st.session_state.central_validated_values if x.get("source")=="accompagnateur"]:
             with st.container(border=True):
                 st.markdown(f"### {item.get('nom_final','')}")
-                st.markdown("**Votre définition retenue**")
-                st.write(item.get("definition_personnelle") or "Non renseignée")
-                if item.get("definition_clarte360"):
-                    st.markdown("**Définition Clarté360**")
-                    st.write(item.get("definition_clarte360"))
-                st.caption("Source : validée avec l’accompagnateur")
-        st.divider()
+                st.markdown("**Définition retenue**"); st.write(item.get("definition_personnelle") or "Non renseignée")
         if st.button("← Retour à l’accueil du parcours",use_container_width=True,key="m1_back_home"):
-            st.session_state.active_module="accueil_modules"; st.session_state.page="Modules"; st.rerun()
+            st.session_state.active_module="accueil_modules"; st.rerun()
         return
     _set_module_status("module_1","en_cours",state.get("step","intro"))
     if not st.session_state.get("module1_count"):
-        st.warning("Ce module concerne uniquement les valeurs déjà identifiées et validées humainement avec votre accompagnateur.")
+        st.warning("Ce prérequis est obligatoire pour accéder à l’application.")
+        answer=st.radio("Avez-vous déjà identifié et validé au moins une valeur avec votre accompagnateur ?",["Choisissez une réponse","Oui","Non"],key="m1_gate_yesno")
+        if answer=="Non":
+            st.error("Le parcours ne peut pas commencer. Reprenez d’abord cette étape avec votre accompagnateur.")
+            return
+        if answer!="Oui": return
         count=int(st.number_input("Combien de valeurs avez-vous déjà identifiées et validées avec votre accompagnateur ?",min_value=1,max_value=15,value=1))
-        c1,c2=st.columns(2)
-        with c1:
-            if st.button("← Retour au parcours",use_container_width=True,key="m1_intro_back"):
-                st.session_state.active_module="accueil_modules"; st.rerun()
-        with c2:
-            if st.button("Commencer",type="primary",use_container_width=True):
-                st.session_state.module1_count=count; st.session_state.module1_index=0; st.session_state.current_value_work=_new_value_work("accompagnateur"); st.rerun()
+        if st.button("Commencer le prérequis",type="primary",use_container_width=True):
+            st.session_state.module1_count=count; st.session_state.module1_index=0; st.session_state.current_value_work=_new_value_work("accompagnateur"); st.rerun()
         return
     idx=int(st.session_state.module1_index); total=int(st.session_state.module1_count)
-    st.progress(min(1.0,idx/max(1,total))); st.caption(f"Valeur {idx+1} sur {total}")
+    labels=["Première","Deuxième","Troisième","Quatrième","Cinquième","Sixième","Septième","Huitième","Neuvième","Dixième"]
+    label=labels[idx] if idx < len(labels) else f"Valeur {idx+1}"
+    st.markdown(f"## {label} valeur validée en séance — {idx+1} sur {total}")
+    st.progress(min(1.0,(idx+1)/max(1,total)))
     work=st.session_state.current_value_work or _new_value_work("accompagnateur")
-    name=open_response_widget("Quelle valeur avez-vous identifiée et validée avec votre accompagnateur ?",f"m1_name_{idx}",value=work.get("nom_initial",""),height=70,allow_reformulation=False,expected_value_label=True, question_kind="word")
+    name=open_response_widget("Quelle valeur avez-vous identifiée et validée avec votre accompagnateur ?",f"m1_name_{idx}",value=work.get("nom_initial",""),height=70,allow_reformulation=False,expected_value_label=True,question_kind="word")
+    if not name: return
+    work["nom_initial"]=name; work["nom_normalise"]=_normalise_value_name(name); work["nom_final"]=work["nom_normalise"]
     definition=open_response_widget("Que signifie précisément cette valeur pour vous ?",f"m1_def_{idx}",value=work.get("definition_personnelle",""),height=110,dependency_scope="prerequisites",value_name=name)
-    if name and definition:
-        work["nom_initial"]=name; work["nom_normalise"]=_normalise_value_name(name); work["nom_final"]=work["nom_normalise"]; work["definition_personnelle"]=definition
-        info=_referential_value_info(work["nom_final"]); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
-        if work["nom_final"]!=name: st.info(f"Formulation normalisée proposée : **{work['nom_final']}**")
-        choice,final_def,definition_confirmed=_value_definition_choices(work,f"m1_{idx}")
-        if not definition_confirmed:
-            return
-        st.markdown("### Questionnaire spécifique Clarté360")
-        important=st.radio("Cette valeur est-elle importante pour vous dans plusieurs domaines ou situations ?",["Choisissez","Oui","Non"],key=f"m1_q1_{idx}",on_change=mark_user_activity,args=("prerequis_questionnaire_q1",))
-        very=st.radio("Seriez-vous durablement insatisfait si cette valeur était régulièrement bafouée ?",["Choisissez","Oui","Non"],key=f"m1_q2_{idx}",on_change=mark_user_activity,args=("prerequis_questionnaire_q2",)) if important=="Oui" else "Non"
-        fundamental=st.radio("Cette valeur influence-t-elle réellement vos choix, vos engagements ou vos refus importants ?",["Choisissez","Oui","Non"],key=f"m1_q3_{idx}",on_change=mark_user_activity,args=("prerequis_questionnaire_q3",)) if very=="Oui" else "Non"
-        questionnaire_complete=not (important=="Choisissez" or (important=="Oui" and very=="Choisissez") or (very=="Oui" and fundamental=="Choisissez"))
-        confirm=st.checkbox("Je confirme que le mot, la définition retenue et mes réponses correspondent à la valeur déjà validée avec mon accompagnateur.",key=f"m1_confirm_{idx}")
-        c1,c2=st.columns(2)
-        with c1:
-            if st.button("← Retour au parcours",use_container_width=True,key=f"m1_work_back_{idx}"):
-                st.session_state.active_module="accueil_modules"; st.rerun()
-        with c2:
-            if st.button("Valider cette valeur",type="primary",disabled=not(confirm and final_def and questionnaire_complete),key=f"m1_save_{idx}",use_container_width=True):
-                questionnaire={"importante":important=="Oui","tres_importante":very=="Oui","fondamentale":fundamental=="Oui"}
-                _upsert_central_value(work["nom_final"],final_def,"accompagnateur",definition_clarte360=work.get("definition_clarte360",""),questionnaire=questionnaire,protected=True,work=work)
-                if not work["present_referentiel"]: notify_new_value(work["nom_final"],final_def)
-                st.session_state.module1_index=idx+1; st.session_state.current_value_work=_new_value_work("accompagnateur")
-                if idx+1>=total: _set_module_status("module_1","termine","termine"); st.session_state.prerequisite_confirmed=True; st.session_state.active_module="accueil_modules"
-                st.rerun()
+    if not definition: return
+    work["definition_personnelle"]=definition
+    info=_referential_value_info(work["nom_final"]); work["present_referentiel"]=bool(info); work["definition_clarte360"]=info.get("definition","")
+    choice,final_def,definition_confirmed=_value_definition_choices(work,f"m1_{idx}",allow_ai_rewrite=False)
+    if not definition_confirmed: return
+    st.markdown("### Questionnaire spécifique Clarté360")
+    important=st.radio("Cette valeur est-elle importante pour vous dans plusieurs domaines ou situations ?",["Choisissez","Oui","Non"],key=f"m1_q1_{idx}")
+    very=st.radio("Seriez-vous durablement insatisfait si cette valeur était régulièrement bafouée ?",["Choisissez","Oui","Non"],key=f"m1_q2_{idx}") if important=="Oui" else "Non"
+    fundamental=st.radio("Cette valeur influence-t-elle réellement vos choix, vos engagements ou vos refus importants ?",["Choisissez","Oui","Non"],key=f"m1_q3_{idx}") if very=="Oui" else "Non"
+    complete=not (important=="Choisissez" or (important=="Oui" and very=="Choisissez") or (very=="Oui" and fundamental=="Choisissez"))
+    if st.button("Valider cette valeur et poursuivre",type="primary",disabled=not complete,key=f"m1_save_{idx}",use_container_width=True):
+        q={"importante":important=="Oui","tres_importante":very=="Oui","fondamentale":fundamental=="Oui"}
+        _upsert_central_value(work["nom_final"],final_def,"accompagnateur",definition_clarte360=work.get("definition_clarte360",""),questionnaire=q,protected=True,work=work)
+        st.session_state.module1_index=idx+1; st.session_state.current_value_work=_new_value_work("accompagnateur")
+        if idx+1>=total:
+            st.session_state.prerequisite_confirmed=True
+            _set_module_status("module_1","termine","termine")
+            _set_module_status("module_2","disponible","questionnaire")
+            _set_module_status("module_3","disponible","accueil")
+            _set_module_status("module_4","disponible","complement_connaissance")
+            st.session_state.active_module="accueil_modules"
+        st.rerun()
 
 def _hydrate_module2_answers() -> None:
     answers=st.session_state.setdefault("module2_answers",{})
@@ -3040,6 +3015,8 @@ def render_module_5() -> None:
 
 def render_business_v218() -> None:
     _ensure_migrated_state()
+    if not st.session_state.get("prerequisite_confirmed"):
+        st.session_state.active_module="module_1"
     if st.session_state.page=="Consultation finale" or st.session_state.get("final_mode"): render_final_consultation(); return
     if st.session_state.page=="Cloture definitive": render_closure_screen(); return
     display_header()
@@ -3343,7 +3320,12 @@ def identification_screen():
         else:
             st.session_state.rgpd_acceptance={"consentement":True,"date":datetime.now().strftime("%Y-%m-%d"),"heure":datetime.now().strftime("%H:%M:%S"),"version_texte":RGPD_TEXT_VERSION}; st.session_state.pending_beneficiaire={"prenom":prenom.strip(),"nom":nom.strip(),"email":email.strip(),"consultant":consultant.strip()}; issue_access_code(email.strip(),prenom.strip(),False)
     if st.session_state.get("access_code"):
-        st.subheader("Code d'accès"); code_in=st.text_input("Saisissez le code reçu par e-mail",max_chars=6); c1,c2=st.columns(2)
+        st.subheader("Code d'accès")
+        _ctrl_enter_marker("access_code_input", "Valider le code et commencer")
+        code_in=st.text_input("Saisissez le code reçu par e-mail",max_chars=6,key="access_code_input")
+        st.caption("Ctrl + Entrée : valider le code et commencer")
+        _install_ctrl_enter_bridge()
+        c1,c2=st.columns(2)
         with c1:
             if st.button("Valider le code et commencer",type="primary"):
                 exp=datetime.fromisoformat(st.session_state.code_expires_at)

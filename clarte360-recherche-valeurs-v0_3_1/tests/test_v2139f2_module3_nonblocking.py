@@ -6,7 +6,7 @@ def _module3():
     return TEXT[TEXT.index("def render_module_3"):TEXT.index("def _advance_module3")]
 
 def test_version_9f3():
-    assert 'APP_VERSION = "2.1.3.9F3-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.1.3.9F4-preproduction"' in TEXT
 
 def test_non_value_analysis_never_blocks_module3():
     fn=_module3()
