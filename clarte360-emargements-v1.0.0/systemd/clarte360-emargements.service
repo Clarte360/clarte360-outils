@@ -1,0 +1,14 @@
+[Unit]
+Description=Clarte360 Emargements Streamlit
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/clarte360-emargements
+ExecStart=/opt/clarte360-emargements/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8501
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

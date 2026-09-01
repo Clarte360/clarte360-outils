@@ -1,0 +1,14 @@
+[Unit]
+Description=Clarte360 Emargements Email Worker
+After=network.target clarte360-emargements.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/clarte360-emargements
+ExecStart=/opt/clarte360-emargements/.venv/bin/python worker.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
