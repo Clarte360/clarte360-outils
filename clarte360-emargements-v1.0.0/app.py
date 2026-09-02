@@ -142,7 +142,7 @@ def create_action_screen(prefill=None,participants_prefill=None):
             pins=[]
             for pd in participants_prefill or []:
                 pid,pin=add_participant(ENGINE,aid,pd.copy(),st.session_state.admin_email);pins.append((pid,pin))
-            st.session_state.selected_action=aid;st.success('Action créée. Vous pouvez maintenant ajouter les participants et les créneaux.');st.session_state.nav='Actions';rerun()
+            st.session_state.selected_action=aid;st.success('Action créée. Vous pouvez maintenant ajouter les participants et les créneaux.');st.session_state['_next_nav']='Actions';rerun()
     footer()
 
 def import_screen():
@@ -161,7 +161,7 @@ def import_screen():
         if st.session_state.get('import_prefill'):
             d=st.session_state.import_prefill;st.json({k:v for k,v in d.items() if k not in ['default_start','default_end']});
             if st.button('Créer cette action dans Clarté360 Émargements'):
-                st.session_state.prefill_create=True;st.session_state.nav='Nouvelle action';rerun()
+                st.session_state.prefill_create=True;st.session_state['_next_nav']='Nouvelle action';rerun()
     with tab2:
         st.caption('Colonnes reconnues : no_action, nom, nom_naissance, prenom, date_naissance, email, matricule, entreprise, telephone.')
         sample='no_action,nom,nom_naissance,prenom,date_naissance,email,matricule,entreprise,telephone\nCLA0001,DURAND,,Marie,1985-02-14,marie@example.com,M001,SOCIETE EXEMPLE,0600000000\n'
@@ -371,6 +371,8 @@ if params.get('slot_token'):
     signature_page(slot_token=params.get('slot_token'));st.stop()
 
 if not setup_or_login(): st.stop()
+if '_next_nav' in st.session_state:
+    st.session_state['nav'] = st.session_state.pop('_next_nav')
 page=sidebar()
 if page=='Tableau de bord': dashboard()
 elif page=='Nouvelle action':
