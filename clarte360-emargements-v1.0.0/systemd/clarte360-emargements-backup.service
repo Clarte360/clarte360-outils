@@ -1,0 +1,8 @@
+[Unit]
+Description=Clarte360 Emargements backup
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0
+ExecStart=/opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0/.venv/bin/python backup.py

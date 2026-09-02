@@ -147,6 +147,37 @@ def init_db(engine: Engine):
     with engine.begin() as c:
         for sql in SCHEMA:
             c.execute(text(sql))
+        # V1.1 additive migration: never rewrite existing evidence.
+        migrations = [
+            "ALTER TABLE slots ADD COLUMN parent_slot_id INTEGER",
+            "ALTER TABLE slots ADD COLUMN slot_kind TEXT NOT NULL DEFAULT 'NORMAL'",
+            "ALTER TABLE slots ADD COLUMN change_reason TEXT",
+            "ALTER TABLE slots ADD COLUMN cancelled_at TEXT",
+            "ALTER TABLE signatures ADD COLUMN access_method TEXT",
+            "ALTER TABLE signatures ADD COLUMN signature_method TEXT NOT NULL DEFAULT 'MANUSCRITE'",
+            "ALTER TABLE signatures ADD COLUMN is_late INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE signatures ADD COLUMN late_reason TEXT",
+        ]
+        for sql in migrations:
+            try: c.execute(text(sql))
+            except Exception: pass
+        extra = [
+        """CREATE TABLE IF NOT EXISTS attendance_status (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, participant_id INTEGER NOT NULL, slot_id INTEGER NOT NULL,
+          status TEXT NOT NULL, reason TEXT, actor TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE(participant_id,slot_id), FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE CASCADE,
+          FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE)""",
+        """CREATE TABLE IF NOT EXISTS trainer_countersignatures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, slot_id INTEGER NOT NULL UNIQUE, trainer_name TEXT NOT NULL,
+          trainer_email TEXT, signed_at TEXT NOT NULL, declaration_text TEXT NOT NULL, signature_path TEXT,
+          signature_sha256 TEXT, method TEXT NOT NULL DEFAULT 'NOM_PRENOM', actor TEXT,
+          FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE)""",
+        """CREATE TABLE IF NOT EXISTS trainer_access_tokens (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL, expires_at TEXT, active INTEGER NOT NULL DEFAULT 1,
+          FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE)"""
+        ]
+        for sql in extra: c.execute(text(sql))
 
 def q(engine, sql, params=None):
     with engine.connect() as c:

@@ -119,3 +119,123 @@ def export_action_zip(engine,aid,pdf_files:dict[str,bytes]|None=None):
         p=Path(s['signature_path'])
         if p.exists(): z.write(p,f'signatures/{p.name}')
     return buf.getvalue()
+
+# ---- V1.1 attendance, rescheduling, catch-up and trainer functions ----
+def local_dt(iso_value, tz_name='Europe/Paris'):
+    if not iso_value: return None
+    dt=datetime.fromisoformat(iso_value)
+    if dt.tzinfo is None: dt=dt.replace(tzinfo=ZoneInfo('UTC'))
+    return dt.astimezone(ZoneInfo(tz_name))
+
+def participant_duplicate(engine, aid, last_name, first_name, birth_date=None, email=None):
+    rows=q(engine,"SELECT * FROM participants WHERE action_id=:a AND UPPER(last_name)=UPPER(:l) AND UPPER(first_name)=UPPER(:f)",{'a':aid,'l':last_name.strip(),'f':first_name.strip()})
+    for r in rows:
+        if birth_date and r.get('birth_date')==birth_date: return r
+        if email and r.get('email') and r['email'].lower()==email.strip().lower(): return r
+    return None
+
+def set_attendance_status(engine,pid,sid,status,reason,actor):
+    p=one(engine,'SELECT action_id FROM participants WHERE id=:p',{'p':pid}); now=utcnow_iso()
+    execute(engine,"""INSERT INTO attendance_status(participant_id,slot_id,status,reason,actor,created_at,updated_at)
+      VALUES(:p,:s,:st,:r,:a,:n,:n) ON CONFLICT(participant_id,slot_id) DO UPDATE SET status=excluded.status,reason=excluded.reason,actor=excluded.actor,updated_at=excluded.updated_at""",
+      {'p':pid,'s':sid,'st':status,'r':reason or None,'a':actor,'n':now})
+    audit(engine,'ATTENDANCE_STATUS_CHANGED',p['action_id'] if p else None,actor,'attendance',f'{pid}/{sid}',{'status':status,'reason':reason})
+
+def create_catchup_slot(engine, original_sid, date_s,start_s,end_s, participant_ids, actor, reason='Rattrapage'):
+    old=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':original_sid})
+    sid=add_slot(engine,old['action_id'],date_s,start_s,end_s,actor,old['send_offset_min'],old['reminder1_offset_min'],old['reminder2_offset_min'],old['close_offset_min'])
+    execute(engine,"UPDATE slots SET parent_slot_id=:p,slot_kind='RATTRAPAGE',change_reason=:r WHERE id=:s",{'p':original_sid,'r':reason,'s':sid})
+    # Only selected participants are expected on this catch-up slot.
+    allp=q(engine,'SELECT id FROM participants WHERE action_id=:a AND active=1',{'a':old['action_id']})
+    selected=set(int(x) for x in participant_ids)
+    for p in allp:
+        if p['id'] not in selected: set_attendance_status(engine,p['id'],sid,'NON_CONCERNE','Non inscrit au rattrapage',actor)
+    audit(engine,'CATCHUP_SLOT_CREATED',old['action_id'],actor,'slot',sid,{'parent_slot_id':original_sid,'participants':list(selected)})
+    return sid
+
+def safe_update_slot(engine,sid,d,actor):
+    evidence=one(engine,"SELECT (SELECT COUNT(*) FROM signatures WHERE slot_id=:s)+(SELECT COUNT(*) FROM attendance_status WHERE slot_id=:s AND status IN ('ABSENT','PRESENT_REGULARISE')) n",{'s':sid})['n']
+    if evidence: return False,"Ce créneau contient déjà une preuve (signature/absence). Il ne peut plus être réécrit : utilisez Report / Rattrapage."
+    update_slot(engine,sid,d,actor); return True,''
+
+def trainer_token(engine,aid):
+    t=one(engine,'SELECT token FROM trainer_access_tokens WHERE action_id=:a AND active=1 ORDER BY id DESC',{'a':aid})
+    if t:return t['token']
+    token=new_token(24);execute(engine,'INSERT INTO trainer_access_tokens(action_id,token,created_at) VALUES(:a,:t,:c)',{'a':aid,'t':token,'c':utcnow_iso()});return token
+
+def trainer_url(engine,aid,base_url): return f"{base_url.rstrip('/')}?trainer_token={trainer_token(engine,aid)}"
+
+def countersign_slot(engine,sid,name,email,actor,declaration):
+    s=one(engine,'SELECT action_id FROM slots WHERE id=:s',{'s':sid})
+    execute(engine,"""INSERT INTO trainer_countersignatures(slot_id,trainer_name,trainer_email,signed_at,declaration_text,method,actor)
+      VALUES(:s,:n,:e,:at,:d,'NOM_PRENOM',:a) ON CONFLICT(slot_id) DO UPDATE SET trainer_name=excluded.trainer_name,trainer_email=excluded.trainer_email,signed_at=excluded.signed_at,declaration_text=excluded.declaration_text,actor=excluded.actor""",
+      {'s':sid,'n':name,'e':email or None,'at':utcnow_iso(),'d':declaration,'a':actor})
+    audit(engine,'TRAINER_COUNTERSIGNED',s['action_id'] if s else None,actor,'slot',sid,{'trainer_name':name})
+
+def can_issue_certificate(engine,pid):
+    p=one(engine,'SELECT action_id FROM participants WHERE id=:p',{'p':pid});
+    if not p:return False,['Participant introuvable']
+    slots=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE')",{'a':p['action_id']}); problems=[]
+    for s in slots:
+        att=one(engine,'SELECT status FROM attendance_status WHERE participant_id=:p AND slot_id=:s',{'p':pid,'s':s['id']})
+        sig=one(engine,"SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':pid,'s':s['id']})
+        if att and att['status']=='NON_CONCERNE': continue
+        if att and att['status']=='ABSENT': problems.append(f"Absence non rattrapée sur le créneau #{s['id']}"); continue
+        if not sig: problems.append(f"Signature manquante sur le créneau #{s['id']}")
+        if not one(engine,'SELECT id FROM trainer_countersignatures WHERE slot_id=:s',{'s':s['id']}): problems.append(f"Contresignature intervenant manquante sur le créneau #{s['id']}")
+    return not problems,problems
+
+def update_participant(engine,pid,d,actor):
+    p=one(engine,'SELECT * FROM participants WHERE id=:p',{'p':pid})
+    if not p: return False,'Participant introuvable.'
+    keys=['individual_action_no','last_name','birth_name','first_name','birth_date','email','employee_id','company_name','phone','active']
+    vals={k:d.get(k,p.get(k)) for k in keys}; vals['p']=pid
+    execute(engine,'UPDATE participants SET '+','.join(f'{k}=:{k}' for k in keys)+' WHERE id=:p',vals)
+    audit(engine,'PARTICIPANT_UPDATED',p['action_id'],actor,'participant',pid,{'before':{k:p.get(k) for k in keys},'after':vals})
+    return True,''
+
+def reset_participant_pin(engine,pid,actor):
+    import secrets
+    p=one(engine,'SELECT action_id FROM participants WHERE id=:p',{'p':pid})
+    if not p: return None
+    pin=f'{secrets.randbelow(10000):04d}'
+    execute(engine,'UPDATE participants SET pin_hash=:h WHERE id=:p',{'h':hash_password(pin),'p':pid})
+    audit(engine,'PARTICIPANT_PIN_RESET',p['action_id'],actor,'participant',pid,{})
+    return pin
+
+def report_slot(engine,sid,date_s,start_s,end_s,actor,reason='Report'):
+    old=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
+    if not old: return None
+    evidence=one(engine,"SELECT (SELECT COUNT(*) FROM signatures WHERE slot_id=:s)+(SELECT COUNT(*) FROM attendance_status WHERE slot_id=:s AND status='ABSENT') n",{'s':sid})['n']
+    if evidence: return None
+    execute(engine,"UPDATE slots SET status='REPORTE',change_reason=:r,updated_at=:u WHERE id=:s",{'r':reason,'u':utcnow_iso(),'s':sid})
+    ns=add_slot(engine,old['action_id'],date_s,start_s,end_s,actor,old['send_offset_min'],old['reminder1_offset_min'],old['reminder2_offset_min'],old['close_offset_min'])
+    execute(engine,"UPDATE slots SET parent_slot_id=:p,slot_kind='REPORT',change_reason=:r WHERE id=:s",{'p':sid,'r':reason,'s':ns})
+    audit(engine,'SLOT_REPORTED',old['action_id'],actor,'slot',ns,{'from_slot_id':sid,'reason':reason})
+    return ns
+
+def catchup_for_absence(engine,pid,original_sid):
+    rows=q(engine,"SELECT s.* FROM slots s WHERE s.parent_slot_id=:o AND s.slot_kind='RATTRAPAGE' AND s.status NOT IN ('ANNULE','REPORTE')",{'o':original_sid})
+    for s in rows:
+        att=one(engine,'SELECT status FROM attendance_status WHERE participant_id=:p AND slot_id=:s',{'p':pid,'s':s['id']})
+        if att and att['status']=='NON_CONCERNE': continue
+        sig=one(engine,"SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':pid,'s':s['id']})
+        if sig: return s
+    return None
+
+# Replace certificate completeness logic with catch-up aware version.
+def can_issue_certificate(engine,pid):
+    p=one(engine,'SELECT action_id FROM participants WHERE id=:p',{'p':pid})
+    if not p:return False,['Participant introuvable']
+    slots=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE') ORDER BY slot_date,start_time",{'a':p['action_id']}); problems=[]
+    for s in slots:
+        att=one(engine,'SELECT status FROM attendance_status WHERE participant_id=:p AND slot_id=:s',{'p':pid,'s':s['id']})
+        if att and att['status']=='NON_CONCERNE': continue
+        sig=one(engine,"SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':pid,'s':s['id']})
+        if att and att['status']=='ABSENT':
+            if not one(engine,'SELECT id FROM trainer_countersignatures WHERE slot_id=:s',{'s':s['id']}): problems.append(f"Contresignature intervenant manquante sur le créneau absent #{s['id']}")
+            if not catchup_for_absence(engine,pid,s['id']): problems.append(f"Absence non rattrapée sur le créneau #{s['id']}")
+            continue
+        if not sig: problems.append(f"Signature manquante sur le créneau #{s['id']}")
+        if not one(engine,'SELECT id FROM trainer_countersignatures WHERE slot_id=:s',{'s':s['id']}): problems.append(f"Contresignature intervenant manquante sur le créneau #{s['id']}")
+    return not problems,problems

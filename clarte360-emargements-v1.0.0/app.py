@@ -88,32 +88,83 @@ def signature_page(token=None,slot_token=None):
 
 def render_sign_form(row,method):
     st.markdown(f"<div class='c360-card'><h3>{row['first_name']} {row['last_name']}</h3><b>{row['title']}</b><br>N° action : {row['action_no']}<br>Date : {row['slot_date']}<br>Créneau : {row['start_time']}–{row['end_time']}</div>",unsafe_allow_html=True)
+    is_late=False
     try:
         from zoneinfo import ZoneInfo
         end=parse_dt(row['slot_date'],row['end_time'],TZ); now=datetime.now(ZoneInfo(TZ)); opening=end+__import__('datetime').timedelta(minutes=int(row.get('send_offset_min') or -10)); closing=end+__import__('datetime').timedelta(minutes=int(row.get('close_offset_min') or 1440))
         if now < opening:
             st.info(f"L’émargement ouvrira à {opening.strftime('%d/%m/%Y %H:%M')}."); return
-        if now > closing:
-            st.error('Ce créneau est clôturé. Contactez votre administrateur si une régularisation est nécessaire.'); return
+        is_late=now > closing
     except Exception:
         pass
-    declaration="Je certifie avoir participé au créneau de formation ou d'accompagnement indiqué ci-dessus."
+    if is_late:
+        st.warning("RÉGULARISATION A POSTERIORI — cette signature sera horodatée à sa date réelle et le document indiquera explicitement qu'elle a été recueillie après le créneau.")
+        declaration="Je certifie avoir effectivement participé au créneau indiqué ci-dessus et signe cette feuille d'émargement a posteriori."
+        late_reason=st.text_input('Motif de la régularisation (oubli, problème technique, autre)')
+    else:
+        declaration="Je certifie avoir participé au créneau de formation ou d'accompagnement indiqué ci-dessus."
+        late_reason=''
+    absent=one(ENGINE,"SELECT status FROM attendance_status WHERE participant_id=:p AND slot_id=:s",{'p':row['id'],'s':row['slot_id']})
+    if absent and absent['status']=='ABSENT':
+        st.error("Vous êtes actuellement déclaré absent sur ce créneau. Une régularisation nécessite d'abord la correction de ce statut par l'administrateur ou l'intervenant."); return
     st.write(declaration)
     consent=st.checkbox('Je confirme l’exactitude de ces informations.')
-    st.caption('Signez dans le cadre avec votre doigt, votre stylet ou votre souris.')
-    canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=3,stroke_color='#1F2937',background_color='#FFFFFF',height=180,width=360,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f"sig_{row['id']}_{row['slot_id']}")
+    sig_mode=st.radio('Mode de signature',['Signature manuscrite','Nom et prénom + certification'],horizontal=True)
+    canvas=None; typed_name=''
+    if sig_mode=='Signature manuscrite':
+        st.caption('Signez dans le cadre avec votre doigt, votre stylet ou votre souris.')
+        canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=3,stroke_color='#1F2937',background_color='#FFFFFF',height=180,width=360,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f"sig_{row['id']}_{row['slot_id']}")
+    else:
+        typed_name=st.text_input('Saisissez vos nom et prénom',value=f"{row['first_name']} {row['last_name']}")
+        st.caption("La validation associe votre identité saisie, votre déclaration et l'horodatage réel à la preuve d'émargement.")
     if st.button('VALIDER MON ÉMARGEMENT',type='primary',use_container_width=True):
         if not consent: st.error('Veuillez confirmer les informations.');return
-        if canvas.image_data is None or (canvas.image_data[:,:,:3] < 250).sum() < 100: st.error('Merci d’apposer votre signature dans le cadre.');return
-        img=PILImage.fromarray(canvas.image_data.astype('uint8'),'RGBA').convert('RGB');buf=io.BytesIO();img.save(buf,format='PNG');b=buf.getvalue();digest=sha256_bytes(b)
-        path=SIG_DIR/f"sig_{row['action_id']}_{row['id']}_{row['slot_id']}_{digest[:12]}.png";path.write_bytes(b)
+        if sig_mode=='Signature manuscrite':
+            if canvas.image_data is None or (canvas.image_data[:,:,:3] < 250).sum() < 100: st.error('Merci d’apposer votre signature dans le cadre.');return
+            img=PILImage.fromarray(canvas.image_data.astype('uint8'),'RGBA').convert('RGB');buf=io.BytesIO();img.save(buf,format='PNG');b=buf.getvalue();digest=sha256_bytes(b)
+            path=SIG_DIR/f"sig_{row['action_id']}_{row['id']}_{row['slot_id']}_{digest[:12]}.png";path.write_bytes(b); sig_method='MANUSCRITE'; signer=f"{row['first_name']} {row['last_name']}"
+        else:
+            if not typed_name.strip(): st.error('Nom et prénom obligatoires.'); return
+            proof=f"{typed_name.strip()}|{declaration}|{row['id']}|{row['slot_id']}".encode('utf-8'); digest=sha256_bytes(proof); path=''; sig_method='NOM_PRENOM'; signer=typed_name.strip()
         try:
-            execute(ENGINE,"""INSERT INTO signatures(participant_id,slot_id,signed_at,signature_path,signature_sha256,signer_name,method,ip_address,user_agent,declaration_text)
-              VALUES(:p,:s,:at,:path,:h,:n,:m,:ip,:ua,:d)""",{'p':row['id'],'s':row['slot_id'],'at':utcnow_iso(),'path':str(path),'h':digest,'n':f"{row['first_name']} {row['last_name']}",'m':method,'ip':get_ip(),'ua':get_ua(),'d':declaration})
+            execute(ENGINE,"""INSERT INTO signatures(participant_id,slot_id,signed_at,signature_path,signature_sha256,signer_name,method,access_method,signature_method,is_late,late_reason,ip_address,user_agent,declaration_text)
+              VALUES(:p,:s,:at,:path,:h,:n,:m,:m,:sm,:late,:lr,:ip,:ua,:d)""",{'p':row['id'],'s':row['slot_id'],'at':utcnow_iso(),'path':str(path),'h':digest,'n':signer,'m':method,'sm':sig_method,'late':1 if is_late else 0,'lr':late_reason or None,'ip':get_ip(),'ua':get_ua(),'d':declaration})
             execute(ENGINE,'UPDATE signature_tokens SET used_at=:u WHERE participant_id=:p AND slot_id=:s',{'u':utcnow_iso(),'p':row['id'],'s':row['slot_id']})
             audit(ENGINE,'SIGNATURE_RECORDED',row['action_id'],f"participant:{row['id']}",'signature',f"{row['id']}/{row['slot_id']}",{'method':method,'sha256':digest})
-            st.success(f"Votre présence a bien été enregistrée à {datetime.now().strftime('%H:%M')}. Merci.");st.balloons()
+            st.success(f"Votre présence a bien été enregistrée à {datetime.now(ZoneInfo(TZ)).strftime('%H:%M')}. Merci.");st.balloons()
         except Exception: st.info('Cet émargement a déjà été enregistré.')
+
+def trainer_page(token):
+    row=one(ENGINE,"""SELECT t.action_id,a.* FROM trainer_access_tokens t JOIN actions a ON a.id=t.action_id WHERE t.token=:t AND t.active=1""",{'t':token})
+    if not row: header('Clarté360 — Intervenant');st.error('Accès intervenant invalide.');footer();return
+    header('Clarté360 — Espace intervenant','Suivi, QR code, absences, relances et contresignature')
+    st.markdown(f"<div class='c360-card'><b>{row['action_no']} — {row['title']}</b><br>Intervenant : {row.get('trainer_name') or 'Non renseigné'}</div>",unsafe_allow_html=True)
+    slots=q(ENGINE,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':row['action_id']});parts=q(ENGINE,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':row['action_id']})
+    if not slots: st.info('Aucun créneau.');footer();return
+    sc={f"{x['slot_date']} {x['start_time']}–{x['end_time']} #{x['id']}":x for x in slots}; lab=st.selectbox('Créneau',list(sc));slot=sc[lab]
+    qr=qrcode.make(public_slot_url(slot,BASE_URL));buf=io.BytesIO();qr.save(buf,format='PNG');c1,c2=st.columns([1,2]);c1.image(buf.getvalue(),width=220);c2.caption('Présentez ce QR code aux participants pour émarger.')
+    sigs=q(ENGINE,'SELECT * FROM signatures WHERE slot_id=:s',{'s':slot['id']});sm={x['participant_id']:x for x in sigs};ats=q(ENGINE,'SELECT * FROM attendance_status WHERE slot_id=:s',{'s':slot['id']});am={x['participant_id']:x for x in ats}
+    rows=[]
+    for p in parts:
+        at=am.get(p['id']); x=sm.get(p['id']); status='SIGNÉ' if x else (at['status'] if at else 'EN ATTENTE')
+        rows.append({'Participant':f"{p['last_name']} {p['first_name']}",'Statut':status,'Email':p.get('email') or ''})
+    st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+    pc={f"{p['last_name']} {p['first_name']}":p for p in parts}; pl=st.selectbox('Participant à gérer',list(pc));pp=pc[pl]
+    c1,c2=st.columns(2)
+    if c1.button('Marquer ABSENT',use_container_width=True): set_attendance_status(ENGINE,pp['id'],slot['id'],'ABSENT','Déclaré par intervenant',f"trainer:{row.get('trainer_email') or row.get('trainer_name')}");st.success('Absence enregistrée.');rerun()
+    if c2.button('Remettre EN ATTENTE',use_container_width=True): set_attendance_status(ENGINE,pp['id'],slot['id'],'EN_ATTENTE','Correction intervenant',f"trainer:{row.get('trainer_email') or row.get('trainer_name')}");rerun()
+    if pp.get('email') and st.button('Relancer ce participant par email'):
+        ensure_tokens_and_events(ENGINE,row['action_id'],BASE_URL,TZ);url=token_url(ENGINE,pp['id'],slot['id'],BASE_URL);cfg=dict(st.secrets.get('smtp',{}));subject=f"Clarté360 — émargement — {row['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci de régulariser votre émargement pour le {slot['slot_date']} de {slot['start_time']} à {slot['end_time']}.</p><p><a href='{url}'>SIGNER / RÉGULARISER</a></p>"
+        try: send_mail(cfg,pp['email'],subject,body);audit(ENGINE,'TRAINER_MANUAL_REMINDER',row['action_id'],'trainer','participant',pp['id'],{'slot_id':slot['id']});st.success('Relance envoyée.')
+        except Exception as ex: st.error(f'Envoi impossible : {ex}')
+    st.markdown('### Contresignature du créneau')
+    existing=one(ENGINE,'SELECT * FROM trainer_countersignatures WHERE slot_id=:s',{'s':slot['id']})
+    if existing: st.success(f"Créneau contresigné par {existing['trainer_name']} le {local_dt(existing['signed_at'],TZ).strftime('%d/%m/%Y à %H:%M')}")
+    name=st.text_input('Nom et prénom de l’intervenant',value=row.get('trainer_name') or '');cert=st.checkbox("Je certifie l'exactitude des présences et absences indiquées pour ce créneau.")
+    if st.button('CONTRESIGNER CE CRÉNEAU',type='primary'):
+        if not name.strip() or not cert: st.error('Nom et certification obligatoires.')
+        else: countersign_slot(ENGINE,slot['id'],name.strip(),row.get('trainer_email'),f"trainer:{name.strip()}","Je certifie l'exactitude des présences et absences indiquées pour ce créneau.");st.success('Contresignature enregistrée.');rerun()
+    footer()
 
 def sidebar():
     st.sidebar.image(str(LOGO_PATH),width=70);st.sidebar.markdown(f"**{st.session_state.get('admin_name','Administrateur')}**")
@@ -237,13 +288,18 @@ def participants_tab(a):
     with st.expander('Ajouter un participant',expanded=not parts):
         with st.form(f'addp{a["id"]}'):
             c1,c2,c3=st.columns(3);last=c1.text_input('Nom *');birth=c2.text_input('Nom de naissance');first=c3.text_input('Prénom *')
-            c1,c2,c3=st.columns(3);bdate=c1.date_input('Date de naissance',value=None);email=c2.text_input('Email (facultatif)');emp=c3.text_input('Matricule entreprise')
+            c1,c2,c3=st.columns(3);bdate=c1.text_input('Date de naissance (JJ/MM/AAAA)');email=c2.text_input('Email (facultatif)');emp=c3.text_input('Matricule entreprise')
             c1,c2,c3=st.columns(3);company=c1.text_input('Entreprise / client');phone=c2.text_input('Téléphone');indno=c3.text_input('N° action individuel (INTER)',value=a['action_no'] if a['mode']!='INTER' else '')
             submit=st.form_submit_button('Ajouter',type='primary')
         if submit:
             if not last.strip() or not first.strip(): st.error('Nom et prénom obligatoires.')
             else:
-                pid,pin=add_participant(ENGINE,a['id'],{'individual_action_no':indno.strip() or None,'last_name':last.strip().upper(),'birth_name':birth.strip().upper() or None,'first_name':first.strip().title(),'birth_date':bdate.isoformat() if bdate else None,'email':email.strip() or None,'employee_id':emp.strip() or None,'company_name':company.strip() or None,'phone':phone.strip() or None},st.session_state.admin_email)
+                
+                try: birth_iso=datetime.strptime(bdate.strip(),'%d/%m/%Y').date().isoformat() if bdate.strip() else None
+                except ValueError: st.error('Date de naissance invalide : utilisez JJ/MM/AAAA.');return
+                dup=participant_duplicate(ENGINE,a['id'],last,first,birth_iso,email)
+                if dup: st.error(f"Participant potentiellement déjà présent : {dup['last_name']} {dup['first_name']}.");return
+                pid,pin=add_participant(ENGINE,a['id'],{'individual_action_no':indno.strip() or None,'last_name':last.strip().upper(),'birth_name':birth.strip().upper() or None,'first_name':first.strip().title(),'birth_date':birth_iso,'email':email.strip() or None,'employee_id':emp.strip() or None,'company_name':company.strip() or None,'phone':phone.strip() or None},st.session_state.admin_email)
                 st.success(f"Participant ajouté. Code QR personnel : {pin} — notez-le maintenant.");st.code(pin);st.info('Pour des raisons de sécurité, ce code ne pourra pas être réaffiché en clair.');
                 if one(ENGINE,'SELECT COUNT(*) n FROM slots WHERE action_id=:a',{'a':a['id']})['n']:
                     ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
@@ -252,6 +308,10 @@ def participants_tab(a):
         if lab!='—' and st.button('Supprimer le participant sélectionné'):
             if one(ENGINE,'SELECT id FROM signatures WHERE participant_id=:p',{'p':ids[lab]}): st.error('Impossible : ce participant possède déjà une signature. Désactivez-le plutôt dans une version ultérieure.')
             else: delete_participant(ENGINE,ids[lab],st.session_state.admin_email);rerun()
+        st.markdown('**Réinitialiser un code personnel QR**')
+        rlab=st.selectbox('Participant concerné',list(ids),key=f'pinreset{a["id"]}')
+        if st.button('Générer un nouveau code à 4 chiffres',key=f'pinbtn{a["id"]}'):
+            newpin=reset_participant_pin(ENGINE,ids[rlab],st.session_state.admin_email);st.success('Nouveau code généré. Communiquez-le au participant :');st.code(newpin)
 
 def calendar_tab(a):
     st.subheader('Calendrier et créneaux')
@@ -268,7 +328,16 @@ def calendar_tab(a):
             c1,c2,c3,c4=st.columns(4);esend=c1.number_input('Envoi vs fin (min)',value=int(es['send_offset_min']),step=5);er1=c2.number_input('Relance 1',value=int(es['reminder1_offset_min']),step=5);er2=c3.number_input('Relance 2',value=int(es['reminder2_offset_min']),step=15);eclose=c4.number_input('Clôture',value=int(es['close_offset_min']),step=60)
             reason=st.text_input('Motif de modification (recommandé si l’action a commencé)');save_slot=st.form_submit_button('Enregistrer le créneau')
         if save_slot:
-            update_slot(ENGINE,es['id'],{'slot_date':ed.isoformat(),'start_time':est.strftime('%H:%M'),'end_time':eet.strftime('%H:%M'),'send_offset_min':int(esend),'reminder1_offset_min':int(er1),'reminder2_offset_min':int(er2),'close_offset_min':int(eclose),'reason':reason},st.session_state.admin_email);ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success('Créneau modifié et journalisé.');rerun()
+            ok,msg=safe_update_slot(ENGINE,es['id'],{'slot_date':ed.isoformat(),'start_time':est.strftime('%H:%M'),'end_time':eet.strftime('%H:%M'),'send_offset_min':int(esend),'reminder1_offset_min':int(er1),'reminder2_offset_min':int(er2),'close_offset_min':int(eclose),'reason':reason},st.session_state.admin_email)
+            if ok: ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success('Créneau modifié et journalisé.');rerun()
+            else: st.error(msg)
+        st.markdown('**Reporter un créneau non encore réalisé**')
+        c1,c2,c3=st.columns(3);rpd=c1.date_input('Nouvelle date',key=f'rpd{es["id"]}');rps=c2.time_input('Nouveau début',value=time.fromisoformat(es['start_time']),key=f'rps{es["id"]}');rpe=c3.time_input('Nouvelle fin',value=time.fromisoformat(es['end_time']),key=f'rpe{es["id"]}')
+        rpr=st.text_input('Motif du report',key=f'rpr{es["id"]}')
+        if st.button('REPORTER CE CRÉNEAU',key=f'report{es["id"]}'):
+            ns=report_slot(ENGINE,es['id'],rpd.isoformat(),rps.strftime('%H:%M'),rpe.strftime('%H:%M'),st.session_state.admin_email,rpr or 'Report')
+            if ns: ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success(f'Créneau reporté. Nouveau créneau #{ns}.');rerun()
+            else: st.error('Ce créneau contient déjà une preuve ou ne peut plus être reporté. Utilisez absence/rattrapage si la séance a déjà eu lieu.')
     with st.expander('Ajouter un créneau',expanded=not slots):
         c1,c2,c3=st.columns(3);d=c1.date_input('Date',key=f'd{a["id"]}');s=c2.time_input('Début',value=time(9,0),key=f's{a["id"]}');e=c3.time_input('Fin',value=time(12,30),key=f'e{a["id"]}')
         c1,c2,c3,c4=st.columns(4);send=c1.number_input('Envoi vs fin (min)',value=-10,step=5);r1=c2.number_input('Relance 1 après fin',value=20,step=5);r2=c3.number_input('Relance 2 après fin',value=120,step=15);close=c4.number_input('Clôture après fin',value=1440,step=60)
@@ -312,6 +381,8 @@ def dispatch_tab(a):
     else:
         st.info('L’envoi manuel sera disponible dès que la configuration SMTP du VPS sera activée.')
 
+    st.markdown('### Accès restreint intervenant')
+    turl=trainer_url(ENGINE,a['id'],BASE_URL);st.code(turl);st.caption('Ce lien donne accès uniquement au suivi opérationnel de cette action : QR, absences, relances et contresignature.')
     st.markdown('### QR code d’un créneau')
     choices={f"{s['slot_date']} — {s['start_time']}–{s['end_time']}":s for s in slots};lab=st.selectbox('Choisir le créneau',list(choices),key=f'qr{a["id"]}');slot=choices[lab];url=public_slot_url(slot,BASE_URL)
     qr=qrcode.make(url);buf=io.BytesIO();qr.save(buf,format='PNG');c1,c2=st.columns([1,2]);c1.image(buf.getvalue(),width=220);c2.code(url);c2.caption('Le stagiaire saisit son nom et son code personnel à 4 chiffres avant de signer.')
@@ -329,11 +400,22 @@ def tracking_tab(a):
     for p in parts:
         r={'Participant':f"{p['last_name']} {p['first_name']}"}
         for s in slots:
-            x=sm.get((p['id'],s['id']));r[f"{s['slot_date']} {s['start_time']}"]=('✅ '+datetime.fromisoformat(x['signed_at']).strftime('%H:%M')) if x else '⏳'
+            x=sm.get((p['id'],s['id']));at=one(ENGINE,'SELECT status FROM attendance_status WHERE participant_id=:p AND slot_id=:s',{'p':p['id'],'s':s['id']});r[f"{s['slot_date']} {s['start_time']}"]=('✅ '+local_dt(x['signed_at'],TZ).strftime('%H:%M')+(' · a posteriori' if x.get('is_late') else '')) if x else ('❌ ABSENT' if at and at['status']=='ABSENT' else ('➖' if at and at['status']=='NON_CONCERNE' else '⏳'))
         r['Heures justifiées']=actual_hours_for_participant(ENGINE,p['id']);rows.append(r)
     if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
     pending=[(p,s) for p in parts for s in slots if (p['id'],s['id']) not in sm]
     st.caption(f"{len(pending)} signature(s) encore attendue(s).")
+    st.markdown('### Gestion présence / absence')
+    if parts and slots:
+        pc={f"{p['last_name']} {p['first_name']}":p for p in parts};sc={f"{s['slot_date']} {s['start_time']}–{s['end_time']} #{s['id']}":s for s in slots};c1,c2=st.columns(2);pp=pc[c1.selectbox('Participant',list(pc),key=f'atp{a["id"]}')];ss=sc[c2.selectbox('Créneau',list(sc),key=f'ats{a["id"]}')];reason=st.text_input('Motif / observation',key=f'atr{a["id"]}')
+        c1,c2=st.columns(2)
+        if c1.button('Marquer ABSENT',key=f'abs{a["id"]}'): set_attendance_status(ENGINE,pp['id'],ss['id'],'ABSENT',reason,st.session_state.admin_email);rerun()
+        if c2.button('Remettre EN ATTENTE',key=f'wait{a["id"]}'): set_attendance_status(ENGINE,pp['id'],ss['id'],'EN_ATTENTE',reason,st.session_state.admin_email);rerun()
+        st.markdown('### Créer une séance de rattrapage')
+        absent=q(ENGINE,"""SELECT p.* FROM attendance_status x JOIN participants p ON p.id=x.participant_id WHERE x.slot_id=:s AND x.status='ABSENT'""",{'s':ss['id']});opts={f"{p['last_name']} {p['first_name']}":p['id'] for p in absent};sel=st.multiselect('Absents concernés',list(opts),default=list(opts));c1,c2,c3=st.columns(3);rd=c1.date_input('Date du rattrapage',key=f'rd{a["id"]}');rs=c2.time_input('Début rattrapage',value=time(9,0),key=f'rs{a["id"]}');re=c3.time_input('Fin rattrapage',value=time(12,0),key=f're{a["id"]}')
+        if st.button('Créer le créneau de rattrapage',key=f'catch{a["id"]}'):
+            if not sel: st.error('Sélectionnez au moins un participant absent.')
+            else: ns=create_catchup_slot(ENGINE,ss['id'],rd.isoformat(),rs.strftime('%H:%M'),re.strftime('%H:%M'),[opts[x] for x in sel],st.session_state.admin_email);ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success(f'Rattrapage créé : créneau #{ns}.');rerun()
 
 def documents_tab(a):
     st.subheader('Documents et archivage')
@@ -345,7 +427,10 @@ def documents_tab(a):
         labels={f"{p['last_name']} {p['first_name']}":p for p in parts};lab=st.selectbox('Participant',list(labels),key=f'docp{a["id"]}');p=labels[lab]
         c1,c2=st.columns(2)
         ipdf=individual_pdf(ENGINE,p['id']);c1.download_button('Feuille individuelle PDF',ipdf,f"{a['action_no']}_{p['last_name']}_{p['first_name']}_emargement.pdf",'application/pdf',use_container_width=True)
-        cert=certificate_pdf(ENGINE,p['id']);c2.download_button('Certificat de réalisation PDF',cert,f"{a['action_no']}_{p['last_name']}_{p['first_name']}_certificat_realisation.pdf",'application/pdf',use_container_width=True)
+        ok_cert,issues=can_issue_certificate(ENGINE,p['id'])
+        if ok_cert:
+            cert=certificate_pdf(ENGINE,p['id']);c2.download_button('Certificat de réalisation PDF',cert,f"{a['action_no']}_{p['last_name']}_{p['first_name']}_certificat_realisation.pdf",'application/pdf',use_container_width=True)
+        else: c2.warning('Certificat définitif indisponible : '+ ' ; '.join(issues[:4]))
     js=export_action_json(ENGINE,a['id']);st.download_button('Exporter le dossier JSON portable',js,f"{a['action_no']}_dossier.json",'application/json')
     try:
         pdfs={'emargement_collectif.pdf':collective_pdf(ENGINE,a['id'])};z=export_action_zip(ENGINE,a['id'],pdfs);st.download_button('Exporter l’archive complète ZIP',z,f"{a['action_no']}_archive_complete.zip",'application/zip')
@@ -365,6 +450,8 @@ def settings_screen():
 
 # ROUTING PUBLIC SIGNATURE
 params=st.query_params
+if params.get('trainer_token'):
+    trainer_page(params.get('trainer_token'));st.stop()
 if params.get('token'):
     signature_page(token=params.get('token'));st.stop()
 if params.get('slot_token'):

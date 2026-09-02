@@ -10,3 +10,4 @@ data/documents/
 exports/*.pdf
 exports/*.zip
 *.log
+backups/

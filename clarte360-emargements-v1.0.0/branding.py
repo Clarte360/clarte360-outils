@@ -1,7 +1,7 @@
 from pathlib import Path
 
 APP_NAME = "Clarté360 — Émargements"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 BRAND = "#008080"
 BRAND_LIGHT = "#F1F8F8"
 TEXT = "#1F2937"

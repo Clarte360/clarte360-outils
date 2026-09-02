@@ -5,8 +5,8 @@ After=network.target
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/opt/clarte360-emargements
-ExecStart=/opt/clarte360-emargements/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8501
+WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0
+ExecStart=/opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8501
 Restart=always
 RestartSec=5
 
