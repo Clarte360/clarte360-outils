@@ -256,32 +256,182 @@ def sidebar():
     return page
 
 def create_action_screen(prefill=None,participants_prefill=None):
-    header('Clarté360 — Nouvelle action','Création d’une action et de son dossier d’émargement')
+    # Lors d'un import, le brouillon reste en session jusqu'à création ou annulation.
+    # Cela évite la perte des champs lors d'un rerun Streamlit ou d'une frappe sur Entrée.
+    if st.session_state.get('import_create_active'):
+        prefill = st.session_state.get('import_prefill') or prefill
+        participants_prefill = st.session_state.get('import_parts') or participants_prefill
+
     p=prefill or {}
-    with st.form('new_action'):
-        c1,c2=st.columns(2);action_no=c1.text_input('N° D’ACTION *',value=p.get('action_no','')).strip().upper();prestation_labels={'Formation':'FORMATION','Bilan de compétences':'BILAN_COMPETENCES','VAE':'VAE','Coaching':'COACHING','Mentorat':'MENTORAT','Autre':'AUTRE'}; prestation_label=c2.selectbox('Type de prestation *',list(prestation_labels)); prestation_type=prestation_labels[prestation_label]; nature=prestation_label
-        title=st.text_input('Intitulé *',value=p.get('title',''));subtitle=st.text_input('Intitulé complémentaire',value=p.get('subtitle') or '')
-        c1,c2=st.columns(2);start_date=c1.date_input('Date de début',value=date.fromisoformat(p['start_date']) if p.get('start_date') else date.today());end_date=c2.date_input('Date de fin',value=date.fromisoformat(p['end_date']) if p.get('end_date') else date.today())
-        c1,c2,c3,c4=st.columns(4);mode=c1.selectbox('Organisation',['INTRA','INTER','INDIVIDUEL']);planned=c2.number_input('Durée contractuelle prévue (h)',min_value=0.0,step=.5,value=float(p.get('planned_hours') or 0));expected=c3.number_input('Nombre prévu de stagiaires',min_value=1,step=1,value=int(p.get('expected_participants') or (1 if mode=='INDIVIDUEL' else 1)));group=c4.text_input('Code de groupe / session INTER',value='')
-        c1,c2=st.columns(2);client=c1.text_input('Client / entreprise (facultatif)',value=p.get('client_name') or '');client_type=c2.selectbox('Type client',['Non précisé','Professionnel','Particulier'])
-        orgs=list_organizations(ENGINE,active_only=True); org_opts={o['name']:o['id'] for o in orgs}; org_label=st.selectbox('Organisme',list(org_opts)); organization_id=org_opts[org_label]; agencies=list_agencies(ENGINE,organization_id,active_only=True); agency_opts={'— Siège / aucune agence —':None,**{g['name']:g['id'] for g in agencies}}; agency_label=st.selectbox('Agence / établissement',list(agency_opts)); agency_id=agency_opts[agency_label]
-        st.markdown('**Modules activés pour cette action**'); m1,m2,m3,m4=st.columns(4); use_attendance=m1.checkbox('Émargement',value=True); use_hot=m2.checkbox('Évaluation à chaud',value=False); use_cold=m3.checkbox('Évaluation à froid',value=False); use_trainer=m4.checkbox('Retour intervenant',value=False)
-        trainers=list_trainers(ENGINE,active_only=True); trainer_opts={'— Aucun intervenant référencé —':None,**{f"{t['full_name']} — {t.get('email') or 'sans email'}":t['id'] for t in trainers}}
-        c1,c2=st.columns(2);trainer_label=c1.selectbox('Intervenant référencé',list(trainer_opts));location=c2.text_input('Lieu / modalité',value=p.get('location') or '')
-        admins=q(ENGINE,'SELECT email,full_name FROM admins WHERE active=1 ORDER BY full_name,email');admin_opts={f"{x.get('full_name') or x['email']} — {x['email']}":x['email'] for x in admins};cur_admin=next((k for k,v in admin_opts.items() if v==st.session_state.get('admin_email')),list(admin_opts)[0] if admin_opts else '');admin_label=st.selectbox('Administrateur référent',list(admin_opts),index=list(admin_opts).index(cur_admin) if cur_admin in admin_opts else 0);admin_email=admin_opts.get(admin_label,st.session_state.get('admin_email',''));notes=st.text_area('Observations')
+    imported_parts=participants_prefill or []
+
+    header('Clarté360 — Nouvelle action','Création d’une action et de son dossier d’émargement')
+
+    if st.session_state.get('import_create_active'):
+        st.info("Action préremplie depuis la base Excel. Les données importées restent conservées tant que l’action n’est pas créée ou que vous n’annulez pas l’import.")
+        if st.button("Annuler cet import et repartir sur une action vide", key="cancel_import_draft"):
+            for k in ['import_create_active','import_prefill','import_parts']:
+                st.session_state.pop(k,None)
+            rerun()
+
+    # Compatibilité avec le mapping actuel excel_import.py : date_start/date_end
+    raw_start = p.get('start_date') or p.get('date_start')
+    raw_end = p.get('end_date') or p.get('date_end')
+    try:
+        start_default = date.fromisoformat(str(raw_start)[:10]) if raw_start else date.today()
+    except Exception:
+        start_default = date.today()
+    try:
+        end_default = date.fromisoformat(str(raw_end)[:10]) if raw_end else date.today()
+    except Exception:
+        end_default = date.today()
+
+    mode_options=['INTRA','INTER','INDIVIDUEL']
+    mode_default=(p.get('mode') or 'INTRA').upper()
+    if mode_default not in mode_options:
+        mode_default='INTRA'
+
+    expected_default = int(p.get('expected_participants') or len(imported_parts) or 1)
+
+    with st.form('new_action', enter_to_submit=False):
+        c1,c2=st.columns(2)
+        action_no=c1.text_input('N° D’ACTION *',value=p.get('action_no','')).strip().upper()
+        prestation_labels={'Formation':'FORMATION','Bilan de compétences':'BILAN_COMPETENCES','VAE':'VAE','Coaching':'COACHING','Mentorat':'MENTORAT','Autre':'AUTRE'}
+        prestation_label=c2.selectbox('Type de prestation *',list(prestation_labels))
+        prestation_type=prestation_labels[prestation_label]
+        nature=prestation_label
+
+        title=st.text_input('Intitulé *',value=p.get('title',''))
+        subtitle=st.text_input('Intitulé complémentaire',value=p.get('subtitle') or '')
+
+        c1,c2=st.columns(2)
+        start_date=c1.date_input('Date de début',value=start_default)
+        end_date=c2.date_input('Date de fin',value=end_default)
+
+        c1,c2,c3,c4=st.columns(4)
+        mode=c1.selectbox('Organisation',mode_options,index=mode_options.index(mode_default))
+        planned=c2.number_input('Durée contractuelle prévue (h)',min_value=0.0,step=.5,value=float(p.get('planned_hours') or 0))
+        expected=c3.number_input('Nombre prévu de stagiaires',min_value=1,step=1,value=expected_default)
+        group=c4.text_input('Code de groupe / session INTER',value=p.get('group_code') or '')
+
+        c1,c2=st.columns(2)
+        client=c1.text_input('Client / entreprise (facultatif)',value=p.get('client_name') or '')
+        client_type=c2.selectbox('Type client',['Non précisé','Professionnel','Particulier'])
+
+        orgs=list_organizations(ENGINE,active_only=True)
+        org_opts={o['name']:o['id'] for o in orgs}
+        org_label=st.selectbox('Organisme',list(org_opts))
+        organization_id=org_opts[org_label]
+        agencies=list_agencies(ENGINE,organization_id,active_only=True)
+        agency_opts={'— Siège / aucune agence —':None,**{g['name']:g['id'] for g in agencies}}
+        agency_label=st.selectbox('Agence / établissement',list(agency_opts))
+        agency_id=agency_opts[agency_label]
+
+        st.markdown('**Modules activés pour cette action**')
+        m1,m2,m3,m4=st.columns(4)
+        use_attendance=m1.checkbox('Émargement',value=True)
+        use_hot=m2.checkbox('Évaluation à chaud',value=False)
+        use_cold=m3.checkbox('Évaluation à froid',value=False)
+        use_trainer=m4.checkbox('Retour intervenant',value=False)
+
+        trainers=list_trainers(ENGINE,active_only=True)
+        trainer_opts={'— Aucun intervenant référencé —':None,**{f"{t['full_name']} — {t.get('email') or 'sans email'}":t['id'] for t in trainers}}
+        trainer_labels=list(trainer_opts)
+        imported_trainer=(p.get('trainer_name') or '').strip().lower()
+        trainer_index=0
+        if imported_trainer:
+            for i,lab in enumerate(trainer_labels):
+                if imported_trainer in lab.lower():
+                    trainer_index=i
+                    break
+
+        c1,c2=st.columns(2)
+        trainer_label=c1.selectbox('Intervenant référencé',trainer_labels,index=trainer_index)
+        location=c2.text_input('Lieu / modalité',value=p.get('location') or '')
+
+        admins=q(ENGINE,'SELECT email,full_name FROM admins WHERE active=1 ORDER BY full_name,email')
+        admin_opts={f"{x.get('full_name') or x['email']} — {x['email']}":x['email'] for x in admins}
+        cur_admin=next((k for k,v in admin_opts.items() if v==st.session_state.get('admin_email')),list(admin_opts)[0] if admin_opts else '')
+        admin_label=st.selectbox('Administrateur référent',list(admin_opts),index=list(admin_opts).index(cur_admin) if cur_admin in admin_opts else 0)
+        admin_email=admin_opts.get(admin_label,st.session_state.get('admin_email',''))
+        notes=st.text_area('Observations')
+
+        if imported_parts:
+            st.markdown('### Participant(s) détecté(s) dans la base')
+            st.caption("Ces fiches seront créées automatiquement dans l’action au moment où vous cliquerez sur « Créer l’action ».")
+            preview_rows=[]
+            for x in imported_parts:
+                preview_rows.append({
+                    'Nom':x.get('last_name') or '',
+                    'Nom de naissance':x.get('birth_name') or '',
+                    'Prénom':x.get('first_name') or '',
+                    'Date de naissance':x.get('birth_date') or '',
+                    'Email':x.get('email') or '',
+                    'Entreprise':x.get('company_name') or '',
+                    'Téléphone':x.get('phone') or '',
+                    'N° action':x.get('individual_action_no') or action_no,
+                })
+            st.dataframe(pd.DataFrame(preview_rows),use_container_width=True,hide_index=True)
+        elif st.session_state.get('import_create_active'):
+            st.warning("Aucun participant n’a été détecté dans la source Excel pour cette action. L’action peut être créée, mais aucun stagiaire ne sera ajouté automatiquement.")
+
         ok=st.form_submit_button('Créer l’action',type='primary')
+
     if ok:
-        if not action_no or not title: st.error('Le n° d’action et l’intitulé sont obligatoires.')
-        elif one(ENGINE,'SELECT id FROM actions WHERE action_no=:n',{'n':action_no}): st.error('Ce numéro d’action existe déjà.')
+        if not action_no or not title:
+            st.error('Le n° d’action et l’intitulé sont obligatoires.')
+        elif one(ENGINE,'SELECT id FROM actions WHERE action_no=:n',{'n':action_no}):
+            st.error('Ce numéro d’action existe déjà.')
         else:
-            aid=create_action(ENGINE,{'action_no':action_no,'title':title,'subtitle':subtitle or None,'nature':nature,'mode':mode,'client_name':client or None,'client_type':client_type,'group_code':group or None,'planned_hours':planned,'expected_participants':int(expected),'admin_email':admin_email,'trainer_name':None,'trainer_email':None,'location':location or None,'notes':notes or None,'source':p.get('source') or 'SAISIE MANUELLE'},st.session_state.admin_email)
-            if trainer_opts.get(trainer_label): assign_trainer(ENGINE,aid,trainer_opts[trainer_label],st.session_state.admin_email)
-            safe_set_action_modules(ENGINE,aid,prestation_type,use_attendance,use_hot,use_cold,use_trainer,organization_id,agency_id,st.session_state.admin_email)
-            execute(ENGINE,'UPDATE actions SET start_date=:s,end_date=:e WHERE id=:a',{'s':start_date.isoformat(),'e':end_date.isoformat(),'a':aid})
+            aid=create_action(ENGINE,{
+                'action_no':action_no,
+                'title':title,
+                'subtitle':subtitle or None,
+                'nature':nature,
+                'mode':mode,
+                'client_name':client or None,
+                'client_type':client_type,
+                'group_code':group or None,
+                'planned_hours':planned,
+                'expected_participants':int(expected),
+                'admin_email':admin_email,
+                'trainer_name':p.get('trainer_name') or None,
+                'trainer_email':p.get('trainer_email') or None,
+                'location':location or None,
+                'notes':notes or None,
+                'source':p.get('source') or 'SAISIE MANUELLE'
+            },st.session_state.admin_email)
+
+            if trainer_opts.get(trainer_label):
+                assign_trainer(ENGINE,aid,trainer_opts[trainer_label],st.session_state.admin_email)
+
+            safe_set_action_modules(
+                ENGINE,aid,prestation_type,use_attendance,use_hot,use_cold,use_trainer,
+                organization_id,agency_id,st.session_state.admin_email
+            )
+            execute(ENGINE,'UPDATE actions SET start_date=:s,end_date=:e WHERE id=:a',
+                    {'s':start_date.isoformat(),'e':end_date.isoformat(),'a':aid})
+
             pins=[]
-            for pd in participants_prefill or []:
-                pid,pin=add_participant(ENGINE,aid,pd.copy(),st.session_state.admin_email);pins.append((pid,pin))
-            st.session_state.selected_action=aid;st.success('Action créée. Vous pouvez maintenant ajouter les participants et les créneaux.');st.session_state['_next_nav']='Actions';rerun()
+            for pd in imported_parts:
+                pdata=pd.copy()
+                # Le n° de l'action importée fait foi si la fiche participant ne le contient pas.
+                if not pdata.get('individual_action_no'):
+                    pdata['individual_action_no']=action_no
+                pid,pin=add_participant(ENGINE,aid,pdata,st.session_state.admin_email)
+                pins.append((pid,pin))
+
+            # Le brouillon d'import n'est effacé qu'après création réussie.
+            for k in ['import_create_active','import_prefill','import_parts']:
+                st.session_state.pop(k,None)
+
+            st.session_state.selected_action=aid
+            if imported_parts:
+                st.success(f'Action créée avec {len(imported_parts)} participant(s) importé(s).')
+            else:
+                st.success('Action créée. Vous pouvez maintenant ajouter les participants et les créneaux.')
+            st.session_state['_next_nav']='Actions'
+            rerun()
     footer()
 
 def import_screen():
@@ -300,7 +450,7 @@ def import_screen():
         if st.session_state.get('import_prefill'):
             d=st.session_state.import_prefill;st.json({k:v for k,v in d.items() if k not in ['default_start','default_end']});
             if st.button('Créer cette action dans Clarté360 Émargements'):
-                st.session_state.prefill_create=True;st.session_state['_next_nav']='Nouvelle action';rerun()
+                st.session_state.import_create_active=True;st.session_state['_next_nav']='Nouvelle action';rerun()
     with tabadca:
         st.info('Import ADCA : permet notamment de reprendre une action historique pour activer uniquement la qualité à froid, sans recréer artificiellement des émargements.')
         af=st.file_uploader('Sélectionnez GESTION OF ADCA (.xlsm)',type=['xlsm','xlsx'],key='adca_xlsm')
@@ -317,7 +467,7 @@ def import_screen():
             d=st.session_state.import_prefill;st.json({k:v for k,v in d.items() if k not in ['default_start','default_end']})
             st.caption('Après création, vous pourrez désactiver Émargement et conserver uniquement Évaluation à froid.')
             if st.button('Créer cette action historique ADCA'):
-                st.session_state.prefill_create=True;st.session_state['_next_nav']='Nouvelle action';rerun()
+                st.session_state.import_create_active=True;st.session_state['_next_nav']='Nouvelle action';rerun()
     with tab2:
         st.caption('Colonnes reconnues : no_action, nom, nom_naissance, prenom, date_naissance, email, matricule, entreprise, telephone.')
         sample='no_action,nom,nom_naissance,prenom,date_naissance,email,matricule,entreprise,telephone\nCLA0001,DURAND,,Marie,1985-02-14,marie@example.com,M001,SOCIETE EXEMPLE,0600000000\n'
@@ -816,8 +966,10 @@ if '_next_nav' in st.session_state:
 page=sidebar()
 if page=='Tableau de bord': dashboard()
 elif page=='Nouvelle action':
-    if st.session_state.pop('prefill_create',False): create_action_screen(st.session_state.get('import_prefill'),st.session_state.get('import_parts'))
-    else:create_action_screen()
+    if st.session_state.get('import_create_active'):
+        create_action_screen(st.session_state.get('import_prefill'),st.session_state.get('import_parts'))
+    else:
+        create_action_screen()
 elif page=='Importer Clarté360 / CSV':import_screen()
 elif page=='Actions':actions_list()
 elif page=='Paramètres':settings_screen()
