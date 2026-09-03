@@ -83,3 +83,12 @@
 - Fuseau du contrôle de complétude aligné sur l'organisme.
 - Tests candidate : 35/35 réussis.
 - Ajout rapport final, procédure VPS et check-list de recette 2–3 h.
+
+## 2.1.0 — 2026-09-03
+- Validation/activation explicite des actions ; aucun envoi d'émargement en BROUILLON.
+- Actions ACTIVE toujours modifiables.
+- Priorité à la configuration secrète MAIL avec compatibilité smtp.
+- Confirmation automatique du planning à l'activation et renvoi manuel du planning actualisé.
+- Calendrier remanié : numéros de séances métier, ajout séparé de la modification, duplication plus logique, envoi « au début du créneau ».
+- Présentation lisible des erreurs email et nettoyage des anciennes erreurs sur événements PENDING recalculés.
+- 39 tests automatisés réussis.

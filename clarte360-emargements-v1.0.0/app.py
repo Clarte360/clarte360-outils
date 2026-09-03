@@ -15,7 +15,7 @@ from security import hash_password, verify_password
 from services import *
 from excel_import import read_clarte360_xlsm, read_adca_xlsm, list_action_numbers
 from pdf_utils import collective_pdf, individual_pdf, certificate_pdf, quality_response_pdf
-from mailer import send_mail
+from mailer import send_mail, resolve_mail_config, validate_mail_config
 
 st.set_page_config(page_title=APP_NAME,page_icon=str(ICON_PATH),layout='wide',initial_sidebar_state='expanded')
 st.markdown(CSS,unsafe_allow_html=True)
@@ -42,9 +42,85 @@ def org_identity(action_id=None):
     runtime=organization_runtime_config(ENGINE,action_id);return runtime['organization']
 
 
+def mail_cfg():
+    try:
+        return resolve_mail_config(dict(st.secrets))
+    except Exception:
+        return resolve_mail_config({})
+
+
+def slot_start_offset_minutes(start_s,end_s):
+    a=datetime.fromisoformat(f"2000-01-01T{start_s}")
+    b=datetime.fromisoformat(f"2000-01-01T{end_s}")
+    if b<=a:
+        b+=__import__('datetime').timedelta(days=1)
+    return -int((b-a).total_seconds()//60)
+
+
+def friendly_mail_error(raw):
+    if not raw:
+        return ''
+    txt=str(raw)
+    low=txt.lower()
+    if '535' in txt or 'authentication' in low or 'auth' in low:
+        return "Authentification email refusée (ancienne configuration)."
+    if 'timed out' in low or 'timeout' in low:
+        return "Serveur email injoignable (délai dépassé)."
+    if 'connection refused' in low:
+        return "Connexion au serveur email refusée."
+    if 'no recipient' in low:
+        return "Adresse email destinataire absente."
+    if 'unknown_delivery' in low or 'interrupted' in low:
+        return "Envoi interrompu : vérification manuelle nécessaire avant renvoi."
+    return txt[:120]
+
+
+def schedule_confirmation_html(action, participant, slots):
+    org=org_identity(action.get('id')); org_name=org.get('name') or 'Organisme'
+    rows=''.join(
+        f"<tr><td style='padding:6px 10px;border-bottom:1px solid #ddd'>{datetime.fromisoformat(x['slot_date']).strftime('%d/%m/%Y')}</td>"
+        f"<td style='padding:6px 10px;border-bottom:1px solid #ddd'>{x['start_time']}–{x['end_time']}</td></tr>"
+        for x in slots
+    )
+    privacy=privacy_notice_html(action.get('id'))
+    location=action.get('location') or 'Modalité / lieu à confirmer'
+    return f"""<p>Bonjour {participant['first_name']},</p>
+    <p>Nous vous confirmons le planning de votre action <strong>{action['title']}</strong> (n° {action['action_no']}).</p>
+    <p><strong>Lieu / modalité :</strong> {location}</p>
+    <table style='border-collapse:collapse'><thead><tr><th style='text-align:left;padding:6px 10px'>Date</th><th style='text-align:left;padding:6px 10px'>Horaire</th></tr></thead><tbody>{rows}</tbody></table>
+    <p>Vous recevrez, pour chaque séance concernée par l’émargement électronique, votre lien personnel selon le paramétrage prévu.</p>
+    {privacy}<p>{org_name}</p>"""
+
+
+def send_schedule_confirmations(action_id, actor):
+    action=one(ENGINE,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
+    parts=q(ENGINE,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':action_id})
+    slots=q(ENGINE,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':action_id})
+    cfg=mail_cfg(); missing=validate_mail_config(cfg)
+    if not cfg.get('enabled') or missing:
+        return [],[(p.get('email') or f"{p['first_name']} {p['last_name']}", 'Configuration MAIL indisponible ou incomplète') for p in parts]
+    org=org_identity(action_id); org_name=org.get('name') or 'Organisme'
+    if org.get('email_from_name'): cfg['from_name']=org['email_from_name']
+    if org.get('email_from_address'): cfg['from_email']=org['email_from_address']
+    sent=[]; failed=[]
+    for participant in parts:
+        email=(participant.get('email') or '').strip()
+        if not email:
+            failed.append((f"{participant['first_name']} {participant['last_name']}",'Adresse email absente')); continue
+        try:
+            send_mail(cfg,email,f"{org_name} — Confirmation de votre planning — {action['action_no']}",schedule_confirmation_html(action,participant,slots))
+            audit(ENGINE,'SCHEDULE_CONFIRMATION_SENT',action_id,actor,'participant',participant['id'],{'email':email,'slots':len(slots)})
+            sent.append(email)
+        except Exception as ex:
+            audit(ENGINE,'SCHEDULE_CONFIRMATION_FAILED',action_id,actor,'participant',participant['id'],{'email':email,'error':str(ex)[:300]})
+            failed.append((email,friendly_mail_error(ex)))
+    return sent,failed
+
+
 def send_participant_code_email(participant, action, pin):
-    if not participant.get('email') or not bool(secret('smtp','enabled',False)): return False, 'Email non envoyé (adresse ou SMTP indisponible).'
-    cfg=dict(st.secrets.get('smtp',{})); org=org_identity(action.get('id'));org_name=org.get('name') or 'Organisme'; subject=f"{org_name} — votre accès émargement — {action['action_no']}"
+    cfg=mail_cfg()
+    if not participant.get('email') or not cfg.get('enabled'): return False, 'Email non envoyé (adresse ou configuration MAIL indisponible).'
+    org=org_identity(action.get('id'));org_name=org.get('name') or 'Organisme'; subject=f"{org_name} — votre accès émargement — {action['action_no']}"
     body=f"""<p>Bonjour {participant['first_name']},</p><p>Vous êtes inscrit(e) à <strong>{action['title']}</strong>.</p><p>Votre code personnel pour l'émargement via QR code est : <strong style='font-size:20px'>{pin}</strong>.</p><p>Conservez ce code pendant l'action. Les liens personnels reçus par email permettent également d'émarger sans ressaisir ce code.</p>{privacy_notice_html(action.get('id'))}<p>{org_name}</p>"""
     try: send_mail(cfg,participant['email'],subject,body); return True,'Code envoyé par email.'
     except Exception as ex: return False,f'Envoi du code impossible : {ex}'
@@ -189,7 +265,7 @@ def trainer_page(token):
         else: st.error(msg)
     if c2.button('Remettre EN ATTENTE',use_container_width=True): set_attendance_status(ENGINE,pp['id'],slot['id'],'EN_ATTENTE','Correction intervenant',f"trainer:{row.get('trainer_email') or row.get('trainer_name')}");rerun()
     if pp.get('email') and st.button('Relancer ce participant par email'):
-        ensure_tokens_and_events(ENGINE,row['action_id'],BASE_URL,TZ);url=token_url(ENGINE,pp['id'],slot['id'],BASE_URL);cfg=dict(st.secrets.get('smtp',{}));org=org_identity(row['action_id']);subject=f"{org.get('name') or 'Organisme'} — émargement — {row['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci de régulariser votre émargement pour le {slot['slot_date']} de {slot['start_time']} à {slot['end_time']}.</p><p><a href='{url}'>SIGNER / RÉGULARISER</a></p>{privacy_notice_html(row['action_id'])}"
+        ensure_tokens_and_events(ENGINE,row['action_id'],BASE_URL,TZ);url=token_url(ENGINE,pp['id'],slot['id'],BASE_URL);cfg=mail_cfg();org=org_identity(row['action_id']);subject=f"{org.get('name') or 'Organisme'} — émargement — {row['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci de régulariser votre émargement pour le {slot['slot_date']} de {slot['start_time']} à {slot['end_time']}.</p><p><a href='{url}'>SIGNER / RÉGULARISER</a></p>{privacy_notice_html(row['action_id'])}"
         try: send_mail(cfg,pp['email'],subject,body);audit(ENGINE,'TRAINER_MANUAL_REMINDER',row['action_id'],'trainer','participant',pp['id'],{'slot_id':slot['id']});st.success('Relance envoyée.')
         except Exception as ex: st.error(f'Envoi impossible : {ex}')
     st.markdown('### Contresignature du créneau')
@@ -551,7 +627,7 @@ def action_settings_tab(a):
     with st.form(f'action_settings_{a["id"]}'):
         c1,c2=st.columns(2);title=c1.text_input('Intitulé',value=a['title']);subtitle=c2.text_input('Intitulé complémentaire',value=a.get('subtitle') or '')
         c1,c2=st.columns(2);start_date=c1.date_input('Date de début',value=date.fromisoformat(a['start_date']) if a.get('start_date') else date.today());end_date=c2.date_input('Date de fin',value=date.fromisoformat(a['end_date']) if a.get('end_date') else date.today())
-        c1,c2,c3=st.columns(3);pt_label=c1.selectbox('Type de prestation',list(prestation_labels),index=list(prestation_labels).index(current_label));mode=c2.selectbox('Organisation',['INTRA','INTER','INDIVIDUEL'],index=['INTRA','INTER','INDIVIDUEL'].index(a['mode']));status_opts=list(ACTION_STATUSES); current_status=normalize_action_status(a.get('status'));status=c3.selectbox('Statut',status_opts,index=status_opts.index(current_status) if current_status in status_opts else 0)
+        c1,c2,c3=st.columns(3);pt_label=c1.selectbox('Type de prestation',list(prestation_labels),index=list(prestation_labels).index(current_label));mode=c2.selectbox('Organisation',['INTRA','INTER','INDIVIDUEL'],index=['INTRA','INTER','INDIVIDUEL'].index(a['mode']));current_status=normalize_action_status(a.get('status'));c3.text_input('Statut',value=current_status,disabled=True);status=current_status
         c1,c2,c3=st.columns(3);planned=c1.number_input('Durée prévue (h)',min_value=0.0,step=.5,value=float(a.get('planned_hours') or 0));expected=c2.number_input('Nombre prévu de participants',min_value=1,step=1,value=int(a.get('expected_participants') or 1));group=c3.text_input('Code groupe / session',value=a.get('group_code') or '')
         c1,c2=st.columns(2);client=c1.text_input('Client / entreprise',value=a.get('client_name') or '');client_type=c2.selectbox('Type client',['Non précisé','Professionnel','Particulier'],index=['Non précisé','Professionnel','Particulier'].index(a.get('client_type')) if a.get('client_type') in ['Non précisé','Professionnel','Particulier'] else 0)
         c1,c2=st.columns(2); org_label=c1.selectbox('Organisme',list(org_opts),index=list(org_opts).index(current_org_label) if current_org_label in org_opts else 0); agency_label=c2.selectbox('Agence / établissement',list(agency_opts),index=list(agency_opts).index(current_agency_label) if current_agency_label in agency_opts else 0)
@@ -569,6 +645,29 @@ def action_settings_tab(a):
             assign_trainer(ENGINE,a['id'],trainer_opts.get(trainer_label),st.session_state.admin_email);st.success('Action mise à jour.');rerun()
         except ValueError as ex: st.error(str(ex))
     current_status=normalize_action_status(a.get('status'))
+    if current_status in ('BROUILLON','PLANIFIEE'):
+        st.markdown('### Validation opérationnelle')
+        st.info("Tant que l’action reste en BROUILLON, aucun email automatique d’émargement ne peut partir. L’action restera modifiable après activation.")
+        if st.button('✅ VALIDER LE PLANNING ET ACTIVER L’ACTION',type='primary',key=f'activate{a["id"]}'):
+            cfg=mail_cfg(); missing=validate_mail_config(cfg)
+            if not cfg.get('enabled') or missing:
+                st.error("Impossible d’activer les envois : la configuration MAIL n’est pas disponible ou est incomplète" + ((" ("+', '.join(missing)+")") if missing else '.'))
+            else:
+                ok_act,issues=activate_action(ENGINE,a['id'],st.session_state.admin_email)
+                if not ok_act:
+                    st.error('Activation impossible : '+' ; '.join(issues))
+                else:
+                    ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
+                    sent,failed=send_schedule_confirmations(a['id'],st.session_state.admin_email)
+                    if sent: st.success(f"Action ACTIVÉE. Confirmation de planning envoyée à {len(sent)} participant(s).")
+                    if failed: st.warning('Action activée, mais certains emails de planning ont échoué : '+' ; '.join(f"{x}: {e}" for x,e in failed))
+                    rerun()
+    elif current_status in ('ACTIVE','A_CLOTURER'):
+        st.success("Action ACTIVE — elle reste entièrement modifiable. Les changements futurs recalculent les échéances d’envoi.")
+        if st.button('Renvoyer le planning actualisé aux participants',key=f'resend_schedule{a["id"]}'):
+            sent,failed=send_schedule_confirmations(a['id'],st.session_state.admin_email)
+            if sent: st.success(f'Planning envoyé à {len(sent)} participant(s).')
+            if failed: st.warning('Échec pour : '+' ; '.join(f"{x}: {e}" for x,e in failed))
     if current_status=='CLOTUREE':
         if st.button('Archiver cette action',key=f'archive{a["id"]}'):
             archive_action(ENGINE,a['id'],st.session_state.admin_email);rerun()
@@ -638,75 +737,135 @@ def calendar_tab(a):
     st.subheader('Calendrier et créneaux')
     slots=q(ENGINE,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':a['id']})
     total=sum(slot_duration_hours(s) for s in slots);delta=round(total-float(a['planned_hours'] or 0),2)
-    if abs(delta)<0.01: st.markdown(f"<div class='c360-ok'>✅ Calendrier cohérent : <b>{total:g} h / {a['planned_hours']:g} h</b></div>",unsafe_allow_html=True)
-    else: st.markdown(f"<div class='c360-warn'>⚠️ Total des créneaux : <b>{total:g} h</b> — durée prévue : <b>{a['planned_hours']:g} h</b> — écart : <b>{delta:+g} h</b></div>",unsafe_allow_html=True)
+    if abs(delta)<0.01:
+        st.markdown(f"<div class='c360-ok'>✅ Calendrier cohérent : <b>{total:g} h / {a['planned_hours']:g} h</b></div>",unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div class='c360-warn'>⚠️ Total des créneaux : <b>{total:g} h</b> — durée prévue : <b>{a['planned_hours']:g} h</b> — écart : <b>{delta:+g} h</b></div>",unsafe_allow_html=True)
+
     if slots:
-        st.dataframe(pd.DataFrame([{'ID':s['id'],'Date':s['slot_date'],'Début':s['start_time'],'Fin':s['end_time'],'Durée':slot_duration_hours(s),'Envoi (min/fin)':s['send_offset_min'],'Relance 1':s['reminder1_offset_min'],'Relance 2':s['reminder2_offset_min']} for s in slots]),use_container_width=True,hide_index=True)
-        st.markdown('**Modifier un créneau**')
-        edit_choices={f"#{x['id']} — {x['slot_date']} {x['start_time']}–{x['end_time']}":x for x in slots}; edit_lab=st.selectbox('Créneau à modifier',list(edit_choices),key=f'editsel{a["id"]}'); es=edit_choices[edit_lab]
+        display=[]
+        for i,x in enumerate(slots,1):
+            initial='Au début' if int(x.get('send_offset_min') or 0)==slot_start_offset_minutes(x['start_time'],x['end_time']) else f"{x['send_offset_min']} min / fin"
+            display.append({'Séance':i,'Date':x['slot_date'],'Début':x['start_time'],'Fin':x['end_time'],'Durée':slot_duration_hours(x),'Envoi initial':initial,'Relance 1':x['reminder1_offset_min'],'Relance 2':x['reminder2_offset_min']})
+        st.dataframe(pd.DataFrame(display),use_container_width=True,hide_index=True)
+
+    st.markdown('### Ajouter une nouvelle séance')
+    last_date=date.fromisoformat(slots[-1]['slot_date']) if slots else date.today()
+    last_start=time.fromisoformat(slots[-1]['start_time']) if slots else time(9,0)
+    last_end=time.fromisoformat(slots[-1]['end_time']) if slots else time(10,30)
+    with st.form(f'addslot_{a["id"]}',clear_on_submit=False):
+        c1,c2,c3=st.columns(3)
+        d=c1.date_input('Date de la nouvelle séance',value=last_date,key=f'd{a["id"]}')
+        stt=c2.time_input('Début',value=last_start,key=f's{a["id"]}')
+        ett=c3.time_input('Fin',value=last_end,key=f'e{a["id"]}')
+        c1,c2,c3=st.columns(3)
+        send_mode=c1.selectbox('Envoi du lien d’émargement',['Au début du créneau','10 min avant la fin','À la fin du créneau','Personnalisé'],key=f'sendmode{a["id"]}')
+        custom=c2.number_input('Décalage personnalisé (min / fin)',value=-10,step=5,key=f'customsend{a["id"]}',disabled=send_mode!='Personnalisé')
+        close=c3.number_input('Clôture après fin (min)',value=1440,step=60,key=f'close{a["id"]}')
+        c1,c2=st.columns(2)
+        r1=c1.number_input('Relance 1 après fin (min)',value=20,step=5,key=f'r1{a["id"]}')
+        r2=c2.number_input('Relance 2 après fin (min)',value=120,step=15,key=f'r2{a["id"]}')
+        add=st.form_submit_button('➕ AJOUTER CETTE NOUVELLE SÉANCE',type='primary')
+    if add:
+        if send_mode=='Au début du créneau': send=slot_start_offset_minutes(stt.strftime('%H:%M'),ett.strftime('%H:%M'))
+        elif send_mode=='10 min avant la fin': send=-10
+        elif send_mode=='À la fin du créneau': send=0
+        else: send=int(custom)
+        add_slot(ENGINE,a['id'],d.isoformat(),stt.strftime('%H:%M'),ett.strftime('%H:%M'),st.session_state.admin_email,int(send),int(r1),int(r2),int(close))
+        if one(ENGINE,'SELECT COUNT(*) n FROM participants WHERE action_id=:a AND active=1',{'a':a['id']})['n']:
+            ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
+        rerun()
+
+    if not slots:
+        return
+
+    st.markdown('### Dupliquer une séance')
+    st.caption('La dernière date du calendrier est proposée comme source. Après duplication, la nouvelle date deviendra automatiquement la source suivante.')
+    dates=sorted(set(x['slot_date'] for x in slots))
+    src=st.selectbox('Date source',dates,index=len(dates)-1,key=f'dupsrc{a["id"]}')
+    src_date=date.fromisoformat(src)
+    dst=st.date_input('Nouvelle date',value=src_date+__import__('datetime').timedelta(days=7),key=f'dup{a["id"]}')
+    if st.button('Dupliquer cette journée vers la nouvelle date',key=f'dupbtn{a["id"]}'):
+        if dst.isoformat()==src:
+            st.error('La nouvelle date doit être différente de la date source.')
+        else:
+            for x in [z for z in slots if z['slot_date']==src]:
+                add_slot(ENGINE,a['id'],dst.isoformat(),x['start_time'],x['end_time'],st.session_state.admin_email,x['send_offset_min'],x['reminder1_offset_min'],x['reminder2_offset_min'],x['close_offset_min'])
+            ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);rerun()
+
+    with st.expander('✏️ Modifier une séance existante',expanded=False):
+        edit_choices={f"Séance {i} — {x['slot_date']} {x['start_time']}–{x['end_time']}":x for i,x in enumerate(slots,1)}
+        edit_lab=st.selectbox('Séance à modifier',list(edit_choices),key=f'editsel{a["id"]}');es=edit_choices[edit_lab]
+        st.warning(f"Vous modifiez réellement {edit_lab}. Pour créer une autre séance, utilisez la zone « Ajouter une nouvelle séance » ci-dessus.")
+        current_begin=int(es.get('send_offset_min') or 0)==slot_start_offset_minutes(es['start_time'],es['end_time'])
         with st.form(f'editslot{es["id"]}'):
             c1,c2,c3=st.columns(3);ed=c1.date_input('Date',value=date.fromisoformat(es['slot_date']));est=c2.time_input('Début',value=time.fromisoformat(es['start_time']));eet=c3.time_input('Fin',value=time.fromisoformat(es['end_time']))
-            c1,c2,c3,c4=st.columns(4);esend=c1.number_input('Envoi vs fin (min)',value=int(es['send_offset_min']),step=5);er1=c2.number_input('Relance 1',value=int(es['reminder1_offset_min']),step=5);er2=c3.number_input('Relance 2',value=int(es['reminder2_offset_min']),step=15);eclose=c4.number_input('Clôture',value=int(es['close_offset_min']),step=60)
-            reason=st.text_input('Motif de modification (recommandé si l’action a commencé)');save_slot=st.form_submit_button('Enregistrer le créneau')
+            c1,c2,c3,c4=st.columns(4)
+            edit_send_mode=c1.selectbox('Envoi initial',['Au début du créneau','Personnalisé'],index=0 if current_begin else 1)
+            esend=c2.number_input('Décalage personnalisé (min / fin)',value=int(es['send_offset_min']),step=5,disabled=edit_send_mode!='Personnalisé')
+            er1=c3.number_input('Relance 1',value=int(es['reminder1_offset_min']),step=5);er2=c4.number_input('Relance 2',value=int(es['reminder2_offset_min']),step=15)
+            eclose=st.number_input('Clôture après fin (min)',value=int(es['close_offset_min']),step=60)
+            reason=st.text_input('Motif de modification (recommandé si l’action a commencé)');save_slot=st.form_submit_button('Enregistrer les modifications de cette séance')
         if save_slot:
-            ok,msg=safe_update_slot(ENGINE,es['id'],{'slot_date':ed.isoformat(),'start_time':est.strftime('%H:%M'),'end_time':eet.strftime('%H:%M'),'send_offset_min':int(esend),'reminder1_offset_min':int(er1),'reminder2_offset_min':int(er2),'close_offset_min':int(eclose),'reason':reason},st.session_state.admin_email)
-            if ok: ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success('Créneau modifié et journalisé.');rerun()
+            final_send=slot_start_offset_minutes(est.strftime('%H:%M'),eet.strftime('%H:%M')) if edit_send_mode=='Au début du créneau' else int(esend)
+            ok,msg=safe_update_slot(ENGINE,es['id'],{'slot_date':ed.isoformat(),'start_time':est.strftime('%H:%M'),'end_time':eet.strftime('%H:%M'),'send_offset_min':final_send,'reminder1_offset_min':int(er1),'reminder2_offset_min':int(er2),'close_offset_min':int(eclose),'reason':reason},st.session_state.admin_email)
+            if ok:
+                ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success('Séance modifiée et échéances futures recalculées.');rerun()
             else: st.error(msg)
-        st.markdown('**Reporter un créneau non encore réalisé**')
-        c1,c2,c3=st.columns(3);rpd=c1.date_input('Nouvelle date',key=f'rpd{es["id"]}');rps=c2.time_input('Nouveau début',value=time.fromisoformat(es['start_time']),key=f'rps{es["id"]}');rpe=c3.time_input('Nouvelle fin',value=time.fromisoformat(es['end_time']),key=f'rpe{es["id"]}')
-        rpr=st.text_input('Motif du report',key=f'rpr{es["id"]}')
-        if st.button('REPORTER CE CRÉNEAU',key=f'report{es["id"]}'):
-            ns=report_slot(ENGINE,es['id'],rpd.isoformat(),rps.strftime('%H:%M'),rpe.strftime('%H:%M'),st.session_state.admin_email,rpr or 'Report')
-            if ns: ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success(f'Créneau reporté. Nouveau créneau #{ns}.');rerun()
-            else: st.error('Ce créneau contient déjà une preuve ou ne peut plus être reporté. Utilisez absence/rattrapage si la séance a déjà eu lieu.')
-    with st.expander('Ajouter un créneau',expanded=not slots):
-        c1,c2,c3=st.columns(3);d=c1.date_input('Date',key=f'd{a["id"]}');s=c2.time_input('Début',value=time(9,0),key=f's{a["id"]}');e=c3.time_input('Fin',value=time(12,30),key=f'e{a["id"]}')
-        c1,c2,c3,c4=st.columns(4);send=c1.number_input('Envoi vs fin (min)',value=-10,step=5);r1=c2.number_input('Relance 1 après fin',value=20,step=5);r2=c3.number_input('Relance 2 après fin',value=120,step=15);close=c4.number_input('Clôture après fin',value=1440,step=60)
-        if st.button('Ajouter ce créneau',type='primary'):
-            add_slot(ENGINE,a['id'],d.isoformat(),s.strftime('%H:%M'),e.strftime('%H:%M'),st.session_state.admin_email,int(send),int(r1),int(r2),int(close))
-            if one(ENGINE,'SELECT COUNT(*) n FROM participants WHERE action_id=:a AND active=1',{'a':a['id']})['n']:
-                ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
-            rerun()
-    if slots:
-        st.markdown('**Dupliquer les créneaux d’une date vers une autre date**')
-        dates=sorted(set(s['slot_date'] for s in slots));c1,c2=st.columns(2);src=c1.selectbox('Date source',dates);dst=c2.date_input('Nouvelle date',key=f'dup{a["id"]}')
-        if st.button('Dupliquer cette journée'):
-            for s in [x for x in slots if x['slot_date']==src]: add_slot(ENGINE,a['id'],dst.isoformat(),s['start_time'],s['end_time'],st.session_state.admin_email,s['send_offset_min'],s['reminder1_offset_min'],s['reminder2_offset_min'],s['close_offset_min'])
-            ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);rerun()
-        st.markdown('**Supprimer un créneau**')
-        choices={f"#{s['id']} — {s['slot_date']} {s['start_time']}–{s['end_time']}":s['id'] for s in slots};ch=st.selectbox('Créneau',list(choices),key=f'dels{a["id"]}');sid_del=choices[ch]
-        if st.button('Supprimer ce créneau s’il ne contient aucune preuve'):
-            ok,msg=delete_slot(ENGINE,sid_del,st.session_state.admin_email);st.success('Créneau supprimé.') if ok else st.error(msg);rerun() if ok else None
-        with st.expander('🗑️ Suppression définitive, y compris preuves existantes'):
-            st.warning('À utiliser uniquement pour une erreur de saisie ou un dossier de test. Toutes les signatures, absences, relances et contresignatures de ce créneau seront supprimées.')
-            conf=st.text_input(f'Saisissez SUPPRIMER CRENEAU {sid_del}',key=f'delsconf{a["id"]}');pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delspw{a["id"]}')
-            if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT LE CRÉNEAU',key=f'delshard{a["id"]}'):
-                if conf.strip()!=f'SUPPRIMER CRENEAU {sid_del}' or not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Confirmation ou mot de passe incorrect.')
-                else: ok,msg=purge_slot(ENGINE,sid_del,st.session_state.admin_email);st.success('Créneau supprimé intégralement.') if ok else st.error(msg);rerun() if ok else None
+
+    with st.expander('📅 Reporter une séance non encore réalisée',expanded=False):
+        rep_choices={f"Séance {i} — {x['slot_date']} {x['start_time']}–{x['end_time']}":x for i,x in enumerate(slots,1)}
+        rep_lab=st.selectbox('Séance à reporter',list(rep_choices),key=f'repsel{a["id"]}');rsrc=rep_choices[rep_lab]
+        c1,c2,c3=st.columns(3);rpd=c1.date_input('Nouvelle date',value=date.fromisoformat(rsrc['slot_date']),key=f'rpd{rsrc["id"]}');rps=c2.time_input('Nouveau début',value=time.fromisoformat(rsrc['start_time']),key=f'rps{rsrc["id"]}');rpe=c3.time_input('Nouvelle fin',value=time.fromisoformat(rsrc['end_time']),key=f'rpe{rsrc["id"]}')
+        rpr=st.text_input('Motif du report',key=f'rpr{rsrc["id"]}')
+        if st.button('REPORTER CETTE SÉANCE',key=f'report{rsrc["id"]}'):
+            ns=report_slot(ENGINE,rsrc['id'],rpd.isoformat(),rps.strftime('%H:%M'),rpe.strftime('%H:%M'),st.session_state.admin_email,rpr or 'Report')
+            if ns: ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success('Séance reportée.');rerun()
+            else: st.error('Cette séance contient déjà une preuve ou ne peut plus être reportée. Utilisez absence/rattrapage si elle a déjà eu lieu.')
+
+    with st.expander('🗑️ Supprimer une séance',expanded=False):
+        choices={f"Séance {i} — {x['slot_date']} {x['start_time']}–{x['end_time']}":x['id'] for i,x in enumerate(slots,1)}
+        ch=st.selectbox('Séance',list(choices),key=f'dels{a["id"]}');sid_del=choices[ch]
+        if st.button('Supprimer cette séance si elle ne contient aucune preuve'):
+            ok,msg=delete_slot(ENGINE,sid_del,st.session_state.admin_email);st.success('Séance supprimée.') if ok else st.error(msg);rerun() if ok else None
+        st.warning('Suppression définitive avec preuves : uniquement pour une erreur de saisie ou un dossier de test.')
+        conf=st.text_input(f'Saisissez SUPPRIMER SEANCE {sid_del}',key=f'delsconf{a["id"]}');pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delspw{a["id"]}')
+        if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT LA SÉANCE',key=f'delshard{a["id"]}'):
+            if conf.strip()!=f'SUPPRIMER SEANCE {sid_del}' or not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Confirmation ou mot de passe incorrect.')
+            else: ok,msg=purge_slot(ENGINE,sid_del,st.session_state.admin_email);st.success('Séance supprimée intégralement.') if ok else st.error(msg);rerun() if ok else None
 
 def dispatch_tab(a):
     st.subheader('Envois automatiques et relances')
     parts=q(ENGINE,'SELECT * FROM participants WHERE action_id=:a AND active=1',{'a':a['id']});slots=q(ENGINE,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':a['id']})
     if not parts or not slots: st.info('Ajoutez d’abord au moins un participant et un créneau.');return
+    active_status=normalize_action_status(a.get('status')) in ('ACTIVE','A_CLOTURER')
+    if not active_status:
+        st.info('Action en BROUILLON : les échéances peuvent être préparées, mais le worker est bloqué et aucun email automatique ne partira avant activation.')
     if st.button('Préparer / actualiser toutes les demandes de signature',type='primary'):
         ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success('Liens personnels et échéances de relance préparés.');rerun()
     events=q(ENGINE,"""SELECT e.*,p.last_name,p.first_name,p.email,s.slot_date,s.start_time,s.end_time FROM email_events e JOIN participants p ON p.id=e.participant_id JOIN slots s ON s.id=e.slot_id WHERE p.action_id=:a ORDER BY e.due_at""",{'a':a['id']})
-    if events: st.dataframe(pd.DataFrame(events)[['last_name','first_name','email','slot_date','start_time','end_time','event_type','due_at','status','sent_at','last_error']],use_container_width=True,hide_index=True)
+    if events:
+        evrows=[]
+        for e in events:
+            evrows.append({'Nom':e['last_name'],'Prénom':e['first_name'],'Email':e.get('email') or '','Date':e['slot_date'],'Début':e['start_time'],'Fin':e['end_time'],'Type':e['event_type'],'Échéance':e['due_at'],'Statut':e['status'],'Envoyé le':e.get('sent_at') or '','Dernière anomalie':friendly_mail_error(e.get('last_error'))})
+        st.dataframe(pd.DataFrame(evrows),use_container_width=True,hide_index=True)
     st.markdown('### Envoi / relance manuelle')
-    smtp_enabled=bool(secret('smtp','enabled',False))
-    if smtp_enabled:
+    smtp_enabled=bool(mail_cfg().get('enabled'))
+    if smtp_enabled and active_status:
         email_parts=[p for p in parts if p.get('email')]
         if email_parts:
             pc={f"{p['last_name']} {p['first_name']} — {p['email']}":p for p in email_parts};pl=st.selectbox('Participant à relancer',list(pc),key=f'mailp{a["id"]}');pp=pc[pl]
             sc={f"{x['slot_date']} {x['start_time']}–{x['end_time']}":x for x in slots};sl=st.selectbox('Créneau à relancer',list(sc),key=f'mails{a["id"]}');ss=sc[sl]
             if st.button('Envoyer maintenant le lien personnel'):
                 ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);url=token_url(ENGINE,pp['id'],ss['id'],BASE_URL)
-                cfg=dict(st.secrets.get('smtp',{}));subject=f"Clarté360 — émargement — {a['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci d'émarger votre présence pour <strong>{a['title']}</strong>, le {ss['slot_date']} de {ss['start_time']} à {ss['end_time']}.</p><p><a href='{url}' style='background:#008080;color:white;padding:12px 18px;text-decoration:none;border-radius:8px'>SIGNER MA PRÉSENCE</a></p><p>Ce lien personnel ne nécessite pas le code QR à 4 chiffres.</p>{PRIVACY_NOTICE}"
+                cfg=mail_cfg();subject=f"Clarté360 — émargement — {a['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci d'émarger votre présence pour <strong>{a['title']}</strong>, le {ss['slot_date']} de {ss['start_time']} à {ss['end_time']}.</p><p><a href='{url}' style='background:#008080;color:white;padding:12px 18px;text-decoration:none;border-radius:8px'>SIGNER MA PRÉSENCE</a></p><p>Ce lien personnel ne nécessite pas le code QR à 4 chiffres.</p>{PRIVACY_NOTICE}"
                 try:
                     send_mail(cfg,pp['email'],subject,body);audit(ENGINE,'MANUAL_EMAIL_SENT',a['id'],st.session_state.admin_email,'participant',pp['id'],{'slot_id':ss['id'],'email':pp['email']});st.success('Email envoyé.')
                 except Exception as ex: st.error(f"Envoi impossible : {ex}")
+    elif not smtp_enabled:
+        st.info('L’envoi manuel sera disponible dès que la configuration MAIL sera activée.')
     else:
-        st.info('L’envoi manuel sera disponible dès que la configuration SMTP du VPS sera activée.')
+        st.info('L’envoi manuel est disponible après activation de l’action.')
 
     st.markdown('### Accès restreint intervenant')
     turl=trainer_url(ENGINE,a['id'],BASE_URL);st.code(turl);st.caption('Ce lien donne accès uniquement au suivi opérationnel de cette action : QR, absences, relances et contresignature.')
@@ -855,7 +1014,7 @@ def settings_screen():
     tabg,tabo,tabag,taba,tabt=st.tabs(['Général','Organisme','Agences / établissements','Administrateurs','Formateurs / accompagnants'])
     with tabg:
         st.write(f"URL publique configurée : `{BASE_URL}`")
-        smtp_enabled=bool(secret('smtp','enabled',False));st.write('Email automatique :', '✅ activé' if smtp_enabled else '⚠️ non activé')
+        smtp_enabled=bool(mail_cfg().get('enabled'));st.write('Email automatique (secret MAIL) :', '✅ activé' if smtp_enabled else '⚠️ non activé')
         st.markdown(privacy_notice_html(),unsafe_allow_html=True)
         st.caption('Les paramètres sensibles sont stockés dans .streamlit/secrets.toml sur le VPS et ne doivent jamais être envoyés sur GitHub.')
     with tabo:

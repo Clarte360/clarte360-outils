@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
 from services import token_url, organization_runtime_config, quality_token_url
-from mailer import send_mail
+from mailer import send_mail, resolve_mail_config
 
 try:
  import tomllib
@@ -76,7 +76,7 @@ def _run_quality_events(eng,smtp,base,limit=50):
       FROM quality_email_events qe JOIN quality_campaigns c ON c.id=qe.campaign_id
       JOIN questionnaire_templates qt ON qt.id=c.template_id JOIN actions a ON a.id=c.action_id
       LEFT JOIN participants p ON p.id=c.participant_id LEFT JOIN trainers t ON t.id=c.trainer_id
-      WHERE qe.status='PENDING' AND qe.due_at<=:n AND c.status<>'COMPLETED' ORDER BY qe.due_at LIMIT :lim""",{'n':now,'lim':limit})
+      WHERE qe.status='PENDING' AND qe.due_at<=:n AND c.status<>'COMPLETED' AND a.status NOT IN ('BROUILLON','PLANIFIEE') ORDER BY qe.due_at LIMIT :lim""",{'n':now,'lim':limit})
     sent=0
     for e in events:
         recipient=e.get('participant_email') or e.get('trainer_email')
@@ -101,14 +101,14 @@ def _run_quality_events(eng,smtp,base,limit=50):
 
 def run_once():
     cfg=load_cfg(); dburl=(cfg.get('database') or {}).get('url'); eng=make_engine(dburl);init_db(eng)
-    smtp=dict(cfg.get('smtp') or {}); app=cfg.get('app') or {}; base=app.get('base_url','http://localhost:8501')
+    smtp=resolve_mail_config(cfg); app=cfg.get('app') or {}; base=app.get('base_url','http://localhost:8501')
     _quarantine_stale_sending(eng)
     _quarantine_stale_quality(eng)
     if not smtp.get('enabled'): return 0
     now=datetime.now(timezone.utc).isoformat()
     events=q(eng,"""SELECT e.*,p.email,p.first_name,p.last_name,a.title,a.action_no,a.id action_id,s.slot_date,s.start_time,s.end_time
        FROM email_events e JOIN participants p ON p.id=e.participant_id JOIN slots s ON s.id=e.slot_id JOIN actions a ON a.id=p.action_id
-       WHERE e.status='PENDING' AND e.due_at<=:n AND p.email IS NOT NULL AND TRIM(p.email)<>'' ORDER BY e.due_at LIMIT 50""",{'n':now})
+       WHERE e.status='PENDING' AND e.due_at<=:n AND p.email IS NOT NULL AND TRIM(p.email)<>'' AND a.status IN ('ACTIVE','A_CLOTURER') ORDER BY e.due_at LIMIT 50""",{'n':now})
     sent=0
     for e in events:
         claim=_claim_event(eng,e['id'])

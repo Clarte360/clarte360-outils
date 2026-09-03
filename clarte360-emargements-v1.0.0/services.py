@@ -77,8 +77,33 @@ def ensure_tokens_and_events(engine, aid, base_url,tz_name='Europe/Paris'):
         for et,off in timings.items():
           due=(end+timedelta(minutes=off)).astimezone(ZoneInfo('UTC')).isoformat()
           execute(engine,"""INSERT OR IGNORE INTO email_events(participant_id,slot_id,event_type,due_at) VALUES(:p,:s,:e,:d)""",{'p':p['id'],'s':s['id'],'e':et,'d':due})
-          execute(engine,"""UPDATE email_events SET due_at=:d WHERE participant_id=:p AND slot_id=:s AND event_type=:e AND status='PENDING'""",{'p':p['id'],'s':s['id'],'e':et,'d':due})
+          execute(engine,"""UPDATE email_events SET due_at=:d,last_error=NULL WHERE participant_id=:p AND slot_id=:s AND event_type=:e AND status='PENDING'""",{'p':p['id'],'s':s['id'],'e':et,'d':due})
     audit(engine,'SIGNATURE_REQUESTS_PREPARED',aid,'system','action',aid,{'base_url':base_url})
+
+
+
+def activate_action(engine, aid, actor):
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':aid})
+    if not a: return False,['Action introuvable.']
+    issues=[]
+    participants=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1',{'a':aid})
+    slots=q(engine,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':aid})
+    if not participants: issues.append('Aucun participant actif.')
+    if bool(a.get('use_attendance',1)) and not slots: issues.append("Aucun créneau d'émargement.")
+    if bool(a.get('use_attendance',1)):
+        missing=[f"{x['first_name']} {x['last_name']}" for x in participants if not (x.get('email') or '').strip()]
+        if missing: issues.append('Email manquant pour : '+', '.join(missing))
+    if issues: return False,issues
+    execute(engine,"UPDATE actions SET status='ACTIVE',updated_at=:u WHERE id=:a",{'u':utcnow_iso(),'a':aid})
+    audit(engine,'ACTION_ACTIVATED',aid,actor,'action',aid,{'participants':len(participants),'slots':len(slots)})
+    return True,[]
+
+def set_action_draft(engine, aid, actor, reason='Retour en brouillon'):
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':aid})
+    if not a: return False,'Action introuvable.'
+    execute(engine,"UPDATE actions SET status='BROUILLON',updated_at=:u WHERE id=:a",{'u':utcnow_iso(),'a':aid})
+    audit(engine,'ACTION_RETURNED_TO_DRAFT',aid,actor,'action',aid,{'reason':reason})
+    return True,''
 
 def token_url(engine,participant_id,slot_id,base_url):
     t=one(engine,'SELECT token FROM signature_tokens WHERE participant_id=:p AND slot_id=:s',{'p':participant_id,'s':slot_id})
