@@ -34,3 +34,7 @@ Application Streamlit destinee au beneficiaire apres son entretien prealable ave
 ## VPS Clarte360
 
 Le meme code peut ensuite etre deploye sur le VPS. Les secrets restent centralises hors GitHub.
+
+
+## Accès sécurisé / RGPD
+Avant tout envoi de code d’accès, le bénéficiaire reçoit l’information RGPD et doit donner un consentement explicite, tracé selon le Framework Clarté360.

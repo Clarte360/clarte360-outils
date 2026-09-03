@@ -1,3 +1,12 @@
+# Changelog
+
+## 1.1.2 — 03/09/2026
+- Correction du crash `StreamlitWidgetAlreadyInstantiatedError` sur les boutons Continuer : navigation différée `_next_nav` avant instanciation du widget.
+- Rétablissement du parcours Framework Clarté360 : identification → information RGPD complète → consentement explicite → génération/envoi du code → validation du code → APS.
+- Traçabilité RGPD : date, heure, version application, version texte, identifiant technique de session.
+- Même contrôle RGPD lors d'une reprise JSON.
+- Conservation de la configuration e-mail officielle `[email]`.
+
 # CHANGELOG
 
 ## 1.1.0 – 2026-09-03

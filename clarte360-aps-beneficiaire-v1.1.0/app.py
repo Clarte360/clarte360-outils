@@ -2,6 +2,7 @@ import json
 import re
 import secrets as pysecrets
 import smtplib
+import uuid
 from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from io import BytesIO
@@ -15,7 +16,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, PageBreak
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 FRAMEWORK_VERSION = "4.0"
 APP_NAME = "APS – Grille d'analyse partagee de situation"
 APP_FULL_NAME = "Clarte360 – APS – Phase preliminaire"
@@ -25,6 +26,7 @@ DARK_TEXT = "#243A3A"
 BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "site_icon.png"
 FINAL_RECIPIENT_DEFAULT = "contact@clarte360.com"
+RGPD_TEXT_VERSION = "RGPD-Clarte360-APS-v1.0-2026-09"
 
 CLARTE360_LEGAL = {
     "raison_sociale": "Clarte360",
@@ -36,6 +38,26 @@ CLARTE360_LEGAL = {
     "web": "www.clarte360.com",
     "siret": "10234983400014",
 }
+
+RGPD_PREACCESS_TEXT = f"""
+### Protection des données personnelles (RGPD)
+
+**Responsable du traitement :** Clarté360 SAS, 60 rue François 1er, 75008 Paris — contact@clarte360.com.
+
+**Finalités :** les données recueillies servent exclusivement à sécuriser votre accès personnel, formaliser la grille d'analyse partagée de situation (APS) issue de votre entretien préalable, préparer la mise en place de votre bilan de compétences et, après votre validation finale, transmettre à Clarté360 le PDF de l'APS et le JSON structuré nécessaires au traitement de votre dossier.
+
+**Données concernées :** identité et coordonnées, situation professionnelle, demande et attentes, objectifs, modalités envisagées, informations utiles à la future convention, consentements, traces d'accès et de validation.
+
+**Conservation :** les données sont conservées uniquement pendant la durée nécessaire à la gestion de votre dossier et au respect des obligations légales et réglementaires applicables. La sauvegarde JSON téléchargée depuis l'application reste également sous votre responsabilité.
+
+**Destinataires :** les informations sont destinées à Clarté360 et aux personnes habilitées intervenant dans la gestion ou l'accompagnement de votre bilan. Elles ne sont pas utilisées à des fins commerciales sans consentement explicite.
+
+**Vos droits :** vous pouvez demander l'accès, la rectification, l'effacement ou la limitation du traitement de vos données, ainsi que l'exercice des autres droits prévus par le RGPD, en écrivant à **contact@clarte360.com**.
+
+**Sécurité et traçabilité :** votre consentement est recueilli avant l'envoi du code d'accès. Son acceptation est tracée avec la date, l'heure, la version de l'application, la version du texte RGPD et un identifiant technique de session.
+
+Version du texte RGPD : **{RGPD_TEXT_VERSION}**.
+"""
 
 SECTIONS = [
     "Accueil",
@@ -232,6 +254,7 @@ def empty_payload(nom="", prenom="", email=""):
         "convention_future": {},
         "consentements": {},
         "validation_finale": {},
+        "rgpd_framework": st.session_state.get("pending_rgpd_acceptance", {}) or {},
     }
 
 
@@ -243,6 +266,9 @@ def ensure_session():
         "access_step": "identify",
         "pending_resume_payload": None,
         "final_sent": False,
+        "_next_nav": None,
+        "session_id": str(uuid.uuid4()),
+        "pending_rgpd_acceptance": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -467,6 +493,30 @@ def send_confirmation_to_beneficiary(payload):
     )
 
 
+def rgpd_trace():
+    now = datetime.now().astimezone()
+    return {
+        "consentement": True,
+        "date": now.strftime("%Y-%m-%d"),
+        "heure": now.strftime("%H:%M:%S"),
+        "timestamp": now.isoformat(timespec="seconds"),
+        "app_version": APP_VERSION,
+        "framework_version": FRAMEWORK_VERSION,
+        "version_texte": RGPD_TEXT_VERSION,
+        "session_id": st.session_state.get("session_id", ""),
+    }
+
+
+def render_rgpd_preaccess_checkbox(key):
+    with st.expander("Protection des données personnelles (RGPD) — à lire avant de recevoir votre code", expanded=True):
+        st.markdown(RGPD_PREACCESS_TEXT)
+    return st.checkbox(
+        "J'ai lu les informations ci-dessus et j'accepte le traitement de mes données dans le cadre de cette APS et de la préparation de mon bilan de compétences. *",
+        value=False,
+        key=key,
+    )
+
+
 def access_gate():
     if st.session_state.get("authenticated"):
         return True
@@ -474,20 +524,20 @@ def access_gate():
     if LOGO_PATH.exists():
         st.image(str(LOGO_PATH), width=95)
     st.title(APP_FULL_NAME)
-    st.markdown("**Acces personnel au formulaire beneficiaire**")
+    st.markdown("**Accès personnel au formulaire bénéficiaire**")
     st.markdown(
-        '<div class="clarte-box"><b>Madame, Monsieur,</b><br><br>Vous avez eu un entretien avec un accompagnateur Clarte360. Afin de revalider l’ensemble de votre entretien, nous vous demandons de bien vouloir completer l’ensemble de ce document et nous donner vos consentements pour la mise en place du bilan de competences.<br><br><b>Ce formulaire n’est en aucun cas un contrat.</b> Le cout du bilan a deja ete evoque lors de votre entretien. Les dispositions financieres seront reprises dans le contrat ou la convention de bilan de competences qui vous sera adresse(e) separement. Certaines des informations recueillies ici permettront de preparer ce document et d’eviter de vous les demander une nouvelle fois.</div>',
+        '<div class="clarte-box"><b>Madame, Monsieur,</b><br><br>Vous avez eu un entretien avec un accompagnateur Clarté360. Afin de revalider l’ensemble de votre entretien, nous vous demandons de bien vouloir compléter l’ensemble de ce document et nous donner vos consentements pour la mise en place du bilan de compétences.<br><br><b>Ce formulaire n’est en aucun cas un contrat.</b> Le coût du bilan a déjà été évoqué lors de votre entretien. Les dispositions financières seront reprises dans le contrat ou la convention de bilan de compétences qui vous sera adressé(e) séparément. Certaines des informations recueillies ici permettront de préparer ce document et d’éviter de vous les demander une nouvelle fois.</div>',
         unsafe_allow_html=True,
     )
 
     if not smtp_ready():
-        st.error("Le service d'envoi du code d'acces n'est pas configure. L'application ne peut pas etre utilisee tant que la messagerie Clarte360 n'est pas operationnelle.")
+        st.error("Le service d'envoi du code d'accès n'est pas configuré. L'application ne peut pas être utilisée tant que la messagerie Clarté360 n'est pas opérationnelle.")
         st.stop()
 
-    mode = st.radio("Que souhaitez-vous faire ?", ["Commencer le formulaire", "Reprendre a partir d'une sauvegarde JSON"], horizontal=False)
+    mode = st.radio("Que souhaitez-vous faire ?", ["Commencer le formulaire", "Reprendre à partir d'une sauvegarde JSON"], horizontal=False)
     resume_obj = None
     if mode.startswith("Reprendre"):
-        uploaded = st.file_uploader("Selectionnez votre sauvegarde JSON APS Clarte360", type=["json"])
+        uploaded = st.file_uploader("Sélectionnez votre sauvegarde JSON APS Clarté360", type=["json"])
         if uploaded is not None:
             try:
                 resume_obj = json.loads(uploaded.getvalue().decode("utf-8"))
@@ -496,19 +546,22 @@ def access_gate():
                     st.error(err)
                     resume_obj = None
                 else:
-                    st.success("Sauvegarde reconnue. Un code sera envoye a l'adresse e-mail enregistree dans ce fichier.")
+                    st.success("Sauvegarde reconnue. Après lecture et acceptation des informations RGPD, un code sera envoyé à l'adresse e-mail enregistrée dans ce fichier.")
             except Exception:
-                st.error("Le fichier JSON ne peut pas etre lu.")
+                st.error("Le fichier JSON ne peut pas être lu.")
 
     step = st.session_state.get("access_step", "identify")
     if step == "identify":
         if resume_obj:
             b = resume_obj.get("beneficiaire", {})
             nom, prenom, email = clean_text(b.get("nom")), clean_text(b.get("prenom")), clean_text(b.get("email"))
-            st.write(f"**Beneficiaire :** {prenom} {nom}")
+            st.write(f"**Bénéficiaire :** {prenom} {nom}")
             st.write(f"**E-mail :** {email}")
-            rgpd = st.checkbox("Je confirme etre la personne concernee par cette sauvegarde et j'accepte de recevoir un code d'acces personnel a cette adresse e-mail.")
-            if st.button("Recevoir mon code d'acces", type="primary", disabled=not rgpd):
+            st.markdown("### Information et consentement RGPD")
+            rgpd_ok = render_rgpd_preaccess_checkbox("rgpd_resume")
+            identity_ok = st.checkbox("Je confirme être la personne concernée par cette sauvegarde et demande l'envoi d'un code d'accès personnel à l'adresse indiquée.", value=False, key="resume_identity_confirm")
+            if st.button("Recevoir mon code d'accès", type="primary", disabled=not (rgpd_ok and identity_ok)):
+                st.session_state.pending_rgpd_acceptance = rgpd_trace()
                 ok, err = issue_access_code(nom, prenom, email)
                 if ok:
                     st.session_state.pending_resume_payload = resume_obj
@@ -516,17 +569,24 @@ def access_gate():
                     st.rerun()
                 st.error(err)
         else:
+            st.markdown("### Identification")
             with st.form("initial_identity"):
                 c1, c2 = st.columns(2)
-                prenom = c1.text_input("Prenom *")
+                prenom = c1.text_input("Prénom *")
                 nom = c2.text_input("Nom *")
                 email = st.text_input("Adresse e-mail personnelle *")
-                rgpd = st.checkbox("J'accepte que ces donnees soient utilisees pour m'adresser mon code d'acces et ouvrir ma session APS Clarte360. *")
-                go = st.form_submit_button("Recevoir mon code d'acces", type="primary")
+                st.markdown("### Information et consentement RGPD")
+                with st.expander("Protection des données personnelles (RGPD) — à lire avant de recevoir votre code", expanded=True):
+                    st.markdown(RGPD_PREACCESS_TEXT)
+                rgpd_ok = st.checkbox("J'ai lu les informations ci-dessus et j'accepte le traitement de mes données dans le cadre de cette APS et de la préparation de mon bilan de compétences. *", value=False)
+                go = st.form_submit_button("Recevoir mon code d'accès", type="primary")
             if go:
-                if not prenom or not nom or not valid_email(email) or not rgpd:
-                    st.error("Merci de renseigner votre nom, votre prenom, une adresse e-mail valide et de confirmer l'autorisation d'envoi.")
+                if not prenom or not nom or not valid_email(email):
+                    st.error("Merci de renseigner votre nom, votre prénom et une adresse e-mail valide.")
+                elif not rgpd_ok:
+                    st.error("Le consentement RGPD est obligatoire avant la génération et l'envoi du code d'accès.")
                 else:
+                    st.session_state.pending_rgpd_acceptance = rgpd_trace()
                     ok, err = issue_access_code(nom, prenom, email)
                     if ok:
                         st.session_state.pending_resume_payload = None
@@ -535,25 +595,27 @@ def access_gate():
                     st.error(err)
     else:
         pending = st.session_state.get("pending_identity", {})
-        st.info(f"Un code personnel a ete envoye a {pending.get('email','')}.")
-        code = st.text_input("Code d'acces a 6 chiffres", max_chars=6)
+        st.info(f"Un code personnel a été envoyé à {pending.get('email','')}.")
+        code = st.text_input("Code d'accès à 6 chiffres", max_chars=6)
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Valider mon code", type="primary", use_container_width=True):
                 ok, err = verify_access_code(code)
                 if ok:
                     if st.session_state.get("pending_resume_payload"):
-                        st.session_state.payload = st.session_state.pending_resume_payload
+                        payload = st.session_state.pending_resume_payload
+                        payload["rgpd_framework"] = st.session_state.get("pending_rgpd_acceptance", {}) or {}
+                        st.session_state.payload = payload
                     else:
                         st.session_state.payload = empty_payload(pending.get("nom", ""), pending.get("prenom", ""), pending.get("email", ""))
-                    st.session_state.nav = "Accueil"
+                    st.session_state._next_nav = "Accueil"
                     st.rerun()
                 st.error(err)
         with c2:
             if st.button("Renvoyer un nouveau code", use_container_width=True):
                 ok, err = issue_access_code(pending.get("nom", ""), pending.get("prenom", ""), pending.get("email", ""))
                 if ok:
-                    st.success("Un nouveau code a ete envoye.")
+                    st.success("Un nouveau code a été envoyé.")
                 else:
                     st.error(err)
     return False
@@ -570,6 +632,11 @@ def sidebar():
     pct = completion_pct(p)
     st.sidebar.progress(pct / 100)
     st.sidebar.caption(f"Progression : {pct}%")
+    # Navigation differee : la cle du widget ne doit jamais etre modifiee apres son instanciation.
+    pending_nav = st.session_state.get("_next_nav")
+    if pending_nav in SECTIONS:
+        st.session_state.nav = pending_nav
+    st.session_state._next_nav = None
     page = st.sidebar.radio("Navigation", SECTIONS, key="nav")
     st.sidebar.markdown("---")
     st.sidebar.download_button(
@@ -614,7 +681,7 @@ if page == "Accueil":
     st.write("Vous pouvez avancer a votre rythme. Les rubriques servent a confirmer votre situation, votre demande, vos attentes et les modalites envisagees avec Clarte360.")
     st.info("Si vous devez interrompre le formulaire, utilisez le bouton « Sauvegarder mon travail (JSON) » dans le menu de gauche. Vous pourrez reprendre plus tard avec ce fichier.")
     if st.button("Commencer / continuer", type="primary"):
-        st.session_state.nav = "1. Votre identite"
+        st.session_state._next_nav = "1. Votre identite"
         st.rerun()
 
 elif page == "1. Votre identite":
@@ -651,7 +718,7 @@ elif page == "1. Votre identite":
             st.error("Merci de completer tous les champs marques d'un astérisque.")
         else:
             set_block("beneficiaire", {"civilite": civilite, "prenom": prenom, "nom": nom, "nom_naissance": nom_naissance, "date_naissance": date_naissance.isoformat(), "adresse": adresse, "complement_adresse": complement, "code_postal": cp, "ville": ville, "pays": pays, "email": v.get("email", ""), "telephone": telephone, "canal_contact": canal})
-            st.session_state.nav = "2. Votre situation professionnelle"
+            st.session_state._next_nav = "2. Votre situation professionnelle"
             st.rerun()
 
 elif page == "2. Votre situation professionnelle":
@@ -674,7 +741,7 @@ elif page == "2. Votre situation professionnelle":
             st.error("Merci d'indiquer votre situation actuelle.")
         else:
             set_block("situation_professionnelle", {"statut": statut, "poste": poste, "employeur": employeur, "anciennete": anciennete, "secteur": secteur, "contexte": contexte, "echeance": echeance})
-            st.session_state.nav = "3. Votre demande et vos attentes"
+            st.session_state._next_nav = "3. Votre demande et vos attentes"
             st.rerun()
 
 elif page == "3. Votre demande et vos attentes":
@@ -697,7 +764,7 @@ elif page == "3. Votre demande et vos attentes":
             st.error("Merci de repondre aux questions marquees d'un asterisque.")
         else:
             set_block("demande_besoin", {"origine_demande": origine, "pourquoi_maintenant": why, "initiative": initiative, "attentes": attentes, "pistes": pistes, "difficultes_contraintes": diffc, "niveau_avancement": niv, "revalidation_entretien": revalidation})
-            st.session_state.nav = "4. Vos objectifs"
+            st.session_state._next_nav = "4. Vos objectifs"
             st.rerun()
 
 elif page == "4. Vos objectifs":
@@ -713,7 +780,7 @@ elif page == "4. Vos objectifs":
             st.error("Merci de repondre aux deux questions obligatoires.")
         else:
             set_block("objectifs", {"objectifs_personnels": objectifs, "criteres_reussite": criteres, "points_a_clarifier": points})
-            st.session_state.nav = "5. Organisation et modalites"
+            st.session_state._next_nav = "5. Organisation et modalites"
             st.rerun()
 
 elif page == "5. Organisation et modalites":
@@ -736,7 +803,7 @@ elif page == "5. Organisation et modalites":
             st.error("Merci d'indiquer le format souhaite et vos disponibilites.")
         else:
             set_block("modalites", {"format_souhaite": fmt, "disponibilites": dispo, "rythme_prefere": rythme, "autonomie_numerique": autonomie, "besoin_amenagement": besoin_amen, "amenagements": amen, "outils_connus": connus})
-            st.session_state.nav = "6. Informations pour la future convention"
+            st.session_state._next_nav = "6. Informations pour la future convention"
             st.rerun()
 
 elif page == "6. Informations pour la future convention":
@@ -762,7 +829,7 @@ elif page == "6. Informations pour la future convention":
             st.error("L'adresse e-mail du contact semble invalide.")
         else:
             set_block("convention_future", {"financeur_envisage": financeur, "tiers_concerne": tiers, "do_raison_sociale": rs, "do_siret": siret, "do_adresse": adr, "do_contact": contact, "do_email": email_do, "reference_prise_en_charge": ref})
-            st.session_state.nav = "7. Informations et consentements"
+            st.session_state._next_nav = "7. Informations et consentements"
             st.rerun()
 
 elif page == "7. Informations et consentements":
@@ -785,7 +852,7 @@ elif page == "7. Informations et consentements":
         submitted = st.form_submit_button("Enregistrer mes consentements", type="primary")
     if submitted:
         set_block("consentements", {"volontaire": volontaire, "non_contrat_compris": noncontrat, "tarif_evoque_compris": tarif, "confidentialite_comprise": conf, "rgpd_accepte": rgpd, "phases_comprises": phases, "suivi_6_mois_compris": suivi, "accord_poursuite": accord, "observations": obs, "recorded_at": now_iso()})
-        st.session_state.nav = "8. Verification et validation"
+        st.session_state._next_nav = "8. Verification et validation"
         st.rerun()
 
 elif page == "8. Verification et validation":
