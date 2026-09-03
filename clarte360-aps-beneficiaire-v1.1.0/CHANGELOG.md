@@ -1,6 +1,18 @@
+# CHANGELOG
+
+## 1.1.3 - 03/09/2026
+- Refonte complete du PDF APS selon le standard graphique Clarte360 : logo officiel, page de cadrage, en-tete sur les pages de contenu, pied de page institutionnel et pagination.
+- Ajout de la partie 0 « Comprendre votre bilan de competences » dans l'application et dans le PDF.
+- Presentation claire des trois phases reglementaires du bilan de competences.
+- Presentation de la duree Clarte360 habituellement comprise entre 13 et 20 heures, avec distinction entre temps synchrones, temps individuel guide Clarte360 comptabilise et travail personnel complementaire non comptabilise.
+- Rappel de la duree legale maximale de 24 heures et du suivi a six mois hors volume initial.
+- Ajout d'un consentement explicite sur la comprehension de la duree et de l'organisation du parcours.
+- Separation graphique renforcee des sections et suppression des mentions legales placees dans le corps du document : elles sont desormais structurees en pied de page.
+- Validation visuelle du PDF sur un rendu A4 de test.
+
 # Changelog
 
-## 1.1.2 — 03/09/2026
+## 1.1.3 — 03/09/2026
 - Correction du crash `StreamlitWidgetAlreadyInstantiatedError` sur les boutons Continuer : navigation différée `_next_nav` avant instanciation du widget.
 - Rétablissement du parcours Framework Clarté360 : identification → information RGPD complète → consentement explicite → génération/envoi du code → validation du code → APS.
 - Traçabilité RGPD : date, heure, version application, version texte, identifiant technique de session.

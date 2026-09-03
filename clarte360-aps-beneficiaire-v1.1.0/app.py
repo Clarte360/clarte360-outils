@@ -14,9 +14,12 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import (
+    Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, PageBreak,
+    Image, KeepTogether, HRFlowable
+)
 
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 FRAMEWORK_VERSION = "4.0"
 APP_NAME = "APS – Grille d'analyse partagee de situation"
 APP_FULL_NAME = "Clarte360 – APS – Phase preliminaire"
@@ -36,7 +39,10 @@ CLARTE360_LEGAL = {
     "telephone": "01 89 48 08 25",
     "email": "contact@clarte360.com",
     "web": "www.clarte360.com",
+    "rcs": "102349834",
     "siret": "10234983400014",
+    "naf": "8559 A",
+    "tva": "FR88102349834",
 }
 
 RGPD_PREACCESS_TEXT = f"""
@@ -61,6 +67,7 @@ Version du texte RGPD : **{RGPD_TEXT_VERSION}**.
 
 SECTIONS = [
     "Accueil",
+    "0. Comprendre le bilan de competences",
     "1. Votre identite",
     "2. Votre situation professionnelle",
     "3. Votre demande et vos attentes",
@@ -318,6 +325,7 @@ def required_checks(p):
         "Confidentialite": bool(k.get("confidentialite_comprise")),
         "RGPD": bool(k.get("rgpd_accepte")),
         "Trois phases du bilan": bool(k.get("phases_comprises")),
+        "Duree et organisation du parcours comprises": bool(k.get("duree_modalites_comprises")),
         "Suivi a six mois": bool(k.get("suivi_6_mois_compris")),
         "Accord pour poursuivre la mise en place du bilan": bool(k.get("accord_poursuite")),
     }
@@ -342,21 +350,122 @@ def ptxt(value):
 
 
 def pdf_bytes(payload):
+    """Genere un PDF APS conforme au standard graphique Clarte360."""
     buff = BytesIO()
-    doc = SimpleDocTemplate(buff, pagesize=A4, rightMargin=1.4*cm, leftMargin=1.4*cm, topMargin=1.4*cm, bottomMargin=1.4*cm)
+    page_w, page_h = A4
+    doc = SimpleDocTemplate(
+        buff,
+        pagesize=A4,
+        rightMargin=1.55 * cm,
+        leftMargin=1.55 * cm,
+        topMargin=2.2 * cm,
+        bottomMargin=2.05 * cm,
+        title="Clarte360 - Grille d'analyse partagee de situation (APS)",
+        author="Clarte360",
+        subject="Phase preliminaire du bilan de competences",
+    )
+
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="C360Title", parent=styles["Title"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=17, leading=21, spaceAfter=8))
-    styles.add(ParagraphStyle(name="C360H", parent=styles["Heading2"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=12, leading=15, spaceBefore=9, spaceAfter=5))
-    styles.add(ParagraphStyle(name="C360Small", parent=styles["BodyText"], fontSize=8.5, leading=11, textColor=colors.HexColor("#555555")))
-    styles.add(ParagraphStyle(name="C360Body", parent=styles["BodyText"], fontSize=9.3, leading=12))
-    story = []
-    story.append(Paragraph("Clarte360 – Grille d'analyse partagee de situation (APS)", styles["C360Title"]))
-    story.append(Paragraph("Phase preliminaire du bilan de competences – Formulaire complete et valide par le beneficiaire apres l'entretien prealable.", styles["C360Body"]))
-    story.append(Spacer(1, .15*cm))
-    story.append(Paragraph(f"Version application : {APP_VERSION} – Generation : {datetime.now().astimezone().strftime('%d/%m/%Y %H:%M')}", styles["C360Small"]))
+    styles.add(ParagraphStyle(
+        name="C360CoverTitle", parent=styles["Title"], fontName="Helvetica-Bold",
+        textColor=colors.HexColor(DARK_TEXT), fontSize=19, leading=23,
+        alignment=1, spaceAfter=6,
+    ))
+    styles.add(ParagraphStyle(
+        name="C360CoverSub", parent=styles["BodyText"], fontName="Helvetica",
+        textColor=colors.HexColor("#4C6060"), fontSize=9.6, leading=13,
+        alignment=1, spaceAfter=8,
+    ))
+    styles.add(ParagraphStyle(
+        name="C360HWhite", parent=styles["Heading2"], fontName="Helvetica-Bold",
+        textColor=colors.white, fontSize=11.5, leading=14, spaceAfter=0,
+    ))
+    styles.add(ParagraphStyle(
+        name="C360SubH", parent=styles["Heading3"], fontName="Helvetica-Bold",
+        textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=10.3, leading=13,
+        spaceBefore=5, spaceAfter=4,
+    ))
+    styles.add(ParagraphStyle(
+        name="C360Body", parent=styles["BodyText"], fontName="Helvetica",
+        fontSize=8.9, leading=12.2, textColor=colors.HexColor("#263838"),
+        spaceAfter=4,
+    ))
+    styles.add(ParagraphStyle(
+        name="C360BodySmall", parent=styles["BodyText"], fontName="Helvetica",
+        fontSize=8.1, leading=10.7, textColor=colors.HexColor("#4D5D5D"),
+        spaceAfter=3,
+    ))
+    styles.add(ParagraphStyle(
+        name="C360Meta", parent=styles["BodyText"], fontName="Helvetica",
+        fontSize=7.5, leading=9.3, textColor=colors.HexColor("#5E6B6B"),
+    ))
+    styles.add(ParagraphStyle(
+        name="C360Label", parent=styles["BodyText"], fontName="Helvetica-Bold",
+        fontSize=8.4, leading=11, textColor=colors.HexColor("#233B3B"),
+    ))
+    styles.add(ParagraphStyle(
+        name="C360Value", parent=styles["BodyText"], fontName="Helvetica",
+        fontSize=8.5, leading=11.2, textColor=colors.HexColor("#233B3B"),
+    ))
+    styles.add(ParagraphStyle(
+        name="C360PhaseTitle", parent=styles["BodyText"], fontName="Helvetica-Bold",
+        fontSize=8.7, leading=11, textColor=colors.HexColor(OFFICIAL_TEAL),
+        alignment=1, spaceAfter=3,
+    ))
+    styles.add(ParagraphStyle(
+        name="C360PhaseBody", parent=styles["BodyText"], fontName="Helvetica",
+        fontSize=7.7, leading=9.8, textColor=colors.HexColor("#344747"),
+        alignment=0,
+    ))
+
+    def draw_header_footer(canvas, doc_obj):
+        canvas.saveState()
+        # En-tete discret sur les pages de contenu.
+        if doc_obj.page > 1:
+            if LOGO_PATH.exists():
+                try:
+                    canvas.drawImage(str(LOGO_PATH), 1.55 * cm, page_h - 1.45 * cm,
+                                     width=0.72 * cm, height=0.72 * cm, preserveAspectRatio=True, mask='auto')
+                except Exception:
+                    pass
+            canvas.setFont("Helvetica-Bold", 7.4)
+            canvas.setFillColor(colors.HexColor(DARK_TEXT))
+            canvas.drawString(2.45 * cm, page_h - 1.12 * cm, "Clarte360 - APS - Phase preliminaire")
+            canvas.setStrokeColor(colors.HexColor("#B8DADA"))
+            canvas.setLineWidth(0.45)
+            canvas.line(1.55 * cm, page_h - 1.58 * cm, page_w - 1.55 * cm, page_h - 1.58 * cm)
+
+        # Pied de page institutionnel sur toutes les pages.
+        y = 1.24 * cm
+        canvas.setStrokeColor(colors.HexColor("#B8DADA"))
+        canvas.setLineWidth(0.5)
+        canvas.line(1.55 * cm, y + 0.42 * cm, page_w - 1.55 * cm, y + 0.42 * cm)
+        canvas.setFillColor(colors.HexColor("#526565"))
+        canvas.setFont("Helvetica", 6.6)
+        line1 = (f"CLARTE360 SAS | {CLARTE360_LEGAL['adresse']} - {CLARTE360_LEGAL['code_postal_ville']} | "
+                 f"Tel. {CLARTE360_LEGAL['telephone']} | {CLARTE360_LEGAL['email']} | {CLARTE360_LEGAL['web']}")
+        canvas.drawCentredString(page_w / 2, y + 0.16 * cm, line1)
+        canvas.setFont("Helvetica", 6.2)
+        line2 = (f"RCS {CLARTE360_LEGAL['rcs']} | SIRET {CLARTE360_LEGAL['siret']} | "
+                 f"NAF {CLARTE360_LEGAL['naf']} | TVA intracommunautaire {CLARTE360_LEGAL['tva']}")
+        canvas.drawString(1.55 * cm, y - 0.12 * cm, line2)
+        canvas.setFont("Helvetica-Bold", 6.4)
+        canvas.drawRightString(page_w - 1.55 * cm, y - 0.12 * cm, f"Page {doc_obj.page}")
+        canvas.restoreState()
+
+    def section_band(title):
+        band = Table([[Paragraph(title, styles["C360HWhite"])]], colWidths=[17.9 * cm])
+        band.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(OFFICIAL_TEAL)),
+            ("LEFTPADDING", (0, 0), (-1, -1), 9),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        return band
 
     def sec(title, pairs):
-        story.append(Paragraph(title, styles["C360H"]))
+        block = [section_band(title), Spacer(1, 0.13 * cm)]
         rows = []
         for label, value in pairs:
             if isinstance(value, bool):
@@ -364,17 +473,25 @@ def pdf_bytes(payload):
             if isinstance(value, list):
                 value = ", ".join(value)
             if clean_text(value):
-                rows.append([Paragraph(f"<b>{ptxt(label)}</b>", styles["C360Body"]), Paragraph(ptxt(value), styles["C360Body"])])
+                rows.append([
+                    Paragraph(ptxt(label), styles["C360Label"]),
+                    Paragraph(ptxt(value), styles["C360Value"]),
+                ])
         if rows:
-            t = Table(rows, colWidths=[5.2*cm, 11.6*cm], repeatRows=0)
-            t.setStyle(TableStyle([
-                ("VALIGN", (0,0), (-1,-1), "TOP"),
-                ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#D9EEEE")),
-                ("BACKGROUND", (0,0), (0,-1), colors.HexColor(LIGHT_TEAL)),
-                ("LEFTPADDING", (0,0), (-1,-1), 5), ("RIGHTPADDING", (0,0), (-1,-1), 5),
-                ("TOPPADDING", (0,0), (-1,-1), 4), ("BOTTOMPADDING", (0,0), (-1,-1), 4),
-            ]))
-            story.append(t)
+            t = Table(rows, colWidths=[5.35 * cm, 12.55 * cm], repeatRows=0, hAlign="LEFT")
+            commands = [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EAF5F5")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 5.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5.5),
+                ("LINEBELOW", (0, 0), (-1, -2), 0.35, colors.HexColor("#D7E8E8")),
+                ("BOX", (0, 0), (-1, -1), 0.45, colors.HexColor("#C8E0E0")),
+            ]
+            t.setStyle(TableStyle(commands))
+            block += [t, Spacer(1, 0.27 * cm)]
+        return block
 
     b = payload.get("beneficiaire", {})
     s = payload.get("situation_professionnelle", {})
@@ -384,69 +501,163 @@ def pdf_bytes(payload):
     c = payload.get("convention_future", {})
     k = payload.get("consentements", {})
     vf = payload.get("validation_finale", {})
+    meta = payload.get("meta", {})
 
-    sec("1. Identite et coordonnees", [
+    story = []
+    # Premiere page : identite visuelle + cadrage du bilan.
+    if LOGO_PATH.exists():
+        try:
+            logo = Image(str(LOGO_PATH), width=2.1 * cm, height=2.1 * cm)
+            logo.hAlign = "CENTER"
+            story += [logo, Spacer(1, 0.15 * cm)]
+        except Exception:
+            pass
+    story.append(Paragraph("Grille d'analyse partagee de situation (APS)", styles["C360CoverTitle"]))
+    story.append(Paragraph(
+        "Phase preliminaire du bilan de competences - document complete et valide par le beneficiaire apres l'entretien prealable Clarte360.",
+        styles["C360CoverSub"],
+    ))
+    story.append(HRFlowable(width="100%", thickness=1.1, color=colors.HexColor(OFFICIAL_TEAL), spaceBefore=2, spaceAfter=8))
+
+    ident_rows = [
+        [Paragraph("Beneficiaire", styles["C360Label"]), Paragraph(ptxt(f"{b.get('prenom','')} {b.get('nom','')}"), styles["C360Value"])],
+        [Paragraph("E-mail authentifie", styles["C360Label"]), Paragraph(ptxt(b.get("email")), styles["C360Value"])],
+        [Paragraph("Document", styles["C360Label"]), Paragraph("APS - Phase preliminaire", styles["C360Value"])],
+        [Paragraph("Generation", styles["C360Label"]), Paragraph(datetime.now().astimezone().strftime("%d/%m/%Y a %H:%M"), styles["C360Value"])],
+    ]
+    ident = Table(ident_rows, colWidths=[4.6 * cm, 13.3 * cm])
+    ident.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#EAF5F5")),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#C8E0E0")),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.3, colors.HexColor("#D7E8E8")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story += [ident, Spacer(1, 0.35 * cm)]
+
+    story.append(section_band("0. Comprendre votre bilan de competences"))
+    story.append(Spacer(1, 0.16 * cm))
+    story.append(Paragraph(
+        "Le bilan de competences est une demarche d'accompagnement qui permet d'analyser vos competences personnelles et professionnelles, vos aptitudes et vos motivations afin de clarifier votre evolution et de definir un projet professionnel, et si besoin un projet de formation. Il est organise en trois phases reglementaires et se conclut par la remise d'un document de synthese.",
+        styles["C360Body"],
+    ))
+
+    phase_data = [[
+        Paragraph("1. Phase preliminaire", styles["C360PhaseTitle"]),
+        Paragraph("2. Phase d'investigation", styles["C360PhaseTitle"]),
+        Paragraph("3. Phase de conclusion", styles["C360PhaseTitle"]),
+    ], [
+        Paragraph("Analyser votre demande et vos besoins, confirmer les objectifs, definir le format et les modalites du bilan.", styles["C360PhaseBody"]),
+        Paragraph("Explorer vos valeurs, motivations, preferences, competences et pistes professionnelles afin de construire et verifier des scenarios realistes.", styles["C360PhaseBody"]),
+        Paragraph("Formaliser le projet retenu, les conditions de reussite et le plan d'action. Un document de synthese vous est remis.", styles["C360PhaseBody"]),
+    ]]
+    phases = Table(phase_data, colWidths=[5.82 * cm, 5.82 * cm, 5.82 * cm], hAlign="CENTER")
+    phases.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F5FAFA")),
+        ("BOX", (0, 0), (-1, -1), 0.55, colors.HexColor("#B9DADA")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D6E8E8")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story += [phases, Spacer(1, 0.22 * cm)]
+
+    duration_box = Table([[Paragraph(
+        "<b>Duree Clarte360 :</b> le parcours est personnalise et represente habituellement <b>13 a 20 heures</b>. "
+        "Ce volume cumule les temps synchrones avec votre accompagnateur (en face a face ou en visioconference) et les temps de travail individuel guide realises avec les outils Clarte360 lorsqu'ils sont prevus dans votre programme. "
+        "Des recherches ou demarches personnelles complementaires peuvent etre proposees sans etre comptabilisees dans ce volume. "
+        "La duree legale d'un bilan de competences ne peut pas exceder 24 heures. Le suivi propose a six mois intervient apres le bilan et n'est pas inclus dans ce volume initial.",
+        styles["C360Body"],
+    )]], colWidths=[17.9 * cm])
+    duration_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF8DE")),
+        ("BOX", (0, 0), (-1, -1), 0.65, colors.HexColor("#D7B34D")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story += [duration_box, Spacer(1, 0.17 * cm)]
+    story.append(Paragraph(
+        "Reference : article L.6313-4 du Code du travail (duree maximale de 24 heures). Le programme Clarte360 est individualise en fonction de votre demande, de vos objectifs et des modalites retenues.",
+        styles["C360Meta"],
+    ))
+    story.append(PageBreak())
+
+    for flow in sec("1. Identite et coordonnees", [
         ("Civilite", b.get("civilite")), ("Prenom", b.get("prenom")), ("Nom", b.get("nom")),
         ("Nom de naissance", b.get("nom_naissance")), ("Date de naissance", b.get("date_naissance")),
         ("Adresse", f"{b.get('adresse','')} {b.get('complement_adresse','')}"), ("Code postal", b.get("code_postal")),
         ("Ville", b.get("ville")), ("Pays", b.get("pays")), ("E-mail", b.get("email")), ("Telephone", b.get("telephone")),
-    ])
-    sec("2. Situation professionnelle", [
+    ]): story.append(flow)
+    for flow in sec("2. Situation professionnelle", [
         ("Situation actuelle", s.get("statut")), ("Poste / metier", s.get("poste")), ("Employeur / organisation", s.get("employeur")),
         ("Anciennete", s.get("anciennete")), ("Secteur", s.get("secteur")), ("Contexte utile", s.get("contexte")), ("Echeance particuliere", s.get("echeance")),
-    ])
-    sec("3. Demande et attentes", [
+    ]): story.append(flow)
+    for flow in sec("3. Demande et attentes", [
         ("Origine de la demarche", d.get("origine_demande")), ("Pourquoi maintenant ?", d.get("pourquoi_maintenant")),
         ("Initiative", d.get("initiative")), ("Attentes", d.get("attentes")), ("Premieres pistes", d.get("pistes")),
         ("Difficultes / contraintes", d.get("difficultes_contraintes")), ("Niveau d'avancement", d.get("niveau_avancement")),
         ("Revalidation apres entretien", d.get("revalidation_entretien")),
-    ])
-    sec("4. Objectifs du bilan", [
+    ]): story.append(flow)
+    for flow in sec("4. Objectifs du bilan", [
         ("Objectifs que je souhaite travailler", o.get("objectifs_personnels")), ("A quoi le bilan devra m'etre utile", o.get("criteres_reussite")),
         ("Points a clarifier", o.get("points_a_clarifier")),
-    ])
-    sec("5. Organisation et modalites", [
+    ]): story.append(flow)
+    for flow in sec("5. Organisation et modalites", [
         ("Format souhaite", m.get("format_souhaite")), ("Disponibilites / contraintes horaires", m.get("disponibilites")),
         ("Rythme prefere", m.get("rythme_prefere")), ("Autonomie numerique", m.get("autonomie_numerique")),
         ("Besoin d'amenagement", m.get("besoin_amenagement")), ("Amenagement utile", m.get("amenagements")),
         ("Outils presentes / susceptibles d'etre mobilises", m.get("outils_connus")),
-    ])
-    sec("6. Informations utiles a la future convention", [
+    ]): story.append(flow)
+    for flow in sec("6. Informations utiles a la future convention", [
         ("Financement envisage / evoque", c.get("financeur_envisage")), ("Demarche liee a un employeur / donneur d'ordre", c.get("tiers_concerne")),
         ("Raison sociale", c.get("do_raison_sociale")), ("SIRET / identifiant", c.get("do_siret")), ("Adresse", c.get("do_adresse")),
         ("Contact connu", c.get("do_contact")), ("E-mail contact", c.get("do_email")), ("Reference de prise en charge", c.get("reference_prise_en_charge")),
-    ])
-    sec("7. Informations et consentements", [
-        ("Demarche volontaire", k.get("volontaire")), ("Je comprends que ce formulaire n'est pas un contrat", k.get("non_contrat_compris")),
-        ("Je confirme que le tarif a deja ete evoque lors de l'entretien et qu'il figurera dans la convention / le contrat", k.get("tarif_evoque_compris")),
-        ("Confidentialite comprise", k.get("confidentialite_comprise")), ("Information RGPD acceptee", k.get("rgpd_accepte")),
-        ("Trois phases comprises", k.get("phases_comprises")), ("Suivi a six mois compris", k.get("suivi_6_mois_compris")),
-        ("Accord pour poursuivre", k.get("accord_poursuite")), ("Observations", k.get("observations")),
-    ])
+    ]): story.append(flow)
     story.append(PageBreak())
-    story.append(Paragraph("8. Validation finale du beneficiaire", styles["C360H"]))
-    story.append(Paragraph(
+    for flow in sec("7. Informations et consentements", [
+        ("Demarche volontaire", k.get("volontaire")), ("Le caractere non contractuel du formulaire est compris", k.get("non_contrat_compris")),
+        ("Le tarif deja evoque et sa formalisation dans le futur document contractuel sont compris", k.get("tarif_evoque_compris")),
+        ("Confidentialite comprise", k.get("confidentialite_comprise")), ("Information RGPD acceptee", k.get("rgpd_accepte")),
+        ("Les trois phases du bilan sont comprises", k.get("phases_comprises")),
+        ("La duree et l'organisation entre temps synchrones, travail individuel Clarte360 et travail personnel complementaire sont comprises", k.get("duree_modalites_comprises")),
+        ("Suivi a six mois compris", k.get("suivi_6_mois_compris")), ("Accord pour poursuivre", k.get("accord_poursuite")),
+        ("Observations", k.get("observations")),
+    ]): story.append(flow)
+
+    story.append(Spacer(1, 0.28 * cm))
+    story.append(section_band("8. Validation finale du beneficiaire"))
+    story.append(Spacer(1, 0.22 * cm))
+    confirm_box = Table([[Paragraph(
         "Je confirme que les informations contenues dans cette grille correspondent a ma situation, a ma demande et aux elements que je souhaite revalider apres l'entretien prealable avec Clarte360. Je comprends que cette validation ne constitue ni un contrat ni un engagement financier. Le document contractuel distinct precisera les conditions de realisation et les dispositions financieres deja evoquees lors de l'entretien.",
         styles["C360Body"],
-    ))
-    story.append(Spacer(1, .2*cm))
-    sec("Trace de validation", [
+    )]], colWidths=[17.9 * cm])
+    confirm_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F5FAFA")),
+        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#A9D0D0")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 9), ("RIGHTPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story += [confirm_box, Spacer(1, 0.28 * cm)]
+    for flow in sec("Trace de validation", [
         ("Nom et prenom", f"{b.get('prenom','')} {b.get('nom','')}"), ("E-mail authentifie", b.get("email")),
-        ("Confirmation finale", vf.get("confirmation_finale")), ("Date et heure de validation", payload.get("meta", {}).get("validated_at")),
-        ("Date et heure de transmission a Clarte360", payload.get("meta", {}).get("transmitted_at")),
-    ])
-    story.append(Spacer(1, .25*cm))
-    story.append(Paragraph(
-        "Ce document constitue la trace de la grille d'analyse partagee de situation (APS) de la phase preliminaire. Il ne remplace pas le contrat ou la convention de bilan de competences.",
-        styles["C360Small"],
-    ))
-    story.append(Paragraph(
-        f"{CLARTE360_LEGAL['raison_sociale']} {CLARTE360_LEGAL['forme']} – {CLARTE360_LEGAL['adresse']}, {CLARTE360_LEGAL['code_postal_ville']} – SIRET {CLARTE360_LEGAL['siret']} – {CLARTE360_LEGAL['email']}",
-        styles["C360Small"],
-    ))
-    doc.build(story)
-    return buff.getvalue()
+        ("Confirmation finale", vf.get("confirmation_finale")), ("Date et heure de validation", meta.get("validated_at")),
+        ("Date et heure de transmission a Clarte360", meta.get("transmitted_at")),
+    ]): story.append(flow)
+    story.append(Spacer(1, 0.18 * cm))
+    status_box = Table([[Paragraph(
+        "<b>Statut du document :</b> cette APS constitue la trace de la phase preliminaire et de la revalidation des informations par le beneficiaire. Elle ne remplace pas le contrat ou la convention de bilan de competences.",
+        styles["C360BodySmall"],
+    )]], colWidths=[17.9 * cm])
+    status_box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#EEF5F5")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(status_box)
 
+    doc.build(story, onFirstPage=draw_header_footer, onLaterPages=draw_header_footer)
+    return buff.getvalue()
 
 def safe_base_name(payload):
     b = payload.get("beneficiaire", {})
@@ -658,6 +869,28 @@ def section_header(title, help_text=None):
         st.markdown(f'<div class="clarte-box">{help_text}</div>', unsafe_allow_html=True)
 
 
+def render_bilan_repere():
+    st.markdown(
+        '<div class="clarte-box"><b>Le bilan de compétences</b> est une démarche structurée qui permet d’analyser vos compétences personnelles et professionnelles, vos aptitudes et vos motivations afin de clarifier votre évolution, de définir un projet professionnel et, si nécessaire, un projet de formation. Il se conclut par un document de synthèse qui vous est remis.</div>',
+        unsafe_allow_html=True,
+    )
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("### 1. Phase préliminaire")
+        st.write("Analyser votre demande et vos besoins, confirmer les objectifs et définir avec vous le format et les modalités du bilan.")
+    with c2:
+        st.markdown("### 2. Phase d’investigation")
+        st.write("Explorer vos valeurs, motivations, préférences, compétences et pistes professionnelles afin de construire et vérifier des scénarios réalistes.")
+    with c3:
+        st.markdown("### 3. Phase de conclusion")
+        st.write("Formaliser le projet retenu, les conditions de réussite et le plan d’action. Un document de synthèse vous est remis.")
+    st.markdown(
+        '<div class="clarte-warning"><b>Durée et organisation chez Clarté360 :</b> le parcours est personnalisé et représente habituellement <b>13 à 20 heures</b>. Ce volume cumule les temps synchrones avec votre accompagnateur (en face à face ou en visioconférence) et les temps de travail individuel guidé réalisés avec les outils Clarté360 lorsqu’ils sont prévus dans votre programme. Des recherches ou démarches personnelles complémentaires peuvent être proposées sans être comptabilisées dans ce volume. La durée légale d’un bilan de compétences ne peut pas excéder 24 heures. Le suivi proposé à six mois intervient après le bilan et n’est pas inclus dans ce volume initial.</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Référence réglementaire : article L.6313-4 du Code du travail - durée maximale de 24 heures. Le programme Clarté360 reste individualisé selon votre demande, vos objectifs et les modalités retenues.")
+
+
 ensure_session()
 if not access_gate():
     st.stop()
@@ -681,6 +914,15 @@ if page == "Accueil":
     st.write("Vous pouvez avancer a votre rythme. Les rubriques servent a confirmer votre situation, votre demande, vos attentes et les modalites envisagees avec Clarte360.")
     st.info("Si vous devez interrompre le formulaire, utilisez le bouton « Sauvegarder mon travail (JSON) » dans le menu de gauche. Vous pourrez reprendre plus tard avec ce fichier.")
     if st.button("Commencer / continuer", type="primary"):
+        st.session_state._next_nav = "0. Comprendre le bilan de competences"
+        st.rerun()
+
+elif page == "0. Comprendre le bilan de competences":
+    section_header("0. Comprendre votre bilan de compétences", "Avant de confirmer votre situation et vos attentes, voici les repères essentiels sur le bilan de compétences et sur son organisation chez Clarté360.")
+    render_bilan_repere()
+    if st.button("J'ai compris - continuer vers mon identité", type="primary"):
+        p["meta"]["information_bilan_lue_at"] = now_iso()
+        st.session_state.payload = p
         st.session_state._next_nav = "1. Votre identite"
         st.rerun()
 
@@ -845,13 +1087,14 @@ elif page == "7. Informations et consentements":
         tarif = st.checkbox("Je confirme que le prix du bilan a deja ete evoque lors de mon entretien et qu'il sera repris dans le document contractuel qui me sera adresse separement. *", value=bool(v.get("tarif_evoque_compris")))
         conf = st.checkbox("Je comprends le principe de confidentialite du bilan de competences et des informations recueillies. *", value=bool(v.get("confidentialite_comprise")))
         rgpd = st.checkbox("J'accepte que les donnees necessaires a la preparation et a la realisation de mon bilan soient traitees par Clarte360 conformement aux informations qui m'ont ete presentees. *", value=bool(v.get("rgpd_accepte")))
-        phases = st.checkbox("J'ai compris que le bilan de competences comporte une phase preliminaire, une phase d'investigation et une phase de conclusion. *", value=bool(v.get("phases_comprises")))
-        suivi = st.checkbox("J'ai ete informe(e) du principe d'un entretien de suivi a six mois. *", value=bool(v.get("suivi_6_mois_compris")))
+        phases = st.checkbox("J'ai compris que le bilan de compétences comporte une phase préliminaire, une phase d'investigation et une phase de conclusion. *", value=bool(v.get("phases_comprises")))
+        duree = st.checkbox("J'ai compris que le parcours Clarté360 est personnalisé, généralement compris entre 13 et 20 heures, et qu'il associe des temps synchrones avec l'accompagnateur et des temps de travail individuel guidé sur les outils Clarté360 ; certaines recherches personnelles complémentaires peuvent ne pas être comptabilisées dans ce volume. *", value=bool(v.get("duree_modalites_comprises")))
+        suivi = st.checkbox("J'ai été informé(e) du principe d'un entretien de suivi à six mois, réalisé après le bilan et hors de son volume initial. *", value=bool(v.get("suivi_6_mois_compris")))
         accord = st.checkbox("Je souhaite poursuivre les demarches en vue de la mise en place de mon bilan de competences avec Clarte360. *", value=bool(v.get("accord_poursuite")))
         obs = st.text_area("Avez-vous une question, une reserve ou une observation a nous transmettre ?", v.get("observations", ""), height=100)
         submitted = st.form_submit_button("Enregistrer mes consentements", type="primary")
     if submitted:
-        set_block("consentements", {"volontaire": volontaire, "non_contrat_compris": noncontrat, "tarif_evoque_compris": tarif, "confidentialite_comprise": conf, "rgpd_accepte": rgpd, "phases_comprises": phases, "suivi_6_mois_compris": suivi, "accord_poursuite": accord, "observations": obs, "recorded_at": now_iso()})
+        set_block("consentements", {"volontaire": volontaire, "non_contrat_compris": noncontrat, "tarif_evoque_compris": tarif, "confidentialite_comprise": conf, "rgpd_accepte": rgpd, "phases_comprises": phases, "duree_modalites_comprises": duree, "suivi_6_mois_compris": suivi, "accord_poursuite": accord, "observations": obs, "recorded_at": now_iso()})
         st.session_state._next_nav = "8. Verification et validation"
         st.rerun()
 
