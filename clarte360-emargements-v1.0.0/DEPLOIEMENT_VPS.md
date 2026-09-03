@@ -4,22 +4,20 @@
 Ubuntu 24.04 LTS, Python 3.12+, Git, Nginx.
 
 ## Principe
-GitHub -> `/opt/clarte360-emargements` -> service systemd Streamlit + service systemd worker -> Nginx HTTPS.
+GitHub -> `/opt/clarte360/clarte360-outils/clarte360-emargements-v2.0.0-dev` -> service systemd Streamlit + service systemd worker -> Nginx HTTPS.
 
 ## Installation
 
 ```bash
 sudo apt update
 sudo apt install -y python3-venv python3-pip git nginx
-sudo mkdir -p /opt/clarte360-emargements
-sudo chown $USER:$USER /opt/clarte360-emargements
-cd /opt/clarte360-emargements
+cd /opt/clarte360/clarte360-outils/clarte360-emargements-v2.0.0-dev
 # git clone <VOTRE_REPO_GITHUB> .
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-cp .streamlit/secrets.example.toml .streamlit/secrets.toml
-nano .streamlit/secrets.toml
+mkdir -p .streamlit
+ln -sfn /opt/clarte360/secrets/secrets.toml .streamlit/secrets.toml
 ```
 
 Définir `base_url` avec le futur sous-domaine, une `setup_key` longue et la configuration SMTP OVH.

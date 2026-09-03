@@ -13,8 +13,8 @@ from branding import *
 from db import make_engine, init_db, q, one, execute, audit, sha256_bytes, utcnow_iso
 from security import hash_password, verify_password
 from services import *
-from excel_import import read_clarte360_xlsm
-from pdf_utils import collective_pdf, individual_pdf, certificate_pdf
+from excel_import import read_clarte360_xlsm, read_adca_xlsm, list_action_numbers
+from pdf_utils import collective_pdf, individual_pdf, certificate_pdf, quality_response_pdf
 from mailer import send_mail
 
 st.set_page_config(page_title=APP_NAME,page_icon=str(ICON_PATH),layout='wide',initial_sidebar_state='expanded')
@@ -24,9 +24,39 @@ def secret(section,key,default=None):
     try:return st.secrets.get(section,{}).get(key,default)
     except:return default
 DB_URL=secret('database','url',None); ENGINE=make_engine(DB_URL);init_db(ENGINE)
+ensure_default_organization(ENGINE); migrate_legacy_action_statuses(ENGINE)
+try:
+    _default_org=get_organization(ENGINE)
+    seed_standard_questionnaires(ENGINE,_default_org.get('id') if _default_org else None,'system')
+except Exception:
+    pass
 BASE_URL=secret('app','base_url','http://localhost:8501');TZ=secret('app','timezone','Europe/Paris')
 
-def footer(): st.markdown(f"<div class='c360-footer'>{LEGAL_LINE_1}<br>{LEGAL_LINE_2}</div>",unsafe_allow_html=True)
+def privacy_notice_html(action_id=None):
+    runtime=organization_runtime_config(ENGINE,action_id);org=runtime['organization'];name=org.get('name') or 'L’organisme'
+    notice=org.get('privacy_notice') or "Les informations nécessaires à l'organisation de l'action et à la justification de sa réalisation sont traitées pour la gestion et la preuve de l'action."
+    contact=org.get('privacy_contact') or org.get('general_email') or ''
+    return f"<div style='font-size:0.9rem;background:#f6f8f8;padding:12px 14px;border-radius:10px;margin:8px 0'><b>Information sur vos données personnelles</b><br>{name} : {notice}{(' Pour exercer vos droits ou poser une question : <b>'+contact+'</b>.') if contact else ''}</div>"
+
+def org_identity(action_id=None):
+    runtime=organization_runtime_config(ENGINE,action_id);return runtime['organization']
+
+
+def send_participant_code_email(participant, action, pin):
+    if not participant.get('email') or not bool(secret('smtp','enabled',False)): return False, 'Email non envoyé (adresse ou SMTP indisponible).'
+    cfg=dict(st.secrets.get('smtp',{})); org=org_identity(action.get('id'));org_name=org.get('name') or 'Organisme'; subject=f"{org_name} — votre accès émargement — {action['action_no']}"
+    body=f"""<p>Bonjour {participant['first_name']},</p><p>Vous êtes inscrit(e) à <strong>{action['title']}</strong>.</p><p>Votre code personnel pour l'émargement via QR code est : <strong style='font-size:20px'>{pin}</strong>.</p><p>Conservez ce code pendant l'action. Les liens personnels reçus par email permettent également d'émarger sans ressaisir ce code.</p>{privacy_notice_html(action.get('id'))}<p>{org_name}</p>"""
+    try: send_mail(cfg,participant['email'],subject,body); return True,'Code envoyé par email.'
+    except Exception as ex: return False,f'Envoi du code impossible : {ex}'
+
+def footer(action_id=None):
+    org=org_identity(action_id);parts=[]
+    if org:
+        parts.append(' — '.join(x for x in [org.get('legal_name') or org.get('name'),org.get('address'),(' '.join(x for x in [org.get('postal_code'),org.get('city')] if x))] if x))
+        parts.append(' — '.join(x for x in [('SIRET : '+org.get('siret')) if org.get('siret') else '',('NDA : '+org.get('nda')) if org.get('nda') else '',org.get('general_email') or '',org.get('website') or ''] if x))
+    text='<br>'.join(x for x in parts if x) or (LEGAL_LINE_1+'<br>'+LEGAL_LINE_2)
+    st.markdown(f"<div class='c360-footer'>{text}</div>",unsafe_allow_html=True)
+
 def header(title=APP_NAME,sub='Gestion sécurisée des présences, signatures et justificatifs'):
     img=base64.b64encode(LOGO_PATH.read_bytes()).decode() if LOGO_PATH.exists() else ''
     st.markdown(f"<div class='c360-header'><img src='data:image/png;base64,{img}'><div><div class='c360-title'>{title}</div><div class='c360-subtitle'>{sub} — Version {APP_VERSION}</div></div></div>",unsafe_allow_html=True)
@@ -108,7 +138,8 @@ def render_sign_form(row,method):
     if absent and absent['status']=='ABSENT':
         st.error("Vous êtes actuellement déclaré absent sur ce créneau. Une régularisation nécessite d'abord la correction de ce statut par l'administrateur ou l'intervenant."); return
     st.write(declaration)
-    consent=st.checkbox('Je confirme l’exactitude de ces informations.')
+    st.markdown(privacy_notice_html(row.get('action_id')),unsafe_allow_html=True)
+    consent=st.checkbox("Je confirme l’exactitude de ces informations et reconnais avoir pris connaissance de l’information sur mes données personnelles.")
     sig_mode=st.radio('Mode de signature',['Signature manuscrite','Nom et prénom + certification'],horizontal=True)
     canvas=None; typed_name=''
     if sig_mode=='Signature manuscrite':
@@ -130,6 +161,7 @@ def render_sign_form(row,method):
             execute(ENGINE,"""INSERT INTO signatures(participant_id,slot_id,signed_at,signature_path,signature_sha256,signer_name,method,access_method,signature_method,is_late,late_reason,ip_address,user_agent,declaration_text)
               VALUES(:p,:s,:at,:path,:h,:n,:m,:m,:sm,:late,:lr,:ip,:ua,:d)""",{'p':row['id'],'s':row['slot_id'],'at':utcnow_iso(),'path':str(path),'h':digest,'n':signer,'m':method,'sm':sig_method,'late':1 if is_late else 0,'lr':late_reason or None,'ip':get_ip(),'ua':get_ua(),'d':declaration})
             execute(ENGINE,'UPDATE signature_tokens SET used_at=:u WHERE participant_id=:p AND slot_id=:s',{'u':utcnow_iso(),'p':row['id'],'s':row['slot_id']})
+            execute(ENGINE,"DELETE FROM attendance_status WHERE participant_id=:p AND slot_id=:s AND status='ABSENT'",{'p':row['id'],'s':row['slot_id']})
             audit(ENGINE,'SIGNATURE_RECORDED',row['action_id'],f"participant:{row['id']}",'signature',f"{row['id']}/{row['slot_id']}",{'method':method,'sha256':digest})
             st.success(f"Votre présence a bien été enregistrée à {datetime.now(ZoneInfo(TZ)).strftime('%H:%M')}. Merci.");st.balloons()
         except Exception: st.info('Cet émargement a déjà été enregistré.')
@@ -151,10 +183,13 @@ def trainer_page(token):
     st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
     pc={f"{p['last_name']} {p['first_name']}":p for p in parts}; pl=st.selectbox('Participant à gérer',list(pc));pp=pc[pl]
     c1,c2=st.columns(2)
-    if c1.button('Marquer ABSENT',use_container_width=True): set_attendance_status(ENGINE,pp['id'],slot['id'],'ABSENT','Déclaré par intervenant',f"trainer:{row.get('trainer_email') or row.get('trainer_name')}");st.success('Absence enregistrée.');rerun()
+    if c1.button('Marquer ABSENT',use_container_width=True):
+        ok,msg=set_attendance_status(ENGINE,pp['id'],slot['id'],'ABSENT','Déclaré par intervenant',f"trainer:{row.get('trainer_email') or row.get('trainer_name')}")
+        if ok: st.success('Absence enregistrée.');rerun()
+        else: st.error(msg)
     if c2.button('Remettre EN ATTENTE',use_container_width=True): set_attendance_status(ENGINE,pp['id'],slot['id'],'EN_ATTENTE','Correction intervenant',f"trainer:{row.get('trainer_email') or row.get('trainer_name')}");rerun()
     if pp.get('email') and st.button('Relancer ce participant par email'):
-        ensure_tokens_and_events(ENGINE,row['action_id'],BASE_URL,TZ);url=token_url(ENGINE,pp['id'],slot['id'],BASE_URL);cfg=dict(st.secrets.get('smtp',{}));subject=f"Clarté360 — émargement — {row['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci de régulariser votre émargement pour le {slot['slot_date']} de {slot['start_time']} à {slot['end_time']}.</p><p><a href='{url}'>SIGNER / RÉGULARISER</a></p>"
+        ensure_tokens_and_events(ENGINE,row['action_id'],BASE_URL,TZ);url=token_url(ENGINE,pp['id'],slot['id'],BASE_URL);cfg=dict(st.secrets.get('smtp',{}));org=org_identity(row['action_id']);subject=f"{org.get('name') or 'Organisme'} — émargement — {row['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci de régulariser votre émargement pour le {slot['slot_date']} de {slot['start_time']} à {slot['end_time']}.</p><p><a href='{url}'>SIGNER / RÉGULARISER</a></p>{privacy_notice_html(row['action_id'])}"
         try: send_mail(cfg,pp['email'],subject,body);audit(ENGINE,'TRAINER_MANUAL_REMINDER',row['action_id'],'trainer','participant',pp['id'],{'slot_id':slot['id']});st.success('Relance envoyée.')
         except Exception as ex: st.error(f'Envoi impossible : {ex}')
     st.markdown('### Contresignature du créneau')
@@ -164,6 +199,52 @@ def trainer_page(token):
     if st.button('CONTRESIGNER CE CRÉNEAU',type='primary'):
         if not name.strip() or not cert: st.error('Nom et certification obligatoires.')
         else: countersign_slot(ENGINE,slot['id'],name.strip(),row.get('trainer_email'),f"trainer:{name.strip()}","Je certifie l'exactitude des présences et absences indiquées pour ce créneau.");st.success('Contresignature enregistrée.');rerun()
+    footer()
+
+def quality_page(token):
+    ctx=quality_campaign_context(ENGINE,token)
+    if not ctx:
+        header('Questionnaire qualité','Lien sécurisé');st.error('Lien de questionnaire invalide ou expiré.');footer();return
+    runtime=organization_runtime_config(ENGINE,ctx['action_id']);org=runtime['organization'];org_name=org.get('name') or 'Organisme'
+    header(f"{org_name} — Qualité",ctx['questionnaire_title'])
+    if ctx.get('status')=='COMPLETED':
+        st.success('Votre questionnaire a déjà été enregistré. Merci pour votre retour.');footer();return
+    respondent=ctx.get('trainer_full_name') or f"{ctx.get('first_name') or ''} {ctx.get('last_name') or ''}".strip()
+    st.markdown(f"<div class='c360-card'><b>{ctx['action_title']}</b><br>N° action : {ctx['action_no']}<br>Répondant : {respondent}<br>Questionnaire : {ctx['questionnaire_title']} — version {ctx['questionnaire_version']}</div>",unsafe_allow_html=True)
+    privacy=org.get('privacy_notice') or "Les informations recueillies sont utilisées pour le suivi de l’action et l’amélioration de la qualité des prestations."
+    contact=org.get('privacy_contact') or org.get('general_email') or ''
+    st.info(f"Données personnelles : {privacy}" + (f" Contact : {contact}" if contact else ''))
+    questions=quality_questions(ENGINE,ctx['id']);existing=quality_existing_answers(ENGINE,ctx['id']);answers={}
+    with st.form(f"quality_{ctx['id']}"):
+        for qu in questions:
+            label=qu['question_text'] + (' *' if qu.get('required') else '')
+            current=existing.get(qu['id'])
+            rt=qu['response_type']; key=f"q_{ctx['id']}_{qu['id']}"
+            if rt=='SCALE_1_5':
+                opts=['— Choisir —',1,2,3,4,5,'N/A'];idx=opts.index(current) if current in opts else 0
+                v=st.selectbox(label,opts,index=idx,key=key,help=f"Code {qu['question_code']} — rubrique {qu['rubric_code']}")
+                answers[qu['id']]=None if v=='— Choisir —' else v
+            elif rt=='NPS_0_10':
+                opts=['— Choisir —']+list(range(11));idx=opts.index(current) if current in opts else 0
+                v=st.selectbox(label,opts,index=idx,key=key,help=f"Code {qu['question_code']}")
+                answers[qu['id']]=None if v=='— Choisir —' else v
+            elif rt=='CHOICE_SINGLE':
+                lo=qu['question_text'].lower()
+                if 'fréquence' in lo: opts=['— Choisir —','Jamais','Rarement','Parfois','Souvent','Très souvent']
+                elif 'difficult' in lo or 'réclamation' in lo or 'aléa' in lo: opts=['— Choisir —','Non','Oui - difficulté / aléa','Oui - réclamation','Je souhaite être recontacté(e)']
+                elif 'besoin complémentaire' in lo: opts=['— Choisir —','Non','Oui','Je ne sais pas encore']
+                elif 'type d’intervention' in lo: opts=['— Choisir —','Formation','Bilan de compétences','VAE','Coaching','Mentorat','Autre']
+                else: opts=['— Choisir —','Oui','Non','Non applicable']
+                idx=opts.index(current) if current in opts else 0;v=st.selectbox(label,opts,index=idx,key=key,help=f"Code {qu['question_code']}");answers[qu['id']]=None if v=='— Choisir —' else v
+            else:
+                answers[qu['id']]=st.text_area(label,value=current if isinstance(current,str) else '',key=key,help=f"Code {qu['question_code']} — rubrique {qu['rubric_code']}")
+        consent=st.checkbox("Je confirme que mes réponses correspondent à mon appréciation et j’ai pris connaissance de l’information sur les données personnelles.")
+        submit=st.form_submit_button('ENREGISTRER MON QUESTIONNAIRE',type='primary',use_container_width=True)
+    if submit:
+        if not consent: st.error('Merci de confirmer avant l’enregistrement.');return
+        try:
+            actor='trainer' if ctx.get('trainer_id') else 'beneficiary';complete_quality_campaign(ENGINE,ctx['id'],answers,actor);st.success('Merci. Votre questionnaire a bien été enregistré.');st.balloons()
+        except ValueError as ex: st.error(str(ex))
     footer()
 
 def sidebar():
@@ -178,18 +259,25 @@ def create_action_screen(prefill=None,participants_prefill=None):
     header('Clarté360 — Nouvelle action','Création d’une action et de son dossier d’émargement')
     p=prefill or {}
     with st.form('new_action'):
-        c1,c2=st.columns(2);action_no=c1.text_input('N° D’ACTION *',value=p.get('action_no','')).strip().upper();nature=c2.selectbox('Nature de l’action',['Formation','Bilan de compétences','Coaching / accompagnement','Autre'],index=0)
+        c1,c2=st.columns(2);action_no=c1.text_input('N° D’ACTION *',value=p.get('action_no','')).strip().upper();prestation_labels={'Formation':'FORMATION','Bilan de compétences':'BILAN_COMPETENCES','VAE':'VAE','Coaching':'COACHING','Mentorat':'MENTORAT','Autre':'AUTRE'}; prestation_label=c2.selectbox('Type de prestation *',list(prestation_labels)); prestation_type=prestation_labels[prestation_label]; nature=prestation_label
         title=st.text_input('Intitulé *',value=p.get('title',''));subtitle=st.text_input('Intitulé complémentaire',value=p.get('subtitle') or '')
+        c1,c2=st.columns(2);start_date=c1.date_input('Date de début',value=date.fromisoformat(p['start_date']) if p.get('start_date') else date.today());end_date=c2.date_input('Date de fin',value=date.fromisoformat(p['end_date']) if p.get('end_date') else date.today())
         c1,c2,c3,c4=st.columns(4);mode=c1.selectbox('Organisation',['INTRA','INTER','INDIVIDUEL']);planned=c2.number_input('Durée contractuelle prévue (h)',min_value=0.0,step=.5,value=float(p.get('planned_hours') or 0));expected=c3.number_input('Nombre prévu de stagiaires',min_value=1,step=1,value=int(p.get('expected_participants') or (1 if mode=='INDIVIDUEL' else 1)));group=c4.text_input('Code de groupe / session INTER',value='')
         c1,c2=st.columns(2);client=c1.text_input('Client / entreprise (facultatif)',value=p.get('client_name') or '');client_type=c2.selectbox('Type client',['Non précisé','Professionnel','Particulier'])
-        c1,c2=st.columns(2);trainer=c1.text_input('Intervenant',value=p.get('trainer_name') or '');location=c2.text_input('Lieu / modalité',value=p.get('location') or '')
-        admin_email=st.text_input('Email administrateur destinataire',value=st.session_state.get('admin_email',''));notes=st.text_area('Observations')
+        orgs=list_organizations(ENGINE,active_only=True); org_opts={o['name']:o['id'] for o in orgs}; org_label=st.selectbox('Organisme',list(org_opts)); organization_id=org_opts[org_label]; agencies=list_agencies(ENGINE,organization_id,active_only=True); agency_opts={'— Siège / aucune agence —':None,**{g['name']:g['id'] for g in agencies}}; agency_label=st.selectbox('Agence / établissement',list(agency_opts)); agency_id=agency_opts[agency_label]
+        st.markdown('**Modules activés pour cette action**'); m1,m2,m3,m4=st.columns(4); use_attendance=m1.checkbox('Émargement',value=True); use_hot=m2.checkbox('Évaluation à chaud',value=False); use_cold=m3.checkbox('Évaluation à froid',value=False); use_trainer=m4.checkbox('Retour intervenant',value=False)
+        trainers=list_trainers(ENGINE,active_only=True); trainer_opts={'— Aucun intervenant référencé —':None,**{f"{t['full_name']} — {t.get('email') or 'sans email'}":t['id'] for t in trainers}}
+        c1,c2=st.columns(2);trainer_label=c1.selectbox('Intervenant référencé',list(trainer_opts));location=c2.text_input('Lieu / modalité',value=p.get('location') or '')
+        admins=q(ENGINE,'SELECT email,full_name FROM admins WHERE active=1 ORDER BY full_name,email');admin_opts={f"{x.get('full_name') or x['email']} — {x['email']}":x['email'] for x in admins};cur_admin=next((k for k,v in admin_opts.items() if v==st.session_state.get('admin_email')),list(admin_opts)[0] if admin_opts else '');admin_label=st.selectbox('Administrateur référent',list(admin_opts),index=list(admin_opts).index(cur_admin) if cur_admin in admin_opts else 0);admin_email=admin_opts.get(admin_label,st.session_state.get('admin_email',''));notes=st.text_area('Observations')
         ok=st.form_submit_button('Créer l’action',type='primary')
     if ok:
         if not action_no or not title: st.error('Le n° d’action et l’intitulé sont obligatoires.')
         elif one(ENGINE,'SELECT id FROM actions WHERE action_no=:n',{'n':action_no}): st.error('Ce numéro d’action existe déjà.')
         else:
-            aid=create_action(ENGINE,{'action_no':action_no,'title':title,'subtitle':subtitle or None,'nature':nature,'mode':mode,'client_name':client or None,'client_type':client_type,'group_code':group or None,'planned_hours':planned,'expected_participants':int(expected),'admin_email':admin_email,'trainer_name':trainer or None,'trainer_email':None,'location':location or None,'notes':notes or None,'source':p.get('source') or 'SAISIE MANUELLE'},st.session_state.admin_email)
+            aid=create_action(ENGINE,{'action_no':action_no,'title':title,'subtitle':subtitle or None,'nature':nature,'mode':mode,'client_name':client or None,'client_type':client_type,'group_code':group or None,'planned_hours':planned,'expected_participants':int(expected),'admin_email':admin_email,'trainer_name':None,'trainer_email':None,'location':location or None,'notes':notes or None,'source':p.get('source') or 'SAISIE MANUELLE'},st.session_state.admin_email)
+            if trainer_opts.get(trainer_label): assign_trainer(ENGINE,aid,trainer_opts[trainer_label],st.session_state.admin_email)
+            safe_set_action_modules(ENGINE,aid,prestation_type,use_attendance,use_hot,use_cold,use_trainer,organization_id,agency_id,st.session_state.admin_email)
+            execute(ENGINE,'UPDATE actions SET start_date=:s,end_date=:e WHERE id=:a',{'s':start_date.isoformat(),'e':end_date.isoformat(),'a':aid})
             pins=[]
             for pd in participants_prefill or []:
                 pid,pin=add_participant(ENGINE,aid,pd.copy(),st.session_state.admin_email);pins.append((pid,pin))
@@ -198,13 +286,13 @@ def create_action_screen(prefill=None,participants_prefill=None):
 
 def import_screen():
     header('Clarté360 — Import','Importer une action depuis la base Clarté360 ou un CSV de participants')
-    tab1,tab2=st.tabs(['Base GESTION OF CLARTE360 (.xlsm)','CSV participants'])
+    tab1,tabadca,tab2=st.tabs(['Base GESTION OF CLARTE360 (.xlsm)','Base GESTION OF ADCA (.xlsm)','CSV participants'])
     with tab1:
         f=st.file_uploader('Sélectionnez GESTION OF CLARTE360 EN COURS.xlsm',type=['xlsm','xlsx'],key='xlsm')
-        n=st.text_input('N° D’ACTION à rechercher',placeholder='CLA0001').strip().upper()
+        mode=st.selectbox('Mode de l’action',['INTRA','INTER','INDIVIDUEL'],key='clar_mode'); n=st.text_input('N° D’ACTION à rechercher',placeholder='CLA0001').strip().upper()
         if st.button('Lire l’action',type='primary') and f and n:
             try:
-                data,parts=read_clarte360_xlsm(f.getvalue(),n)
+                data,parts=read_clarte360_xlsm(f.getvalue(),n,mode)
                 if not data: st.error('Action introuvable dans les onglets CONV ADM et STAGIAIRE.')
                 else:
                     st.session_state.import_prefill=data;st.session_state.import_parts=parts;st.success(f"Action trouvée — {len(parts)} participant(s) détecté(s). Le NIR n’est pas importé.")
@@ -212,6 +300,23 @@ def import_screen():
         if st.session_state.get('import_prefill'):
             d=st.session_state.import_prefill;st.json({k:v for k,v in d.items() if k not in ['default_start','default_end']});
             if st.button('Créer cette action dans Clarté360 Émargements'):
+                st.session_state.prefill_create=True;st.session_state['_next_nav']='Nouvelle action';rerun()
+    with tabadca:
+        st.info('Import ADCA : permet notamment de reprendre une action historique pour activer uniquement la qualité à froid, sans recréer artificiellement des émargements.')
+        af=st.file_uploader('Sélectionnez GESTION OF ADCA (.xlsm)',type=['xlsm','xlsx'],key='adca_xlsm')
+        amode=st.selectbox('Mode de l’action',['INTRA','INTER','INDIVIDUEL'],key='adca_mode')
+        an=st.text_input('N° ADCA à rechercher',placeholder='ADC4736').strip().upper()
+        if st.button('Lire l’action ADCA',type='primary') and af and an:
+            try:
+                data,parts=read_adca_xlsm(af.getvalue(),an,amode)
+                if not data: st.error('Action ADCA introuvable.')
+                else:
+                    st.session_state.import_prefill=data;st.session_state.import_parts=parts;st.success(f"Action trouvée — {len(parts)} participant(s). Source métier utilisée : {data.get('source_sheet')}.")
+            except Exception as e: st.error(f'Lecture ADCA impossible : {e}')
+        if st.session_state.get('import_prefill',{}).get('source')=='GESTION OF ADCA':
+            d=st.session_state.import_prefill;st.json({k:v for k,v in d.items() if k not in ['default_start','default_end']})
+            st.caption('Après création, vous pourrez désactiver Émargement et conserver uniquement Évaluation à froid.')
+            if st.button('Créer cette action historique ADCA'):
                 st.session_state.prefill_create=True;st.session_state['_next_nav']='Nouvelle action';rerun()
     with tab2:
         st.caption('Colonnes reconnues : no_action, nom, nom_naissance, prenom, date_naissance, email, matricule, entreprise, telephone.')
@@ -237,7 +342,7 @@ def import_screen():
 def dashboard():
     header('Clarté360 — Tableau de bord','Vue globale des actions et émargements')
     acts=q(ENGINE,'SELECT * FROM actions ORDER BY id DESC')
-    total=len(acts);open_n=sum(a['status']!='ARCHIVE' for a in acts);pending=one(ENGINE,"SELECT COUNT(*) n FROM email_events WHERE status='PENDING'")['n'];signed=one(ENGINE,"SELECT COUNT(*) n FROM signatures WHERE status='VALIDE'")['n']
+    total=len(acts);open_n=sum(normalize_action_status(a['status'])!='ARCHIVEE' for a in acts);pending=one(ENGINE,"SELECT COUNT(*) n FROM email_events WHERE status='PENDING'")['n'];signed=one(ENGINE,"SELECT COUNT(*) n FROM signatures WHERE status='VALIDE'")['n']
     c1,c2,c3,c4=st.columns(4)
     for c,n,l in [(c1,total,'Actions'),(c2,open_n,'Actives'),(c3,signed,'Signatures'),(c4,pending,'Envois / relances prévus')]: c.markdown(f"<div class='c360-kpi'><div class='n'>{n}</div><div class='l'>{l}</div></div>",unsafe_allow_html=True)
     st.subheader('Actions récentes')
@@ -245,40 +350,81 @@ def dashboard():
     for a in acts[:20]:
         pr=action_progress(ENGINE,a['id']);rows.append({'Action':a['action_no'],'Intitulé':a['title'],'Mode':a['mode'],'Participants':pr['participants'],'Créneaux':pr['slots'],'Signatures':f"{pr['signed']}/{pr['expected']}",'Avancement':f"{pr['percent']}%"})
     st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+    st.subheader('Pilotage qualité')
+    orgs=list_organizations(ENGINE,active_only=True); om={'Tous':None,**{o['name']:o['id'] for o in orgs}}; c1,c2=st.columns(2); ol=c1.selectbox('Organisme',list(om),key='qd_org'); pts=['Tous','FORMATION','BILAN_COMPETENCES','VAE','COACHING','MENTORAT','AUTRE']; pt=c2.selectbox('Prestation',pts,key='qd_pt')
+    qd=quality_dashboard(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt)
+    c1,c2,c3,c4=st.columns(4)
+    for c,n,l in [(c1,qd['campaigns'],'Questionnaires prévus'),(c2,f"{qd['response_rate']}%",'Taux de réponse'),(c3,qd['issues_open'],'Difficultés ouvertes'),(c4,qd['improvements_open'],'Améliorations ouvertes')]: c.markdown(f"<div class='c360-kpi'><div class='n'>{n}</div><div class='l'>{l}</div></div>",unsafe_allow_html=True)
+    stats=quality_question_stats(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt)
+    if stats: st.dataframe(pd.DataFrame(stats),use_container_width=True,hide_index=True)
     footer()
 
 def actions_list():
     header('Clarté360 — Actions','Reprendre, modifier et suivre une action')
-    acts=q(ENGINE,'SELECT * FROM actions ORDER BY id DESC')
-    if not acts: st.info('Aucune action pour le moment.');footer();return
-    labels={f"{a['action_no']} — {a['title']}":a['id'] for a in acts};sel=st.selectbox('Choisir une action',list(labels));aid=labels[sel];st.session_state.selected_action=aid
-    action_detail(aid);footer()
+    c1,c2=st.columns([3,1]); search=c1.text_input('Rechercher une action, un bénéficiaire, un client ou un email'); include_archived=c2.checkbox('Inclure les archives',value=False); acts=search_actions(ENGINE,search,include_archived=include_archived)
+    if not acts: st.info('Aucune action correspondant aux critères.');footer();return
+    labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a['status'])}":a['id'] for a in acts};sel=st.selectbox('Choisir une action',list(labels));aid=labels[sel];st.session_state.selected_action=aid
+    action_detail(aid)
+    a=one(ENGINE,'SELECT * FROM actions WHERE id=:a',{'a':aid})
+    with st.expander('🗑️ Supprimer définitivement cette action'):
+        st.error('Suppression irréversible : participants, créneaux, signatures, absences, relances, contresignatures et historique de cette action seront supprimés.')
+        confirm=st.text_input(f"Pour confirmer, saisissez le n° d’action : {a['action_no']}",key=f'delactxt{aid}');pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delacpw{aid}')
+        if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT L’ACTION',key=f'delac{aid}'):
+            if confirm.strip()!=a['action_no']: st.error('Le numéro d’action saisi ne correspond pas.')
+            elif not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Mot de passe administrateur incorrect.')
+            else:
+                ok,msg=purge_action(ENGINE,aid,st.session_state.admin_email)
+                if ok: st.session_state.pop('selected_action',None);st.success('Action et données associées supprimées.');rerun()
+                else: st.error(msg)
+    footer()
 
 def action_detail(aid):
     a=one(ENGINE,'SELECT * FROM actions WHERE id=:a',{'a':aid});pr=action_progress(ENGINE,aid)
     st.markdown(f"<div class='c360-card'><h3>{a['action_no']} — {a['title']}</h3>{a.get('subtitle') or ''}<br><b>{a['mode']}</b> — Durée prévue : {a['planned_hours']:g} h — Statut : {a['status']}</div>",unsafe_allow_html=True)
     c1,c2,c3,c4=st.columns(4);c1.metric('Participants',pr['participants']);c2.metric('Créneaux',pr['slots']);c3.metric('Signatures',f"{pr['signed']}/{pr['expected']}");c4.metric('Avancement',f"{pr['percent']} %")
-    tabs=st.tabs(['Paramètres action','Participants','Calendrier','Envois & relances','Suivi','Documents','Journal'])
+    tabs=st.tabs(['Paramètres action','Participants','Calendrier','Envois & relances','Suivi','Qualité','Documents','Journal'])
     with tabs[0]: action_settings_tab(a)
     with tabs[1]: participants_tab(a)
     with tabs[2]: calendar_tab(a)
     with tabs[3]: dispatch_tab(a)
     with tabs[4]: tracking_tab(a)
-    with tabs[5]: documents_tab(a)
-    with tabs[6]: audit_tab(a)
+    with tabs[5]: quality_tab(a)
+    with tabs[6]: documents_tab(a)
+    with tabs[7]: audit_tab(a)
 
 def action_settings_tab(a):
     st.subheader('Paramètres de l’action')
+    prestation_labels={'Formation':'FORMATION','Bilan de compétences':'BILAN_COMPETENCES','VAE':'VAE','Coaching':'COACHING','Mentorat':'MENTORAT','Autre':'AUTRE'}
+    reverse_pt={v:k for k,v in prestation_labels.items()}; current_pt=a.get('prestation_type') or 'FORMATION'; current_label=reverse_pt.get(current_pt,'Formation')
+    orgs=list_organizations(ENGINE,active_only=True); org_opts={o['name']:o['id'] for o in orgs}; current_org=a.get('organization_id') or (next(iter(org_opts.values())) if org_opts else None); current_org_label=next((k for k,v in org_opts.items() if v==current_org),next(iter(org_opts),'—'))
+    agencies=list_agencies(ENGINE,current_org,active_only=True) if current_org else []; agency_opts={'— Siège / aucune agence —':None,**{g['name']:g['id'] for g in agencies}}; current_agency_label=next((k for k,v in agency_opts.items() if v==a.get('agency_id')),'— Siège / aucune agence —')
     with st.form(f'action_settings_{a["id"]}'):
         c1,c2=st.columns(2);title=c1.text_input('Intitulé',value=a['title']);subtitle=c2.text_input('Intitulé complémentaire',value=a.get('subtitle') or '')
-        c1,c2,c3=st.columns(3);nature=c1.selectbox('Nature',['Formation','Bilan de compétences','Coaching / accompagnement','Autre'],index=['Formation','Bilan de compétences','Coaching / accompagnement','Autre'].index(a['nature']) if a['nature'] in ['Formation','Bilan de compétences','Coaching / accompagnement','Autre'] else 0);mode=c2.selectbox('Organisation',['INTRA','INTER','INDIVIDUEL'],index=['INTRA','INTER','INDIVIDUEL'].index(a['mode']));status=c3.selectbox('Statut',['BROUILLON','ACTIVE','TERMINEE','ARCHIVE'],index=['BROUILLON','ACTIVE','TERMINEE','ARCHIVE'].index(a['status']) if a['status'] in ['BROUILLON','ACTIVE','TERMINEE','ARCHIVE'] else 0)
-        c1,c2,c3=st.columns(3);planned=c1.number_input('Durée prévue (h)',min_value=0.0,step=.5,value=float(a.get('planned_hours') or 0));expected=c2.number_input('Nombre prévu de stagiaires',min_value=1,step=1,value=int(a.get('expected_participants') or 1));group=c3.text_input('Code groupe / session',value=a.get('group_code') or '')
+        c1,c2=st.columns(2);start_date=c1.date_input('Date de début',value=date.fromisoformat(a['start_date']) if a.get('start_date') else date.today());end_date=c2.date_input('Date de fin',value=date.fromisoformat(a['end_date']) if a.get('end_date') else date.today())
+        c1,c2,c3=st.columns(3);pt_label=c1.selectbox('Type de prestation',list(prestation_labels),index=list(prestation_labels).index(current_label));mode=c2.selectbox('Organisation',['INTRA','INTER','INDIVIDUEL'],index=['INTRA','INTER','INDIVIDUEL'].index(a['mode']));status_opts=list(ACTION_STATUSES); current_status=normalize_action_status(a.get('status'));status=c3.selectbox('Statut',status_opts,index=status_opts.index(current_status) if current_status in status_opts else 0)
+        c1,c2,c3=st.columns(3);planned=c1.number_input('Durée prévue (h)',min_value=0.0,step=.5,value=float(a.get('planned_hours') or 0));expected=c2.number_input('Nombre prévu de participants',min_value=1,step=1,value=int(a.get('expected_participants') or 1));group=c3.text_input('Code groupe / session',value=a.get('group_code') or '')
         c1,c2=st.columns(2);client=c1.text_input('Client / entreprise',value=a.get('client_name') or '');client_type=c2.selectbox('Type client',['Non précisé','Professionnel','Particulier'],index=['Non précisé','Professionnel','Particulier'].index(a.get('client_type')) if a.get('client_type') in ['Non précisé','Professionnel','Particulier'] else 0)
-        c1,c2=st.columns(2);trainer=c1.text_input('Intervenant',value=a.get('trainer_name') or '');location=c2.text_input('Lieu / modalité',value=a.get('location') or '')
-        admin_email=st.text_input('Email administrateur destinataire',value=a.get('admin_email') or st.session_state.admin_email);notes=st.text_area('Observations',value=a.get('notes') or '')
+        c1,c2=st.columns(2); org_label=c1.selectbox('Organisme',list(org_opts),index=list(org_opts).index(current_org_label) if current_org_label in org_opts else 0); agency_label=c2.selectbox('Agence / établissement',list(agency_opts),index=list(agency_opts).index(current_agency_label) if current_agency_label in agency_opts else 0)
+        st.markdown('**Modules activés**');m1,m2,m3,m4=st.columns(4);use_attendance=m1.checkbox('Émargement',value=bool(a.get('use_attendance',1)));use_hot=m2.checkbox('Évaluation à chaud',value=bool(a.get('use_quality_hot',0)));use_cold=m3.checkbox('Évaluation à froid',value=bool(a.get('use_quality_cold',0)));use_trainer=m4.checkbox('Retour intervenant',value=bool(a.get('use_trainer_feedback',0)))
+        trainers=list_trainers(ENGINE,active_only=True); trainer_opts={'— Aucun intervenant référencé —':None,**{f"{t['full_name']} — {t.get('email') or 'sans email'}":t['id'] for t in trainers}}; trainer_labels=list(trainer_opts); current_idx=next((i for i,l in enumerate(trainer_labels) if trainer_opts[l]==a.get('trainer_id')),0)
+        c1,c2=st.columns(2);trainer_label=c1.selectbox('Intervenant référencé',trainer_labels,index=current_idx);location=c2.text_input('Lieu / modalité',value=a.get('location') or '')
+        admins=q(ENGINE,'SELECT email,full_name FROM admins WHERE active=1 ORDER BY full_name,email');admin_opts={f"{x.get('full_name') or x['email']} — {x['email']}":x['email'] for x in admins};cur_email=a.get('admin_email') or st.session_state.admin_email;cur_admin=next((k for k,v in admin_opts.items() if v==cur_email),list(admin_opts)[0] if admin_opts else '');admin_label=st.selectbox('Administrateur référent',list(admin_opts),index=list(admin_opts).index(cur_admin) if cur_admin in admin_opts else 0);admin_email=admin_opts.get(admin_label,cur_email);notes=st.text_area('Observations',value=a.get('notes') or '')
         save=st.form_submit_button('Enregistrer les modifications',type='primary')
     if save:
-        update_action(ENGINE,a['id'],{'title':title,'subtitle':subtitle or None,'nature':nature,'mode':mode,'client_name':client or None,'client_type':client_type,'group_code':group or None,'planned_hours':float(planned),'expected_participants':int(expected),'admin_email':admin_email,'trainer_name':trainer or None,'trainer_email':a.get('trainer_email'),'location':location or None,'notes':notes or None,'status':status},st.session_state.admin_email);st.success('Action mise à jour.');rerun()
+        try:
+            nature=pt_label
+            update_action(ENGINE,a['id'],{'title':title,'subtitle':subtitle or None,'nature':nature,'mode':mode,'client_name':client or None,'client_type':client_type,'group_code':group or None,'planned_hours':float(planned),'expected_participants':int(expected),'admin_email':admin_email,'trainer_name':a.get('trainer_name'),'trainer_email':a.get('trainer_email'),'location':location or None,'notes':notes or None,'status':status},st.session_state.admin_email)
+            safe_set_action_modules(ENGINE,a['id'],prestation_labels[pt_label],use_attendance,use_hot,use_cold,use_trainer,org_opts.get(org_label),agency_opts.get(agency_label),st.session_state.admin_email)
+            execute(ENGINE,'UPDATE actions SET start_date=:s,end_date=:e WHERE id=:a',{'s':start_date.isoformat(),'e':end_date.isoformat(),'a':a['id']})
+            assign_trainer(ENGINE,a['id'],trainer_opts.get(trainer_label),st.session_state.admin_email);st.success('Action mise à jour.');rerun()
+        except ValueError as ex: st.error(str(ex))
+    current_status=normalize_action_status(a.get('status'))
+    if current_status=='CLOTUREE':
+        if st.button('Archiver cette action',key=f'archive{a["id"]}'):
+            archive_action(ENGINE,a['id'],st.session_state.admin_email);rerun()
+    elif current_status=='ARCHIVEE':
+        if st.button('Réactiver depuis les archives',key=f'unarchive{a["id"]}'):
+            unarchive_action(ENGINE,a['id'],st.session_state.admin_email);rerun()
 
 def participants_tab(a):
     st.subheader('Participants')
@@ -290,6 +436,7 @@ def participants_tab(a):
             c1,c2,c3=st.columns(3);last=c1.text_input('Nom *');birth=c2.text_input('Nom de naissance');first=c3.text_input('Prénom *')
             c1,c2,c3=st.columns(3);bdate=c1.text_input('Date de naissance (JJ/MM/AAAA)');email=c2.text_input('Email (facultatif)');emp=c3.text_input('Matricule entreprise')
             c1,c2,c3=st.columns(3);company=c1.text_input('Entreprise / client');phone=c2.text_input('Téléphone');indno=c3.text_input('N° action individuel (INTER)',value=a['action_no'] if a['mode']!='INTER' else '')
+            send_code=st.checkbox('Envoyer immédiatement par email le code QR personnel et la notice sur les données (si une adresse email est renseignée)',value=True)
             submit=st.form_submit_button('Ajouter',type='primary')
         if submit:
             if not last.strip() or not first.strip(): st.error('Nom et prénom obligatoires.')
@@ -300,18 +447,42 @@ def participants_tab(a):
                 dup=participant_duplicate(ENGINE,a['id'],last,first,birth_iso,email)
                 if dup: st.error(f"Participant potentiellement déjà présent : {dup['last_name']} {dup['first_name']}.");return
                 pid,pin=add_participant(ENGINE,a['id'],{'individual_action_no':indno.strip() or None,'last_name':last.strip().upper(),'birth_name':birth.strip().upper() or None,'first_name':first.strip().title(),'birth_date':birth_iso,'email':email.strip() or None,'employee_id':emp.strip() or None,'company_name':company.strip() or None,'phone':phone.strip() or None},st.session_state.admin_email)
-                st.success(f"Participant ajouté. Code QR personnel : {pin} — notez-le maintenant.");st.code(pin);st.info('Pour des raisons de sécurité, ce code ne pourra pas être réaffiché en clair.');
+                st.success(f"Participant ajouté. Code QR personnel : {pin}");st.code(pin);st.info('Le code n’est pas conservé en clair. En cas d’oubli, il sera réinitialisé.');
+                if send_code and email.strip():
+                    pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':pid});okm,msgm=send_participant_code_email(pp,a,pin);st.success(msgm) if okm else st.warning(msgm)
                 if one(ENGINE,'SELECT COUNT(*) n FROM slots WHERE action_id=:a',{'a':a['id']})['n']:
                     ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
     if parts:
-        ids={f"{p['last_name']} {p['first_name']}":p['id'] for p in parts};lab=st.selectbox('Supprimer un participant', ['—']+list(ids),key=f'delp{a["id"]}')
-        if lab!='—' and st.button('Supprimer le participant sélectionné'):
-            if one(ENGINE,'SELECT id FROM signatures WHERE participant_id=:p',{'p':ids[lab]}): st.error('Impossible : ce participant possède déjà une signature. Désactivez-le plutôt dans une version ultérieure.')
-            else: delete_participant(ENGINE,ids[lab],st.session_state.admin_email);rerun()
+        ids={f"{p['last_name']} {p['first_name']}":p['id'] for p in parts}
+        with st.expander('✏️ Modifier un participant'):
+            emap={f"{p['last_name']} {p['first_name']}":p for p in parts};el=st.selectbox('Participant à modifier',list(emap),key=f'editp{a["id"]}');ep=emap[el]
+            with st.form(f'editpf{a["id"]}_{ep["id"]}'):
+                c1,c2,c3=st.columns(3);ln=c1.text_input('Nom',value=ep.get('last_name') or '');bn=c2.text_input('Nom de naissance',value=ep.get('birth_name') or '');fn=c3.text_input('Prénom',value=ep.get('first_name') or '')
+                bd='';
+                if ep.get('birth_date'):
+                    try: bd=datetime.fromisoformat(ep['birth_date']).strftime('%d/%m/%Y')
+                    except Exception: bd=ep['birth_date']
+                c1,c2,c3=st.columns(3);bds=c1.text_input('Date de naissance JJ/MM/AAAA',value=bd);em=c2.text_input('Email',value=ep.get('email') or '');emp=c3.text_input('Matricule',value=ep.get('employee_id') or '')
+                c1,c2,c3=st.columns(3);co=c1.text_input('Entreprise',value=ep.get('company_name') or '');ph=c2.text_input('Téléphone',value=ep.get('phone') or '');ino=c3.text_input('N° action individuel',value=ep.get('individual_action_no') or '')
+                savep=st.form_submit_button('Enregistrer les modifications')
+            if savep:
+                try: bdi=datetime.strptime(bds.strip(),'%d/%m/%Y').date().isoformat() if bds.strip() else None
+                except ValueError: st.error('Date invalide : utilisez JJ/MM/AAAA.');bdi='__ERR__'
+                if bdi!='__ERR__': update_participant(ENGINE,ep['id'],{'last_name':ln.strip().upper(),'birth_name':bn.strip().upper() or None,'first_name':fn.strip().title(),'birth_date':bdi,'email':em.strip() or None,'employee_id':emp.strip() or None,'company_name':co.strip() or None,'phone':ph.strip() or None,'individual_action_no':ino.strip() or None,'active':1},st.session_state.admin_email);st.success('Participant modifié.');rerun()
+        with st.expander('🗑️ Supprimer définitivement un participant'):
+            lab=st.selectbox('Participant à supprimer', ['—']+list(ids),key=f'delp{a["id"]}')
+            if lab!='—':
+                st.warning('Cette suppression efface définitivement ce participant et ses signatures, statuts de présence, relances, jetons et traces participant liées à cette action.')
+                confirm=st.text_input(f"Saisissez SUPPRIMER {lab} pour confirmer",key=f'delptext{a["id"]}');pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delppw{a["id"]}')
+                if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT',key=f'delpbtn{a["id"]}'):
+                    if confirm.strip()!=f'SUPPRIMER {lab}': st.error('Confirmation incorrecte.')
+                    elif not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Mot de passe administrateur incorrect.')
+                    else:
+                        okd,msgd=purge_participant(ENGINE,ids[lab],st.session_state.admin_email);st.success('Participant supprimé intégralement.') if okd else st.error(msgd);rerun() if okd else None
         st.markdown('**Réinitialiser un code personnel QR**')
         rlab=st.selectbox('Participant concerné',list(ids),key=f'pinreset{a["id"]}')
         if st.button('Générer un nouveau code à 4 chiffres',key=f'pinbtn{a["id"]}'):
-            newpin=reset_participant_pin(ENGINE,ids[rlab],st.session_state.admin_email);st.success('Nouveau code généré. Communiquez-le au participant :');st.code(newpin)
+            newpin=reset_participant_pin(ENGINE,ids[rlab],st.session_state.admin_email);st.success('Nouveau code généré :');st.code(newpin);pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':ids[rlab]});okm,msgm=send_participant_code_email(pp,a,newpin);st.success(msgm) if okm else st.info(msgm)
 
 def calendar_tab(a):
     st.subheader('Calendrier et créneaux')
@@ -352,10 +523,16 @@ def calendar_tab(a):
         if st.button('Dupliquer cette journée'):
             for s in [x for x in slots if x['slot_date']==src]: add_slot(ENGINE,a['id'],dst.isoformat(),s['start_time'],s['end_time'],st.session_state.admin_email,s['send_offset_min'],s['reminder1_offset_min'],s['reminder2_offset_min'],s['close_offset_min'])
             ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);rerun()
-        st.markdown('**Supprimer un créneau (possible uniquement s’il n’est pas signé)**')
-        choices={f"#{s['id']} — {s['slot_date']} {s['start_time']}–{s['end_time']}":s['id'] for s in slots};ch=st.selectbox('Créneau',list(choices),key=f'dels{a["id"]}')
-        if st.button('Supprimer ce créneau'):
-            ok,msg=delete_slot(ENGINE,choices[ch],st.session_state.admin_email);st.success('Créneau supprimé.') if ok else st.error(msg);rerun() if ok else None
+        st.markdown('**Supprimer un créneau**')
+        choices={f"#{s['id']} — {s['slot_date']} {s['start_time']}–{s['end_time']}":s['id'] for s in slots};ch=st.selectbox('Créneau',list(choices),key=f'dels{a["id"]}');sid_del=choices[ch]
+        if st.button('Supprimer ce créneau s’il ne contient aucune preuve'):
+            ok,msg=delete_slot(ENGINE,sid_del,st.session_state.admin_email);st.success('Créneau supprimé.') if ok else st.error(msg);rerun() if ok else None
+        with st.expander('🗑️ Suppression définitive, y compris preuves existantes'):
+            st.warning('À utiliser uniquement pour une erreur de saisie ou un dossier de test. Toutes les signatures, absences, relances et contresignatures de ce créneau seront supprimées.')
+            conf=st.text_input(f'Saisissez SUPPRIMER CRENEAU {sid_del}',key=f'delsconf{a["id"]}');pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delspw{a["id"]}')
+            if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT LE CRÉNEAU',key=f'delshard{a["id"]}'):
+                if conf.strip()!=f'SUPPRIMER CRENEAU {sid_del}' or not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Confirmation ou mot de passe incorrect.')
+                else: ok,msg=purge_slot(ENGINE,sid_del,st.session_state.admin_email);st.success('Créneau supprimé intégralement.') if ok else st.error(msg);rerun() if ok else None
 
 def dispatch_tab(a):
     st.subheader('Envois automatiques et relances')
@@ -374,7 +551,7 @@ def dispatch_tab(a):
             sc={f"{x['slot_date']} {x['start_time']}–{x['end_time']}":x for x in slots};sl=st.selectbox('Créneau à relancer',list(sc),key=f'mails{a["id"]}');ss=sc[sl]
             if st.button('Envoyer maintenant le lien personnel'):
                 ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);url=token_url(ENGINE,pp['id'],ss['id'],BASE_URL)
-                cfg=dict(st.secrets.get('smtp',{}));subject=f"Clarté360 — émargement — {a['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci d'émarger votre présence pour <strong>{a['title']}</strong>, le {ss['slot_date']} de {ss['start_time']} à {ss['end_time']}.</p><p><a href='{url}' style='background:#008080;color:white;padding:12px 18px;text-decoration:none;border-radius:8px'>SIGNER MA PRÉSENCE</a></p>"
+                cfg=dict(st.secrets.get('smtp',{}));subject=f"Clarté360 — émargement — {a['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci d'émarger votre présence pour <strong>{a['title']}</strong>, le {ss['slot_date']} de {ss['start_time']} à {ss['end_time']}.</p><p><a href='{url}' style='background:#008080;color:white;padding:12px 18px;text-decoration:none;border-radius:8px'>SIGNER MA PRÉSENCE</a></p><p>Ce lien personnel ne nécessite pas le code QR à 4 chiffres.</p>{PRIVACY_NOTICE}"
                 try:
                     send_mail(cfg,pp['email'],subject,body);audit(ENGINE,'MANUAL_EMAIL_SENT',a['id'],st.session_state.admin_email,'participant',pp['id'],{'slot_id':ss['id'],'email':pp['email']});st.success('Email envoyé.')
                 except Exception as ex: st.error(f"Envoi impossible : {ex}")
@@ -409,13 +586,82 @@ def tracking_tab(a):
     if parts and slots:
         pc={f"{p['last_name']} {p['first_name']}":p for p in parts};sc={f"{s['slot_date']} {s['start_time']}–{s['end_time']} #{s['id']}":s for s in slots};c1,c2=st.columns(2);pp=pc[c1.selectbox('Participant',list(pc),key=f'atp{a["id"]}')];ss=sc[c2.selectbox('Créneau',list(sc),key=f'ats{a["id"]}')];reason=st.text_input('Motif / observation',key=f'atr{a["id"]}')
         c1,c2=st.columns(2)
-        if c1.button('Marquer ABSENT',key=f'abs{a["id"]}'): set_attendance_status(ENGINE,pp['id'],ss['id'],'ABSENT',reason,st.session_state.admin_email);rerun()
+        if c1.button('Marquer ABSENT',key=f'abs{a["id"]}'):
+            oka,msga=set_attendance_status(ENGINE,pp['id'],ss['id'],'ABSENT',reason,st.session_state.admin_email)
+            if oka: rerun()
+            else: st.error(msga)
         if c2.button('Remettre EN ATTENTE',key=f'wait{a["id"]}'): set_attendance_status(ENGINE,pp['id'],ss['id'],'EN_ATTENTE',reason,st.session_state.admin_email);rerun()
         st.markdown('### Créer une séance de rattrapage')
         absent=q(ENGINE,"""SELECT p.* FROM attendance_status x JOIN participants p ON p.id=x.participant_id WHERE x.slot_id=:s AND x.status='ABSENT'""",{'s':ss['id']});opts={f"{p['last_name']} {p['first_name']}":p['id'] for p in absent};sel=st.multiselect('Absents concernés',list(opts),default=list(opts));c1,c2,c3=st.columns(3);rd=c1.date_input('Date du rattrapage',key=f'rd{a["id"]}');rs=c2.time_input('Début rattrapage',value=time(9,0),key=f'rs{a["id"]}');re=c3.time_input('Fin rattrapage',value=time(12,0),key=f're{a["id"]}')
         if st.button('Créer le créneau de rattrapage',key=f'catch{a["id"]}'):
             if not sel: st.error('Sélectionnez au moins un participant absent.')
             else: ns=create_catchup_slot(ENGINE,ss['id'],rd.isoformat(),rs.strftime('%H:%M'),re.strftime('%H:%M'),[opts[x] for x in sel],st.session_state.admin_email);ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success(f'Rattrapage créé : créneau #{ns}.');rerun()
+
+def quality_tab(a):
+    st.subheader('Évaluations qualité')
+    enabled=[]
+    if a.get('use_quality_hot'): enabled.append('à chaud')
+    if a.get('use_quality_cold'): enabled.append('à froid')
+    if a.get('use_trainer_feedback'): enabled.append('retour intervenant')
+    if not enabled:
+        st.info("Aucun module qualité n'est activé pour cette action. Vous pouvez les activer dans « Paramètres action ».")
+        return
+    st.caption('Modules activés : '+', '.join(enabled)+'. Les campagnes utilisent les questionnaires standard V2 versionnés et les rubriques analytiques fixes Rxx/Ixx.')
+    maxslot=one(ENGINE,'SELECT MAX(slot_date) d FROM slots WHERE action_id=:a',{'a':a['id']})
+    end_date=a.get('end_date') or (maxslot.get('d') if maxslot else None)
+    if not end_date:
+        st.warning("Renseignez la date de fin de l'action avant de préparer les campagnes qualité.")
+    else:
+        st.write(f"Date de fin de référence : **{datetime.fromisoformat(end_date).strftime('%d/%m/%Y')}**")
+        if a.get('use_quality_cold'):
+            pt=(a.get('prestation_type') or 'FORMATION').upper();label='M+6' if pt=='BILAN_COMPETENCES' else 'J+90 (ou date spécifique si renseignée)'
+            st.caption(f'Échéance standard à froid : {label}.')
+        if st.button('Préparer les campagnes qualité standard',type='primary',key=f'prepquality{a["id"]}',disabled=not bool(end_date)):
+            try:
+                made=prepare_quality_campaigns(ENGINE,a['id'],BASE_URL,st.session_state.admin_email)
+                if made: st.success(f'{len(made)} campagne(s) créée(s) et planifiée(s).')
+                else: st.info('Toutes les campagnes nécessaires étaient déjà préparées.')
+                rerun()
+            except ValueError as ex: st.error(str(ex))
+    campaigns=list_quality_campaigns(ENGINE,a['id'])
+    if campaigns:
+        rows=[]
+        tzname=organization_runtime_config(ENGINE,a['id'])['timezone']
+        for c in campaigns:
+            who=c.get('trainer_full_name') or f"{c.get('first_name') or ''} {c.get('last_name') or ''}".strip()
+            due=local_dt(c['due_at'],tzname)
+            rows.append({'ID':c['id'],'Type':c['campaign_kind'],'Questionnaire':c['questionnaire_title'],'Répondant':who,'Échéance':due.strftime('%d/%m/%Y %H:%M'),'Statut':c['status']})
+        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+        cmap={f"#{c['id']} — {c['campaign_kind']} — {(c.get('trainer_full_name') or ((c.get('first_name') or '')+' '+(c.get('last_name') or '')).strip())}":c for c in campaigns}
+        selected=cmap[st.selectbox('Campagne à consulter',list(cmap),key=f'qcamp{a["id"]}')]
+        st.code(quality_token_url(selected['token'],BASE_URL))
+        c1,c2=st.columns(2)
+        if c1.button('Déclencher / reprogrammer l’envoi initial maintenant',key=f'qsend{selected["id"]}',disabled=selected['status']=='COMPLETED'):
+            if force_quality_event_now(ENGINE,selected['id'],'INITIAL'): st.success('Envoi placé dans la file du worker.');rerun()
+            else: st.warning('Événement initial introuvable ou déjà traité.')
+        if selected['status']=='COMPLETED':
+            try:
+                qpdf=quality_response_pdf(ENGINE,selected['id'])
+                c2.download_button('Télécharger le questionnaire PDF',qpdf,f"{a['action_no']}_questionnaire_{selected['id']}.pdf",'application/pdf',use_container_width=True)
+            except Exception as ex: c2.error(f'PDF qualité : {ex}')
+    issues=list_quality_issues(ENGINE,a['id'])
+    st.markdown('#### Difficultés, aléas, réclamations et amélioration')
+    with st.expander('Créer une fiche manuellement'):
+        with st.form(f'issue_new_{a["id"]}'):
+            it=st.selectbox('Type',['DIFFICULTE_ALEA','RECLAMATION','INCIDENT']); title=st.text_input('Titre'); desc=st.text_area('Description'); owner=st.text_input('Responsable'); ok=st.form_submit_button('Créer la fiche')
+        if ok and title.strip(): create_quality_issue(ENGINE,a['id'],it,title.strip(),desc,owner,st.session_state.admin_email);rerun()
+    if issues:
+        imap={f"#{i['id']} — {i['issue_type']} — {i['title']} — {i['status']}":i for i in issues}; il=st.selectbox('Fiche à suivre',list(imap),key=f'issue_sel_{a["id"]}'); ii=imap[il]
+        c1,c2=st.columns(2); ns=c1.selectbox('Statut',['OUVERTE','EN_COURS','CLOTUREE'],index=['OUVERTE','EN_COURS','CLOTUREE'].index(ii['status']) if ii['status'] in ['OUVERTE','EN_COURS','CLOTUREE'] else 0,key=f'is_{ii["id"]}'); own=c2.text_input('Responsable',value=ii.get('owner') or '',key=f'io_{ii["id"]}')
+        if st.button('Mettre à jour la fiche',key=f'iu_{ii["id"]}'): update_quality_issue(ENGINE,ii['id'],ns,own,st.session_state.admin_email);rerun()
+        with st.form(f'imp_new_{ii["id"]}'):
+            tt=st.text_input('Action d’amélioration'); dd=st.text_area('Description de l’action'); oo=st.text_input('Responsable action'); due=st.date_input('Échéance',value=None); addi=st.form_submit_button('Ajouter l’action d’amélioration')
+        if addi and tt.strip(): create_improvement_action(ENGINE,a['id'],tt.strip(),dd,oo,due.isoformat() if due else None,ii['id'],st.session_state.admin_email);rerun()
+    imps=q(ENGINE,'SELECT * FROM improvement_actions WHERE action_id=:a ORDER BY id DESC',{'a':a['id']})
+    if imps: st.dataframe(pd.DataFrame(imps)[['id','title','owner','due_at','status','completed_at']],use_container_width=True,hide_index=True)
+    if issues:
+        st.markdown('### Difficultés / aléas / réclamations détectés')
+        st.dataframe(pd.DataFrame(issues),use_container_width=True,hide_index=True)
 
 def documents_tab(a):
     st.subheader('Documents et archivage')
@@ -425,12 +671,25 @@ def documents_tab(a):
     parts=q(ENGINE,'SELECT * FROM participants WHERE action_id=:a ORDER BY last_name,first_name',{'a':a['id']})
     if parts:
         labels={f"{p['last_name']} {p['first_name']}":p for p in parts};lab=st.selectbox('Participant',list(labels),key=f'docp{a["id"]}');p=labels[lab]
+        st.caption(f"Durée réellement justifiée : {actual_hours_for_participant(ENGINE,p['id']):g} h / {float(a.get('planned_hours') or 0):g} h prévues.")
         c1,c2=st.columns(2)
         ipdf=individual_pdf(ENGINE,p['id']);c1.download_button('Feuille individuelle PDF',ipdf,f"{a['action_no']}_{p['last_name']}_{p['first_name']}_emargement.pdf",'application/pdf',use_container_width=True)
-        ok_cert,issues=can_issue_certificate(ENGINE,p['id'])
+        preview=certificate_pdf(ENGINE,p['id'],draft=True);c2.download_button('Aperçu certificat — NON DÉFINITIF',preview,f"{a['action_no']}_{p['last_name']}_{p['first_name']}_certificat_APERCU.pdf",'application/pdf',use_container_width=True)
+        ok_pre,issues_pre=can_issue_certificate(ENGINE,p['id'],require_closed=False)
+        if normalize_action_status(a.get('status'))!='CLOTUREE':
+            if ok_pre:
+                st.info("Toutes les preuves de ce participant sont réunies. L'action doit maintenant être clôturée pour éditer le certificat définitif.")
+            else:
+                st.warning('Certificat définitif encore bloqué : '+ ' ; '.join(issues_pre[:5]))
+        ok_close,close_issues=action_can_close(ENGINE,a['id'])
+        if normalize_action_status(a.get('status'))!='CLOTUREE':
+            if st.button('✅ Clôturer l’action et autoriser les certificats définitifs',type='primary',disabled=not ok_close,key=f'close{a["id"]}'):
+                okc,ic=close_action(ENGINE,a['id'],st.session_state.admin_email);st.success('Action clôturée.') if okc else st.error(' ; '.join(ic));rerun() if okc else None
+            if not ok_close: st.caption('Clôture impossible : '+ ' ; '.join(close_issues[:6]))
+        ok_cert,issues=can_issue_certificate(ENGINE,p['id'],require_closed=True)
         if ok_cert:
-            cert=certificate_pdf(ENGINE,p['id']);c2.download_button('Certificat de réalisation PDF',cert,f"{a['action_no']}_{p['last_name']}_{p['first_name']}_certificat_realisation.pdf",'application/pdf',use_container_width=True)
-        else: c2.warning('Certificat définitif indisponible : '+ ' ; '.join(issues[:4]))
+            cert=certificate_pdf(ENGINE,p['id']);st.download_button('Certificat de réalisation DÉFINITIF',cert,f"{a['action_no']}_{p['last_name']}_{p['first_name']}_certificat_realisation.pdf",'application/pdf',use_container_width=True)
+        elif normalize_action_status(a.get('status'))=='CLOTUREE': st.warning('Certificat définitif indisponible : '+ ' ; '.join(issues[:5]))
     js=export_action_json(ENGINE,a['id']);st.download_button('Exporter le dossier JSON portable',js,f"{a['action_no']}_dossier.json",'application/json')
     try:
         pdfs={'emargement_collectif.pdf':collective_pdf(ENGINE,a['id'])};z=export_action_zip(ENGINE,a['id'],pdfs);st.download_button('Exporter l’archive complète ZIP',z,f"{a['action_no']}_archive_complete.zip",'application/zip')
@@ -442,14 +701,108 @@ def audit_tab(a):
     if logs: st.dataframe(pd.DataFrame(logs),use_container_width=True,hide_index=True)
 
 def settings_screen():
-    header('Clarté360 — Paramètres','État de la configuration du serveur')
-    st.write(f"URL publique configurée : `{BASE_URL}`")
-    smtp_enabled=bool(secret('smtp','enabled',False));st.write('Email automatique :', '✅ activé' if smtp_enabled else '⚠️ non activé')
-    st.caption('Les paramètres sensibles sont stockés dans .streamlit/secrets.toml sur le VPS et ne doivent jamais être envoyés sur GitHub.')
+    header('Clarté360 — Paramètres','Administration de l’application')
+    tabg,tabo,tabag,taba,tabt=st.tabs(['Général','Organisme','Agences / établissements','Administrateurs','Formateurs / accompagnants'])
+    with tabg:
+        st.write(f"URL publique configurée : `{BASE_URL}`")
+        smtp_enabled=bool(secret('smtp','enabled',False));st.write('Email automatique :', '✅ activé' if smtp_enabled else '⚠️ non activé')
+        st.markdown(privacy_notice_html(),unsafe_allow_html=True)
+        st.caption('Les paramètres sensibles sont stockés dans .streamlit/secrets.toml sur le VPS et ne doivent jamais être envoyés sur GitHub.')
+    with tabo:
+        st.subheader('Identité de l’organisme')
+        org=get_organization(ENGINE); oid=(org or {}).get('id')
+        with st.form('organization_settings'):
+            c1,c2=st.columns(2); name=c1.text_input('Nom commercial *',value=(org or {}).get('name') or ''); legal=c2.text_input('Raison sociale',value=(org or {}).get('legal_name') or '')
+            address=st.text_input('Adresse du siège',value=(org or {}).get('address') or ''); c1,c2,c3=st.columns(3); postal=c1.text_input('Code postal',value=(org or {}).get('postal_code') or ''); city=c2.text_input('Ville',value=(org or {}).get('city') or ''); country=c3.text_input('Pays',value=(org or {}).get('country') or 'France')
+            c1,c2,c3,c4=st.columns(4); siret=c1.text_input('SIRET',value=(org or {}).get('siret') or ''); rcs=c2.text_input('RCS',value=(org or {}).get('rcs') or ''); naf=c3.text_input('NAF',value=(org or {}).get('naf') or ''); vat=c4.text_input('TVA / Id CEE',value=(org or {}).get('vat_id') or '')
+            c1,c2,c3=st.columns(3); nda=c1.text_input('NDA',value=(org or {}).get('nda') or ''); website=c2.text_input('Site web',value=(org or {}).get('website') or ''); phone=c3.text_input('Téléphone',value=(org or {}).get('phone') or '')
+            c1,c2=st.columns(2); general_email=c1.text_input('Email général',value=(org or {}).get('general_email') or ''); tz=c2.text_input('Fuseau horaire IANA',value=(org or {}).get('timezone') or 'Europe/Paris')
+            c1,c2=st.columns(2); privacy_contact=c1.text_input('Contact RGPD',value=(org or {}).get('privacy_contact') or ''); retention=c2.number_input('Conservation indicative (mois)',min_value=0,step=1,value=int((org or {}).get('retention_months') or 0))
+            privacy_notice=st.text_area('Notice RGPD',value=(org or {}).get('privacy_notice') or '',height=130)
+            c1,c2=st.columns(2); from_name=c1.text_input('Nom affiché expéditeur',value=(org or {}).get('email_from_name') or ''); from_address=c2.text_input('Adresse expéditeur (si différente du secret SMTP)',value=(org or {}).get('email_from_address') or '')
+            save_org=st.form_submit_button('Enregistrer l’organisme',type='primary')
+        if save_org:
+            if not name.strip(): st.error('Nom commercial obligatoire.')
+            else:
+                try:
+                    from zoneinfo import ZoneInfo; ZoneInfo(tz.strip())
+                    upsert_organization(ENGINE,oid,{'name':name.strip(),'legal_name':legal.strip() or None,'address':address.strip() or None,'postal_code':postal.strip() or None,'city':city.strip() or None,'country':country.strip() or None,'siret':siret.strip() or None,'rcs':rcs.strip() or None,'naf':naf.strip() or None,'vat_id':vat.strip() or None,'nda':nda.strip() or None,'website':website.strip() or None,'general_email':general_email.strip() or None,'phone':phone.strip() or None,'timezone':tz.strip(),'privacy_contact':privacy_contact.strip() or None,'privacy_notice':privacy_notice.strip() or None,'logo_path':(org or {}).get('logo_path'),'favicon_path':(org or {}).get('favicon_path'),'primary_color':(org or {}).get('primary_color'),'secondary_color':(org or {}).get('secondary_color'),'email_from_name':from_name.strip() or None,'email_from_address':from_address.strip() or None,'retention_months':int(retention) or None},st.session_state.admin_email);st.success('Organisme enregistré.');rerun()
+                except Exception as ex: st.error(f'Paramètres invalides : {ex}')
+    with tabag:
+        st.subheader('Agences / établissements')
+        org=get_organization(ENGINE)
+        if not org: st.warning('Configurez d’abord l’organisme.')
+        else:
+            agencies=list_agencies(ENGINE,org['id'])
+            if agencies: st.dataframe(pd.DataFrame(agencies)[['id','name','city','siret','nda','email','active']],use_container_width=True,hide_index=True)
+            with st.expander('Ajouter une agence / un établissement',expanded=not agencies):
+                with st.form('add_agency_form'):
+                    c1,c2=st.columns(2); aname=c1.text_input('Nom *'); aemail=c2.text_input('Email'); aaddress=st.text_input('Adresse'); c1,c2,c3=st.columns(3); apostal=c1.text_input('Code postal'); acity=c2.text_input('Ville'); acountry=c3.text_input('Pays',value='France'); c1,c2,c3=st.columns(3); asiret=c1.text_input('SIRET'); anda=c2.text_input('NDA'); aphone=c3.text_input('Téléphone'); aadd=st.form_submit_button('Ajouter')
+                if aadd:
+                    if not aname.strip(): st.error('Nom obligatoire.')
+                    else: add_agency(ENGINE,org['id'],{'name':aname.strip(),'address':aaddress.strip() or None,'postal_code':apostal.strip() or None,'city':acity.strip() or None,'country':acountry.strip() or None,'siret':asiret.strip() or None,'nda':anda.strip() or None,'email':aemail.strip() or None,'phone':aphone.strip() or None},st.session_state.admin_email);rerun()
+            if agencies:
+                amap={f"{x['name']} — {x.get('city') or ''}":x for x in agencies}; alab=st.selectbox('Agence à gérer',list(amap),key='agency_manage'); ag=amap[alab]
+                with st.form('edit_agency_form'):
+                    c1,c2=st.columns(2); ename=c1.text_input('Nom',value=ag['name']); eemail=c2.text_input('Email',value=ag.get('email') or ''); eaddress=st.text_input('Adresse',value=ag.get('address') or ''); c1,c2,c3=st.columns(3); epostal=c1.text_input('Code postal',value=ag.get('postal_code') or ''); ecity=c2.text_input('Ville',value=ag.get('city') or ''); ecountry=c3.text_input('Pays',value=ag.get('country') or ''); c1,c2,c3=st.columns(3); esiret=c1.text_input('SIRET',value=ag.get('siret') or ''); enda=c2.text_input('NDA',value=ag.get('nda') or ''); ephone=c3.text_input('Téléphone',value=ag.get('phone') or ''); eactive=st.checkbox('Agence active',value=bool(ag.get('active'))); esave=st.form_submit_button('Enregistrer les modifications')
+                if esave: update_agency(ENGINE,ag['id'],{'name':ename.strip(),'address':eaddress.strip() or None,'postal_code':epostal.strip() or None,'city':ecity.strip() or None,'country':ecountry.strip() or None,'siret':esiret.strip() or None,'nda':enda.strip() or None,'email':eemail.strip() or None,'phone':ephone.strip() or None,'active':int(eactive)},st.session_state.admin_email);rerun()
+    with taba:
+        st.subheader('Administrateurs autorisés')
+        admins=q(ENGINE,'SELECT id,email,full_name,active,role,created_at FROM admins ORDER BY id')
+        st.dataframe(pd.DataFrame(admins),use_container_width=True,hide_index=True)
+        with st.expander('Changer mon mot de passe'):
+            with st.form('change_my_pw'):
+                oldpw=st.text_input('Mot de passe actuel',type='password');np1=st.text_input('Nouveau mot de passe',type='password');np2=st.text_input('Confirmer le nouveau mot de passe',type='password');cpw=st.form_submit_button('Changer mon mot de passe')
+            if cpw:
+                if not admin_password_ok(ENGINE,st.session_state.admin_email,oldpw): st.error('Mot de passe actuel incorrect.')
+                elif len(np1)<10 or np1!=np2: st.error('Le nouveau mot de passe doit comporter au moins 10 caractères et les deux saisies doivent être identiques.')
+                else: execute(ENGINE,'UPDATE admins SET password_hash=:p WHERE email=:e',{'p':hash_password(np1),'e':st.session_state.admin_email});audit(ENGINE,'ADMIN_PASSWORD_CHANGED',actor=st.session_state.admin_email,entity_type='admin',details={});st.success('Mot de passe modifié.')
+        with st.expander('Ajouter un administrateur'):
+            with st.form('add_admin'):
+                n=st.text_input('Nom et prénom');e=st.text_input('Email').strip().lower();p1=st.text_input('Mot de passe initial',type='password');p2=st.text_input('Confirmer',type='password');add=st.form_submit_button('Créer administrateur')
+            if add:
+                if not e or len(p1)<10 or p1!=p2: st.error('Email requis, mot de passe d’au moins 10 caractères et confirmation identique.')
+                elif one(ENGINE,'SELECT id FROM admins WHERE email=:e',{'e':e}): st.error('Cet email existe déjà.')
+                else: execute(ENGINE,"INSERT INTO admins(email,password_hash,full_name,active,role,created_at) VALUES(:e,:p,:n,1,'ADMIN',:c)",{'e':e,'p':hash_password(p1),'n':n.strip() or None,'c':utcnow_iso()});audit(ENGINE,'ADMIN_CREATED',actor=st.session_state.admin_email,entity_type='admin',details={'email':e});st.success('Administrateur créé.');rerun()
+        others=[x for x in admins if x['email']!=st.session_state.admin_email]
+        if others:
+            st.markdown('**Activer / désactiver / supprimer**')
+            amap={f"{x.get('full_name') or x['email']} — {x['email']}":x for x in others};al=st.selectbox('Administrateur',list(amap),key='adm_manage');aa=amap[al]
+            c1,c2=st.columns(2)
+            if c1.button('Désactiver' if aa['active'] else 'Réactiver',key='adm_toggle'):
+                execute(ENGINE,'UPDATE admins SET active=:x WHERE id=:i',{'x':0 if aa['active'] else 1,'i':aa['id']});audit(ENGINE,'ADMIN_STATUS_CHANGED',actor=st.session_state.admin_email,entity_type='admin',entity_id=aa['id'],details={'active':not bool(aa['active'])});rerun()
+            with c2.expander('🗑️ Supprimer'):
+                pw=st.text_input('Votre mot de passe',type='password',key='admdelpw');conf=st.text_input('Saisissez SUPPRIMER',key='admdelconf')
+                if st.button('Supprimer cet administrateur',key='admdel'):
+                    if conf!='SUPPRIMER' or not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Confirmation ou mot de passe incorrect.')
+                    else: execute(ENGINE,'DELETE FROM admins WHERE id=:i',{'i':aa['id']});audit(ENGINE,'ADMIN_PURGED',actor=st.session_state.admin_email,entity_type='admin',entity_id=aa['id'],details={'email':aa['email']});rerun()
+    with tabt:
+        st.subheader('Formateurs / accompagnants référencés')
+        trainers=list_trainers(ENGINE)
+        if trainers: st.dataframe(pd.DataFrame(trainers)[['id','full_name','email','phone','active']],use_container_width=True,hide_index=True)
+        with st.expander('Ajouter un formateur / accompagnant',expanded=not trainers):
+            with st.form('add_trainer'):
+                n=st.text_input('Nom et prénom *');e=st.text_input('Email');ph=st.text_input('Téléphone');add=st.form_submit_button('Ajouter au référentiel')
+            if add:
+                if not n.strip(): st.error('Nom obligatoire.')
+                else:
+                    try: add_trainer(ENGINE,n,e,ph,st.session_state.admin_email);st.success('Intervenant ajouté.');rerun()
+                    except Exception as ex: st.error(f'Impossible : {ex}')
+        if trainers:
+            tmap={f"{x['full_name']} — {x.get('email') or 'sans email'}":x for x in trainers};tl=st.selectbox('Intervenant à gérer',list(tmap),key='tr_manage');tt=tmap[tl]
+            c1,c2=st.columns(2)
+            if c1.button('Désactiver' if tt['active'] else 'Réactiver',key='tr_toggle'): set_trainer_active(ENGINE,tt['id'],not bool(tt['active']),st.session_state.admin_email);rerun()
+            with c2.expander('🗑️ Supprimer définitivement'):
+                pw=st.text_input('Votre mot de passe administrateur',type='password',key='trdelpw');conf=st.text_input('Saisissez SUPPRIMER',key='trdelconf')
+                if st.button('Supprimer du référentiel',key='trdel'):
+                    if conf!='SUPPRIMER' or not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Confirmation ou mot de passe incorrect.')
+                    else: purge_trainer(ENGINE,tt['id'],st.session_state.admin_email);st.success('Intervenant supprimé.');rerun()
     footer()
 
 # ROUTING PUBLIC SIGNATURE
 params=st.query_params
+if params.get('quality_token'):
+    quality_page(params.get('quality_token'));st.stop()
 if params.get('trainer_token'):
     trainer_page(params.get('trainer_token'));st.stop()
 if params.get('token'):

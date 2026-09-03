@@ -1,0 +1,1671 @@
+[
+  {
+    "code": "STD-FORMATION-HOT",
+    "version": "2.0",
+    "prestation_type": "FORMATION",
+    "campaign_kind": "HOT",
+    "title": "Formation - évaluation à chaud du bénéficiaire",
+    "questions": [
+      {
+        "question_code": "F-CH-R01-01",
+        "rubric_code": "R01",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les informations reçues avant la formation étaient claires et suffisantes.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R01-02",
+        "rubric_code": "R01",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les objectifs annoncés étaient compréhensibles.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R02-01",
+        "rubric_code": "R02",
+        "response_type": "SCALE_1_5",
+        "question_text": "L’organisation générale (convocation, horaires, accès) était satisfaisante.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R03-01",
+        "rubric_code": "R03",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les locaux ou l’environnement numérique étaient adaptés.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R03-02",
+        "rubric_code": "R03",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les moyens techniques mis à disposition ont permis de suivre la formation dans de bonnes conditions.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R04-01",
+        "rubric_code": "R04",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les supports et ressources pédagogiques étaient utiles et adaptés.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R05-01",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le formateur maîtrisait le sujet traité.",
+        "position": 7,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R05-02",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les explications, exemples et consignes étaient clairs.",
+        "position": 8,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R05-03",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le rythme et l’animation ont favorisé mon apprentissage.",
+        "position": 9,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R06-01",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "La formation a été adaptée à mon niveau et à mes besoins.",
+        "position": 10,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R06-02",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai pu poser mes questions et obtenir des réponses utiles.",
+        "position": 11,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R07-01",
+        "rubric_code": "R07",
+        "response_type": "SCALE_1_5",
+        "question_text": "Mes éventuels besoins particuliers ou d’accessibilité ont été pris en compte de manière satisfaisante.",
+        "position": 12,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les objectifs de la formation me paraissent atteints.",
+        "position": 13,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R08-02",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’estime avoir développé des connaissances ou compétences utiles.",
+        "position": 14,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Je vois comment utiliser les acquis de cette formation dans ma situation.",
+        "position": 15,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Globalement, je suis satisfait(e) de cette formation.",
+        "position": 16,
+        "required": 1
+      },
+      {
+        "question_code": "F-CH-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 17,
+        "required": 0
+      },
+      {
+        "question_code": "F-CH-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 18,
+        "required": 0
+      },
+      {
+        "question_code": "F-CH-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 19,
+        "required": 0
+      },
+      {
+        "question_code": "F-CH-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 20,
+        "required": 0
+      },
+      {
+        "question_code": "F-CH-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 21,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-FORMATION-COLD",
+    "version": "2.0",
+    "prestation_type": "FORMATION",
+    "campaign_kind": "COLD",
+    "title": "Formation - évaluation à froid J+90 du bénéficiaire",
+    "questions": [
+      {
+        "question_code": "F-FR-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Depuis la formation, j’ai eu l’occasion d’utiliser tout ou partie des acquis.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "F-FR-R09-02",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les acquis sont utiles dans ma pratique professionnelle ou mon projet.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "F-FR-R09-03",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "La formation a contribué à améliorer mon autonomie ou mon efficacité.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "F-FR-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, les objectifs de la formation restent pertinents pour moi.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "F-FR-R08-02",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les compétences ou connaissances travaillées ont produit des effets concrets.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "F-FR-R04-01",
+        "rubric_code": "R04",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les supports ou ressources remis restent utiles après la formation.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "F-FR-R06-01",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "La formation était suffisamment adaptée à mes situations réelles de travail / projet.",
+        "position": 7,
+        "required": 1
+      },
+      {
+        "question_code": "F-FR-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, je reste satisfait(e) de la formation suivie.",
+        "position": 8,
+        "required": 1
+      },
+      {
+        "question_code": "F-FR-R09-04",
+        "rubric_code": "R09",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Depuis la formation, à quelle fréquence avez-vous utilisé les acquis ?",
+        "position": 9,
+        "required": 0
+      },
+      {
+        "question_code": "F-FR-R09-05",
+        "rubric_code": "R09",
+        "response_type": "TEXT_LONG",
+        "question_text": "Donnez un exemple concret d’utilisation ou d’impact observé :",
+        "position": 10,
+        "required": 0
+      },
+      {
+        "question_code": "F-FR-R12-01",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Avez-vous rencontré des freins à la mise en pratique ?",
+        "position": 11,
+        "required": 0
+      },
+      {
+        "question_code": "F-FR-R15-01",
+        "rubric_code": "R15",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Un besoin complémentaire vous paraît-il utile ?",
+        "position": 12,
+        "required": 0
+      },
+      {
+        "question_code": "F-FR-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 13,
+        "required": 0
+      },
+      {
+        "question_code": "F-FR-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 14,
+        "required": 0
+      },
+      {
+        "question_code": "F-FR-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 15,
+        "required": 0
+      },
+      {
+        "question_code": "F-FR-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 16,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-BILAN_COMPETENCES-HOT",
+    "version": "2.0",
+    "prestation_type": "BILAN_COMPETENCES",
+    "campaign_kind": "HOT",
+    "title": "Bilan de compétences - évaluation de fin de bilan",
+    "questions": [
+      {
+        "question_code": "BC-CH-R01-01",
+        "rubric_code": "R01",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le cadre, les étapes et les règles de confidentialité du bilan m’ont été clairement expliqués.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R06-01",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "Mes besoins et mes objectifs ont été analysés et définis avec moi.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R06-02",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le programme, le rythme et les modalités ont été adaptés à ma situation.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R05-01",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "L’accompagnateur a adopté une posture d’écoute, de neutralité et de respect de mes choix.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R05-02",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les échanges m’ont permis de prendre du recul sans que des conclusions me soient imposées.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R04-01",
+        "rubric_code": "R04",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les outils et supports utilisés ont été utiles à ma réflexion.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R07-01",
+        "rubric_code": "R07",
+        "response_type": "SCALE_1_5",
+        "question_text": "Mes éventuels besoins particuliers ou d’accessibilité ont été pris en compte.",
+        "position": 7,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R16-01",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le bilan m’a permis de mieux identifier mes compétences et ressources.",
+        "position": 8,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R16-02",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le bilan m’a permis de mieux comprendre mes motivations, valeurs et préférences professionnelles.",
+        "position": 9,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R16-03",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le bilan m’a aidé(e) à clarifier ou confirmer un projet professionnel.",
+        "position": 10,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R16-04",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les pistes étudiées ont été confrontées à leur faisabilité et à la réalité professionnelle.",
+        "position": 11,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les objectifs définis au début du bilan me paraissent atteints.",
+        "position": 12,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le plan d’action final constitue un support utile pour la suite.",
+        "position": 13,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R04-02",
+        "rubric_code": "R04",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le document de synthèse reflète fidèlement les éléments que je retiens de mon bilan.",
+        "position": 14,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Globalement, je suis satisfait(e) de mon bilan de compétences.",
+        "position": 15,
+        "required": 1
+      },
+      {
+        "question_code": "BC-CH-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 16,
+        "required": 0
+      },
+      {
+        "question_code": "BC-CH-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 17,
+        "required": 0
+      },
+      {
+        "question_code": "BC-CH-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 18,
+        "required": 0
+      },
+      {
+        "question_code": "BC-CH-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 19,
+        "required": 0
+      },
+      {
+        "question_code": "BC-CH-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 20,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-BILAN_COMPETENCES-COLD",
+    "version": "2.0",
+    "prestation_type": "BILAN_COMPETENCES",
+    "campaign_kind": "COLD",
+    "title": "Bilan de compétences - suivi qualité à 6 mois",
+    "questions": [
+      {
+        "question_code": "BC-6M-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le bilan reste utile dans mes décisions ou démarches professionnelles.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "BC-6M-R09-02",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai utilisé le plan d’action ou le document de synthèse depuis la fin du bilan.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "BC-6M-R16-01",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le projet ou les pistes retenues à l’issue du bilan restent cohérents avec ma situation actuelle.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "BC-6M-R16-02",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le bilan m’a aidé(e) à passer à l’action.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "BC-6M-R16-03",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le bilan m’a aidé(e) à mieux argumenter ou sécuriser mes choix professionnels.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "BC-6M-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec six mois de recul, les objectifs initiaux du bilan ont produit des effets utiles.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "BC-6M-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, je reste satisfait(e) de l’accompagnement réalisé.",
+        "position": 7,
+        "required": 1
+      },
+      {
+        "question_code": "BC-6M-R16-04",
+        "rubric_code": "R16",
+        "response_type": "TEXT_LONG",
+        "question_text": "Où en est aujourd’hui votre projet principal ?",
+        "position": 8,
+        "required": 0
+      },
+      {
+        "question_code": "BC-6M-R09-03",
+        "rubric_code": "R09",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quelles actions prévues au plan d’action avez-vous réalisées ?",
+        "position": 9,
+        "required": 0
+      },
+      {
+        "question_code": "BC-6M-R12-01",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quelles difficultés ou évolutions ont modifié votre situation depuis la fin du bilan ?",
+        "position": 10,
+        "required": 0
+      },
+      {
+        "question_code": "BC-6M-R15-01",
+        "rubric_code": "R15",
+        "response_type": "TEXT_LONG",
+        "question_text": "Un ajustement du plan d’action vous paraît-il nécessaire ?",
+        "position": 11,
+        "required": 0
+      },
+      {
+        "question_code": "BC-6M-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 12,
+        "required": 0
+      },
+      {
+        "question_code": "BC-6M-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 13,
+        "required": 0
+      },
+      {
+        "question_code": "BC-6M-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 14,
+        "required": 0
+      },
+      {
+        "question_code": "BC-6M-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 15,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-VAE-HOT",
+    "version": "2.0",
+    "prestation_type": "VAE",
+    "campaign_kind": "HOT",
+    "title": "VAE - évaluation de fin d’accompagnement",
+    "questions": [
+      {
+        "question_code": "VAE-CH-R01-01",
+        "rubric_code": "R01",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les étapes, conditions et exigences de la démarche VAE m’ont été clairement expliquées.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R02-01",
+        "rubric_code": "R02",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le calendrier et l’organisation de l’accompagnement étaient clairs.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R05-01",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "L’accompagnateur maîtrisait la méthodologie d’accompagnement VAE.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R05-02",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "L’accompagnement m’a aidé(e) à analyser et expliciter mon expérience.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R16-01",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai été aidé(e) à mettre en relation mon expérience avec le référentiel de la certification visée.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R16-02",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "L’accompagnement m’a aidé(e) à structurer et argumenter mon dossier.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R16-03",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai été suffisamment préparé(e) aux attendus du jury lorsque cette étape était prévue.",
+        "position": 7,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R06-01",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "La durée et les modalités d’accompagnement ont été adaptées à ma situation.",
+        "position": 8,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R03-01",
+        "rubric_code": "R03",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les moyens techniques / numériques utilisés étaient adaptés.",
+        "position": 9,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R04-01",
+        "rubric_code": "R04",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les supports et ressources utilisés étaient utiles.",
+        "position": 10,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R07-01",
+        "rubric_code": "R07",
+        "response_type": "SCALE_1_5",
+        "question_text": "Mes éventuels besoins particuliers ou d’accessibilité ont été pris en compte.",
+        "position": 11,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les objectifs de l’accompagnement me paraissent atteints.",
+        "position": 12,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Globalement, je suis satisfait(e) de l’accompagnement VAE.",
+        "position": 13,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-CH-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 14,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-CH-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 15,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-CH-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 16,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-CH-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 17,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-CH-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 18,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-VAE-COLD",
+    "version": "2.0",
+    "prestation_type": "VAE",
+    "campaign_kind": "COLD",
+    "title": "VAE - évaluation différée après jury ou J+90",
+    "questions": [
+      {
+        "question_code": "VAE-FR-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "L’accompagnement VAE m’a été utile au moment de présenter mon dossier / ma certification.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-FR-R16-01",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "La préparation réalisée m’a aidé(e) à valoriser clairement mon expérience.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-FR-R16-02",
+        "rubric_code": "R16",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai pu mobiliser les méthodes ou outils travaillés pendant l’accompagnement.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-FR-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, je reste satisfait(e) de l’accompagnement VAE.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "VAE-FR-R16-03",
+        "rubric_code": "R16",
+        "response_type": "TEXT_LONG",
+        "question_text": "Situation de la démarche à ce jour :",
+        "position": 5,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-FR-R09-02",
+        "rubric_code": "R09",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels éléments de l’accompagnement vous ont été les plus utiles ?",
+        "position": 6,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-FR-R15-01",
+        "rubric_code": "R15",
+        "response_type": "TEXT_LONG",
+        "question_text": "En cas de validation partielle ou de difficulté, quels besoins identifiez-vous pour la suite ?",
+        "position": 7,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-FR-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 8,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-FR-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 9,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-FR-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 10,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-FR-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 11,
+        "required": 0
+      },
+      {
+        "question_code": "VAE-FR-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 12,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-COACHING-HOT",
+    "version": "2.0",
+    "prestation_type": "COACHING",
+    "campaign_kind": "HOT",
+    "title": "Coaching - évaluation de fin d’accompagnement",
+    "questions": [
+      {
+        "question_code": "CO-CH-R01-01",
+        "rubric_code": "R01",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le cadre, les objectifs et les règles de confidentialité de l’accompagnement étaient clairs.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R06-01",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les objectifs de l’accompagnement ont été définis avec moi et adaptés à ma situation.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R05-01",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le coach a instauré une relation de confiance, d’écoute et de respect.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R05-02",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le questionnement et les reformulations m’ont aidé(e) à développer ma propre réflexion.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R05-03",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "Je me suis senti(e) libre de mes choix, sans conseil ou solution imposée.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R04-01",
+        "rubric_code": "R04",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les outils ou exercices proposés étaient pertinents pour mes objectifs.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R06-02",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le rythme et les modalités ont été adaptés à mes besoins.",
+        "position": 7,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai progressé sur les objectifs définis au début de l’accompagnement.",
+        "position": 8,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Je repars avec des décisions, actions ou repères concrets pour la suite.",
+        "position": 9,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R09-02",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Je me sens davantage autonome pour poursuivre le travail engagé.",
+        "position": 10,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Globalement, je suis satisfait(e) de l’accompagnement de coaching.",
+        "position": 11,
+        "required": 1
+      },
+      {
+        "question_code": "CO-CH-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 12,
+        "required": 0
+      },
+      {
+        "question_code": "CO-CH-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 13,
+        "required": 0
+      },
+      {
+        "question_code": "CO-CH-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 14,
+        "required": 0
+      },
+      {
+        "question_code": "CO-CH-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 15,
+        "required": 0
+      },
+      {
+        "question_code": "CO-CH-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 16,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-COACHING-COLD",
+    "version": "2.0",
+    "prestation_type": "COACHING",
+    "campaign_kind": "COLD",
+    "title": "Coaching - évaluation à froid J+90",
+    "questions": [
+      {
+        "question_code": "CO-FR-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les prises de conscience ou apprentissages issus du coaching restent utiles aujourd’hui.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "CO-FR-R09-02",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai mis en œuvre des actions décidées pendant l’accompagnement.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "CO-FR-R09-03",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les changements engagés se maintiennent dans le temps.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "CO-FR-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, j’ai progressé de manière durable sur mes objectifs.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "CO-FR-R09-04",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Je me sens plus autonome pour traiter des situations comparables.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "CO-FR-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, je reste satisfait(e) du coaching réalisé.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "CO-FR-R09-05",
+        "rubric_code": "R09",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quel changement concret observez-vous aujourd’hui ?",
+        "position": 7,
+        "required": 0
+      },
+      {
+        "question_code": "CO-FR-R15-01",
+        "rubric_code": "R15",
+        "response_type": "TEXT_LONG",
+        "question_text": "Avez-vous besoin d’une suite ?",
+        "position": 8,
+        "required": 0
+      },
+      {
+        "question_code": "CO-FR-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 9,
+        "required": 0
+      },
+      {
+        "question_code": "CO-FR-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 10,
+        "required": 0
+      },
+      {
+        "question_code": "CO-FR-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 11,
+        "required": 0
+      },
+      {
+        "question_code": "CO-FR-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 12,
+        "required": 0
+      },
+      {
+        "question_code": "CO-FR-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 13,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-MENTORAT-HOT",
+    "version": "2.0",
+    "prestation_type": "MENTORAT",
+    "campaign_kind": "HOT",
+    "title": "Mentorat - évaluation de fin d’accompagnement",
+    "questions": [
+      {
+        "question_code": "ME-CH-R01-01",
+        "rubric_code": "R01",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le cadre, les objectifs et le rôle du mentor étaient clairs.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "ME-CH-R05-01",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "La relation de mentorat a favorisé un dialogue ouvert et respectueux.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "ME-CH-R05-02",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le partage d’expérience et de connaissances a été pertinent pour mes besoins.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "ME-CH-R06-01",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le mentorat a été adapté à mon contexte et à mes priorités.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "ME-CH-R04-01",
+        "rubric_code": "R04",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les ressources, exemples ou mises en relation proposés ont été utiles.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "ME-CH-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai progressé sur les objectifs définis.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "ME-CH-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Je repars avec des repères ou actions concrètes pour la suite.",
+        "position": 7,
+        "required": 1
+      },
+      {
+        "question_code": "ME-CH-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Globalement, je suis satisfait(e) du mentorat.",
+        "position": 8,
+        "required": 1
+      },
+      {
+        "question_code": "ME-CH-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 9,
+        "required": 0
+      },
+      {
+        "question_code": "ME-CH-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 10,
+        "required": 0
+      },
+      {
+        "question_code": "ME-CH-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 11,
+        "required": 0
+      },
+      {
+        "question_code": "ME-CH-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 12,
+        "required": 0
+      },
+      {
+        "question_code": "ME-CH-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 13,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-MENTORAT-COLD",
+    "version": "2.0",
+    "prestation_type": "MENTORAT",
+    "campaign_kind": "COLD",
+    "title": "Mentorat - évaluation à froid J+90",
+    "questions": [
+      {
+        "question_code": "ME-FR-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les apports du mentorat restent utiles dans ma pratique / mon projet.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "ME-FR-R09-02",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai mis en œuvre des actions ou décisions issues du mentorat.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "ME-FR-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, j’ai progressé sur les objectifs travaillés.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "ME-FR-R09-03",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le mentorat a renforcé mon autonomie ou ma capacité de décision.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "ME-FR-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, je reste satisfait(e) de l’accompagnement.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "ME-FR-R09-04",
+        "rubric_code": "R09",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quel apport du mentorat utilisez-vous encore aujourd’hui ?",
+        "position": 6,
+        "required": 0
+      },
+      {
+        "question_code": "ME-FR-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 7,
+        "required": 0
+      },
+      {
+        "question_code": "ME-FR-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 8,
+        "required": 0
+      },
+      {
+        "question_code": "ME-FR-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 9,
+        "required": 0
+      },
+      {
+        "question_code": "ME-FR-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 10,
+        "required": 0
+      },
+      {
+        "question_code": "ME-FR-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 11,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-AUTRE-HOT",
+    "version": "2.0",
+    "prestation_type": "AUTRE",
+    "campaign_kind": "HOT",
+    "title": "Autre prestation - évaluation de fin",
+    "questions": [
+      {
+        "question_code": "AU-CH-R01-01",
+        "rubric_code": "R01",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les informations reçues avant la prestation étaient claires.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R02-01",
+        "rubric_code": "R02",
+        "response_type": "SCALE_1_5",
+        "question_text": "L’organisation générale était satisfaisante.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R03-01",
+        "rubric_code": "R03",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les moyens techniques / locaux étaient adaptés.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R04-01",
+        "rubric_code": "R04",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les ressources mises à disposition étaient utiles.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R05-01",
+        "rubric_code": "R05",
+        "response_type": "SCALE_1_5",
+        "question_text": "La qualité de l’intervention a répondu à mes attentes.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R06-01",
+        "rubric_code": "R06",
+        "response_type": "SCALE_1_5",
+        "question_text": "La prestation a été adaptée à mes besoins.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R07-01",
+        "rubric_code": "R07",
+        "response_type": "SCALE_1_5",
+        "question_text": "Mes éventuels besoins particuliers ont été pris en compte.",
+        "position": 7,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les objectifs annoncés me paraissent atteints.",
+        "position": 8,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "La prestation me sera utile pour la suite.",
+        "position": 9,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Globalement, je suis satisfait(e) de la prestation.",
+        "position": 10,
+        "required": 1
+      },
+      {
+        "question_code": "AU-CH-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 11,
+        "required": 0
+      },
+      {
+        "question_code": "AU-CH-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 12,
+        "required": 0
+      },
+      {
+        "question_code": "AU-CH-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 13,
+        "required": 0
+      },
+      {
+        "question_code": "AU-CH-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 14,
+        "required": 0
+      },
+      {
+        "question_code": "AU-CH-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 15,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-AUTRE-COLD",
+    "version": "2.0",
+    "prestation_type": "AUTRE",
+    "campaign_kind": "COLD",
+    "title": "Autre prestation - évaluation à froid J+90",
+    "questions": [
+      {
+        "question_code": "AU-FR-R09-01",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les apports de la prestation restent utiles aujourd’hui.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "AU-FR-R09-02",
+        "rubric_code": "R09",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai utilisé ou mis en œuvre des éléments issus de la prestation.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "AU-FR-R08-01",
+        "rubric_code": "R08",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, les objectifs de la prestation ont produit des effets utiles.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "AU-FR-R10-01",
+        "rubric_code": "R10",
+        "response_type": "SCALE_1_5",
+        "question_text": "Avec le recul, je reste satisfait(e) de la prestation.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "AU-FR-R11-01",
+        "rubric_code": "R11",
+        "response_type": "NPS_0_10",
+        "question_text": "Sur une échelle de 0 à 10, recommanderiez-vous cette prestation à une personne ayant un besoin comparable ?",
+        "position": 5,
+        "required": 0
+      },
+      {
+        "question_code": "AU-FR-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels sont, selon vous, les principaux points forts de la prestation ?",
+        "position": 6,
+        "required": 0
+      },
+      {
+        "question_code": "AU-FR-R14-01",
+        "rubric_code": "R14",
+        "response_type": "TEXT_LONG",
+        "question_text": "Qu’est-ce qui devrait être amélioré en priorité ?",
+        "position": 7,
+        "required": 0
+      },
+      {
+        "question_code": "AU-FR-R12-01",
+        "rubric_code": "R12",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré une difficulté, un aléa ou souhaitez-vous formuler une réclamation ?",
+        "position": 8,
+        "required": 0
+      },
+      {
+        "question_code": "AU-FR-R12-02",
+        "rubric_code": "R12",
+        "response_type": "TEXT_LONG",
+        "question_text": "Si oui, précisez uniquement les éléments utiles au traitement de votre demande :",
+        "position": 9,
+        "required": 0
+      }
+    ]
+  },
+  {
+    "code": "STD-ALL-TRAINER",
+    "version": "2.0",
+    "prestation_type": "ALL",
+    "campaign_kind": "TRAINER",
+    "title": "Intervenant - retour qualité logistique et moyens",
+    "questions": [
+      {
+        "question_code": "INT-I01-01",
+        "rubric_code": "I01",
+        "response_type": "SCALE_1_5",
+        "question_text": "J’ai reçu suffisamment tôt les informations administratives nécessaires à mon intervention.",
+        "position": 1,
+        "required": 1
+      },
+      {
+        "question_code": "INT-I01-02",
+        "rubric_code": "I01",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les objectifs, le public et les modalités de la prestation m’ont été clairement communiqués.",
+        "position": 2,
+        "required": 1
+      },
+      {
+        "question_code": "INT-I02-01",
+        "rubric_code": "I02",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les locaux / accès / conditions matérielles étaient adaptés.",
+        "position": 3,
+        "required": 1
+      },
+      {
+        "question_code": "INT-I02-02",
+        "rubric_code": "I02",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les moyens techniques ou numériques ont fonctionné de manière satisfaisante.",
+        "position": 4,
+        "required": 1
+      },
+      {
+        "question_code": "INT-I03-01",
+        "rubric_code": "I03",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les ressources, supports et équipements disponibles étaient adaptés à la prestation.",
+        "position": 5,
+        "required": 1
+      },
+      {
+        "question_code": "INT-I04-01",
+        "rubric_code": "I04",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le planning, la durée et les conditions de mise en œuvre permettaient d’atteindre les objectifs.",
+        "position": 6,
+        "required": 1
+      },
+      {
+        "question_code": "INT-I04-02",
+        "rubric_code": "I04",
+        "response_type": "SCALE_1_5",
+        "question_text": "L’effectif et la composition du groupe / les conditions d’accompagnement étaient adaptés.",
+        "position": 7,
+        "required": 1
+      },
+      {
+        "question_code": "INT-I05-01",
+        "rubric_code": "I05",
+        "response_type": "SCALE_1_5",
+        "question_text": "Les informations nécessaires concernant d’éventuels besoins d’adaptation / accessibilité étaient disponibles et exploitables.",
+        "position": 8,
+        "required": 1
+      },
+      {
+        "question_code": "INT-I01-03",
+        "rubric_code": "I01",
+        "response_type": "SCALE_1_5",
+        "question_text": "La coordination avec l’administration de l’organisme a été fluide.",
+        "position": 9,
+        "required": 1
+      },
+      {
+        "question_code": "INT-I03-02",
+        "rubric_code": "I03",
+        "response_type": "SCALE_1_5",
+        "question_text": "Le dispositif d’émargement, de suivi et de traçabilité était simple à utiliser.",
+        "position": 10,
+        "required": 1
+      },
+      {
+        "question_code": "INT-TYPE-01",
+        "rubric_code": "I04",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Type d’intervention :",
+        "position": 11,
+        "required": 0
+      },
+      {
+        "question_code": "INT-I06-01",
+        "rubric_code": "I06",
+        "response_type": "CHOICE_SINGLE",
+        "question_text": "Avez-vous rencontré un incident, aléa ou difficulté ayant affecté la prestation ?",
+        "position": 12,
+        "required": 0
+      },
+      {
+        "question_code": "INT-I06-02",
+        "rubric_code": "I06",
+        "response_type": "TEXT_LONG",
+        "question_text": "Décrivez les faits utiles (sans données personnelles non nécessaires) :",
+        "position": 13,
+        "required": 0
+      },
+      {
+        "question_code": "INT-I07-01",
+        "rubric_code": "I07",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quelles améliorations recommandez-vous concernant la logistique, les moyens, l’organisation ou la coordination ?",
+        "position": 14,
+        "required": 0
+      },
+      {
+        "question_code": "INT-R13-01",
+        "rubric_code": "R13",
+        "response_type": "TEXT_LONG",
+        "question_text": "Quels éléments ont particulièrement bien fonctionné et devraient être maintenus ?",
+        "position": 15,
+        "required": 0
+      }
+    ]
+  }
+]

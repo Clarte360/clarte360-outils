@@ -1,4 +1,4 @@
-# Clarté360 — Émargements V1.0.0
+# Clarté360 — Émargements V2.0.0-dev
 
 Application Streamlit autonome pour créer des actions, gérer des participants et des créneaux, recueillir les signatures sur smartphone/ordinateur, automatiser les demandes et relances, générer les feuilles d'émargement/certificats et exporter une archive portable.
 
@@ -53,3 +53,24 @@ Voir `DEPLOIEMENT_VPS.md` et les exemples systemd dans `systemd/`.
 ## Base de données
 
 La V1 utilise SQLite (`data/clarte360_emargements.db`) en mode WAL : c'est volontairement simple, persistant et très facile à sauvegarder ou à déplacer sur un autre serveur. Une migration PostgreSQL pourra être faite plus tard si le volume ou la concurrence d'accès le justifie.
+
+## V1.1.1 — administration renforcée
+
+La V1.1.1 ajoute notamment :
+- administrateurs multiples et administrateur référent par action ;
+- référentiel des formateurs/accompagnants et affectation aux actions ;
+- accès restreint intervenant ;
+- suppression définitive contrôlée (participant, créneau, action) avec mot de passe administrateur ;
+- modification des participants ;
+- notice données personnelles dans les emails et le parcours d'émargement ;
+- workflow de clôture avant certificat définitif et aperçu non définitif ;
+- correction de la cohérence signature/absence ;
+- feuilles collectives avec absence et contresignature ;
+- export JSON enrichi.
+
+
+## V2.0.0-dev — construction engagée
+Socle V1.1.1 conservé. Première incrémentation V2 : schéma organisme/agences, modules activables par action, archivage, référentiel de questionnaires versionnés, campagnes qualité, réponses figées par snapshot, difficultés et actions d’amélioration. Ces fonctions sont une fondation technique : la recette V1.1.1 réelle VPS reste obligatoire avant production V2.
+
+## V2 dev — incrément 2 Qualité
+Le jalon `2.0.0-dev-I2-qualite` ajoute le parcours qualité électronique versionné (chaud, froid et intervenant), ses campagnes/relances, ses liens sécurisés, la restitution PDF et l'intégration des données qualité à l'archive. Ce jalon est destiné à la poursuite du développement, pas à une recette VPS utilisateur.

@@ -35,3 +35,51 @@
 - certificat calculé sur les dates effectivement émargées
 - sauvegarde SQLite + signatures/documents avec rotation de 30 archives et timer systemd fourni
 - tests V1.1 portés à 7 scénarios automatisés
+
+
+## 1.1.1 — recette renforcée 2026-09-03
+- suppression définitive contrôlée des participants, créneaux et actions, y compris données associées, avec confirmation + mot de passe administrateur
+- correction de cohérence : une signature valide prime sur un ancien statut ABSENT et interdit de marquer ensuite la personne absente
+- workflow de clôture explicite avant certificat définitif + aperçu NON DÉFINITIF disponible à tout moment
+- référentiel administrateurs multiples : ajout, désactivation, suppression protégée, changement de mot de passe
+- référentiel formateurs/accompagnants : ajout, activation/désactivation, suppression, affectation aux actions
+- accès restreint intervenant conservé et régénéré lors d'un changement d'intervenant
+- choix de l'administrateur référent de l'action parmi les comptes actifs
+- modification des fiches participants
+- envoi/réinitialisation du code QR personnel par email sans stockage du code en clair
+- notice données personnelles ajoutée à l'écran de signature et aux emails d'émargement
+- feuilles collectives enrichies avec absences et contresignature intervenant
+- export JSON enrichi : présences/absences, contresignatures et événements email
+
+## 2.0.0-dev — incrément intermédiaire n°1 consolidé — 2026-09-03
+- consolidation organisme/agences et écran de paramétrage ;
+- types de prestations V2 et modules à la carte branchés aux actions ;
+- cycle de vie et archivage normalisés ;
+- recherche actifs/archives ;
+- worker avec réservation atomique et quarantaine des livraisons SMTP ambiguës ;
+- utilitaire de restauration validant l'intégrité SQLite ;
+- 22 tests automatisés réussis.
+
+## 2.0.0-dev — incrément intermédiaire n°2 — 2026-09-03
+- module Qualité fonctionnel à chaud / à froid / intervenant ;
+- 13 questionnaires standard V2 versionnés avec codes Rxx/Ixx stables ;
+- parcours public sécurisé PC/tablette/smartphone ;
+- campagnes, échéances et relances automatisées ;
+- worker qualité idempotent avec quarantaine des livraisons ambiguës ;
+- PDF individuel questionnaire ;
+- détection structurée difficultés/réclamations ;
+- export et purge étendus aux données qualité ;
+- 29 tests automatisés réussis + smoke test PDF.
+
+## 2.0.0-dev-I3-pilotage — 2026-09-03
+- Import ADCA historique et mapping métier INTRA / INTER / INDIVIDUEL.
+- Pilotage qualité consolidé et statistiques par codes stables.
+- Gestion difficultés, réclamations, incidents et actions d'amélioration.
+- 33/33 tests automatisés.
+
+## 2.0.0-rc1 — 2026-09-03
+- Candidate complète de recette métier.
+- Finition de transférabilité des notices RGPD, emails manuels et documents PDF.
+- Fuseau du contrôle de complétude aligné sur l'organisme.
+- Tests candidate : 35/35 réussis.
+- Ajout rapport final, procédure VPS et check-list de recette 2–3 h.
