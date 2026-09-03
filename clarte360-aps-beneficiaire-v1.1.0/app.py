@@ -15,7 +15,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, PageBreak
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 FRAMEWORK_VERSION = "4.0"
 APP_NAME = "APS – Grille d'analyse partagee de situation"
 APP_FULL_NAME = "Clarte360 – APS – Phase preliminaire"
@@ -105,59 +105,53 @@ def secret(section, key, default=""):
         return default
 
 
-def email_settings():
-    host = clean_text(secret("smtp", "host", secret("email", "smtp_server", "")))
-    port = int(secret("smtp", "port", secret("email", "smtp_port", 587)) or 587)
-    username = clean_text(secret("smtp", "username", secret("smtp", "user", secret("email", "username", ""))))
-    password = str(secret("smtp", "password", secret("email", "password", "")) or "")
-    use_tls = bool(secret("smtp", "use_tls", True))
-    use_ssl = bool(secret("smtp", "use_ssl", False))
-    timeout = int(secret("smtp", "timeout", 20) or 20)
-    from_email = clean_text(secret("email", "from_email", username)) or username
-    from_name = clean_text(secret("email", "from_name", "Clarte360")) or "Clarte360"
-    return {
-        "host": host,
-        "port": port,
-        "username": username,
-        "password": password,
-        "use_tls": use_tls,
-        "use_ssl": use_ssl,
-        "timeout": timeout,
-        "from_email": from_email,
-        "from_name": from_name,
-    }
+def get_email_config():
+    """Lit la messagerie au format officiel Clarte360 : section [email]."""
+    try:
+        cfg = st.secrets.get("email", {})
+        required = ["smtp_server", "smtp_port", "smtp_user", "smtp_password", "from_email", "to_email"]
+        if all(k in cfg and clean_text(cfg[k]) for k in required):
+            out = {k: clean_text(cfg[k]) for k in required}
+            out["from_name"] = clean_text(cfg.get("from_name", "Clarte360")) or "Clarte360"
+            return out
+    except Exception:
+        pass
+    return None
 
 
 def smtp_ready():
-    cfg = email_settings()
-    return bool(cfg["host"] and cfg["from_email"] and cfg["username"] and cfg["password"])
+    return get_email_config() is not None
 
 
 def send_email(to_addr, subject, body, attachments=None):
-    cfg = email_settings()
-    if not smtp_ready():
+    cfg = get_email_config()
+    if not cfg:
         return False, "Le service d'envoi d'e-mails n'est pas configure."
     msg = EmailMessage()
-    msg["From"] = f'{cfg["from_name"]} <{cfg["from_email"]}>'
+    from_name = cfg.get("from_name", "Clarte360")
+    msg["From"] = f'{from_name} <{cfg["from_email"]}>' if from_name else cfg["from_email"]
     msg["To"] = to_addr
     msg["Subject"] = subject
     msg.set_content(body)
     for filename, data, maintype, subtype in attachments or []:
         msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
     try:
-        if cfg["use_ssl"]:
-            server = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=cfg["timeout"])
+        port = int(cfg["smtp_port"])
+        server = cfg["smtp_server"]
+        user = cfg["smtp_user"]
+        password = cfg["smtp_password"]
+        if port == 465:
+            with smtplib.SMTP_SSL(server, port, timeout=20) as smtp:
+                smtp.login(user, password)
+                smtp.send_message(msg)
         else:
-            server = smtplib.SMTP(cfg["host"], cfg["port"], timeout=cfg["timeout"])
-        with server:
-            if cfg["use_tls"] and not cfg["use_ssl"]:
-                server.starttls()
-            server.login(cfg["username"], cfg["password"])
-            server.send_message(msg)
+            with smtplib.SMTP(server, port, timeout=20) as smtp:
+                smtp.starttls()
+                smtp.login(user, password)
+                smtp.send_message(msg)
         return True, ""
     except Exception:
         return False, "L'envoi de l'e-mail n'a pas pu aboutir. Merci de reessayer dans quelques instants."
-
 
 def generate_access_code():
     return f"{pysecrets.randbelow(1_000_000):06d}"
@@ -170,13 +164,29 @@ def issue_access_code(nom, prenom, email):
     st.session_state.access_code_expiry = (datetime.now().astimezone() + timedelta(minutes=minutes)).isoformat()
     st.session_state.access_code_attempts = 0
     st.session_state.pending_identity = {"nom": nom, "prenom": prenom, "email": email}
+
+    cfg = get_email_config()
+    if not cfg:
+        return False, "Le service d'envoi d'e-mails n'est pas configure."
+
+    # Notification technique Clarte360, comme dans les autres applications du Framework.
+    admin_body = (
+        "Une personne vient de demander un code d'acces pour l'APS Clarte360.\n\n"
+        f"Prenom : {prenom}\n"
+        f"Nom : {nom}\n"
+        f"E-mail : {email}\n"
+        f"Code genere : {code}\n"
+        f"Date/heure : {now_iso()}\n"
+        f"Version application : {APP_VERSION}\n"
+    )
+    send_email(cfg["to_email"], "Clarte360 - Nouveau code d'acces APS", admin_body)
+
     ok, err = send_email(
         email,
-        "Votre code d'acces Clarte360 – APS",
+        "Votre code d'acces Clarte360 - APS",
         f"Bonjour {prenom},\n\nVoici votre code personnel pour acceder au formulaire APS Clarte360 : {code}\n\nCe code est valable {minutes} minutes.\n\nSi vous n'etes pas a l'origine de cette demande, ignorez ce message.\n\nClarte360\n{CLARTE360_LEGAL['email']}",
     )
     return ok, err
-
 
 def verify_access_code(code_in):
     expected = st.session_state.get("access_code", "")
@@ -420,7 +430,8 @@ def safe_base_name(payload):
 
 
 def send_final_package(payload):
-    recipient = clean_text(secret("app", "aps_recipient", FINAL_RECIPIENT_DEFAULT)) or FINAL_RECIPIENT_DEFAULT
+    cfg = get_email_config()
+    recipient = cfg.get("to_email", FINAL_RECIPIENT_DEFAULT) if cfg else FINAL_RECIPIENT_DEFAULT
     base = safe_base_name(payload)
     pdf = pdf_bytes(payload)
     js = json_bytes(payload)

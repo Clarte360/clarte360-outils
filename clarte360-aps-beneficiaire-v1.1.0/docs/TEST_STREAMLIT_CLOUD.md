@@ -1,6 +1,6 @@
 # Plan de test Streamlit Community Cloud
 
-1. Configurer les secrets SMTP.
+1. Configurer la section `[email]` des Secrets Streamlit au format officiel Clarte360.
 2. Lancer l'app en navigation privee.
 3. Saisir nom, prenom, e-mail.
 4. Verifier la reception du code a 6 chiffres.

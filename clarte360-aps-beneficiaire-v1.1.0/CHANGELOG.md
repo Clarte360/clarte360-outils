@@ -14,3 +14,11 @@
 - Generation du PDF APS complet.
 - Envoi obligatoire PDF + JSON a contact@clarte360.com apres validation finale.
 - Confirmation de transmission au beneficiaire.
+
+## 1.1.1 - 03/09/2026
+- Correction de la configuration e-mail pour respecter le Framework Clarte360.
+- Suppression de la section `[smtp]` introduite par erreur.
+- Lecture exclusive de la section `[email]` avec les cles officielles : `smtp_server`, `smtp_port`, `smtp_user`, `smtp_password`, `from_email`, `to_email`.
+- Connexion SSL automatique sur le port 465, STARTTLS sur les autres ports.
+- Le destinataire du PDF + JSON final est maintenant `[email].to_email`.
+- Notification technique du code d'acces a `[email].to_email`, en plus de l'envoi au beneficiaire, selon le comportement des autres applications Clarte360.
