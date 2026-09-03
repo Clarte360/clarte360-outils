@@ -1,3 +1,10 @@
+
+## 2.1.1 — Correctif configuration email VPS
+- Priorité donnée à la section `[email]` déjà utilisée par l’infrastructure Clarté360.
+- Prise en charge de `smtp_server`, `smtp_port`, `smtp_user`, `smtp_password`, `from_email`.
+- Compatibilité conservée avec `[MAIL]`, `[mail]` et `[smtp]`.
+- Aucun secret réel inclus.
+
 # Changelog
 
 ## 1.0.0

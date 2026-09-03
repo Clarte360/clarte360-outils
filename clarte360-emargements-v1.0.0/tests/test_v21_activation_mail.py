@@ -56,3 +56,14 @@ def test_recalculating_pending_event_clears_old_last_error():
     execute(e,"UPDATE email_events SET last_error='535 old auth error' WHERE participant_id=:p AND slot_id=:s",{'p':pid,'s':sid})
     ensure_tokens_and_events(e,aid,'https://example.fr','Europe/Paris')
     assert one(e,'SELECT last_error FROM email_events WHERE participant_id=:p AND slot_id=:s AND event_type="INITIAL"',{'p':pid,'s':sid})['last_error'] is None
+
+
+def test_mail_prefers_existing_email_section_used_on_vps():
+    cfg=resolve_mail_config({'email':{'smtp_server':'mail.example.fr','smtp_port':465,'smtp_user':'u','smtp_password':'p','from_email':'x@example.fr'}})
+    assert cfg['_source']=='email'
+    assert cfg['host']=='mail.example.fr'
+    assert cfg['port']==465
+    assert cfg['username']=='u'
+    assert cfg['password']=='p'
+    assert cfg['from_email']=='x@example.fr'
+    assert cfg['enabled'] is True

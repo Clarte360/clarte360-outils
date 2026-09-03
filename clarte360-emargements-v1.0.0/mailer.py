@@ -18,12 +18,12 @@ def _pick(d, *names, default=None):
 def resolve_mail_config(secrets_container):
     """Return one normalized mail configuration.
 
-    V2.1 prefers the existing Clarte360 [MAIL] secret convention, while keeping
-    backward compatibility with [mail] and legacy [smtp]. Key names are matched
+    V2.1.1 prefers the existing Clarte360 [email] secret convention, while keeping
+    backward compatibility with [MAIL], [mail] and legacy [smtp]. Key names are matched
     case-insensitively and several common aliases are accepted.
     """
     root = dict(secrets_container or {})
-    section = root.get('MAIL') or root.get('mail') or root.get('smtp') or root.get('SMTP') or {}
+    section = root.get('email') or root.get('EMAIL') or root.get('MAIL') or root.get('mail') or root.get('smtp') or root.get('SMTP') or {}
     sec = _ci_dict(section)
 
     security = _pick(sec, 'security', 'encryption', 'mode', default=None)
@@ -44,12 +44,12 @@ def resolve_mail_config(secrets_container):
         'enabled': enabled,
         'host': _pick(sec, 'host', 'server', 'smtp_host', 'smtp_server'),
         'port': int(_pick(sec, 'port', 'smtp_port', default=465) or 465),
-        'username': _pick(sec, 'username', 'user', 'login', 'smtp_username'),
+        'username': _pick(sec, 'username', 'user', 'login', 'smtp_username', 'smtp_user'),
         'password': _pick(sec, 'password', 'pass', 'smtp_password'),
         'from_email': _pick(sec, 'from_email', 'from_address', 'sender', 'sender_email', 'email'),
         'from_name': _pick(sec, 'from_name', 'sender_name', 'name', default='Clarté360'),
         'security': str(security).lower(),
-        '_source': 'MAIL' if root.get('MAIL') else ('mail' if root.get('mail') else ('smtp' if root.get('smtp') else 'SMTP')),
+        '_source': ('email' if root.get('email') else ('EMAIL' if root.get('EMAIL') else ('MAIL' if root.get('MAIL') else ('mail' if root.get('mail') else ('smtp' if root.get('smtp') else 'SMTP'))))),
     }
     return cfg
 
