@@ -413,8 +413,8 @@ def create_action_screen(prefill=None,participants_prefill=None):
                     {'s':start_date.isoformat(),'e':end_date.isoformat(),'a':aid})
 
             pins=[]
-            for pd in imported_parts:
-                pdata=pd.copy()
+            for participant_data in imported_parts:
+                pdata=participant_data.copy()
                 # Le n° de l'action importée fait foi si la fiche participant ne le contient pas.
                 if not pdata.get('individual_action_no'):
                     pdata['individual_action_no']=action_no
