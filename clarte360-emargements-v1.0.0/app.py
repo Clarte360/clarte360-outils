@@ -698,7 +698,7 @@ def participants_tab(a):
                 pid,pin=add_participant(ENGINE,a['id'],{'individual_action_no':indno.strip() or None,'last_name':last.strip().upper(),'birth_name':birth.strip().upper() or None,'first_name':first.strip().title(),'birth_date':birth_iso,'email':email.strip() or None,'employee_id':emp.strip() or None,'company_name':company.strip() or None,'phone':phone.strip() or None},st.session_state.admin_email)
                 st.success(f"Participant ajouté. Code QR personnel : {pin}");st.code(pin);st.info('Le code n’est pas conservé en clair. En cas d’oubli, il sera réinitialisé.');
                 if send_code and email.strip():
-                    pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':pid});okm,msgm=send_participant_code_email(pp,a,pin);st.success(msgm) if okm else st.warning(msgm)
+                    pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':pid});okm,msgm=send_participant_code_email(pp,a,pin);(st.success(msgm) if okm else st.warning(msgm))
                 if one(ENGINE,'SELECT COUNT(*) n FROM slots WHERE action_id=:a',{'a':a['id']})['n']:
                     ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
     if parts:
@@ -731,7 +731,11 @@ def participants_tab(a):
         st.markdown('**Réinitialiser un code personnel QR**')
         rlab=st.selectbox('Participant concerné',list(ids),key=f'pinreset{a["id"]}')
         if st.button('Générer un nouveau code à 4 chiffres',key=f'pinbtn{a["id"]}'):
-            newpin=reset_participant_pin(ENGINE,ids[rlab],st.session_state.admin_email);st.success('Nouveau code généré :');st.code(newpin);pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':ids[rlab]});okm,msgm=send_participant_code_email(pp,a,newpin);st.success(msgm) if okm else st.info(msgm)
+            newpin=reset_participant_pin(ENGINE,ids[rlab],st.session_state.admin_email);st.success('Nouveau code généré :');st.code(newpin);pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':ids[rlab]});okm,msgm=send_participant_code_email(pp,a,newpin)
+            if okm:
+                st.success(msgm)
+            else:
+                st.info(msgm)
 
 def calendar_tab(a):
     st.subheader('Calendrier et créneaux')
@@ -761,7 +765,7 @@ def calendar_tab(a):
         c1,c2,c3=st.columns(3)
         send_mode=c1.selectbox('Envoi du lien d’émargement',['Au début du créneau','10 min avant la fin','À la fin du créneau','Personnalisé'],key=f'sendmode{a["id"]}')
         custom=c2.number_input('Décalage personnalisé (min / fin)',value=-10,step=5,key=f'customsend{a["id"]}',disabled=send_mode!='Personnalisé')
-        close=c3.number_input('Clôture après fin (min)',value=1440,step=60,key=f'close{a["id"]}')
+        close=c3.number_input('Clôture après fin (min)',value=1440,step=60,key=f'add_close_offset_{a["id"]}')
         c1,c2=st.columns(2)
         r1=c1.number_input('Relance 1 après fin (min)',value=20,step=5,key=f'r1{a["id"]}')
         r2=c2.number_input('Relance 2 après fin (min)',value=120,step=15,key=f'r2{a["id"]}')
@@ -992,7 +996,7 @@ def documents_tab(a):
                 st.warning('Certificat définitif encore bloqué : '+ ' ; '.join(issues_pre[:5]))
         ok_close,close_issues=action_can_close(ENGINE,a['id'])
         if normalize_action_status(a.get('status'))!='CLOTUREE':
-            if st.button('✅ Clôturer l’action et autoriser les certificats définitifs',type='primary',disabled=not ok_close,key=f'close{a["id"]}'):
+            if st.button('✅ Clôturer l’action et autoriser les certificats définitifs',type='primary',disabled=not ok_close,key=f'close_action_{a["id"]}'):
                 okc,ic=close_action(ENGINE,a['id'],st.session_state.admin_email);st.success('Action clôturée.') if okc else st.error(' ; '.join(ic));rerun() if okc else None
             if not ok_close: st.caption('Clôture impossible : '+ ' ; '.join(close_issues[:6]))
         ok_cert,issues=can_issue_certificate(ENGINE,p['id'],require_closed=True)
