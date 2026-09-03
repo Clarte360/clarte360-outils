@@ -99,3 +99,11 @@
 - Calendrier remanié : numéros de séances métier, ajout séparé de la modification, duplication plus logique, envoi « au début du créneau ».
 - Présentation lisible des erreurs email et nettoyage des anciennes erreurs sur événements PENDING recalculés.
 - 39 tests automatisés réussis.
+
+## 2.1.3 - 2026-09-03
+- Activation visible depuis Calendrier et Envois & relances.
+- Validation de coherence horaire avant activation des actions avec emargement.
+- Planning envoye lors de l'activation.
+- Preparation automatique des campagnes qualite activees.
+- Qualite recalee sur la fin reelle de la derniere seance et recalcul dynamique des campagnes PENDING.
+- Correction des affichages parasites DeltaGenerator.

@@ -90,6 +90,11 @@ def activate_action(engine, aid, actor):
     slots=q(engine,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':aid})
     if not participants: issues.append('Aucun participant actif.')
     if bool(a.get('use_attendance',1)) and not slots: issues.append("Aucun créneau d'émargement.")
+    if bool(a.get('use_attendance',1)) and slots and float(a.get('planned_hours') or 0)>0:
+        total=round(sum(slot_duration_hours(x) for x in slots),2)
+        planned=round(float(a.get('planned_hours') or 0),2)
+        if abs(total-planned)>0.01:
+            issues.append(f'Calendrier incohérent : {total:g} h planifiées pour {planned:g} h prévues.')
     if bool(a.get('use_attendance',1)):
         missing=[f"{x['first_name']} {x['last_name']}" for x in participants if not (x.get('email') or '').strip()]
         if missing: issues.append('Email manquant pour : '+', '.join(missing))
@@ -583,10 +588,34 @@ def get_standard_template(engine, organization_id, prestation_type, campaign_kin
       WHERE active=1 AND campaign_kind=:k AND prestation_type=:p AND (organization_id=:o OR organization_id IS NULL)
       ORDER BY CASE WHEN organization_id=:o THEN 0 ELSE 1 END,id DESC LIMIT 1""",{'k':kind,'p':target_pt,'o':organization_id})
 
+def _action_end_moment(engine, action, tz_name='Europe/Paris'):
+    """Return the real end moment of the latest planned session when a calendar exists.
+
+    Falls back to the administrative action end date only when no session exists.
+    Overnight sessions are correctly carried to the next day.
+    """
+    slots=q(engine,"""SELECT slot_date,start_time,end_time FROM slots
+      WHERE action_id=:a AND COALESCE(status,'PREVU') NOT IN ('ANNULE','REPORTE')
+      ORDER BY slot_date,start_time,end_time""",{'a':action['id']})
+    latest=None
+    for slot in slots:
+        begin=parse_dt(slot['slot_date'],slot['start_time'],tz_name)
+        finish=parse_dt(slot['slot_date'],slot['end_time'],tz_name)
+        if finish<=begin:
+            finish+=timedelta(days=1)
+        if latest is None or finish>latest:
+            latest=finish
+    if latest is not None:
+        return latest
+    if action.get('end_date'):
+        d=datetime.fromisoformat(action['end_date']).date()
+        return datetime.combine(d,datetime.min.time().replace(hour=12),tzinfo=ZoneInfo(tz_name))
+    return None
+
 def _action_end_date(engine, action):
-    if action.get('end_date'): return action['end_date']
-    row=one(engine,'SELECT MAX(slot_date) d FROM slots WHERE action_id=:a',{'a':action['id']})
-    return row.get('d') if row else None
+    tz_name=organization_runtime_config(engine,action.get('id'))['timezone'] if action.get('id') else 'Europe/Paris'
+    end=_action_end_moment(engine,action,tz_name)
+    return end.date().isoformat() if end else None
 
 def _add_months(d, months):
     import calendar
@@ -597,16 +626,53 @@ def standard_quality_due(engine, action_id, campaign_kind, tz_name=None):
     a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
     if not a: raise ValueError('Action introuvable')
     tz_name=tz_name or organization_runtime_config(engine,action_id)['timezone']
-    end_s=_action_end_date(engine,a)
-    if not end_s: raise ValueError("La date de fin de l'action est nécessaire pour planifier les questionnaires qualité.")
-    d=datetime.fromisoformat(end_s).date(); kind=campaign_kind.upper(); pt=(a.get('prestation_type') or 'FORMATION').upper()
-    if kind in ('HOT','TRAINER'): due_date=d
-    elif a.get('quality_cold_due_date'): due_date=datetime.fromisoformat(a['quality_cold_due_date']).date()
-    elif pt=='BILAN_COMPETENCES': due_date=_add_months(d,6)
-    else: due_date=d+timedelta(days=90)
-    # Midday local avoids DST edge cases while remaining suitable for automated delivery.
-    local=datetime.combine(due_date,datetime.min.time().replace(hour=12),tzinfo=ZoneInfo(tz_name))
+    end_moment=_action_end_moment(engine,a,tz_name)
+    if not end_moment: raise ValueError("La date de fin de l'action est nécessaire pour planifier les questionnaires qualité.")
+    kind=campaign_kind.upper(); pt=(a.get('prestation_type') or 'FORMATION').upper()
+    if kind in ('HOT','TRAINER'):
+        # A chaud / intervenant : jamais avant la fin réelle de la dernière séance.
+        local=end_moment
+    else:
+        d=end_moment.date()
+        if a.get('quality_cold_due_date'):
+            due_date=datetime.fromisoformat(a['quality_cold_due_date']).date()
+        elif pt=='BILAN_COMPETENCES':
+            due_date=_add_months(d,6)
+        else:
+            due_date=d+timedelta(days=90)
+        local=datetime.combine(due_date,datetime.min.time().replace(hour=12),tzinfo=ZoneInfo(tz_name))
     return local.astimezone(ZoneInfo('UTC')).isoformat()
+
+def reschedule_pending_quality_campaigns(engine, action_id, actor='system'):
+    """Recalculate only quality campaigns that have not been sent yet.
+
+    SENT/COMPLETED campaigns are evidence and are never silently moved.
+    """
+    campaigns=q(engine,"SELECT * FROM quality_campaigns WHERE action_id=:a AND status='PENDING' ORDER BY id",{'a':action_id})
+    changed=0
+    for camp in campaigns:
+        due=standard_quality_due(engine,action_id,camp['campaign_kind'])
+        old_due=camp.get('due_at')
+        if old_due!=due:
+            execute(engine,'UPDATE quality_campaigns SET due_at=:d WHERE id=:c',{'d':due,'c':camp['id']})
+            changed+=1
+        due_dt=datetime.fromisoformat(due)
+        offsets=(2,7) if camp['campaign_kind'] in ('HOT','TRAINER') else (7,14)
+        event_due={
+            'INITIAL': due_dt,
+            'REMINDER_1': due_dt+timedelta(days=offsets[0]),
+            'REMINDER_2': due_dt+timedelta(days=offsets[1]),
+        }
+        for event_type,dt in event_due.items():
+            iso=dt.astimezone(ZoneInfo('UTC')).isoformat()
+            execute(engine,"""UPDATE quality_email_events SET due_at=:d,last_error=NULL
+              WHERE campaign_id=:c AND event_type=:e AND status='PENDING'""",{'d':iso,'c':camp['id'],'e':event_type})
+        execute(engine,'UPDATE quality_campaigns SET reminder1_due_at=:r1,reminder2_due_at=:r2 WHERE id=:c',
+                {'r1':event_due['REMINDER_1'].astimezone(ZoneInfo('UTC')).isoformat(),
+                 'r2':event_due['REMINDER_2'].astimezone(ZoneInfo('UTC')).isoformat(),'c':camp['id']})
+    if changed:
+        audit(engine,'QUALITY_CAMPAIGNS_RESCHEDULED',action_id,actor,'action',action_id,{'campaigns':changed})
+    return changed
 
 def quality_token_url(token, base_url):
     return f"{base_url.rstrip('/')}?quality_token={token}"
@@ -647,6 +713,7 @@ def prepare_quality_campaigns(engine, action_id, base_url, actor='system'):
             if is_new:
                 schedule_quality_email_events(engine,cid,due,'TRAINER')
                 created.append({'campaign_id':cid,'kind':'TRAINER','recipient':tr['full_name'],'url':quality_token_url(token,base_url)})
+    reschedule_pending_quality_campaigns(engine,action_id,actor)
     audit(engine,'QUALITY_CAMPAIGNS_PREPARED',action_id,actor,'action',action_id,{'created':len(created)})
     return created
 

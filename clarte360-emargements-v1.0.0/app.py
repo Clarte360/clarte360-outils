@@ -125,6 +125,57 @@ def send_participant_code_email(participant, action, pin):
     try: send_mail(cfg,participant['email'],subject,body); return True,'Code envoyé par email.'
     except Exception as ex: return False,f'Envoi du code impossible : {ex}'
 
+
+def sync_quality_schedule(action_id, actor):
+    """Keep unsent quality deadlines aligned with the real calendar."""
+    action=one(ENGINE,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
+    if not action:
+        return
+    try:
+        if normalize_action_status(action.get('status')) in ('ACTIVE','A_CLOTURER') and (action.get('use_quality_hot') or action.get('use_quality_cold') or action.get('use_trainer_feedback')):
+            prepare_quality_campaigns(ENGINE,action_id,BASE_URL,actor)
+        else:
+            reschedule_pending_quality_campaigns(ENGINE,action_id,actor)
+    except ValueError:
+        # During draft construction the calendar can temporarily be incomplete.
+        pass
+
+def activate_action_ui(a, location_key):
+    """Single operational activation workflow, reusable from several tabs."""
+    status=normalize_action_status(a.get('status'))
+    if status not in ('BROUILLON','PLANIFIEE'):
+        return False
+    if st.button('✅ VALIDER LE PLANNING ET ACTIVER L’ACTION',type='primary',key=f'activate_{location_key}_{a["id"]}'):
+        cfg=mail_cfg(); missing=validate_mail_config(cfg)
+        if not cfg.get('enabled') or missing:
+            st.error("Impossible d’activer les envois : la configuration MAIL n’est pas disponible ou est incomplète" + ((" ("+', '.join(missing)+")") if missing else '.'))
+            return True
+        ok_act,issues=activate_action(ENGINE,a['id'],st.session_state.admin_email)
+        if not ok_act:
+            st.error('Activation impossible : '+' ; '.join(issues))
+            return True
+        ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
+        quality_created=[]
+        try:
+            if a.get('use_quality_hot') or a.get('use_quality_cold') or a.get('use_trainer_feedback'):
+                quality_created=prepare_quality_campaigns(ENGINE,a['id'],BASE_URL,st.session_state.admin_email)
+        except ValueError as ex:
+            # Activation remains valid; quality setup is reported for correction.
+            st.session_state['_action_flash']=(a['id'],'warning',f'Action activée. Qualité à vérifier : {ex}')
+        slots_count=one(ENGINE,'SELECT COUNT(*) n FROM slots WHERE action_id=:a',{'a':a['id']})['n']
+        sent=[];failed=[]
+        if bool(a.get('use_attendance',1)) and slots_count:
+            sent,failed=send_schedule_confirmations(a['id'],st.session_state.admin_email)
+        if failed:
+            msg='Action ACTIVÉE, mais certains emails de planning ont échoué : '+' ; '.join(f"{x}: {e}" for x,e in failed)
+            st.session_state['_action_flash']=(a['id'],'warning',msg)
+        elif sent:
+            st.session_state['_action_flash']=(a['id'],'success',f'Action ACTIVÉE. Confirmation de planning envoyée à {len(sent)} participant(s).')
+        else:
+            st.session_state['_action_flash']=(a['id'],'success','Action ACTIVÉE. Les automatisations prévues sont maintenant opérationnelles.')
+        rerun()
+    return True
+
 def footer(action_id=None):
     org=org_identity(action_id);parts=[]
     if org:
@@ -607,6 +658,11 @@ def actions_list():
 def action_detail(aid):
     a=one(ENGINE,'SELECT * FROM actions WHERE id=:a',{'a':aid});pr=action_progress(ENGINE,aid)
     st.markdown(f"<div class='c360-card'><h3>{a['action_no']} — {a['title']}</h3>{a.get('subtitle') or ''}<br><b>{a['mode']}</b> — Durée prévue : {a['planned_hours']:g} h — Statut : {a['status']}</div>",unsafe_allow_html=True)
+    flash=st.session_state.pop('_action_flash',None)
+    if flash and flash[0]==aid:
+        if flash[1]=='success': st.success(flash[2])
+        elif flash[1]=='warning': st.warning(flash[2])
+        else: st.info(flash[2])
     c1,c2,c3,c4=st.columns(4);c1.metric('Participants',pr['participants']);c2.metric('Créneaux',pr['slots']);c3.metric('Signatures',f"{pr['signed']}/{pr['expected']}");c4.metric('Avancement',f"{pr['percent']} %")
     tabs=st.tabs(['Paramètres action','Participants','Calendrier','Envois & relances','Suivi','Qualité','Documents','Journal'])
     with tabs[0]: action_settings_tab(a)
@@ -647,23 +703,10 @@ def action_settings_tab(a):
     current_status=normalize_action_status(a.get('status'))
     if current_status in ('BROUILLON','PLANIFIEE'):
         st.markdown('### Validation opérationnelle')
-        st.info("Tant que l’action reste en BROUILLON, aucun email automatique d’émargement ne peut partir. L’action restera modifiable après activation.")
-        if st.button('✅ VALIDER LE PLANNING ET ACTIVER L’ACTION',type='primary',key=f'activate{a["id"]}'):
-            cfg=mail_cfg(); missing=validate_mail_config(cfg)
-            if not cfg.get('enabled') or missing:
-                st.error("Impossible d’activer les envois : la configuration MAIL n’est pas disponible ou est incomplète" + ((" ("+', '.join(missing)+")") if missing else '.'))
-            else:
-                ok_act,issues=activate_action(ENGINE,a['id'],st.session_state.admin_email)
-                if not ok_act:
-                    st.error('Activation impossible : '+' ; '.join(issues))
-                else:
-                    ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
-                    sent,failed=send_schedule_confirmations(a['id'],st.session_state.admin_email)
-                    if sent: st.success(f"Action ACTIVÉE. Confirmation de planning envoyée à {len(sent)} participant(s).")
-                    if failed: st.warning('Action activée, mais certains emails de planning ont échoué : '+' ; '.join(f"{x}: {e}" for x,e in failed))
-                    rerun()
+        st.info("Tant que l’action reste en BROUILLON, aucun email automatique d’émargement ni questionnaire qualité ne peut partir. L’action restera modifiable après activation.")
+        activate_action_ui(a,'settings')
     elif current_status in ('ACTIVE','A_CLOTURER'):
-        st.success("Action ACTIVE — elle reste entièrement modifiable. Les changements futurs recalculent les échéances d’envoi.")
+        st.success("Action ACTIVE — elle reste entièrement modifiable. Les changements futurs recalculent les échéances d’envoi et les campagnes qualité non encore envoyées.")
         if st.button('Renvoyer le planning actualisé aux participants',key=f'resend_schedule{a["id"]}'):
             sent,failed=send_schedule_confirmations(a['id'],st.session_state.admin_email)
             if sent: st.success(f'Planning envoyé à {len(sent)} participant(s).')
@@ -698,9 +741,15 @@ def participants_tab(a):
                 pid,pin=add_participant(ENGINE,a['id'],{'individual_action_no':indno.strip() or None,'last_name':last.strip().upper(),'birth_name':birth.strip().upper() or None,'first_name':first.strip().title(),'birth_date':birth_iso,'email':email.strip() or None,'employee_id':emp.strip() or None,'company_name':company.strip() or None,'phone':phone.strip() or None},st.session_state.admin_email)
                 st.success(f"Participant ajouté. Code QR personnel : {pin}");st.code(pin);st.info('Le code n’est pas conservé en clair. En cas d’oubli, il sera réinitialisé.');
                 if send_code and email.strip():
-                    pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':pid});okm,msgm=send_participant_code_email(pp,a,pin);(st.success(msgm) if okm else st.warning(msgm))
+                    pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':pid})
+                    okm,msgm=send_participant_code_email(pp,a,pin)
+                    if okm:
+                        st.success(msgm)
+                    else:
+                        st.warning(msgm)
                 if one(ENGINE,'SELECT COUNT(*) n FROM slots WHERE action_id=:a',{'a':a['id']})['n']:
                     ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
+                sync_quality_schedule(a['id'],st.session_state.admin_email)
     if parts:
         ids={f"{p['last_name']} {p['first_name']}":p['id'] for p in parts}
         with st.expander('✏️ Modifier un participant'):
@@ -727,7 +776,12 @@ def participants_tab(a):
                     if confirm.strip()!=f'SUPPRIMER {lab}': st.error('Confirmation incorrecte.')
                     elif not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Mot de passe administrateur incorrect.')
                     else:
-                        okd,msgd=purge_participant(ENGINE,ids[lab],st.session_state.admin_email);st.success('Participant supprimé intégralement.') if okd else st.error(msgd);rerun() if okd else None
+                        okd,msgd=purge_participant(ENGINE,ids[lab],st.session_state.admin_email)
+                        if okd:
+                            st.success('Participant supprimé intégralement.')
+                            rerun()
+                        else:
+                            st.error(msgd)
         st.markdown('**Réinitialiser un code personnel QR**')
         rlab=st.selectbox('Participant concerné',list(ids),key=f'pinreset{a["id"]}')
         if st.button('Générer un nouveau code à 4 chiffres',key=f'pinbtn{a["id"]}'):
@@ -745,6 +799,14 @@ def calendar_tab(a):
         st.markdown(f"<div class='c360-ok'>✅ Calendrier cohérent : <b>{total:g} h / {a['planned_hours']:g} h</b></div>",unsafe_allow_html=True)
     else:
         st.markdown(f"<div class='c360-warn'>⚠️ Total des créneaux : <b>{total:g} h</b> — durée prévue : <b>{a['planned_hours']:g} h</b> — écart : <b>{delta:+g} h</b></div>",unsafe_allow_html=True)
+
+    if normalize_action_status(a.get('status')) in ('BROUILLON','PLANIFIEE'):
+        st.markdown('### Validation du planning')
+        if abs(delta)<0.01 and slots:
+            st.info('Le calendrier est cohérent. Vous pouvez maintenant valider le planning : l’action deviendra ACTIVE et le planning sera envoyé aux participants concernés.')
+            activate_action_ui(a,'calendar')
+        else:
+            st.caption('La validation sera disponible lorsque le calendrier sera cohérent avec la durée prévue.')
 
     if slots:
         display=[]
@@ -778,6 +840,7 @@ def calendar_tab(a):
         add_slot(ENGINE,a['id'],d.isoformat(),stt.strftime('%H:%M'),ett.strftime('%H:%M'),st.session_state.admin_email,int(send),int(r1),int(r2),int(close))
         if one(ENGINE,'SELECT COUNT(*) n FROM participants WHERE action_id=:a AND active=1',{'a':a['id']})['n']:
             ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
+        sync_quality_schedule(a['id'],st.session_state.admin_email)
         rerun()
 
     if not slots:
@@ -795,7 +858,7 @@ def calendar_tab(a):
         else:
             for x in [z for z in slots if z['slot_date']==src]:
                 add_slot(ENGINE,a['id'],dst.isoformat(),x['start_time'],x['end_time'],st.session_state.admin_email,x['send_offset_min'],x['reminder1_offset_min'],x['reminder2_offset_min'],x['close_offset_min'])
-            ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);rerun()
+            ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);sync_quality_schedule(a['id'],st.session_state.admin_email);rerun()
 
     with st.expander('✏️ Modifier une séance existante',expanded=False):
         edit_choices={f"Séance {i} — {x['slot_date']} {x['start_time']}–{x['end_time']}":x for i,x in enumerate(slots,1)}
@@ -814,7 +877,7 @@ def calendar_tab(a):
             final_send=slot_start_offset_minutes(est.strftime('%H:%M'),eet.strftime('%H:%M')) if edit_send_mode=='Au début du créneau' else int(esend)
             ok,msg=safe_update_slot(ENGINE,es['id'],{'slot_date':ed.isoformat(),'start_time':est.strftime('%H:%M'),'end_time':eet.strftime('%H:%M'),'send_offset_min':final_send,'reminder1_offset_min':int(er1),'reminder2_offset_min':int(er2),'close_offset_min':int(eclose),'reason':reason},st.session_state.admin_email)
             if ok:
-                ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success('Séance modifiée et échéances futures recalculées.');rerun()
+                ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);sync_quality_schedule(a['id'],st.session_state.admin_email);st.success('Séance modifiée et échéances futures recalculées, y compris les campagnes qualité non envoyées.');rerun()
             else: st.error(msg)
 
     with st.expander('📅 Reporter une séance non encore réalisée',expanded=False):
@@ -824,19 +887,32 @@ def calendar_tab(a):
         rpr=st.text_input('Motif du report',key=f'rpr{rsrc["id"]}')
         if st.button('REPORTER CETTE SÉANCE',key=f'report{rsrc["id"]}'):
             ns=report_slot(ENGINE,rsrc['id'],rpd.isoformat(),rps.strftime('%H:%M'),rpe.strftime('%H:%M'),st.session_state.admin_email,rpr or 'Report')
-            if ns: ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success('Séance reportée.');rerun()
+            if ns: ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);sync_quality_schedule(a['id'],st.session_state.admin_email);st.success('Séance reportée et échéances futures recalculées.');rerun()
             else: st.error('Cette séance contient déjà une preuve ou ne peut plus être reportée. Utilisez absence/rattrapage si elle a déjà eu lieu.')
 
     with st.expander('🗑️ Supprimer une séance',expanded=False):
         choices={f"Séance {i} — {x['slot_date']} {x['start_time']}–{x['end_time']}":x['id'] for i,x in enumerate(slots,1)}
         ch=st.selectbox('Séance',list(choices),key=f'dels{a["id"]}');sid_del=choices[ch]
         if st.button('Supprimer cette séance si elle ne contient aucune preuve'):
-            ok,msg=delete_slot(ENGINE,sid_del,st.session_state.admin_email);st.success('Séance supprimée.') if ok else st.error(msg);rerun() if ok else None
+            ok,msg=delete_slot(ENGINE,sid_del,st.session_state.admin_email)
+            if ok:
+                sync_quality_schedule(a['id'],st.session_state.admin_email)
+                st.success('Séance supprimée.')
+                rerun()
+            else:
+                st.error(msg)
         st.warning('Suppression définitive avec preuves : uniquement pour une erreur de saisie ou un dossier de test.')
         conf=st.text_input(f'Saisissez SUPPRIMER SEANCE {sid_del}',key=f'delsconf{a["id"]}');pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delspw{a["id"]}')
         if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT LA SÉANCE',key=f'delshard{a["id"]}'):
             if conf.strip()!=f'SUPPRIMER SEANCE {sid_del}' or not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Confirmation ou mot de passe incorrect.')
-            else: ok,msg=purge_slot(ENGINE,sid_del,st.session_state.admin_email);st.success('Séance supprimée intégralement.') if ok else st.error(msg);rerun() if ok else None
+            else:
+                ok,msg=purge_slot(ENGINE,sid_del,st.session_state.admin_email)
+                if ok:
+                    sync_quality_schedule(a['id'],st.session_state.admin_email)
+                    st.success('Séance supprimée intégralement.')
+                    rerun()
+                else:
+                    st.error(msg)
 
 def dispatch_tab(a):
     st.subheader('Envois automatiques et relances')
@@ -845,6 +921,8 @@ def dispatch_tab(a):
     active_status=normalize_action_status(a.get('status')) in ('ACTIVE','A_CLOTURER')
     if not active_status:
         st.info('Action en BROUILLON : les échéances peuvent être préparées, mais le worker est bloqué et aucun email automatique ne partira avant activation.')
+        st.markdown('### Activer l’action')
+        activate_action_ui(a,'dispatch')
     if st.button('Préparer / actualiser toutes les demandes de signature',type='primary'):
         ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success('Liens personnels et échéances de relance préparés.');rerun()
     events=q(ENGINE,"""SELECT e.*,p.last_name,p.first_name,p.email,s.slot_date,s.start_time,s.end_time FROM email_events e JOIN participants p ON p.id=e.participant_id JOIN slots s ON s.id=e.slot_id WHERE p.action_id=:a ORDER BY e.due_at""",{'a':a['id']})
@@ -920,12 +998,16 @@ def quality_tab(a):
         st.info("Aucun module qualité n'est activé pour cette action. Vous pouvez les activer dans « Paramètres action ».")
         return
     st.caption('Modules activés : '+', '.join(enabled)+'. Les campagnes utilisent les questionnaires standard V2 versionnés et les rubriques analytiques fixes Rxx/Ixx.')
-    maxslot=one(ENGINE,'SELECT MAX(slot_date) d FROM slots WHERE action_id=:a',{'a':a['id']})
-    end_date=a.get('end_date') or (maxslot.get('d') if maxslot else None)
+    try:
+        end_due=standard_quality_due(ENGINE,a['id'],'HOT')
+        ref_end=local_dt(end_due,organization_runtime_config(ENGINE,a['id'])['timezone'])
+        end_date=ref_end.date().isoformat()
+    except ValueError:
+        end_date=None
     if not end_date:
-        st.warning("Renseignez la date de fin de l'action avant de préparer les campagnes qualité.")
+        st.warning("Ajoutez un calendrier ou renseignez une date de fin de l'action avant de préparer les campagnes qualité.")
     else:
-        st.write(f"Date de fin de référence : **{datetime.fromisoformat(end_date).strftime('%d/%m/%Y')}**")
+        st.write(f"Date de fin de référence : **{datetime.fromisoformat(end_date).strftime('%d/%m/%Y')}** (dernière séance planifiée lorsqu’un calendrier existe)")
         if a.get('use_quality_cold'):
             pt=(a.get('prestation_type') or 'FORMATION').upper();label='M+6' if pt=='BILAN_COMPETENCES' else 'J+90 (ou date spécifique si renseignée)'
             st.caption(f'Échéance standard à froid : {label}.')
@@ -933,7 +1015,7 @@ def quality_tab(a):
             try:
                 made=prepare_quality_campaigns(ENGINE,a['id'],BASE_URL,st.session_state.admin_email)
                 if made: st.success(f'{len(made)} campagne(s) créée(s) et planifiée(s).')
-                else: st.info('Toutes les campagnes nécessaires étaient déjà préparées.')
+                else: st.info('Toutes les campagnes nécessaires étaient déjà préparées. Les échéances encore en attente ont été réalignées sur le calendrier actuel.')
                 rerun()
             except ValueError as ex: st.error(str(ex))
     campaigns=list_quality_campaigns(ENGINE,a['id'])
@@ -997,7 +1079,12 @@ def documents_tab(a):
         ok_close,close_issues=action_can_close(ENGINE,a['id'])
         if normalize_action_status(a.get('status'))!='CLOTUREE':
             if st.button('✅ Clôturer l’action et autoriser les certificats définitifs',type='primary',disabled=not ok_close,key=f'close_action_{a["id"]}'):
-                okc,ic=close_action(ENGINE,a['id'],st.session_state.admin_email);st.success('Action clôturée.') if okc else st.error(' ; '.join(ic));rerun() if okc else None
+                okc,ic=close_action(ENGINE,a['id'],st.session_state.admin_email)
+                if okc:
+                    st.success('Action clôturée.')
+                    rerun()
+                else:
+                    st.error(' ; '.join(ic))
             if not ok_close: st.caption('Clôture impossible : '+ ' ; '.join(close_issues[:6]))
         ok_cert,issues=can_issue_certificate(ENGINE,p['id'],require_closed=True)
         if ok_cert:
