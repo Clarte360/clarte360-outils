@@ -1,8 +1,0 @@
-.streamlit/secrets.toml
-*.db
-*.sqlite
-*.sqlite3
-__pycache__/
-*.pyc
-.env
-exports/
