@@ -70,3 +70,27 @@ def test_worker_guard_repairs_stale_overnight_due_without_early_send(tmp_path, m
     rows=q(e,'SELECT event_type,due_at,status FROM email_events WHERE slot_id=:s ORDER BY event_type',{'s':sid})
     assert all(r['status']=='PENDING' for r in rows)
     assert all(r['due_at'].startswith('2099-09-') for r in rows)
+
+def test_worker_repairs_future_stored_due_and_sends_when_real_due_is_reached(tmp_path, monkeypatch):
+    import worker
+    from db import execute, q
+    from datetime import datetime, timezone, timedelta
+    e=eng(tmp_path); aid=action(e,'WG-V214-FUTURE')
+    pid,_=add_participant(e,aid,{'individual_action_no':'WGF','last_name':'DUE','birth_name':None,'first_name':'Future','birth_date':None,'email':'future@example.org','employee_id':None,'company_name':None,'phone':None},'test')
+    sid=add_slot(e,aid,'2099-09-03','20:30','21:30','test',0,20,120,1440)
+    execute(e,"UPDATE actions SET status='ACTIVE' WHERE id=:a",{'a':aid})
+    ensure_tokens_and_events(e,aid,'https://example.org','Europe/Paris')
+    # Simule une ancienne échéance stockée à tort très loin dans le futur.
+    execute(e,"UPDATE email_events SET due_at='2199-01-01T00:00:00+00:00' WHERE slot_id=:s AND event_type='INITIAL'",{'s':sid})
+    # Les relances ne doivent pas partir pendant ce test.
+    execute(e,"UPDATE email_events SET status='SKIPPED' WHERE slot_id=:s AND event_type<>'INITIAL'",{'s':sid})
+    dburl='sqlite:///'+str(tmp_path/'v214.db')
+    monkeypatch.setattr(worker,'load_cfg',lambda:{'database':{'url':dburl},'app':{'base_url':'https://example.org'},'email':{'enabled':True,'smtp_server':'x','smtp_port':587,'smtp_user':'u','smtp_password':'p','from_email':'f@example.org'}})
+    real_due=datetime.now(timezone.utc)-timedelta(minutes=1)
+    monkeypatch.setattr(worker,'email_event_due_utc',lambda row,event_type,tz_name: real_due)
+    sent=[]; monkeypatch.setattr(worker,'send_mail',lambda *a,**k: sent.append(a))
+    worker.run_once()
+    assert len(sent)==1
+    row=q(e,"SELECT due_at,status FROM email_events WHERE slot_id=:s AND event_type='INITIAL'",{'s':sid})[0]
+    assert row['status']=='SENT'
+    assert row['due_at']==real_due.isoformat()

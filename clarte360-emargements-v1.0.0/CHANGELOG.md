@@ -1,4 +1,11 @@
 
+## 2.2 RC1.1 - Correctif urgent envois (2026-09-04)
+- Correction de l'envoi manuel d'emargement : remplacement de la constante obsolete `PRIVACY_NOTICE` par `privacy_notice_html(action_id)`.
+- Durcissement du worker : les evenements PENDING d'actions actives sont recalcules depuis le creneau et le fuseau avant decision d'envoi, meme si une ancienne `due_at` stockee est erronee dans le futur.
+- Le garde-fou anti-envoi premature reste actif : aucun envoi n'est effectue avant l'echeance metier recalculee.
+- Ajout d'un test de regression sur une echeance stockee a tort dans le futur.
+- Suite de tests : 76 tests reussis.
+
 ## 2.1.1 — Correctif configuration email VPS
 - Priorité donnée à la section `[email]` déjà utilisée par l’infrastructure Clarté360.
 - Prise en charge de `smtp_server`, `smtp_port`, `smtp_user`, `smtp_password`, `from_email`.

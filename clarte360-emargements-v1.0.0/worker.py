@@ -3,7 +3,7 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, repair_all_pending_quality_schedules
+from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents
 from mailer import send_mail, resolve_mail_config
 
 try:
@@ -183,16 +183,20 @@ def run_once():
     _quarantine_stale_sending(eng)
     _quarantine_stale_quality(eng)
     _quarantine_stale_client_transmissions(eng)
-    # Guard against stale legacy quality dates before any quality email is selected.
-    # Only PENDING campaigns/events are realigned; sent/completed evidence is preserved.
-    repair_all_pending_quality_schedules(eng,'worker')
     generate_due_final_bundles(eng,'worker')
     if not smtp.get('enabled'): return 0
     _process_portal_retention(eng,smtp,base)
     now=datetime.now(timezone.utc).isoformat()
-    events=q(eng,"""SELECT e.*,p.email,p.first_name,p.last_name,a.title,a.action_no,a.id action_id,s.slot_date,s.start_time,s.end_time
+    # Ne pas filtrer les candidats sur due_at avant le garde-fou métier :
+    # une ancienne échéance erronée (notamment décalage horaire) peut être stockée dans le futur
+    # et empêcherait alors le worker de la réparer. On relit les événements PENDING des actions
+    # actives, on recalcule leur vraie échéance à partir du créneau et du fuseau de l'organisme,
+    # puis on n'envoie que si cette échéance recalculée est réellement atteinte.
+    events=q(eng,"""SELECT e.*,p.email,p.first_name,p.last_name,a.title,a.action_no,a.id action_id,s.slot_date,s.start_time,s.end_time,
+              s.send_offset_min,s.reminder1_offset_min,s.reminder2_offset_min,s.close_offset_min
        FROM email_events e JOIN participants p ON p.id=e.participant_id JOIN slots s ON s.id=e.slot_id JOIN actions a ON a.id=p.action_id
-       WHERE e.status='PENDING' AND e.due_at<=:n AND p.email IS NOT NULL AND TRIM(p.email)<>'' AND a.status IN ('ACTIVE','A_CLOTURER') ORDER BY e.due_at LIMIT 50""",{'n':now})
+       WHERE e.status='PENDING' AND p.email IS NOT NULL AND TRIM(p.email)<>'' AND a.status IN ('ACTIVE','A_CLOTURER')
+       ORDER BY e.due_at LIMIT 500""")
     sent=0
     for e in events:
         runtime=organization_runtime_config(eng,e['action_id'])
