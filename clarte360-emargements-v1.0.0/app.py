@@ -1104,7 +1104,10 @@ def action_settings_tab(a):
             update_action(ENGINE,a['id'],{'title':title,'subtitle':subtitle or None,'nature':nature,'mode':mode,'client_name':client or None,'client_type':client_type,'group_code':group or None,'planned_hours':float(planned),'expected_participants':int(expected),'admin_email':admin_email,'trainer_name':a.get('trainer_name'),'trainer_email':a.get('trainer_email'),'location':location or None,'notes':notes or None,'status':status},st.session_state.admin_email)
             safe_set_action_modules(ENGINE,a['id'],prestation_labels[pt_label],use_attendance,use_hot,use_cold,use_trainer,org_opts.get(org_label),agency_opts.get(agency_label),st.session_state.admin_email)
             execute(ENGINE,'UPDATE actions SET start_date=:s,end_date=:e WHERE id=:a',{'s':start_date.isoformat(),'e':end_date.isoformat(),'a':a['id']})
-            assign_trainer(ENGINE,a['id'],trainer_opts.get(trainer_label),st.session_state.admin_email);st.success('Action mise à jour.');rerun()
+            assign_trainer(ENGINE,a['id'],trainer_opts.get(trainer_label),st.session_state.admin_email)
+            # Any change to dates/modules/trainer must immediately realign unsent quality schedules.
+            sync_quality_schedule(a['id'],st.session_state.admin_email)
+            st.success('Action mise à jour.');rerun()
         except ValueError as ex: st.error(str(ex))
     current_status=normalize_action_status(a.get('status'))
     if current_status in ('BROUILLON','PLANIFIEE'):
@@ -1460,6 +1463,12 @@ def tracking_tab(a):
 
 def quality_tab(a):
     st.subheader('Évaluations qualité')
+    # Repair legacy/stale PENDING dates before displaying them. SENT/COMPLETED
+    # campaigns are never moved by reschedule_pending_quality_campaigns().
+    try:
+        reschedule_pending_quality_campaigns(ENGINE,a['id'],st.session_state.admin_email)
+    except ValueError:
+        pass
     enabled=[]
     if a.get('use_quality_hot'): enabled.append('à chaud')
     if a.get('use_quality_cold'): enabled.append('à froid')

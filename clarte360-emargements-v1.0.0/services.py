@@ -320,7 +320,7 @@ def can_issue_certificate(engine,pid, require_closed=False):
                 problems.append(f"Absence non rattrapée sur le créneau #{sl['id']}")
             continue
         try:
-            if parse_dt(sl['slot_date'],sl['end_time']) > now:
+            if slot_start_end(sl,tz_name)[1] > now:
                 problems.append(f"Créneau #{sl['id']} non encore achevé")
                 continue
         except Exception: pass
@@ -734,8 +734,11 @@ def _action_end_moment(engine, action, tz_name='Europe/Paris'):
     if latest is not None:
         return latest
     if action.get('end_date'):
+        # No session exists, so there is no real end time to reuse.
+        # Use the end of the administrative day rather than an arbitrary noon,
+        # ensuring no automation can fire before that declared end date is over.
         d=datetime.fromisoformat(action['end_date']).date()
-        return datetime.combine(d,datetime.min.time().replace(hour=12),tzinfo=ZoneInfo(tz_name))
+        return datetime.combine(d,datetime.min.time().replace(hour=23,minute=59),tzinfo=ZoneInfo(tz_name))
     return None
 
 def _action_end_date(engine, action):
@@ -766,7 +769,11 @@ def standard_quality_due(engine, action_id, campaign_kind, tz_name=None):
             due_date=_add_months(d,6)
         else:
             due_date=d+timedelta(days=90)
-        local=datetime.combine(due_date,datetime.min.time().replace(hour=12),tzinfo=ZoneInfo(tz_name))
+        # Keep the real local end time of the action for the cold campaign too.
+        # Example: last session ends at 20:30 => J+90/M+6 is also scheduled at 20:30.
+        # This removes the former arbitrary 12:00 fallback.
+        end_clock=end_moment.timetz().replace(tzinfo=None)
+        local=datetime.combine(due_date,end_clock,tzinfo=ZoneInfo(tz_name))
     return local.astimezone(ZoneInfo('UTC')).isoformat()
 
 def reschedule_pending_quality_campaigns(engine, action_id, actor='system'):
@@ -798,6 +805,24 @@ def reschedule_pending_quality_campaigns(engine, action_id, actor='system'):
                  'r2':event_due['REMINDER_2'].astimezone(ZoneInfo('UTC')).isoformat(),'c':camp['id']})
     if changed:
         audit(engine,'QUALITY_CAMPAIGNS_RESCHEDULED',action_id,actor,'action',action_id,{'campaigns':changed})
+    return changed
+
+
+def repair_all_pending_quality_schedules(engine, actor='system'):
+    """Repair all unsent quality schedules from the current real calendars.
+
+    This is intentionally limited to PENDING campaigns: SENT and COMPLETED rows are
+    historical evidence and are never silently moved. The function is safe to run
+    repeatedly and is used by the UI and worker as a guard against stale legacy dates.
+    """
+    action_ids=[r['action_id'] for r in q(engine,"SELECT DISTINCT action_id FROM quality_campaigns WHERE status='PENDING' ORDER BY action_id")]
+    changed=0
+    for aid in action_ids:
+        try:
+            changed += reschedule_pending_quality_campaigns(engine,aid,actor)
+        except ValueError:
+            # A draft/import can temporarily have no usable end reference.
+            continue
     return changed
 
 def quality_token_url(token, base_url):
@@ -1235,7 +1260,8 @@ def action_final_bundle(engine, action_id, persist=True, actor='system'):
                 except Exception: pass
     data=bio.getvalue()
     if persist:
-        bundle_date=(a.get('end_date') or datetime.now().date().isoformat())[:10]
+        # The file name follows the real last session when a calendar exists.
+        bundle_date=(_action_end_date(engine,a) or a.get('end_date') or datetime.now().date().isoformat())[:10]
         try: prefix=datetime.fromisoformat(bundle_date).strftime('%y%m%d')
         except Exception: prefix=datetime.now().strftime('%y%m%d')
         fp=FINAL_BUNDLE_ROOT/f"{prefix} {_safe_filename(a['action_no'])} DOCS STAGIAIRES.zip"; fp.write_bytes(data); now=utcnow_iso()

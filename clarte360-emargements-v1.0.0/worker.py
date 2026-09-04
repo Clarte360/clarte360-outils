@@ -3,7 +3,7 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents
+from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, repair_all_pending_quality_schedules
 from mailer import send_mail, resolve_mail_config
 
 try:
@@ -183,6 +183,9 @@ def run_once():
     _quarantine_stale_sending(eng)
     _quarantine_stale_quality(eng)
     _quarantine_stale_client_transmissions(eng)
+    # Guard against stale legacy quality dates before any quality email is selected.
+    # Only PENDING campaigns/events are realigned; sent/completed evidence is preserved.
+    repair_all_pending_quality_schedules(eng,'worker')
     generate_due_final_bundles(eng,'worker')
     if not smtp.get('enabled'): return 0
     _process_portal_retention(eng,smtp,base)
