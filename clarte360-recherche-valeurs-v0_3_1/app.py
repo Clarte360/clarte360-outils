@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.2.0-preproduction-2"
+APP_VERSION = "2.2.0-preproduction-3"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -2908,14 +2908,28 @@ Retournez uniquement le JSON demandé."""
     return _expression_result("echec_technique",reason=last_error or "Aucune proposition suffisamment utile et fidèle n'a pu être obtenue.",source="ia")
 
 def reliable_expression_assessment(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> dict[str, Any]:
-    """Deuxième garde-fou : aucun échec ne peut être maquillé en texte 'déjà clair'."""
-    try:
-        result=assess_response_expression(text,expected_value_label=expected_value_label,question_kind=question_kind)
-        if result.get("statut") in {"correction_forme","reformulation_expression"} and not str(result.get("texte_propose") or "").strip():
-            return _expression_result("echec_technique",reason="La proposition attendue est vide.")
-        return result
-    except Exception as exc:
-        return _expression_result("echec_technique",reason=str(exc))
+    """Garde-fou V2.5 : une seconde analyse complète est tentée automatiquement avant d'afficher un échec.
+
+    assess_response_expression possède déjà deux tentatives internes pour améliorer une
+    proposition insuffisante. Ici, si ce premier cycle complet aboutit malgré tout à
+    echec_technique, Clarté360 relance automatiquement un second cycle complet. Le
+    bénéficiaire ne voit donc l'échec qu'après épuisement des deux cycles.
+    """
+    last_result=None
+    for cycle in range(2):
+        try:
+            result=assess_response_expression(text,expected_value_label=expected_value_label,question_kind=question_kind)
+            last_result=result
+            if result.get("statut") in {"correction_forme","reformulation_expression"} and not str(result.get("texte_propose") or "").strip():
+                result=_expression_result("echec_technique",reason="La proposition attendue est vide.")
+                last_result=result
+            if result.get("statut") != "echec_technique":
+                return result
+        except Exception as exc:
+            last_result=_expression_result("echec_technique",reason=str(exc))
+        if cycle==0:
+            continue
+    return last_result or _expression_result("echec_technique",reason="Aucune proposition linguistique fiable n'a pu être obtenue après deux cycles automatiques.")
 
 def reliable_clean_spoken_text(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> str:
     """Compatibilité historique : renvoie seulement une proposition réelle, jamais l'original en fallback."""
