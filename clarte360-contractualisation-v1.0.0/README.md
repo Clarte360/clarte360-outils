@@ -1,56 +1,27 @@
-# Clarté360 – Contractualisation V1.0.0
+# Clarté360 – Contractualisation V1.1.1 VPS / base locale
 
-Pilote Streamlit Community Cloud pour préparer les contrats Clarté360 sans Word.
+Cette version est destinée à être exécutée sur le VPS Clarté360, mais **la base Excel Clarté360 reste sur l'ordinateur de l'administrateur**.
 
-## V1.0.0
+## Principe
+1. Charger ponctuellement la base `.xlsm` locale dans l'application.
+2. Charger une APS JSON ou reprendre une action existante.
+3. Compléter les informations contractuelles manquantes.
+4. L'application injecte les données dans `CONV ADM` et les financeurs dans `FINANCEMENTS` sur la copie en mémoire.
+5. Le contrat PDF et le JSON contractuel sont générés.
+6. Télécharger la base `.xlsm` mise à jour et remplacer la base locale après contrôle.
 
-Fonctionnel de bout en bout pour :
-- import de la base `GESTION OF CLARTE360_CONTRACTUALISATION_V1.xlsm` ;
-- import d'une APS JSON Clarté360 ;
-- détection de la première action CLA libre ;
-- préremplissage du bénéficiaire ;
-- saisie du prix et de plusieurs financeurs ;
-- contrôle `somme des financements = prix TTC` ;
-- écriture dans `CONV ADM` et `FINANCEMENTS` ;
-- téléchargement d'une nouvelle base XLSM ;
-- conservation du projet VBA et des composants internes du classeur par modification XML ciblée ;
-- recalcul Excel forcé à l'ouverture ;
-- génération PDF du **Contrat de prestation de bilan de compétences – particulier bipartite** ;
-- export du dossier contractuel JSON.
+Aucune base Excel Clarté360 n'est conservée de façon persistante sur le VPS.
 
-Les moteurs Coaching / Formation / Tripartite sont prévus par le sélecteur, mais leur PDF reste volontairement désactivé tant que les clauses correspondantes ne sont pas auditées et validées.
+## Règles BC particulier bipartite actuellement actives
+- `NO_CLAR` : prochain numéro libre.
+- Données bénéficiaire : APS JSON vers `CONV ADM`.
+- Particulier : `NOM_ENT`, `ADRESSE`, `CODE_POST`, `VILLE` reprennent le bénéficiaire.
+- `SPEC_BPF` : `Autres`.
+- Prix : seul `INTRA_HT` reçoit le montant total HT saisi.
+- `CALENDRIER` : texte exactement saisi dans le masque.
+- Dates : vraies dates Excel avec format porté par la colonne existante.
+- Contacts de mise en place : laissés vides pour un particulier bipartite.
+- Financeurs : plusieurs lignes possibles dans `FINANCEMENTS`, reliées par `NO_CLAR`.
+- `FACTURE_A_ETABLIR_A` : reprend les destinataires renseignés dans les lignes de financement.
 
-## Déploiement Streamlit Cloud
-
-1. Copier ce dossier dans le dépôt GitHub Clarté360.
-2. Créer une application Streamlit avec `app.py` comme Main file.
-3. Dans **Settings > Secrets**, ajouter :
-
-```toml
-[security]
-admin_password = "VOTRE_MOT_DE_PASSE"
-```
-
-4. Ne jamais mettre un vrai mot de passe ni une clé API dans GitHub.
-
-## API OpenAI
-
-Aucune clé OpenAI n'est requise pour cette V1. C'est volontaire : le texte juridique est déterministe et versionné.
-Une API pourra être ajoutée plus tard uniquement pour des aides rédactionnelles non juridiques (par exemple proposer une synthèse courte des objectifs à partir d'une APS), toujours avec validation humaine.
-
-## Limite Streamlit Cloud V1
-
-Aucune base n'est stockée sur le serveur. À chaque session :
-**UPLOAD XLSM → travail → DOWNLOAD XLSM**.
-La persistance sera traitée lors du passage sur le VPS.
-
-## Correctifs V1.0.2
-- suppression de tous les calendriers, dates, prix et montants de financement codés en dur pour un bénéficiaire ;
-- seules les données réellement présentes dans l'APS sont préremplies ;
-- affichage dans l'application d'une table de correspondance APS JSON -> CONV ADM ;
-- les dates, la durée, le planning et le prix sont demandés à l'administrateur s'ils n'existent pas déjà dans CONV ADM ;
-- validation de l'onglet FINANCEMENTS sans réécriture automatique de sa structure ;
-- contrôle d'intégrité XLSM avant téléchargement : même liste de composants, VBA strictement inchangé, seules CONV ADM, FINANCEMENTS, la table FINANCEMENTS et le réglage de recalcul peuvent évoluer ;
-- aucun fichier XLSM n'est proposé au téléchargement si le contrôle d'intégrité échoue.
-
-Sur Streamlit Cloud, un fichier chargé depuis le navigateur ne peut pas être modifié directement sur le disque local de l'utilisateur. La copie mise à jour doit donc être téléchargée. Ce comportement disparaîtra lors du passage à une base persistante sur VPS.
+Le moteur PDF actif en V1 concerne le contrat de prestation de bilan de compétences particulier bipartite.
