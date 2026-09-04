@@ -3373,8 +3373,9 @@ def _module4_render_cycle(voie:str) -> None:
     # le clic « Faire le point » voyait question="" et recréait une question avant
     # d'entrer dans synthese_globale_pending, ce qui annulait de fait le point.
     # La génération d'une question n'est autorisée que dans un état conversationnel.
+    # HOTFIX : le stage "initial" correspond à un NOUVEAU bloc volontaire ; il doit générer sa première question.
     stage=cycle.get("stage","")
-    can_seed_question = stage in {"", "question"}
+    can_seed_question = stage in {"", "question"} or stage == "initial"
     if can_seed_question and voie=="questions_personnalisees" and not cycle.get("question"):
         cycle["question"]=_module4_generate_way2_question(); cycle["stage"]="question"
     elif can_seed_question and voie=="situation" and not cycle.get("question"):
