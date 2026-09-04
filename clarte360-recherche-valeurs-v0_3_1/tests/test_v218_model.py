@@ -40,14 +40,14 @@ def seed(mod,st):
 
 def test_version_and_dynamic_referential():
     mod,st=load_app()
-    assert mod.APP_VERSION=='2.1.9B-preproduction'
+    assert mod.APP_VERSION=='2.2.0-preproduction'
     assert len(mod.CATALOGUE)==204
     assert mod.value_info('Clarté')['code']=='RVC360-241'
 
 
 def test_new_schema_defaults_present():
     mod,st=load_app(); d=mod.default_business_state()
-    assert d['json_schema_version']=='2.1.3.9D'
+    assert d['json_schema_version']=='2.2.0'
     assert set(d['module_states'])=={'module_1','module_2','module_3','module_4','module_5'}
     assert d['central_validated_values']==[] and d['values_to_examine']==[] and d['session_review_items']==[]
 
@@ -75,7 +75,7 @@ def test_work_json_contains_new_transversal_lists():
     st.session_state.values_to_examine=[{'nom_final':'Respect','statut':'a_examiner'}]
     st.session_state.session_review_items=[{'terme':'Contrôle','statut':'a_revoir_en_seance'}]
     payload=mod.build_payload(False); m=payload['metier']
-    assert m['schema_metier']=='2.1.3.8E'
+    assert m['schema_metier']=='2.2.0'
     assert m['valeurs_validees_centrales'][0]['nom_final']=='Clarté'
     assert m['valeurs_a_examiner'][0]['nom_final']=='Respect'
     assert m['a_revoir_en_seance'][0]['terme']=='Contrôle'

@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.1.9D-preproduction"
+APP_VERSION = "2.2.0-preproduction"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -313,7 +313,7 @@ def default_business_state() -> dict[str, Any]:
         "navigation_history":[], "answer_metadata":{}, "reasoning_evolution":[], "resume_new_values_done":False,
         "voice_enabled":True, "data_revision":0, "stale_sections":[], "return_after_personal_values":"",
         "dependency_events":[], "last_consistent_revision":0, "closure_audit":{},
-        "json_schema_version":"2.1.3.9D",
+        "json_schema_version":"2.2.0",
         "active_module":"accueil_modules","pending_module_entry":"",
         "module_states":{
             "module_1":{"status":"non_commence","step":"intro"},
@@ -323,7 +323,7 @@ def default_business_state() -> dict[str, Any]:
             "module_5":{"status":"indisponible","step":"accueil"},
         },
         "central_validated_values":[], "values_to_examine":[], "session_review_items":[],
-        "clarification_tracks":[], "hypothesis_basket":[], "module4_exploration_history":[],
+        "clarification_tracks":[], "hypothesis_basket":[], "module4_rejected_hypotheses":[], "module4_exploration_history":[],
         "current_value_work":{}, "module1_count":0, "module1_index":0,
         "module2_question_index":0, "module2_answers":{},
         "module3_declared_count":0, "module3_index":0, "module3_queue":[],
@@ -833,7 +833,7 @@ def _reset_response_voice_state(base: str) -> None:
     current_version=int(st.session_state.get(f"{base}_audio_version",0) or 0)
     keys=[
         f"{base}_audio_{current_version}", f"{base}_audio_id",
-        f"{base}_transcript_raw", f"{base}_transcript_clean",
+        f"{base}_transcript_raw", f"{base}_transcript_clean", f"{base}_transcript_assessment",
         f"{base}_processing_audio", f"{base}_transcription_error",
         f"{base}_voice_choice", f"{base}_clean_edit",
     ]
@@ -1131,7 +1131,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
     nouvelle réponse, correction manuelle de l'actuelle, reformulation directe.
     """
     base=_safe_widget_key(key)
-    meta=st.session_state.answer_metadata.setdefault(base,{"mode_saisie":"","texte_brut":"","transcription":"","transcription_corrigee":"","reformulation_proposee":"","reformulation_retenue":"","version_officielle":"","validee_le":""})
+    meta=st.session_state.answer_metadata.setdefault(base,{"mode_saisie":"","texte_brut":"","transcription":"","transcription_corrigee":"","correction_linguistique_proposee":"","reformulation_proposee":"","reformulation_retenue":"","statut_expression":"","raison_expression":"","version_officielle":"","validee_le":""})
     _repair_answer_metadata_entry(meta)
     if value and not _official_answer_from_meta(meta):
         meta.update({"mode_saisie":"reprise","texte_brut":str(value),"version_officielle":str(value),"validee_le":meta.get("validee_le") or now_iso()})
@@ -1180,30 +1180,50 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
     if edit_mode=="ai":
         proposal_key=f"{base}_direct_proposal"
         if proposal_key not in st.session_state:
-            with st.spinner("Préparation d’une reformulation fidèle…"):
-                st.session_state[proposal_key]=reliable_clean_spoken_text(official, expected_value_label=expected_value_label)
-        proposal=str(st.session_state.get(proposal_key) or "").strip()
-        if not proposal:
-            st.success("Votre réponse est déjà suffisamment claire. Aucune reformulation supplémentaire n’est nécessaire.")
-            if st.button("Conserver ma réponse actuelle",key=f"{base}_keep_clear",type="primary",use_container_width=True): st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.rerun()
+            with st.spinner("Analyse de la qualité d’expression…"):
+                st.session_state[proposal_key]=reliable_expression_assessment(official, expected_value_label=expected_value_label, question_kind=question_kind)
+        assessment=st.session_state.get(proposal_key) or {}
+        status=str(assessment.get("statut") or "echec_technique")
+        proposal=str(assessment.get("texte_propose") or "").strip()
+        reason=str(assessment.get("raison_courte") or "").strip()
+        clarification=str(assessment.get("question_clarification") or "").strip()
+        choice="Choisissez une option"
+        if status=="aucune_modification":
+            st.success("Votre réponse est déjà correcte, fluide et réutilisable telle quelle. Aucune modification n’est utile.")
+            if st.button("Conserver ma réponse actuelle",key=f"{base}_keep_clear",type="primary",use_container_width=True):
+                meta.update({"statut_expression":status,"raison_expression":reason,"correction_linguistique_proposee":"","reformulation_proposee":"","reformulation_retenue":"original"})
+                st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.session_state.pop(proposal_key,None); st.rerun()
+        elif status=="echec_technique":
+            st.warning("Clarté360 n’a pas pu produire une proposition linguistique fiable. Cela ne signifie pas que votre réponse est déjà correctement formulée.")
+            if reason: st.caption(reason)
+            c1,c2=st.columns(2)
+            with c1:
+                if st.button("Réessayer",key=f"{base}_retry_expression",type="primary",use_container_width=True): st.session_state.pop(proposal_key,None); st.rerun()
+            with c2:
+                if st.button("Conserver ma réponse actuelle",key=f"{base}_keep_expression_failure",use_container_width=True):
+                    meta.update({"statut_expression":status,"raison_expression":reason,"correction_linguistique_proposee":"","reformulation_proposee":"","reformulation_retenue":"original"})
+                    st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.session_state.pop(proposal_key,None); st.rerun()
+        elif status=="clarification_necessaire":
+            st.warning("Une reformulation fidèle risquerait de modifier votre pensée. Clarté360 vous demande plutôt une précision.")
+            if clarification: st.info(clarification)
+            if st.button("Corriger / préciser moi-même",key=f"{base}_clarify_manual",type="primary",use_container_width=True): st.session_state[mode_key]="correct"; st.session_state.pop(proposal_key,None); st.rerun()
+            if st.button("Conserver ma réponse actuelle",key=f"{base}_keep_ambiguous",use_container_width=True):
+                meta.update({"statut_expression":status,"raison_expression":reason,"correction_linguistique_proposee":"","reformulation_proposee":"","reformulation_retenue":"original"})
+                st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.session_state.pop(proposal_key,None); st.rerun()
         else:
-            difference_kind=_text_difference_kind(official,proposal)
-            if difference_kind=="identique":
-                st.success("Votre réponse est déjà claire et correctement formulée. Aucune modification n’est nécessaire.")
-                choice=st.radio("Validation",["Choisissez une option","Conserver ma réponse actuelle"],key=f"{base}_direct_choice")
-            elif difference_kind=="correction_legere":
-                st.info("Clarté360 propose une légère correction de forme, sans modifier le sens. Comparez les deux versions avant de choisir.")
-                st.markdown(f'<div class="transcript-card"><b>Formulation initiale</b><br><br>{html.escape(official)}</div>',unsafe_allow_html=True)
+            st.markdown(f'<div class="transcript-card"><b>Formulation initiale</b><br><br>{html.escape(official)}</div>',unsafe_allow_html=True)
+            if status=="correction_forme":
+                st.info("Clarté360 propose une correction de forme, sans modifier le sens.")
                 st.markdown(f'<div class="transcript-card corrected"><b>Correction de forme proposée</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
                 choice=st.radio("Quelle version souhaitez-vous conserver ?",["Choisissez une option","Conserver ma formulation","Utiliser la correction de forme"],key=f"{base}_direct_choice")
             else:
-                st.markdown(f'<div class="transcript-card"><b>Réponse actuelle</b><br><br>{html.escape(official)}</div>',unsafe_allow_html=True)
-                st.markdown(f'<div class="transcript-card corrected"><b>Proposition corrigée Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
+                st.info("Le sens est compris, mais l’expression peut être rendue plus fluide et plus réutilisable. La proposition reste strictement fidèle à votre contenu.")
+                st.markdown(f'<div class="transcript-card corrected"><b>Proposition d’expression Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
                 choice=st.radio("Quelle version souhaitez-vous conserver ?",["Choisissez une option","Conserver ma réponse actuelle","Utiliser la proposition Clarté360"],key=f"{base}_direct_choice")
             if st.button("✓ Valider mon choix",key=f"{base}_direct_validate",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
                 new_value=official if choice.startswith("Conserver") else proposal
                 meta.setdefault("historique_versions",[]); meta["historique_versions"].append({"version":official,"remplacee_le":now_iso(),"motif":"reformulation demandée"})
-                meta.update({"mode_saisie":meta.get("mode_saisie") or "reprise","reformulation_proposee":proposal,"reformulation_retenue":"original" if choice.startswith("Conserver") else "clarte360","version_officielle":new_value,"validee_le":now_iso()})
+                meta.update({"mode_saisie":meta.get("mode_saisie") or "reprise","statut_expression":status,"raison_expression":reason,"correction_linguistique_proposee":proposal if status=="correction_forme" else "","reformulation_proposee":proposal if status=="reformulation_expression" else "","reformulation_retenue":"original" if choice.startswith("Conserver") else "clarte360","version_officielle":new_value,"validee_le":now_iso()})
                 st.session_state[f"{base}_official"]=new_value; st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.session_state.pop(proposal_key,None)
                 if new_value!=official: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} reformulée")
                 st.rerun()
@@ -1226,35 +1246,48 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
             if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed_{edit_mode}",type="primary",use_container_width=True):
                 new_value=typed.strip(); meta.setdefault("historique_versions",[])
                 if official: meta["historique_versions"].append({"version":official,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
-                meta.update({"mode_saisie":"clavier","texte_brut":new_value,"reformulation_proposee":"","reformulation_retenue":"original","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
+                meta.update({"mode_saisie":"clavier","texte_brut":new_value,"statut_expression":"non_applicable","raison_expression":"","correction_linguistique_proposee":"","reformulation_proposee":"","reformulation_retenue":"original","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
                 st.session_state[f"{base}_official"]=new_value; st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.rerun()
         else:
             if st.session_state.get(source_key)!=typed.strip(): st.session_state.pop(proposal_key,None)
             if st.button("Préparer et comparer",key=f"{base}_prepare_typed_{edit_mode}",type="primary",use_container_width=True):
-                st.session_state[source_key]=typed.strip(); st.session_state[proposal_key]=reliable_clean_spoken_text(typed.strip(), expected_value_label=expected_value_label); st.rerun()
+                st.session_state[source_key]=typed.strip(); st.session_state[proposal_key]=reliable_expression_assessment(typed.strip(), expected_value_label=expected_value_label, question_kind=question_kind); st.rerun()
             if source_key in st.session_state:
-                proposal=str(st.session_state.get(proposal_key) or "").strip()
-                difference_kind=_text_difference_kind(typed.strip(),proposal)
+                assessment=st.session_state.get(proposal_key) or {}
+                status=str(assessment.get("statut") or "echec_technique")
+                proposal=str(assessment.get("texte_propose") or "").strip()
+                reason=str(assessment.get("raison_courte") or "").strip()
+                clarification=str(assessment.get("question_clarification") or "").strip()
                 options=["Choisissez une option"]
-                if difference_kind=="identique":
+                if status=="aucune_modification":
                     st.markdown(f'<div class="transcript-card"><b>Votre réponse</b><br><br>{html.escape(typed.strip())}</div>',unsafe_allow_html=True)
-                    st.success("Votre réponse est déjà claire et correctement formulée. Aucune modification n’est nécessaire.")
+                    st.success("Votre réponse est déjà correcte, fluide et réutilisable telle quelle. Aucune modification n’est utile.")
                     options.append("Conserver ma réponse initiale")
-                elif difference_kind=="correction_legere":
-                    st.info("Clarté360 propose une légère correction de forme, sans modifier le sens. Comparez les deux versions avant de choisir.")
+                elif status=="correction_forme":
+                    st.info("Clarté360 propose une correction de forme, sans modifier le sens. Comparez les deux versions avant de choisir.")
                     st.markdown(f'<div class="transcript-card"><b>Réponse initiale</b><br><br>{html.escape(typed.strip())}</div>',unsafe_allow_html=True)
-                    st.markdown(f'<div class="transcript-card corrected"><b>Version légèrement corrigée</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
+                    st.markdown(f'<div class="transcript-card corrected"><b>Version corrigée</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
                     options.extend(["Conserver ma réponse initiale","Utiliser la correction de forme"])
-                else:
+                elif status=="reformulation_expression":
+                    st.info("Le sens est compris, mais l’expression peut être rendue plus fluide et plus réutilisable. Clarté360 vous propose une formulation fidèle.")
                     st.markdown(f'<div class="transcript-card"><b>Réponse initiale</b><br><br>{html.escape(typed.strip())}</div>',unsafe_allow_html=True)
-                    st.markdown(f'<div class="transcript-card corrected"><b>Proposition Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
+                    st.markdown(f'<div class="transcript-card corrected"><b>Proposition d’expression Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
+                    options.extend(["Conserver ma réponse initiale","Utiliser la proposition Clarté360"])
+                elif status=="clarification_necessaire":
+                    st.warning("Une reformulation fidèle risquerait de modifier votre pensée. Précisez votre réponse avant de relancer la comparaison.")
+                    if clarification: st.info(clarification)
                     options.append("Conserver ma réponse initiale")
-                    if proposal: options.append("Utiliser la proposition Clarté360")
+                else:
+                    st.warning("Clarté360 n’a pas pu produire une proposition linguistique fiable. Cela ne signifie pas que votre réponse est déjà correctement formulée.")
+                    if reason: st.caption(reason)
+                    options.append("Conserver ma réponse initiale")
+                    if st.button("Réessayer l’analyse linguistique",key=f"{base}_typed_retry_{edit_mode}",use_container_width=True):
+                        st.session_state.pop(proposal_key,None); st.rerun()
                 choice=st.radio("Quelle version souhaitez-vous valider ?",options,key=f"{base}_typed_choice_{edit_mode}")
                 if st.button("✓ Valider ma réponse écrite",key=f"{base}_validate_typed_{edit_mode}",type="primary",use_container_width=True,disabled=choice=="Choisissez une option"):
                     new_value=proposal if choice.startswith("Utiliser") else typed.strip(); meta.setdefault("historique_versions",[])
                     if official: meta["historique_versions"].append({"version":official,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
-                    meta.update({"mode_saisie":"clavier","texte_brut":typed.strip(),"reformulation_proposee":proposal,"reformulation_retenue":"clarte360" if choice.startswith("Utiliser") else "original","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
+                    meta.update({"mode_saisie":"clavier","texte_brut":typed.strip(),"statut_expression":status,"raison_expression":reason,"correction_linguistique_proposee":proposal if status=="correction_forme" else "","reformulation_proposee":proposal if status=="reformulation_expression" else "","reformulation_retenue":"clarte360" if choice.startswith("Utiliser") else "original","transcription":"","transcription_corrigee":"","version_officielle":new_value,"validee_le":now_iso()})
                     st.session_state[f"{base}_official"]=new_value; st.session_state[editing_key]=False; st.session_state[mode_key]=""; st.session_state.pop(proposal_key,None); st.session_state.pop(source_key,None)
                     if official and official!=new_value: invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse {base} modifiée")
                     st.rerun()
@@ -1288,34 +1321,45 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
                 # tarde ou échoue, le premier clic affiche toujours la version originale.
                 st.session_state[f"{base}_transcript_raw"]=raw
                 st.session_state[f"{base}_transcript_clean"]=raw
-                proposal=reliable_clean_spoken_text(raw, expected_value_label=expected_value_label)
-                st.session_state[f"{base}_transcript_clean"]=proposal or raw
+                assessment=reliable_expression_assessment(raw, expected_value_label=expected_value_label, question_kind=question_kind)
+                st.session_state[f"{base}_transcript_assessment"]=assessment
+                st.session_state[f"{base}_transcript_clean"]=str(assessment.get("texte_propose") or "")
             # Un seul clic doit suffire : on force immédiatement le rerun qui affiche
             # la transcription déjà mémorisée, sans relancer ni la transcription ni l'IA.
             st.rerun()
         except Exception as exc: st.session_state[f"{base}_transcription_error"]=str(exc)
     err=str(st.session_state.pop(f"{base}_transcription_error","") or "")
     if err: st.error(f"La transcription n’a pas pu être réalisée : {err}")
-    raw=str(st.session_state.get(f"{base}_transcript_raw","") or ""); proposal=str(st.session_state.get(f"{base}_transcript_clean","") or "")
+    raw=str(st.session_state.get(f"{base}_transcript_raw","") or "")
     if raw:
-        difference_kind=_text_difference_kind(raw,proposal)
+        assessment=st.session_state.get(f"{base}_transcript_assessment") or {}
+        status=str(assessment.get("statut") or "echec_technique")
+        proposal=str(assessment.get("texte_propose") or "").strip()
+        reason=str(assessment.get("raison_courte") or "").strip()
+        clarification=str(assessment.get("question_clarification") or "").strip()
         options=["Choisissez une option"]
-        if difference_kind=="identique":
-            st.markdown(f'<div class="transcript-card"><b>Votre transcription</b><br><br>{html.escape(raw)}</div>',unsafe_allow_html=True)
-            st.success("Votre transcription est déjà claire et correctement formulée. Aucune modification n’est nécessaire.")
+        st.markdown(f'<div class="transcript-card"><b>Transcription initiale</b><br><br>{html.escape(raw)}</div>',unsafe_allow_html=True)
+        if status=="aucune_modification":
+            st.success("Votre transcription est déjà correcte, fluide et réutilisable telle quelle. Aucune modification n’est utile.")
             options.append("Conserver la transcription initiale")
-        elif difference_kind=="correction_legere":
-            st.info("Clarté360 propose une légère correction de forme, sans modifier le sens. Comparez les deux versions avant de choisir.")
-            st.markdown(f'<div class="transcript-card"><b>Transcription initiale</b><br><br>{html.escape(raw)}</div>',unsafe_allow_html=True)
-            st.markdown(f'<div class="transcript-card corrected"><b>Version légèrement corrigée</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
+        elif status=="correction_forme":
+            st.info("Clarté360 propose une correction de forme, sans modifier le sens.")
+            st.markdown(f'<div class="transcript-card corrected"><b>Version corrigée</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
+            options.extend(["Conserver la transcription initiale","Utiliser la correction de forme"])
+        elif status=="reformulation_expression":
+            st.info("Le sens est compris, mais l’expression orale peut être rendue plus fluide et plus réutilisable. Clarté360 propose une formulation fidèle.")
+            st.markdown(f'<div class="transcript-card corrected"><b>Proposition d’expression Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
+            options.extend(["Conserver la transcription initiale","Utiliser la proposition Clarté360"])
+        elif status=="clarification_necessaire":
+            st.warning("Une reformulation fidèle risquerait de modifier votre pensée. Vous pouvez préciser manuellement votre transcription.")
+            if clarification: st.info(clarification)
             options.append("Conserver la transcription initiale")
-            options.append("Utiliser la correction de forme")
         else:
-            st.markdown(f'<div class="transcript-card"><b>Transcription initiale</b><br><br>{html.escape(raw)}</div>',unsafe_allow_html=True)
+            st.warning("Clarté360 n’a pas pu produire une proposition linguistique fiable. Cela ne signifie pas que la transcription est déjà correctement formulée.")
+            if reason: st.caption(reason)
             options.append("Conserver la transcription initiale")
-            if proposal:
-                st.markdown(f'<div class="transcript-card corrected"><b>Proposition Clarté360</b><br><br>{html.escape(proposal)}</div>',unsafe_allow_html=True)
-                options.append("Utiliser la proposition Clarté360")
+            if st.button("Réessayer l’analyse linguistique",key=f"{base}_voice_retry",use_container_width=True):
+                st.session_state[f"{base}_transcript_assessment"]=reliable_expression_assessment(raw,expected_value_label=expected_value_label,question_kind=question_kind); st.rerun()
         options += ["Corriger manuellement","Réenregistrer"]
         choice=st.radio("Quelle version souhaitez-vous valider ?",options,key=f"{base}_voice_choice")
         manual=""
@@ -1329,7 +1373,7 @@ def open_response_widget(label: str, key: str, *, value: str="", height: int=110
             else:
                 meta.setdefault("historique_versions",[])
                 if official: meta["historique_versions"].append({"version":official,"remplacee_le":now_iso(),"motif":"modification bénéficiaire"})
-                meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":proposal,"reformulation_proposee":proposal,"reformulation_retenue":"clarte360" if choice.startswith("Utiliser") else "manuel" if choice=="Corriger manuellement" else "original","version_officielle":retained.strip(),"validee_le":now_iso()})
+                meta.update({"mode_saisie":"voix","texte_brut":raw,"transcription":raw,"transcription_corrigee":proposal if status in {"correction_forme","reformulation_expression"} else "","statut_expression":status,"raison_expression":reason,"correction_linguistique_proposee":proposal if status=="correction_forme" else "","reformulation_proposee":proposal if status=="reformulation_expression" else "","reformulation_retenue":"clarte360" if choice.startswith("Utiliser") else "manuel" if choice=="Corriger manuellement" else "original","version_officielle":retained.strip(),"validee_le":now_iso()})
                 st.session_state[f"{base}_official"]=retained.strip(); _reset_response_voice_state(base); st.session_state[editing_key]=False; st.session_state[mode_key]=""
                 if official and official!=retained.strip(): invalidate_dependencies(dependency_scope,value_name=value_name,reason=f"réponse vocale {base} modifiée")
                 st.rerun()
@@ -2587,6 +2631,7 @@ def _module4_all_known_names() -> set[str]:
     for item in st.session_state.get("session_review_items",[]): names.add(normalize(item.get("nom") or item.get("nom_final") or ""))
     for item in st.session_state.get("hypothesis_basket",[]): names.add(normalize(item.get("nom") or ""))
     for item in st.session_state.get("rejected_values",[]): names.add(normalize(item.get("nom") or ""))
+    for item in st.session_state.get("module4_rejected_hypotheses",[]): names.add(normalize(item.get("nom") or ""))
     return {x for x in names if x}
 
 
@@ -2598,7 +2643,7 @@ def _module4_context_payload() -> dict[str,Any]:
         "valeurs_a_examiner":[x.get("nom_final") or x.get("nom_normalise") or x.get("nom_initial") for x in st.session_state.get("values_to_examine",[])],
         "a_revoir_en_seance":[x.get("nom") or x.get("nom_final") for x in st.session_state.get("session_review_items",[])],
         "panier_hypotheses":[x.get("nom") for x in st.session_state.get("hypothesis_basket",[])],
-        "hypotheses_refusees":[x.get("nom") for x in st.session_state.get("rejected_values",[])],
+        "hypotheses_refusees":[x.get("nom") for x in st.session_state.get("rejected_values",[])]+[x.get("nom") for x in st.session_state.get("module4_rejected_hypotheses",[])],
         "memoire_questions_reponses":deepcopy(st.session_state.get("module4_question_memory",[])),
     }
 
@@ -2697,17 +2742,125 @@ def _module4_resolve_source_track(cycle: dict[str,Any], outcome: str, new_hypoth
     business_trace("module4_piste_resolue",f"{old_name}:{outcome}:{new_hypothesis}")
 
 
-def reliable_clean_spoken_text(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> str:
-    """Exécute la correction en un seul clic, avec une seconde tentative interne si l'API ne renvoie rien."""
-    last = ""
-    for _ in range(2):
+def _expression_result(status: str, proposal: str="", reason: str="", clarification: str="", *, source: str="ia") -> dict[str, Any]:
+    return {
+        "statut": status,
+        "texte_propose": str(proposal or "").strip(),
+        "raison_courte": str(reason or "").strip(),
+        "question_clarification": str(clarification or "").strip(),
+        "source": source,
+    }
+
+def _looks_linguistically_weak(text: str) -> bool:
+    """Détecteur local volontairement conservateur : il interdit surtout les faux 'texte déjà propre'."""
+    raw=str(text or "").strip()
+    low=normalize(raw)
+    if not raw:
+        return False
+    oral_markers=(" du coup "," en fait "," donc "," voila "," voilà "," genre "," quoi ")
+    padded=f" {low} "
+    if sum(padded.count(m) for m in oral_markers) >= 2:
+        return True
+    if re.search(r"\b(du coup|en fait)\b.*\b(du coup|en fait)\b", low):
+        return True
+    if re.search(r"(?i)\b([\wÀ-ÖØ-öø-ÿ'-]+(?:\s+[\wÀ-ÖØ-öø-ÿ'-]+){0,3})\s+\1\b", raw):
+        return True
+    # Phrase longue sans ponctuation structurante : signal faible, uniquement pour éviter un faux positif.
+    if len(raw.split()) >= 28 and not re.search(r"[;:.!?]", raw):
+        return True
+    return False
+
+def assess_response_expression(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> dict[str, Any]:
+    """Contrat linguistique RVC360 V2.4 : N0/N1/N2/N3/E, identique pour clavier et voix."""
+    original=str(text or "").strip()
+    if not original:
+        return _expression_result("aucune_modification", source="local")
+    if expected_value_label:
+        candidate=_clean_value_label_input(original)
+        if candidate and candidate.strip()!=original.strip():
+            return _expression_result("correction_forme", candidate, "Nettoyage du nom de valeur.", source="local")
+        return _expression_result("aucune_modification", source="local")
+
+    local=_local_spoken_cleanup(original)
+    if not ai_ready():
+        if local and local != original:
+            return _expression_result("correction_forme", local, "Correction locale de forme.", source="local")
+        if _looks_linguistically_weak(original):
+            return _expression_result("echec_technique", reason="Le service de reformulation n'est pas disponible pour vérifier cette formulation.", source="local")
+        return _expression_result("aucune_modification", reason="Aucune anomalie linguistique évidente détectée localement.", source="local")
+
+    instructions="""Vous êtes le moteur de qualité d'expression RVC360 V2.4.
+Évaluez une réponse française libre sans jamais interpréter la personne.
+
+Vous devez choisir EXACTEMENT un statut :
+- aucune_modification : uniquement si le texte est déjà correct, fluide et réutilisable tel quel ;
+- correction_forme : le sens et la structure sont bons, mais il faut corriger orthographe, grammaire, ponctuation ou petites maladresses ;
+- reformulation_expression : le sens est compris, mais l'expression reste orale, répétitive, télégraphique, lourde ou syntaxiquement faible ;
+- clarification_necessaire : une reformulation fidèle obligerait à deviner une idée ou une nuance.
+
+Règles absolues :
+- conservez la première personne, les faits, les nuances, réserves et mots importants ;
+- n'ajoutez aucune idée, valeur, cause, intention, émotion, diagnostic, conseil ou conclusion ;
+- supprimez seulement les tics de langage, répétitions accidentelles et faux départs sans portée de sens ;
+- une phrase compréhensible n'est PAS automatiquement une phrase bien formulée ;
+- si le texte est oral, répétitif ou maladroit mais compréhensible, utilisez reformulation_expression ;
+- texte_propose doit être vide pour aucune_modification et clarification_necessaire ;
+- pour correction_forme ou reformulation_expression, texte_propose doit être réellement amélioré et ne jamais être strictement identique à l'original ;
+- si clarification_necessaire, fournissez une question_clarification courte et neutre.
+Retournez uniquement le JSON demandé."""
+    schema={
+        "type":"object","additionalProperties":False,
+        "properties":{
+            "statut":{"type":"string","enum":["aucune_modification","correction_forme","reformulation_expression","clarification_necessaire"]},
+            "texte_propose":{"type":"string"},
+            "raison_courte":{"type":"string"},
+            "question_clarification":{"type":"string"},
+        },
+        "required":["statut","texte_propose","raison_courte","question_clarification"],
+    }
+    last_error=""
+    for attempt in range(2):
         try:
-            last = str(clean_spoken_text(text, expected_value_label=expected_value_label, question_kind=question_kind) or "").strip()
-            if last:
-                return last
-        except Exception:
+            out=response_json(instructions,{"reponse":original,"type_question":question_kind},"qualite_expression_rvc360_v24",schema,max_tokens=750)
+            status=str(out.get("statut") or "").strip()
+            proposal=str(out.get("texte_propose") or "").strip()
+            reason=str(out.get("raison_courte") or "").strip()
+            clarification=str(out.get("question_clarification") or "").strip()
+            compact_original=re.sub(r"\s+"," ",original).strip()
+            compact_proposal=re.sub(r"\s+"," ",proposal).strip()
+            if status in {"correction_forme","reformulation_expression"}:
+                if not proposal or compact_proposal==compact_original:
+                    raise ValueError("Proposition absente ou identique à l'original")
+                if has_forbidden_language(proposal):
+                    raise ValueError("Proposition interprétative")
+                return _expression_result(status,proposal,reason,source="ia")
+            if status=="clarification_necessaire":
+                return _expression_result(status,"",reason,clarification or "Pouvez-vous préciser ce que vous souhaitez dire ici ?",source="ia")
+            if status=="aucune_modification":
+                # Garde-fou local : l'IA ne peut déclarer 'propre' un texte manifestement oral/répétitif.
+                if _looks_linguistically_weak(original):
+                    raise ValueError("Faux positif aucune_modification sur formulation faible")
+                return _expression_result(status,"",reason,source="ia")
+            raise ValueError("Statut linguistique invalide")
+        except Exception as exc:
+            last_error=str(exc)
             continue
-    return str(text or "").strip()
+    return _expression_result("echec_technique",reason=last_error or "Aucune proposition fiable n'a pu être obtenue.",source="ia")
+
+def reliable_expression_assessment(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> dict[str, Any]:
+    """Deuxième garde-fou : aucun échec ne peut être maquillé en texte 'déjà clair'."""
+    try:
+        result=assess_response_expression(text,expected_value_label=expected_value_label,question_kind=question_kind)
+        if result.get("statut") in {"correction_forme","reformulation_expression"} and not str(result.get("texte_propose") or "").strip():
+            return _expression_result("echec_technique",reason="La proposition attendue est vide.")
+        return result
+    except Exception as exc:
+        return _expression_result("echec_technique",reason=str(exc))
+
+def reliable_clean_spoken_text(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> str:
+    """Compatibilité historique : renvoie seulement une proposition réelle, jamais l'original en fallback."""
+    result=reliable_expression_assessment(text,expected_value_label=expected_value_label,question_kind=question_kind)
+    return str(result.get("texte_propose") or "").strip()
 
 def _text_difference_kind(original: str, proposal: str) -> str:
     """Classe la différence afin d'éviter deux blocs artificiellement identiques."""
@@ -2846,7 +2999,7 @@ Décidez d’une seule action :
 
 Ne demandez jamais un mot immédiatement après le seul récit initial. Posez normalement entre trois et cinq relances utiles, sans dépasser cinq. Chaque nouvelle question doit s'appuyer sur la dernière réponse et apporter un angle réellement nouveau. Ne répétez jamais une question presque identique.
 La recherche du mot doit viser ce qui était important, pas seulement le ressenti. Formulation recommandée : « Si vous deviez mettre un mot sur ce qui était le plus important pour vous dans cette situation, lequel serait-il ? »
-Une idée explorée ne pourra produire qu’une seule hypothèse retenue."""
+Une même exploration peut faire émerger plusieurs hypothèses ; chacune sera décidée séparément par le bénéficiaire."""
     schema={"type":"object","properties":{"action":{"type":"string","enum":["relance_verticale","demander_mot","proposer_hypotheses","aucune_piste"]},"question":{"type":"string"},"raison":{"type":"string"},"idee_principale":{"type":"string"}},"required":["action","question","raison","idee_principale"],"additionalProperties":False}
     payload={"voie":cycle.get("voie"),"echanges":exchanges,"valeurs_deja_connues":list(_module4_all_known_names())}
     try:
@@ -2887,7 +3040,7 @@ Règles :
 - repartez de la définition HEC d’une valeur : un principe durable susceptible d’orienter les choix et comportements d’un individu ;
 - utilisez silencieusement comme garde-fou la possibilité que ce principe puisse se manifester dans plusieurs domaines de vie, sans demander au bénéficiaire de le prouver ;
 - ne transformez pas automatiquement un besoin, une émotion, une croyance, une limite, un objectif ou un comportement en valeur ;
-- une idée explorée = une seule hypothèse éventuellement retenue ;
+- une même exploration peut produire plusieurs hypothèses plausibles ; chacune doit être présentée et décidée séparément ;
 - ne proposez que des valeurs présentes dans la liste fournie ;
 - si rien n’est suffisamment plausible, retournez une liste vide ;
 - relisez toute la situation et le contexte déjà connu : un mot comme « reconnaissance » ne doit pas masquer un autre enjeu distinct déjà exprimé, par exemple le travail, l’engagement, la qualité, la contribution ou la responsabilité ;
@@ -2923,15 +3076,51 @@ Aucune analyse psychologique, aucune conclusion et aucun conseil. Retournez seul
         return fallback
 
 
-def _module4_add_hypothesis(cycle:dict[str,Any], candidate:dict[str,str]) -> None:
-    item={"id":str(uuid.uuid4()),"nom":candidate["nom"],"definition_clarte360":candidate.get("definition",""),"source":"module_4","voie":cycle.get("voie"),"cycle_id":cycle.get("id"),"statut":"hypothese","created_at":now_iso(),"question_reponses":deepcopy(cycle.get("exchanges",[])),"contexte_initial":deepcopy(cycle.get("source_track") or {})}
-    existing={normalize(x.get("nom") or "") for x in st.session_state.get("hypothesis_basket",[])}
-    if normalize(candidate["nom"]) not in existing:
+def _module4_add_hypothesis(cycle:dict[str,Any], candidate:dict[str,str], decision: str="oui") -> dict[str,Any]:
+    """Ajoute une hypothèse sans terminer le cycle : V2.4 autorise plusieurs pistes par exploration."""
+    decision_norm="peut_etre" if normalize(decision).startswith("peut") else "oui"
+    item={"id":str(uuid.uuid4()),"nom":candidate["nom"],"definition_clarte360":candidate.get("definition",""),"source":"module_4","voie":cycle.get("voie"),"cycle_id":cycle.get("id"),"statut":"hypothese","decision_module4":decision_norm,"created_at":now_iso(),"question_reponses":deepcopy(cycle.get("exchanges",[])),"contexte_initial":deepcopy(cycle.get("source_track") or {})}
+    existing={normalize(x.get("nom") or ""):x for x in st.session_state.get("hypothesis_basket",[])}
+    key=normalize(candidate["nom"])
+    if key not in existing:
         st.session_state.hypothesis_basket.append(item)
-    if cycle.get("voie")=="piste_clarifier":
-        _module4_resolve_source_track(cycle,"hypothese_retenue",candidate["nom"])
-    cycle["result"]="hypothese_retenue"; cycle["selected_hypothesis"]=candidate["nom"]; cycle["stage"]="termine"
-    business_trace("module4_hypothese_panier",candidate["nom"])
+    else:
+        existing[key]["decision_module4"]=decision_norm
+        existing[key]["updated_at"]=now_iso()
+        item=existing[key]
+    business_trace("module4_hypothese_panier",f"{candidate['nom']}:{decision_norm}")
+    return item
+
+def _module4_apply_hypothesis_decisions(cycle:dict[str,Any], options:list[dict[str,str]], decisions:dict[str,str]) -> None:
+    """Traite toutes les hypothèses présentées indépendamment puis clôt le cycle."""
+    kept=[]; refused=[]
+    rejected_store=st.session_state.setdefault("module4_rejected_hypotheses",[])
+    option_map={normalize(x.get("nom") or ""):x for x in options}
+    for name,decision in decisions.items():
+        candidate=option_map.get(normalize(name),{"nom":name,"definition":(_referential_value_info(name) or {}).get("definition","")})
+        if decision in {"Oui","Peut-être"}:
+            _module4_add_hypothesis(cycle,candidate,decision)
+            kept.append(candidate.get("nom") or name)
+        elif decision=="Non":
+            refused.append(candidate.get("nom") or name)
+            entry={"nom":candidate.get("nom") or name,"definition":candidate.get("definition",""),"cycle_id":cycle.get("id"),"voie":cycle.get("voie"),"date":now_iso(),"contexte":deepcopy(cycle.get("exchanges",[]))}
+            if normalize(entry["nom"]) not in {normalize(x.get("nom") or "") for x in rejected_store}: rejected_store.append(entry)
+    cycle.setdefault("candidate_round_history",[]).append({"date_heure":now_iso(),"candidats":[x.get("nom","") for x in options],"decisions":deepcopy(decisions),"retenues":kept,"refusees":refused})
+    cycle["selected_hypotheses"]=kept
+    cycle["refused_hypotheses"]=refused
+    if kept:
+        cycle["result"]="hypotheses_retenues"
+        if cycle.get("voie")=="piste_clarifier":
+            _module4_resolve_source_track(cycle,"hypotheses_retenues",", ".join(kept))
+            cycle["track_resolution_recorded"]=True
+        cycle["stage"]="termine"
+    else:
+        cycle["candidate_options"]=[]
+        if int(cycle.get("reorientation_count",0))<2:
+            cycle["stage"]="reorientation_apres_refus"
+            cycle["result"]=""
+        else:
+            cycle["stage"]="termine"; cycle["result"]="hypotheses_refusees_apres_approfondissement"
 
 
 def _module4_threshold_invitation() -> None:
@@ -2956,7 +3145,9 @@ def _module4_render_cycle(voie:str) -> None:
         _module4_reconcile_cycle(cycle)
     if not cycle or cycle.get("voie")!=voie or cycle.get("stage")=="termine":
         if cycle.get("stage")=="termine":
-            if cycle.get("result")=="hypothese_retenue": st.success(f"L’hypothèse **{cycle.get('selected_hypothesis','')}** a été ajoutée uniquement au panier Hypothèses.")
+            if cycle.get("result")=="hypotheses_retenues":
+                names=cycle.get("selected_hypotheses",[])
+                st.success(f"{len(names)} hypothèse(s) ont été ajoutée(s) uniquement au panier Hypothèses : **{', '.join(names)}**.")
             else: st.info("Ce cycle est terminé sans hypothèse retenue. Cela est parfaitement normal.")
             _module4_threshold_invitation()
             c1,c2=st.columns(2)
@@ -3034,18 +3225,24 @@ def _module4_render_cycle(voie:str) -> None:
             for item in options:
                 st.write(f"• **{item.get('nom','')}** — {item.get('definition','')}")
         own=st.text_input("Une autre valeur vous est-elle venue à l’esprit ?",key=f"m4_own_hypothesis_{cycle['id']}",placeholder="Vous pouvez saisir un mot, ou laisser vide.")
-        actions=["Choisissez","Examiner une hypothèse","Continuer le questionnement","Arrêter ce dialogue"]
+        actions=["Choisissez","Décider sur les hypothèses","Continuer le questionnement","Arrêter ce dialogue"]
         action=st.radio("Que souhaitez-vous faire maintenant ?",actions,key=f"m4_checkpoint_action_{cycle['id']}")
-        if action=="Examiner une hypothèse":
-            labels=[x.get("nom","") for x in options]
-            if own.strip(): labels.append(_normalise_value_name(own.strip()))
-            if not labels:
+        if action=="Décider sur les hypothèses":
+            decision_options=list(options)
+            own_name=_normalise_value_name(own.strip()) if own.strip() else ""
+            if own_name and normalize(own_name) not in {normalize(x.get("nom", "")) for x in decision_options}:
+                decision_options.append({"nom":own_name,"definition":(_referential_value_info(own_name) or {}).get("definition","")})
+            if not decision_options:
                 st.warning("Aucune hypothèse n’est encore disponible. Vous pouvez saisir votre propre proposition ou poursuivre le dialogue.")
             else:
-                selected=st.radio("Quelle hypothèse souhaitez-vous examiner ?",labels,key=f"m4_checkpoint_select_{cycle['id']}")
-                if st.button("Conserver cette hypothèse",type="primary",use_container_width=True,key=f"m4_checkpoint_keep_{cycle['id']}"):
-                    item=next((x for x in options if x.get("nom")==selected),{"nom":selected,"definition":(_referential_value_info(selected) or {}).get("definition","")})
-                    _module4_add_hypothesis(cycle,item); st.rerun()
+                st.caption("Décidez séparément pour chaque hypothèse. Vous pouvez en conserver aucune, une ou plusieurs.")
+                decisions={}
+                for item in decision_options:
+                    name=item.get("nom","")
+                    decisions[name]=st.radio(f"{name}",["Choisissez","Oui","Peut-être","Non"],key=f"m4_checkpoint_decision_{cycle['id']}_{_safe_widget_key(name)}",horizontal=True)
+                complete=all(v!="Choisissez" for v in decisions.values())
+                if st.button("Confirmer toutes mes décisions",type="primary",use_container_width=True,key=f"m4_checkpoint_keep_{cycle['id']}",disabled=not complete):
+                    _module4_apply_hypothesis_decisions(cycle,decision_options,decisions); st.rerun()
         elif action=="Continuer le questionnement":
             if st.button("Continuer avec une nouvelle question",type="primary",use_container_width=True,key=f"m4_checkpoint_continue_{cycle['id']}"):
                 cycle["question"]=_module4_generate_reorientation_question(cycle); cycle["stage"]="question"; cycle["pending_answer_processed"]=False; st.rerun()
@@ -3072,23 +3269,16 @@ def _module4_render_cycle(voie:str) -> None:
 
     if cycle.get("stage")=="candidats":
         options=cycle.get("candidate_options",[])
-        st.info("Ces mots sont de simples hypothèses. Clarté360 peut se tromper. Une seule hypothèse peut être retenue pour l’idée explorée.")
+        st.info("Ces mots sont de simples hypothèses. Clarté360 peut se tromper. Décidez séparément pour chacune : vous pouvez en conserver aucune, une ou plusieurs.")
+        decisions={}
         for item in options:
             with st.container(border=True):
                 st.markdown(f"**{item['nom']}**")
                 st.write(item.get("definition","") or "Définition non disponible.")
-        labels=[x["nom"] for x in options]+["Aucune ne correspond"]
-        selected=st.radio("Laquelle correspond le mieux à ce que vous vouliez exprimer ?",labels,key=f"m4_select_{cycle['id']}")
-        if st.button("Confirmer mon choix",type="primary",use_container_width=True,key=f"m4_confirm_{cycle['id']}"):
-            if selected=="Aucune ne correspond":
-                history=cycle.setdefault("candidate_round_history",[])
-                history.append({"date_heure":now_iso(),"candidats":[x.get("nom","") for x in options],"decision":"aucune_ne_correspond"})
-                cycle["candidate_options"]=[]
-                if int(cycle.get("reorientation_count",0))<2:
-                    cycle["stage"]="reorientation_apres_refus"
-                else:
-                    cycle["stage"]="termine"; cycle["result"]="hypotheses_refusees_apres_approfondissement"
-            else: _module4_add_hypothesis(cycle,next(x for x in options if x["nom"]==selected))
+                decisions[item["nom"]]=st.radio("Votre décision",["Choisissez","Oui","Peut-être","Non"],key=f"m4_decision_{cycle['id']}_{_safe_widget_key(item['nom'])}",horizontal=True)
+        complete=bool(options) and all(v!="Choisissez" for v in decisions.values())
+        if st.button("Confirmer toutes mes décisions",type="primary",use_container_width=True,key=f"m4_confirm_{cycle['id']}",disabled=not complete):
+            _module4_apply_hypothesis_decisions(cycle,options,decisions)
             st.rerun()
 
     if cycle.get("stage")=="reorientation_apres_refus":
@@ -3108,7 +3298,7 @@ def _module4_render_cycle(voie:str) -> None:
 
 def _module4_render_way1() -> None:
     st.title("Partir d’une situation observée")
-    instruction="Décrivez une situation réelle. Clarté360 vous posera quelques questions verticales, puis cherchera avec vous un mot. Le résultat restera une simple hypothèse et une idée explorée ne pourra produire qu’une seule hypothèse retenue. Si les premiers mots proposés ne correspondent pas, Clarté360 pourra approfondir brièvement un autre aspect de la même situation avant de clore la piste."
+    instruction="Décrivez une situation réelle. Clarté360 vous posera quelques questions verticales, puis cherchera avec vous un mot. Le résultat restera une simple hypothèse et une même exploration pourra conduire à plusieurs hypothèses retenues, chacune après une décision explicite. Si les premiers mots proposés ne correspondent pas, Clarté360 pourra approfondir brièvement un autre aspect de la même situation avant de clore la piste."
     st.info(instruction); speak_button(instruction,"m4_way1_instruction")
     _module4_render_cycle("situation")
 
@@ -3156,7 +3346,7 @@ def _module4_render_way3() -> None:
         cycle["source_track"]=deepcopy(track)
     _module4_render_cycle("piste_clarifier")
     cycle=st.session_state.get("module4_current_cycle") or {}
-    if cycle.get("stage")=="termine" and cycle.get("result")!="hypothese_retenue" and not cycle.get("track_resolution_recorded"):
+    if cycle.get("stage")=="termine" and cycle.get("result")!="hypotheses_retenues" and not cycle.get("track_resolution_recorded"):
         _module4_resolve_source_track(cycle,cycle.get("result") or "aucune_hypothese")
         cycle["track_resolution_recorded"]=True
     if st.button("← Changer de voie",use_container_width=True,key="m4_way3_change"):
@@ -3303,6 +3493,7 @@ def build_payload(completed=False)->dict[str,Any]:
             "absence_score_profil_conclusion":True,
         },
         "panier_hypotheses":deepcopy(st.session_state.get("hypothesis_basket",[])),
+        "hypotheses_refusees_module4":deepcopy(st.session_state.get("module4_rejected_hypotheses",[])),
         "pistes_a_clarifier":deepcopy(st.session_state.get("clarification_tracks",[])),
         "preferences_interaction":st.session_state.get("interaction_preferences",{}),
         "valeurs_accompagnateur":[v for v in st.session_state.get("value_records",{}).values() if v.get("source")=="accompagnateur"],
@@ -3325,7 +3516,7 @@ def build_payload(completed=False)->dict[str,Any]:
         "evenements_dependances":st.session_state.get("dependency_events",[]),
         "derniere_revision_coherente":st.session_state.get("last_consistent_revision",0),
         "audit_cloture":st.session_state.get("closure_audit",{}),
-        "schema_metier":"2.1.3.8E",
+        "schema_metier":"2.2.0",
         "modules":deepcopy(st.session_state.get("module_states",{})),
         "module_actif":st.session_state.get("active_module","module_1"),
         "valeurs_validees_centrales":deepcopy(st.session_state.get("central_validated_values",[])),

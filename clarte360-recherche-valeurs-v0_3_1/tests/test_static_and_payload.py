@@ -113,7 +113,8 @@ def test_single_open_response_architecture_and_voice_cleanup():
     assert 'already_done=' in text
     assert 'Transcription en cours…' in text
     assert 'Transcription initiale' in text
-    assert 'Proposition corrigée Clarté360' in text
+    assert 'Proposition d’expression Clarté360' in text
+    assert 'statut_expression' in text
     assert 'Valider cette réponse orale' in text
     assert 'Valider ma réponse écrite' in text
 

@@ -6,7 +6,7 @@ TEXT=ROOT.joinpath('app.py').read_text(encoding='utf-8')
 
 
 def test_version_9c():
-    assert 'APP_VERSION = "2.1.9B-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction"' in TEXT
 
 
 def test_clean_referential_is_embedded():

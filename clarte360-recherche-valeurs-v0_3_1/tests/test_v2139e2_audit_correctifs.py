@@ -11,14 +11,15 @@ def _widget_source() -> str:
 
 
 def test_version_9e2_declared():
-    assert 'APP_VERSION = "2.1.9B-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction"' in TEXT
 
 
 def test_value_labels_always_keep_initial_written_formulation_option():
     widget = _widget_source()
     assert 'options.extend(["Conserver ma réponse initiale","Utiliser la correction de forme"])' in widget
     assert 'if not expected_value_label: options.append("Conserver ma réponse initiale")' not in widget
-    assert 'options.append("Conserver ma réponse initiale")\n                    if proposal' in widget
+    assert widget.count('Conserver ma réponse initiale') >= 4
+    assert 'Utiliser la proposition Clarté360' in widget
 
 
 def test_value_labels_always_keep_initial_voice_transcription_option():

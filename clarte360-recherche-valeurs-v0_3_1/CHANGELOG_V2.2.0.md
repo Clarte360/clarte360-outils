@@ -1,0 +1,36 @@
+# Clarté360 Recherche des valeurs — V2.2.0-preproduction
+
+Date : 4 septembre 2026
+
+## Objet
+
+Mise en conformité avec l'audit préparatoire du 4 septembre 2026 et le référentiel officiel RVC360 API V2.4.
+
+## Changements principaux
+
+- Nouveau contrat transversal de qualité d'expression pour toutes les réponses libres utilisant `open_response_widget`.
+- Statuts distincts : `aucune_modification`, `correction_forme`, `reformulation_expression`, `clarification_necessaire`, `echec_technique`.
+- Un échec API ou une proposition identique à l'original ne peut plus être présenté comme « réponse déjà claire ».
+- Même traitement pour clavier et voix.
+- Métadonnées JSON enrichies : statut d'expression, raison, correction linguistique distincte de la reformulation.
+- Module 4 : décisions indépendantes Oui / Peut-être / Non pour chaque hypothèse.
+- Plusieurs hypothèses d'une même exploration peuvent rejoindre simultanément le panier Hypothèses.
+- Les refus du Module 4 sont mémorisés séparément et réutilisés pour éviter les repropositions répétitives.
+- Schéma métier de reprise porté à `2.2.0`.
+- Suite de tests remise en cohérence avec la version courante et complétée par des tests V2.2.0.
+
+## Contrôles réalisés
+
+- `python -m py_compile app.py` : OK
+- `pytest -q` : 129 tests réussis
+
+## Points à tester en passation bénéficiaire
+
+1. Réponse écrite déjà propre.
+2. Réponse écrite avec fautes légères.
+3. Réponse écrite compréhensible mais très orale/répétitive.
+4. Réponse ambiguë nécessitant une précision.
+5. Simulation d'indisponibilité API : aucun faux message « déjà claire ».
+6. Même série à l'oral.
+7. Module 4 avec trois hypothèses : conservation de deux hypothèses et refus de la troisième.
+8. Reprise JSON après sélection multiple des hypothèses.

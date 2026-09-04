@@ -3,7 +3,7 @@ from pathlib import Path
 TEXT=(Path(__file__).parents[1]/'app.py').read_text(encoding='utf-8')
 
 def test_version_9e():
-    assert 'APP_VERSION = "2.1.9B-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction"' in TEXT
 
 def test_module3_can_open_hypothesis_voluntarily():
     assert 'Examiner une hypothèse conservée' in TEXT
@@ -32,7 +32,8 @@ def test_menu_labels_include_module_word():
     for n in range(1,6):
         assert f'MODULE {n}\\n' in TEXT
 
-def test_near_identical_reformulation_handling():
-    assert '_text_difference_kind' in TEXT
-    assert 'légère correction de forme' in TEXT
-    assert 'Aucune modification n’est nécessaire' in TEXT
+def test_structured_reformulation_handling():
+    assert 'def assess_response_expression' in TEXT
+    assert 'correction_forme' in TEXT
+    assert 'reformulation_expression' in TEXT
+    assert 'Une proposition ne peut jamais être strictement identique' in TEXT or "Proposition absente ou identique" in TEXT

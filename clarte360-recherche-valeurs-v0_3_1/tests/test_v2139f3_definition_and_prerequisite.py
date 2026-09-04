@@ -3,7 +3,7 @@ from pathlib import Path
 TEXT=Path(__file__).resolve().parents[1].joinpath("app.py").read_text(encoding="utf-8")
 
 def test_version_f3():
-    assert 'APP_VERSION = "2.1.9B-preproduction"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction"' in TEXT
 
 def test_definition_requires_explicit_validation():
     assert 'Valider la définition retenue' in TEXT

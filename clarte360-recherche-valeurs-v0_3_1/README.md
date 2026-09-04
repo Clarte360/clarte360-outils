@@ -64,3 +64,7 @@ python -m pytest -q
 - Transitions atomiques entre les paniers actifs, incluant désormais les pistes du Module 4 et le nettoyage des états de reprise.
 - Résolution renforcée des pistes provenant d’anciennes sauvegardes : suppression par identifiant source et par alias afin d’empêcher la réapparition d’un ancien terme comme « Sécurité financière ».
 - Présentation des modules restructurée : numéro du module, titre sur une ligne distincte, statut et alignement homogènes.
+
+## Version 2.2.0-preproduction — 4 septembre 2026
+
+Cette version applique le référentiel conversationnel RVC360 V2.4 : qualité d'expression structurée (correction / reformulation / clarification / échec technique) et sélection multi-hypothèses dans le Module 4. Voir `CHANGELOG_V2.2.0.md`.
