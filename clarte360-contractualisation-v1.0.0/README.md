@@ -43,3 +43,14 @@ Une API pourra être ajoutée plus tard uniquement pour des aides rédactionnell
 Aucune base n'est stockée sur le serveur. À chaque session :
 **UPLOAD XLSM → travail → DOWNLOAD XLSM**.
 La persistance sera traitée lors du passage sur le VPS.
+
+## Correctifs V1.0.2
+- suppression de tous les calendriers, dates, prix et montants de financement codés en dur pour un bénéficiaire ;
+- seules les données réellement présentes dans l'APS sont préremplies ;
+- affichage dans l'application d'une table de correspondance APS JSON -> CONV ADM ;
+- les dates, la durée, le planning et le prix sont demandés à l'administrateur s'ils n'existent pas déjà dans CONV ADM ;
+- validation de l'onglet FINANCEMENTS sans réécriture automatique de sa structure ;
+- contrôle d'intégrité XLSM avant téléchargement : même liste de composants, VBA strictement inchangé, seules CONV ADM, FINANCEMENTS, la table FINANCEMENTS et le réglage de recalcul peuvent évoluer ;
+- aucun fichier XLSM n'est proposé au téléchargement si le contrôle d'intégrité échoue.
+
+Sur Streamlit Cloud, un fichier chargé depuis le navigateur ne peut pas être modifié directement sur le disque local de l'utilisateur. La copie mise à jour doit donc être téléchargée. Ce comportement disparaîtra lors du passage à une base persistante sur VPS.

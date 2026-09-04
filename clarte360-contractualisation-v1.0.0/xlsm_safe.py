@@ -197,6 +197,68 @@ def patch_conv_adm(data: bytes, row_number: int, values_by_header: Dict[str, Any
     return out.getvalue()
 
 
+
+
+FINANCEMENT_HEADER_ALIASES = {
+    'NO_CLAR': {'NO_CLAR'},
+    'TYPE_FINANCEUR': {'TYPE_FINANCEUR'},
+    'NOM_FINANCEUR': {'NOM_FINANCEUR'},
+    'MONTANT_TTC': {'MONTANT_TTC'},
+    'TAUX_TVA': {'TAUX_TVA'},
+    'FACTURE_A_ETABLIR_A': {'FACTURE_A_ETABLIR_A'},
+}
+
+def ensure_financements_schema(data: bytes) -> tuple[bytes, bool]:
+    """Valide l'onglet FINANCEMENTS sans modifier le classeur.
+
+    La V1.0.2 n'essaie plus de reconstruire la feuille ou sa table OOXML.
+    Cela évite toute altération silencieuse d'un .xlsm complexe.
+    """
+    wb = workbook_values(data, data_only=False)
+    if 'FINANCEMENTS' not in wb.sheetnames:
+        wb.close()
+        raise RuntimeError("L'onglet FINANCEMENTS est absent de la base.")
+    ws = wb['FINANCEMENTS']
+    headers = {str(ws.cell(1,c).value or '').strip() for c in range(1, ws.max_column+1)}
+    wb.close()
+    missing=[]
+    for canonical, aliases in FINANCEMENT_HEADER_ALIASES.items():
+        if not (headers & aliases): missing.append(canonical)
+    if missing:
+        raise RuntimeError('Entêtes FINANCEMENTS manquantes : ' + ', '.join(missing))
+    return data, False
+
+def assert_xlsm_integrity(original: bytes, updated: bytes) -> None:
+    """Bloque le téléchargement si une composante non ciblée du XLSM a changé."""
+    import hashlib
+    with zipfile.ZipFile(io.BytesIO(original),'r') as z0, zipfile.ZipFile(io.BytesIO(updated),'r') as z1:
+        n0=set(z0.namelist()); n1=set(z1.namelist())
+        if n0 != n1:
+            raise RuntimeError('Sécurité XLSM : la liste des composants internes a changé. Génération annulée.')
+        smap=_sheet_map(z0)
+        allowed={smap.get('CONV ADM'), smap.get('FINANCEMENTS'), 'xl/workbook.xml'}
+        allowed.discard(None)
+        # table FINANCEMENTS is allowed to change only if present
+        fin_target=smap.get('FINANCEMENTS')
+        if fin_target:
+            rel_path=fin_target.replace('worksheets/','worksheets/_rels/')+'.rels'
+            if rel_path in n0:
+                relroot=ET.fromstring(z0.read(rel_path))
+                import posixpath
+                for rel in relroot:
+                    tgt=rel.attrib.get('Target','')
+                    if 'tables/' in tgt:
+                        parts=fin_target.split('/')[:-1]
+                        allowed.add(posixpath.normpath(posixpath.join('/'.join(parts),tgt)))
+        if 'xl/vbaProject.bin' in n0:
+            if hashlib.sha256(z0.read('xl/vbaProject.bin')).digest() != hashlib.sha256(z1.read('xl/vbaProject.bin')).digest():
+                raise RuntimeError('Sécurité XLSM : le projet VBA a été modifié. Génération annulée.')
+        for name in n0:
+            if name in allowed: continue
+            if z0.read(name) != z1.read(name):
+                raise RuntimeError(f'Sécurité XLSM : composant inattendu modifié : {name}. Génération annulée.')
+
+
 def _read_financing_rows(data: bytes) -> Tuple[List[str], List[Dict[str, Any]]]:
     wb = workbook_values(data, data_only=False)
     ws = wb['FINANCEMENTS']
