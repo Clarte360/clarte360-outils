@@ -3,7 +3,7 @@ from pathlib import Path
 TEXT = Path('app.py').read_text(encoding='utf-8')
 
 def test_version_219b():
-    assert 'APP_VERSION = "2.2.0-preproduction-2"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction-4"' in TEXT
 
 def test_original_always_visible_for_light_corrections():
     assert '<b>Transcription initiale</b>' in TEXT

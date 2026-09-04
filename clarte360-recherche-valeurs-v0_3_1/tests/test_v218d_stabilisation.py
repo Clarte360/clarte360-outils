@@ -5,7 +5,7 @@ APP=Path(__file__).resolve().parents[1]/'app.py'
 TEXT=APP.read_text(encoding='utf-8')
 
 def test_version_8d_and_single_explicit_validation_engine():
-    assert 'APP_VERSION = "2.2.0-preproduction-2"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction-4"' in TEXT
     assert 'Retourne uniquement une réponse explicitement validée' in TEXT
     assert 'Saisir une nouvelle réponse' in TEXT
     assert 'Corriger ma réponse actuelle' in TEXT

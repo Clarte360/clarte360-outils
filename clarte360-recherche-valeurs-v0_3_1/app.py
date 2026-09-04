@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.2.0-preproduction-3"
+APP_VERSION = "2.2.0-preproduction-4"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -2680,13 +2680,13 @@ def _module4_question_already_asked(cycle: dict[str,Any], question: str) -> bool
 
 
 def _module4_distinct_followup(cycle: dict[str,Any]) -> str:
-    """Retourne une relance réellement différente lorsque l'IA répète une question."""
+    """Retourne une relance verticale différente sans changer brutalement de sujet."""
     candidates=[
-        "Qu'est-ce qui vous a le plus marqué dans cette situation, au-delà du résultat obtenu ?",
-        "Qu'auriez-vous voulu rendre possible pour les personnes concernées ?",
-        "Qu'est-ce qui aurait été difficilement acceptable pour vous dans la situation inverse ?",
-        "Dans votre manière d'agir, qu'est-ce qui comptait le plus pour vous personnellement ?",
-        "Retrouvez-vous cette même importance dans d'autres situations de votre vie ? Donnez un exemple concret.",
+        "Dans ce que vous venez de décrire, qu'est-ce qui comptait le plus pour vous personnellement ?",
+        "Qu'auriez-vous voulu préserver, rendre possible ou éviter dans cette même situation ?",
+        "Qu'est-ce qui vous aurait le plus dérangé si la situation avait évolué dans le sens inverse ?",
+        "Dans cette même situation, qu'est-ce qui explique que vous ayez choisi d'agir ainsi plutôt qu'autrement ?",
+        "Si vous deviez résumer ce qui était essentiel pour vous dans cette situation, que diriez-vous ?",
     ]
     for candidate in candidates:
         if not _module4_question_already_asked(cycle,candidate):
@@ -2954,6 +2954,7 @@ def _module4_new_cycle(voie:str) -> None:
         "id":str(uuid.uuid4()), "voie":voie, "stage":"initial", "started_at":now_iso(),
         "question":"", "exchanges":[], "candidate_options":[], "result":"", "candidate_rounds":0, "reorientation_count":0,
         "word_question_asked":False, "word_no_answer":False, "axis_closed":False, "hypothesis_checkpoint_shown":False,
+        "global_review":{}, "review_trigger":"",
     }
     st.session_state.module4_candidate_options=[]
     business_trace("module4_cycle_demarre",voie)
@@ -3003,6 +3004,16 @@ def _module4_reconcile_cycle(cycle: dict[str,Any]) -> bool:
             return out
         st.session_state.module4_question_memory=_dedupe_memory(st.session_state.get("module4_question_memory",[]))
         st.session_state.module4_exploration_history=_dedupe_memory(st.session_state.get("module4_exploration_history",[]))
+
+    # V2.6 : cinq questions utiles maximum par bloc. Un ancien JSON qui contient déjà
+    # cinq réponses ou davantage est immédiatement orienté vers la synthèse globale :
+    # aucune sixième question automatique ne peut être affichée.
+    if _module4_vertical_count(cycle) >= MODULE4_MAX_VERTICAL_QUESTIONS and cycle.get("stage") in {"question","mot"}:
+        cycle["stage"]="synthese_globale_pending"
+        cycle["review_trigger"]="limite_cinq_questions"
+        cycle["question"]=""
+        changed=True
+        return changed
 
     # Si la question courante est déjà la dernière question répondue, elle ne doit
     # jamais être réaffichée. On avance vers un nouvel angle ou vers le point d'étape.
@@ -3139,8 +3150,9 @@ def _module4_generate_reorientation_question(cycle:dict[str,Any]) -> str:
     instructions="""Vous poursuivez avec modestie un questionnement vertical Clarté360 après le refus de plusieurs mots candidats.
 Le refus d’une hypothèse ne signifie pas que la situation est épuisée. Relisez tous les couples questions-réponses et repérez UN aspect significatif encore peu exploré.
 Posez UNE question ouverte, courte, ancrée dans les mots du bénéficiaire, afin d’approfondir cet autre aspect.
+Restez impérativement dans la situation, le récit ou le fil immédiatement en cours. Ne changez pas de domaine de vie et ne lancez pas un nouveau thème tant que ce bloc n’a pas été synthétisé.
 Ne proposez aucun mot de valeur dans la question. Ne répétez pas l’axe déjà refusé et ne cherchez pas un simple synonyme.
-Vous pouvez notamment revenir sur un élément concret passé au second plan : travail, investissement, effort, qualité, utilité, responsabilité, relation, choix ou autre élément réellement présent dans le récit.
+Vous pouvez revenir sur un élément concret passé au second plan uniquement s’il appartient au même récit : effort, choix, exigence, relation, utilité ou autre élément explicitement présent.
 Aucune analyse psychologique, aucune conclusion et aucun conseil. Retournez seulement la question."""
     schema={"type":"object","properties":{"question":{"type":"string"}},"required":["question"],"additionalProperties":False}
     payload={"echanges":cycle.get("exchanges",[]),"candidats_deja_refuses":cycle.get("candidate_round_history",[]),"contexte_beneficiaire":_module4_context_payload()}
@@ -3210,6 +3222,128 @@ def _module4_candidates_from_dialogue(cycle: dict[str,Any]) -> list[dict[str,str
     joined=" ".join(x.get("reponse_validee","") for x in cycle.get("exchanges",[]))
     return _module4_word_candidates(cycle, joined)
 
+
+def _module4_memory_exchanges(cycle: dict[str,Any]) -> list[dict[str,Any]]:
+    """Réunit la mémoire validée des deux voies et le cycle courant, sans doublons."""
+    merged=[]; seen=set()
+    for item in list(st.session_state.get("module4_question_memory",[]) or []) + list(cycle.get("exchanges",[]) or []):
+        q=str(item.get("question","") or "").strip(); a=str(item.get("reponse_validee","") or "").strip()
+        if not a: continue
+        sig=(_module4_question_signature(q), normalize(a))
+        if sig in seen: continue
+        seen.add(sig); merged.append(deepcopy(item))
+    return merged
+
+def _module4_active_known_items() -> list[dict[str,str]]:
+    """Valeurs déjà connues à comparer lors de la synthèse, sans les reproposer comme nouvelles."""
+    out=[]; seen=set()
+    def add(name:str,status:str,definition:str=""):
+        name=_normalise_value_name(name)
+        if not name or normalize(name) in seen: return
+        seen.add(normalize(name)); info=_referential_value_info(name)
+        out.append({"nom":name,"statut":status,"definition":definition or info.get("definition","")})
+    for item in st.session_state.get("central_validated_values",[]) or []:
+        add(item.get("nom_final") or item.get("nom") or "","validee",item.get("definition_personnelle") or item.get("definition_clarte360") or "")
+    for item in st.session_state.get("values_to_examine",[]) or []:
+        add(item.get("nom_final") or item.get("nom_initial") or item.get("nom") or "","a_examiner",item.get("definition_personnelle") or item.get("definition") or "")
+    for item in st.session_state.get("hypothesis_basket",[]) or []:
+        add(item.get("nom") or "","hypothese_deja_au_panier",item.get("definition_clarte360") or item.get("definition") or "")
+    for item in st.session_state.get("clarification_tracks",[]) or []:
+        add(item.get("terme_initial") or item.get("terme") or "","piste_a_clarifier",item.get("definition_personnelle") or item.get("definition") or "")
+    return out
+
+def _module4_global_review(cycle: dict[str,Any], trigger: str="manuel") -> dict[str,Any]:
+    """Synthèse transversale obligatoire : toutes les réponses servent de mémoire descriptive.
+
+    Elle recherche les récurrences entre plusieurs situations, compare les valeurs déjà
+    validées / en étude et ne propose comme nouvelles hypothèses que des entrées non connues.
+    """
+    exchanges=_module4_memory_exchanges(cycle)
+    known_items=_module4_active_known_items()
+    known_names={normalize(x.get("nom", "")) for x in known_items}
+    answers=[str(x.get("reponse_validee","") or "").strip() for x in exchanges if str(x.get("reponse_validee","") or "").strip()]
+    base={"hypotheses":[],"renforcements":[],"synthese":"Clarté360 a étudié l’ensemble des réponses disponibles.","trigger":trigger}
+    if not answers:
+        return base
+    if not ai_ready():
+        fake=deepcopy(cycle); fake["exchanges"]=exchanges
+        options=_module4_word_candidates(fake," ".join(answers))
+        base["hypotheses"]=[{**x,"raison":"Piste issue de la synthèse des réponses validées.","preuves":[]} for x in options]
+        return base
+
+    axes_instructions="""Vous préparez une synthèse transversale du Module 4 RVC360.
+Vous ne devez établir ni profil, ni diagnostic, ni valeur certaine. Relisez TOUS les couples questions-réponses validés, même s’ils portent sur des sujets différents.
+Repérez uniquement des récurrences explicitement observables : critères qui reviennent, manières de choisir, éléments admirés ou refusés, efforts poursuivis, principes invoqués.
+Le but est de produire des termes de recherche lexicaux permettant ensuite de comparer ces récurrences au référentiel RVC360.
+Une récurrence est particulièrement utile lorsqu’elle apparaît dans au moins deux situations différentes. Ne forcez rien si les éléments sont faibles.
+Retournez une synthèse descriptive courte et jusqu’à 10 termes ou expressions de recherche, sans dire « vous êtes » et sans conclure qu’une valeur appartient au bénéficiaire."""
+    axes_schema={"type":"object","additionalProperties":False,"properties":{"synthese":{"type":"string"},"axes_recherche":{"type":"array","maxItems":10,"items":{"type":"string"}}},"required":["synthese","axes_recherche"]}
+    try:
+        axes=response_json(axes_instructions,{"echanges_valides":exchanges,"module2":st.session_state.get("module2_answers",{}),"valeurs_connues":known_items},"module4_synthese_axes_transversaux",axes_schema,max_tokens=700)
+    except Exception:
+        axes={"synthese":"Clarté360 a étudié l’ensemble des réponses disponibles.","axes_recherche":[]}
+    search_terms=[str(x) for x in axes.get("axes_recherche",[]) if str(x).strip()]
+    pool=lexical_prefilter(search_terms+answers,limit=80)
+    pool=[x for x in pool if normalize(x.get("nom","")) not in known_names and normalize(x.get("nom","")) not in _module4_all_known_names()]
+    base["synthese"]=str(axes.get("synthese") or base["synthese"]).strip()
+    if not pool:
+        return base
+    allowed={x["nom"]:x for x in pool}
+    allowed_names=sorted(allowed)
+    known_allowed=sorted({x["nom"] for x in known_items if x.get("nom")})
+    review_instructions="""Vous réalisez le point de convergence du Module 4 RVC360.
+Étudiez l’ensemble de la mémoire descriptive, pas seulement la dernière réponse. Comparez les récurrences entre situations différentes avec le sous-ensemble du référentiel fourni.
+Règles :
+- une hypothèse est une piste à examiner, jamais une conclusion ;
+- privilégiez une hypothèse soutenue par plusieurs réponses distinctes ; une seule réponse très explicite peut toutefois suffire ;
+- citez des preuves courtes provenant des réponses validées ;
+- ne proposez jamais comme nouvelle hypothèse une valeur déjà validée, à examiner, au panier Hypothèses ou à clarifier ;
+- si les réponses renforcent surtout un élément déjà connu, placez-le dans renforcements au lieu de créer un doublon ;
+- si aucune nouvelle hypothèse n’est assez solide, retournez hypotheses vide ;
+- ne faites aucune interprétation psychologique et n’ajoutez aucun sens absent.
+Retournez au maximum trois nouvelles hypothèses et au maximum trois renforcements d’éléments déjà connus."""
+    hyp_item={"type":"object","additionalProperties":False,"properties":{"nom":{"type":"string","enum":allowed_names},"raison":{"type":"string"},"preuves":{"type":"array","maxItems":3,"items":{"type":"string"}}},"required":["nom","raison","preuves"]}
+    props={"hypotheses":{"type":"array","maxItems":3,"items":hyp_item},"synthese":{"type":"string"}}
+    required=["hypotheses","synthese"]
+    if known_allowed:
+        props["renforcements"]={"type":"array","maxItems":3,"items":{"type":"object","additionalProperties":False,"properties":{"nom":{"type":"string","enum":known_allowed},"raison":{"type":"string"}},"required":["nom","raison"]}}
+        required.append("renforcements")
+    schema={"type":"object","additionalProperties":False,"properties":props,"required":required}
+    payload={"echanges_valides":exchanges,"axes_recherche":search_terms,"candidats_referentiel":pool,"elements_deja_connus":known_items,"contexte":_module4_context_payload()}
+    try:
+        out=response_json(review_instructions,payload,"module4_synthese_globale_hypotheses",schema,max_tokens=1000)
+    except Exception:
+        out={"hypotheses":[],"renforcements":[],"synthese":base["synthese"]}
+    valid=[]
+    for item in out.get("hypotheses",[]) or []:
+        name=str(item.get("nom","") or "").strip()
+        src=allowed.get(name)
+        if not src or normalize(name) in known_names: continue
+        valid.append({"nom":name,"definition":src.get("definition",""),"raison":str(item.get("raison","") or "").strip(),"preuves":[str(x) for x in item.get("preuves",[]) if str(x).strip()][:3]})
+    base["hypotheses"]=valid[:3]
+    base["renforcements"]=[{"nom":str(x.get("nom","") or ""),"raison":str(x.get("raison","") or "")} for x in (out.get("renforcements",[]) or [])[:3]]
+    base["synthese"]=str(out.get("synthese") or base["synthese"]).strip()
+    return base
+
+def _module4_apply_global_review_decisions(cycle:dict[str,Any], options:list[dict[str,Any]], decisions:dict[str,str]) -> None:
+    """Décisions indépendantes après synthèse globale, sans relance automatique du même bloc."""
+    kept=[]; refused=[]; rejected_store=st.session_state.setdefault("module4_rejected_hypotheses",[])
+    option_map={normalize(x.get("nom") or ""):x for x in options}
+    for name,decision in decisions.items():
+        candidate=option_map.get(normalize(name),{"nom":name,"definition":(_referential_value_info(name) or {}).get("definition","")})
+        if decision in {"Oui","Peut-être"}:
+            _module4_add_hypothesis(cycle,candidate,decision); kept.append(candidate.get("nom") or name)
+        elif decision=="Non":
+            refused.append(candidate.get("nom") or name)
+            entry={"nom":candidate.get("nom") or name,"definition":candidate.get("definition",""),"cycle_id":cycle.get("id"),"voie":cycle.get("voie"),"date":now_iso(),"contexte":deepcopy(_module4_memory_exchanges(cycle)),"source":"synthese_globale"}
+            if normalize(entry["nom"]) not in {normalize(x.get("nom") or "") for x in rejected_store}: rejected_store.append(entry)
+    cycle.setdefault("candidate_round_history",[]).append({"date_heure":now_iso(),"source":"synthese_globale","candidats":[x.get("nom","") for x in options],"decisions":deepcopy(decisions),"retenues":kept,"refusees":refused})
+    cycle["selected_hypotheses"]=kept; cycle["refused_hypotheses"]=refused
+    if kept:
+        cycle["result"]="hypotheses_retenues"; cycle["stage"]="termine"
+    else:
+        cycle["stage"]="synthese_globale_actions"; cycle["result"]=""
+
 def _module4_module2_completed() -> bool:
     return _module_state("module_2").get("status")=="termine"
 
@@ -3243,7 +3377,19 @@ def _module4_render_cycle(voie:str) -> None:
 
     _module4_render_exchange_thread(cycle)
 
+    if cycle.get("stage")=="synthese_globale_pending":
+        with st.spinner("Clarté360 étudie l’ensemble de vos réponses pour rechercher des récurrences et d’éventuelles hypothèses…"):
+            cycle["global_review"]=_module4_global_review(cycle,cycle.get("review_trigger") or "limite_cinq_questions")
+        cycle["candidate_options"]=deepcopy(cycle.get("global_review",{}).get("hypotheses",[]))
+        cycle["stage"]="synthese_globale"
+        business_trace("module4_synthese_globale",cycle.get("review_trigger") or "")
+        st.rerun()
+
     if cycle.get("stage") in {"question","mot"}:
+        if cycle.get("exchanges"):
+            st.caption(f"Bloc actuel : {_module4_vertical_count(cycle)} question(s) validée(s) sur {MODULE4_MAX_VERTICAL_QUESTIONS} maximum avant un point obligatoire.")
+            if st.button("🧭 Faire le point avec mes réponses actuelles",use_container_width=True,key=f"m4_review_now_{cycle['id']}_{len(cycle.get('exchanges',[]))}"):
+                cycle["review_trigger"]="demande_beneficiaire"; cycle["stage"]="synthese_globale_pending"; cycle["question"]=""; st.rerun()
         question=cycle.get("question","")
         st.markdown(f"### {question}"); speak_button(question,f"m4_q_{cycle['id']}_{len(cycle.get('exchanges',[]))}")
         widget_key=f"m4_cycle_{cycle['id']}_{len(cycle.get('exchanges',[]))}"
@@ -3263,8 +3409,16 @@ def _module4_render_cycle(voie:str) -> None:
                     if candidates: cycle["candidate_rounds"]=int(cycle.get("candidate_rounds",0))+1
                     cycle["stage"]="candidats" if candidates else "proposition_permission"
             else:
-                progress=_module4_analyse_progress(cycle)
-                if progress.get("action")=="aucune_piste":
+                if _module4_vertical_count(cycle)>=MODULE4_MAX_VERTICAL_QUESTIONS:
+                    cycle["review_trigger"]="limite_cinq_questions"
+                    cycle["stage"]="synthese_globale_pending"
+                    cycle["question"]=""
+                    progress=None
+                else:
+                    progress=_module4_analyse_progress(cycle)
+                if progress is None:
+                    pass
+                elif progress.get("action")=="aucune_piste":
                     cycle["candidate_options"]=_module4_candidates_from_dialogue(cycle)
                     cycle["stage"]="checkpoint_hypotheses" if cycle.get("exchanges") else "termine"
                     cycle["result"]="aucune_piste" if not cycle.get("exchanges") else ""
@@ -3279,7 +3433,7 @@ def _module4_render_cycle(voie:str) -> None:
                 else:
                     next_question=progress.get("question") or "Qu’est-ce qui était réellement important pour vous dans cette situation ?"
                     if _module4_vertical_count(cycle)>=MODULE4_MAX_VERTICAL_QUESTIONS:
-                        cycle["stage"]="mot"; cycle["question"]=MODULE4_WORD_QUESTION; cycle["word_question_asked"]=True
+                        cycle["review_trigger"]="limite_cinq_questions"; cycle["stage"]="synthese_globale_pending"; cycle["question"]=""
                     elif _module4_question_already_asked(cycle,next_question):
                         cycle["stage"]="mot"; cycle["question"]=MODULE4_WORD_QUESTION; cycle["word_question_asked"]=True
                     else:
@@ -3318,11 +3472,64 @@ def _module4_render_cycle(voie:str) -> None:
                 if st.button("Confirmer toutes mes décisions",type="primary",use_container_width=True,key=f"m4_checkpoint_keep_{cycle['id']}",disabled=not complete):
                     _module4_apply_hypothesis_decisions(cycle,decision_options,decisions); st.rerun()
         elif action=="Continuer le questionnement":
-            if st.button("Continuer avec une nouvelle question",type="primary",use_container_width=True,key=f"m4_checkpoint_continue_{cycle['id']}"):
+            if _module4_vertical_count(cycle)>=MODULE4_MAX_VERTICAL_QUESTIONS:
+                st.info("Le bloc a atteint cinq questions. Clarté360 doit maintenant faire le point avant toute nouvelle question.")
+                if st.button("Faire le point maintenant",type="primary",use_container_width=True,key=f"m4_checkpoint_review_{cycle['id']}"):
+                    cycle["review_trigger"]="limite_cinq_questions"; cycle["stage"]="synthese_globale_pending"; cycle["question"]=""; st.rerun()
+            elif st.button("Continuer le même fil (jusqu’à 5 questions maximum)",type="primary",use_container_width=True,key=f"m4_checkpoint_continue_{cycle['id']}"):
                 cycle["question"]=_module4_generate_reorientation_question(cycle); cycle["stage"]="question"; cycle["pending_answer_processed"]=False; st.rerun()
         elif action=="Arrêter ce dialogue":
             if st.button("Arrêter et conserver le travail réalisé",type="primary",use_container_width=True,key=f"m4_checkpoint_stop_{cycle['id']}"):
                 cycle["stage"]="termine"; cycle["result"]="dialogue_arrete_sans_hypothese"; st.rerun()
+
+    if cycle.get("stage") in {"synthese_globale","synthese_globale_actions"}:
+        review=cycle.get("global_review",{}) or {}
+        st.markdown("### Point d’étape sur l’ensemble de vos réponses")
+        st.info("Clarté360 a étudié l’ensemble des réponses validées du Module 4, y compris les échanges précédents, et les a comparées aux valeurs déjà validées, aux valeurs à examiner et au Panier Hypothèses. Ce point reste une analyse de pistes, jamais un profil ni une conclusion sur vous.")
+        if review.get("synthese"): st.write(review.get("synthese"))
+        reinf=review.get("renforcements",[]) or []
+        if reinf:
+            st.markdown("**Éléments déjà connus que vos réponses peuvent renforcer**")
+            for item in reinf: st.write(f"• **{item.get('nom','')}** — {item.get('raison','')}")
+        options=review.get("hypotheses",[]) or []
+        if options and cycle.get("stage")=="synthese_globale":
+            st.markdown("**Nouvelles hypothèses possibles repérées dans plusieurs réponses**")
+            for item in options:
+                with st.container(border=True):
+                    st.markdown(f"**{item.get('nom','')}**")
+                    if item.get("definition"): st.write(item.get("definition"))
+                    if item.get("raison"): st.caption(item.get("raison"))
+                    preuves=item.get("preuves",[]) or []
+                    if preuves:
+                        st.write("Indices relevés :")
+                        for preuve in preuves: st.write(f"- {preuve}")
+            st.caption("Décidez séparément pour chaque hypothèse. Vous pouvez n’en conserver aucune, une ou plusieurs.")
+            decisions={}
+            for item in options:
+                name=item.get("nom","")
+                decisions[name]=st.radio(f"{name}",["Choisissez","Oui","Peut-être","Non"],key=f"m4_global_decision_{cycle['id']}_{_safe_widget_key(name)}",horizontal=True)
+            complete=all(v!="Choisissez" for v in decisions.values())
+            if st.button("Confirmer mes décisions sur ces hypothèses",type="primary",use_container_width=True,key=f"m4_global_confirm_{cycle['id']}",disabled=not complete):
+                _module4_apply_global_review_decisions(cycle,options,decisions); st.rerun()
+        elif not options:
+            st.warning("À ce stade, Clarté360 ne dispose pas d’éléments suffisamment solides pour proposer une nouvelle hypothèse de valeur. Toutes vos réponses restent néanmoins conservées comme mémoire descriptive pour la suite.")
+
+        if not options or cycle.get("stage")=="synthese_globale_actions":
+            st.markdown("#### Que souhaitez-vous faire maintenant ?")
+            c1,c2,c3=st.columns(3)
+            with c1:
+                if st.button("Explorer avec l’autre voie",type="primary",use_container_width=True,key=f"m4_global_other_way_{cycle['id']}"):
+                    other="situation" if voie=="questions_personnalisees" else "questions_personnalisees" if voie=="situation" else ""
+                    st.session_state.module4_current_cycle={}
+                    st.session_state.module4_route=other
+                    _set_module_status("module_4","en_cours","voie_1_situation" if other=="situation" else "voie_2_preparation" if other else "choix_voie")
+                    st.rerun()
+            with c2:
+                if st.button("Continuer avec 5 nouvelles questions maximum",use_container_width=True,key=f"m4_global_continue_{cycle['id']}"):
+                    _module4_new_cycle(voie); st.rerun()
+            with c3:
+                if st.button("Arrêter pour le moment",use_container_width=True,key=f"m4_global_stop_{cycle['id']}"):
+                    cycle["stage"]="termine"; cycle["result"]="arret_apres_synthese_globale"; st.rerun()
 
     if cycle.get("stage")=="proposition_permission":
         if cycle.get("word_no_answer"):
@@ -3372,7 +3579,7 @@ def _module4_render_cycle(voie:str) -> None:
 
 def _module4_render_way1() -> None:
     st.title("Partir d’une situation observée")
-    instruction="Décrivez une situation réelle. Clarté360 vous posera quelques questions verticales, puis cherchera avec vous un mot. Le résultat restera une simple hypothèse et une même exploration pourra conduire à plusieurs hypothèses retenues, chacune après une décision explicite. Si les premiers mots proposés ne correspondent pas, Clarté360 pourra approfondir brièvement un autre aspect de la même situation avant de clore la piste."
+    instruction="Décrivez une situation réelle. Clarté360 approfondit le même fil sans changer brutalement de sujet. Un bloc comporte au maximum cinq questions utiles ; au plus tard après la cinquième, une synthèse de l’ensemble des réponses du Module 4 est réalisée. Le résultat reste une simple hypothèse : une même exploration pourra conduire à plusieurs hypothèses retenues, chacune après une décision explicite."
     st.info(instruction); speak_button(instruction,"m4_way1_instruction")
     _module4_render_cycle("situation")
 
@@ -3389,7 +3596,7 @@ def _module4_render_way2() -> None:
             if st.button("Choisir la voie 1",use_container_width=True,key="m4_way2_go_way1"):
                 st.session_state.module4_route="situation"; st.session_state.module4_current_cycle={}; st.rerun()
         return
-    instruction="Clarté360 choisira une question à partir de tout ce qui est déjà connu, y compris les couples questions-réponses issus des deux voies. Cette mémoire reste descriptive : elle ne constitue ni un profil ni une conclusion sur vous."
+    instruction="Clarté360 choisira une question à partir de tout ce qui est déjà connu, y compris les couples questions-réponses issus des deux voies. Cette mémoire reste descriptive : elle ne constitue ni un profil ni une conclusion sur vous. Un bloc comporte au maximum cinq questions ; au plus tard après la cinquième, Clarté360 étudie l’ensemble de vos réponses avant de vous proposer une hypothèse, une autre voie, un nouveau bloc ou l’arrêt."
     st.info(instruction); speak_button(instruction,"m4_way2_instruction")
     values=_module4_validated_value_labels()
     if values: st.markdown("**Valeurs déjà validées prises en compte :** "+", ".join(values))

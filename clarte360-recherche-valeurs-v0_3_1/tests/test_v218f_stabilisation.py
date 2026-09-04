@@ -10,7 +10,7 @@ def load_app():
     return _load()
 
 def test_version_f_and_cross_module_language_rule():
-    assert 'APP_VERSION = "2.2.0-preproduction-2"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction-4"' in TEXT
     assert 'Corrigez toujours les fautes d\'orthographe' in TEXT
     assert 'expected_value_label' in TEXT
 

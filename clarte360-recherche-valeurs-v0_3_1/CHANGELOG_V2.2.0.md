@@ -1,4 +1,4 @@
-# Clarté360 Recherche des valeurs — V2.2.0-preproduction-2
+# Clarté360 Recherche des valeurs — V2.2.0-preproduction-4
 
 Date : 4 septembre 2026
 
@@ -46,3 +46,16 @@ Mise en conformité avec l'audit préparatoire du 4 septembre 2026 et le référ
 6. Même série à l'oral.
 7. Module 4 avec trois hypothèses : conservation de deux hypothèses et refus de la troisième.
 8. Reprise JSON après sélection multiple des hypothèses.
+
+
+## V2.2.0-preproduction-4 - Convergence Module 4
+
+- maximum absolu de 5 questions validées par bloc dans le Module 4 ; aucune 6e question automatique ;
+- bouton permanent « Faire le point avec mes réponses actuelles » après au moins une réponse validée ;
+- synthèse transversale de toute la mémoire validée des deux voies du Module 4 ;
+- recherche de récurrences entre situations différentes avant proposition de nouvelles hypothèses ;
+- comparaison avec les valeurs déjà validées, à examiner, au panier Hypothèses et les pistes à clarifier afin d’éviter les doublons ;
+- possibilité de signaler qu’un élément déjà connu est renforcé sans le reproposer comme nouvelle hypothèse ;
+- après synthèse sans hypothèse : autre voie, nouveau bloc volontaire de 5 questions maximum ou arrêt ;
+- relances du même bloc renforcées pour rester sur le même fil et éviter les changements brutaux de sujet ;
+- compatibilité reprise JSON : un ancien cycle contenant déjà 5 réponses ou davantage est envoyé directement vers la synthèse globale.

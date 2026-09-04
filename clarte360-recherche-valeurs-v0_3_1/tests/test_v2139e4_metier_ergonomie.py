@@ -2,7 +2,7 @@ from pathlib import Path
 TEXT=Path(__file__).resolve().parents[1].joinpath('app.py').read_text(encoding='utf-8')
 
 def test_version_e4():
-    assert 'APP_VERSION = "2.2.0-preproduction-2"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction-4"' in TEXT
 
 def test_quatre_orientations_module3():
     for label in (
