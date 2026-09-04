@@ -19,6 +19,26 @@ def slot_duration_hours(slot):
     if b<=a: b+=timedelta(days=1)
     return round((b-a).total_seconds()/3600,2)
 
+
+def slot_start_end(slot, tz_name='Europe/Paris'):
+    start=parse_dt(slot['slot_date'],slot['start_time'],tz_name)
+    end=parse_dt(slot['slot_date'],slot['end_time'],tz_name)
+    if end<=start:
+        end+=timedelta(days=1)
+    return start,end
+
+def email_event_due_utc(slot,event_type,tz_name='Europe/Paris'):
+    start,end=slot_start_end(slot,tz_name)
+    if event_type=='INITIAL':
+        due=end+timedelta(minutes=int(slot.get('send_offset_min') or 0))
+    elif event_type=='RELANCE_1':
+        due=end+timedelta(minutes=int(slot.get('reminder1_offset_min') or 0))
+    elif event_type=='RELANCE_2':
+        due=end+timedelta(minutes=int(slot.get('reminder2_offset_min') or 0))
+    else:
+        raise ValueError(f'Type d’événement inconnu : {event_type}')
+    return due.astimezone(ZoneInfo('UTC'))
+
 def create_action(engine, d, actor):
     now=utcnow_iso()
     aid=execute(engine,"""INSERT INTO actions(action_no,title,subtitle,nature,mode,client_name,client_type,group_code,planned_hours,expected_participants,status,admin_email,trainer_name,trainer_email,location,notes,source,created_at,updated_at)
@@ -72,10 +92,8 @@ def ensure_tokens_and_events(engine, aid, base_url,tz_name='Europe/Paris'):
         tok=one(engine,'SELECT * FROM signature_tokens WHERE participant_id=:p AND slot_id=:s',{'p':p['id'],'s':s['id']})
         if not tok:
           token=new_token(24); execute(engine,'INSERT INTO signature_tokens(participant_id,slot_id,token,created_at) VALUES(:p,:s,:t,:c)',{'p':p['id'],'s':s['id'],'t':token,'c':utcnow_iso()})
-        end=parse_dt(s['slot_date'],s['end_time'],tz_name)
-        timings={'INITIAL':s['send_offset_min'],'RELANCE_1':s['reminder1_offset_min'],'RELANCE_2':s['reminder2_offset_min']}
-        for et,off in timings.items():
-          due=(end+timedelta(minutes=off)).astimezone(ZoneInfo('UTC')).isoformat()
+        for et in ('INITIAL','RELANCE_1','RELANCE_2'):
+          due=email_event_due_utc(s,et,tz_name).isoformat()
           execute(engine,"""INSERT OR IGNORE INTO email_events(participant_id,slot_id,event_type,due_at) VALUES(:p,:s,:e,:d)""",{'p':p['id'],'s':s['id'],'e':et,'d':due})
           execute(engine,"""UPDATE email_events SET due_at=:d,last_error=NULL WHERE participant_id=:p AND slot_id=:s AND event_type=:e AND status='PENDING'""",{'p':p['id'],'s':s['id'],'e':et,'d':due})
     audit(engine,'SIGNATURE_REQUESTS_PREPARED',aid,'system','action',aid,{'base_url':base_url})
@@ -375,6 +393,44 @@ def list_trainers(engine,active_only=False):
 def add_trainer(engine,name,email,phone,actor):
     now=utcnow_iso(); tid=execute(engine,'INSERT INTO trainers(full_name,email,phone,created_at,updated_at) VALUES(:n,:e,:p,:c,:c)',{'n':name.strip(),'e':email.strip().lower() or None,'p':phone.strip() or None,'c':now})
     audit(engine,'TRAINER_CREATED',None,actor,'trainer',tid,{'name':name,'email':email}); return tid
+
+def create_trainer_invitation(engine,tid,actor,valid_hours=72):
+    import secrets
+    t=one(engine,'SELECT * FROM trainers WHERE id=:i',{'i':tid})
+    if not t or not (t.get('email') or '').strip(): return None
+    token=secrets.token_urlsafe(32)
+    expires=(datetime.now(ZoneInfo('UTC'))+timedelta(hours=valid_hours)).isoformat()
+    execute(engine,'UPDATE trainers SET invite_token=:t,invite_expires_at=:e,invited_at=:n,updated_at=:n WHERE id=:i',
+            {'t':token,'e':expires,'n':utcnow_iso(),'i':tid})
+    audit(engine,'TRAINER_INVITED',None,actor,'trainer',tid,{'email':t.get('email'),'valid_hours':valid_hours})
+    return token
+
+def trainer_by_invite(engine,token):
+    if not token:return None
+    t=one(engine,'SELECT * FROM trainers WHERE invite_token=:t AND active=1',{'t':token})
+    if not t:return None
+    exp=t.get('invite_expires_at')
+    if exp and datetime.fromisoformat(exp)<datetime.now(ZoneInfo('UTC')): return None
+    return t
+
+def accept_trainer_invitation(engine,token,password):
+    t=trainer_by_invite(engine,token)
+    if not t:return False,'Invitation invalide ou expirée.'
+    if len(password)<10:return False,'Le mot de passe doit comporter au moins 10 caractères.'
+    execute(engine,'UPDATE trainers SET password_hash=:p,invite_token=NULL,invite_expires_at=NULL,updated_at=:u WHERE id=:i',
+            {'p':hash_password(password),'u':utcnow_iso(),'i':t['id']})
+    audit(engine,'TRAINER_ACCOUNT_ACTIVATED',None,t.get('email') or 'trainer','trainer',t['id'],{})
+    return True,''
+
+def verify_trainer_login(engine,email,password):
+    from security import verify_password
+    t=one(engine,"SELECT * FROM trainers WHERE LOWER(email)=LOWER(:e) AND active=1",{'e':(email or '').strip()})
+    if not t or not t.get('password_hash') or not verify_password(password,t['password_hash']): return None
+    execute(engine,'UPDATE trainers SET last_login_at=:n WHERE id=:i',{'n':utcnow_iso(),'i':t['id']})
+    return t
+
+def trainer_actions(engine,trainer_id):
+    return q(engine,"SELECT * FROM actions WHERE trainer_id=:t AND status<>'ARCHIVEE' ORDER BY COALESCE(start_date,''),action_no",{'t':trainer_id})
 
 def set_trainer_active(engine,tid,active,actor):
     execute(engine,'UPDATE trainers SET active=:x,updated_at=:u WHERE id=:i',{'x':1 if active else 0,'u':utcnow_iso(),'i':tid}); audit(engine,'TRAINER_STATUS_CHANGED',None,actor,'trainer',tid,{'active':bool(active)})

@@ -16,6 +16,7 @@ from services import *
 from excel_import import read_clarte360_xlsm, read_adca_xlsm, list_action_numbers
 from pdf_utils import collective_pdf, individual_pdf, certificate_pdf, quality_response_pdf
 from mailer import send_mail, resolve_mail_config, validate_mail_config
+from source_store import source_info, set_external_path, save_uploaded_source, refresh_from_external, read_snapshot
 
 st.set_page_config(page_title=APP_NAME,page_icon=str(ICON_PATH),layout='wide',initial_sidebar_state='expanded')
 st.markdown(CSS,unsafe_allow_html=True)
@@ -176,6 +177,84 @@ def activate_action_ui(a, location_key):
         rerun()
     return True
 
+def send_trainer_invitation_email(trainer, token):
+    cfg=mail_cfg()
+    email=(trainer.get('email') or '').strip()
+    if not email or not cfg.get('enabled'):
+        return False, "Invitation non envoyée (email absent ou configuration MAIL indisponible)."
+    org=org_identity(); org_name=(org or {}).get('name') or 'Organisme'
+    if org and org.get('email_from_name'): cfg['from_name']=org['email_from_name']
+    if org and org.get('email_from_address'): cfg['from_email']=org['email_from_address']
+    url=f"{BASE_URL.rstrip('/')}?trainer_invite={quote(token)}"
+    body=f"""<p>Bonjour {trainer['full_name']},</p>
+    <p>Vous avez été référencé(e) comme formateur / accompagnant pour <strong>{org_name}</strong>.</p>
+    <p>Pour créer votre accès personnel sécurisé, cliquez sur le bouton ci-dessous :</p>
+    <p><a href='{url}' style='background:#008b8b;color:white;padding:12px 18px;text-decoration:none;border-radius:8px'>CRÉER MON ACCÈS INTERVENANT</a></p>
+    <p>Votre espace vous permettra de consulter uniquement les actions qui vous sont affectées et d'accéder aux fonctions opérationnelles autorisées : planning, QR d'émargement, suivi, absences, relances et contresignature.</p>
+    {privacy_notice_html()}<p>{org_name}</p>"""
+    try:
+        send_mail(cfg,email,f"{org_name} — Créez votre accès formateur / accompagnant",body)
+        return True,'Invitation intervenant envoyée par email.'
+    except Exception as ex:
+        return False,f'Invitation non envoyée : {friendly_mail_error(ex)}'
+
+
+def trainer_invitation_page(token):
+    header('Clarté360 — Accès intervenant','Création de votre accès sécurisé')
+    tr=trainer_by_invite(ENGINE,token)
+    if not tr:
+        st.error('Cette invitation est invalide ou a expiré. Demandez une nouvelle invitation à votre administrateur.')
+        footer(); return
+    st.info(f"Invitation pour {tr['full_name']} — {tr.get('email') or ''}")
+    with st.form('trainer_accept_invite'):
+        p1=st.text_input('Choisissez votre mot de passe',type='password')
+        p2=st.text_input('Confirmez le mot de passe',type='password')
+        ok=st.form_submit_button('CRÉER MON ACCÈS',type='primary')
+    if ok:
+        if p1!=p2: st.error('Les deux mots de passe ne correspondent pas.')
+        else:
+            done,msg=accept_trainer_invitation(ENGINE,token,p1)
+            if done:
+                st.success('Votre accès est créé. Vous pouvez maintenant vous connecter à votre espace intervenant.')
+                st.link_button('Se connecter à mon espace intervenant',f"{BASE_URL.rstrip('/')}?trainer_portal=1")
+            else: st.error(msg)
+    footer()
+
+
+def trainer_portal_page():
+    if not st.session_state.get('trainer_portal_id'):
+        header('Clarté360 — Espace intervenant','Accès réservé aux formateurs / accompagnants')
+        with st.form('trainer_login'):
+            email=st.text_input('Email').strip().lower()
+            pw=st.text_input('Mot de passe',type='password')
+            ok=st.form_submit_button('Se connecter',type='primary')
+        if ok:
+            tr=verify_trainer_login(ENGINE,email,pw)
+            if tr:
+                st.session_state.trainer_portal_id=tr['id']; st.session_state.trainer_portal_name=tr['full_name']; rerun()
+            else: st.error('Identifiants intervenant incorrects ou accès non encore créé.')
+        footer(); return
+    tid=st.session_state.trainer_portal_id
+    tr=one(ENGINE,'SELECT * FROM trainers WHERE id=:i AND active=1',{'i':tid})
+    if not tr:
+        st.session_state.pop('trainer_portal_id',None); rerun()
+    header('Clarté360 — Espace intervenant',f"Bienvenue {tr['full_name']}")
+    if st.button('Se déconnecter de l’espace intervenant'):
+        st.session_state.pop('trainer_portal_id',None); st.session_state.pop('trainer_portal_name',None); rerun()
+    acts=trainer_actions(ENGINE,tid)
+    if not acts:
+        st.info('Aucune action ne vous est actuellement affectée.')
+    else:
+        rows=[]
+        for a in acts:
+            rows.append({'Action':a['action_no'],'Intitulé':a['title'],'Début':a.get('start_date') or '','Fin':a.get('end_date') or '','Statut':normalize_action_status(a.get('status'))})
+        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+        labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a.get('status'))}":a for a in acts}
+        lab=st.selectbox('Action à ouvrir',list(labels)); a=labels[lab]
+        st.link_button('OUVRIR MON ESPACE OPÉRATIONNEL POUR CETTE ACTION',trainer_url(ENGINE,a['id'],BASE_URL),type='primary')
+        st.caption('Vous n’accédez qu’aux actions qui vous sont affectées. Les paramètres administratifs et les autres actions restent invisibles.')
+    footer()
+
 def footer(action_id=None):
     org=org_identity(action_id);parts=[]
     if org:
@@ -215,6 +294,7 @@ def setup_or_login():
             else: st.error('Identifiants incorrects.')
     with c2:
         st.markdown("<div class='c360-card'><h3>À quoi sert cet espace ?</h3>Créer ou importer une action, définir ses créneaux, gérer les stagiaires, suivre les signatures, relancer et générer les justificatifs.</div>",unsafe_allow_html=True)
+    st.link_button('Accès formateur / accompagnant',f"{BASE_URL.rstrip('/')}?trainer_portal=1")
     footer();return False
 
 def signature_page(token=None,slot_token=None):
@@ -565,14 +645,24 @@ def import_screen():
     header('Clarté360 — Import','Importer une action depuis la base Clarté360 ou un CSV de participants')
     tab1,tabadca,tab2=st.tabs(['Base GESTION OF CLARTE360 (.xlsm)','Base GESTION OF ADCA (.xlsm)','CSV participants'])
     with tab1:
-        f=st.file_uploader('Sélectionnez GESTION OF CLARTE360 EN COURS.xlsm',type=['xlsm','xlsx'],key='xlsm')
+        info=source_info('CLARTE360')
+        if info.get('snapshot_path'):
+            st.info(f"Base Clarté360 mémorisée sur le VPS : {info.get('original_name') or Path(info['snapshot_path']).name}. Vous pouvez rechercher plusieurs actions sans recharger le fichier.")
+        f=st.file_uploader('Charger / actualiser GESTION OF CLARTE360 (.xlsm/.xlsx)',type=['xlsm','xlsx'],key='xlsm')
         mode=st.selectbox('Mode de l’action',['INTRA','INTER','INDIVIDUEL'],key='clar_mode'); n=st.text_input('N° D’ACTION à rechercher',placeholder='CLA0001').strip().upper()
-        if st.button('Lire l’action',type='primary') and f and n:
+        if st.button('Lire l’action',type='primary') and n:
             try:
-                data,parts=read_clarte360_xlsm(f.getvalue(),n,mode)
-                if not data: st.error('Action introuvable dans les onglets CONV ADM et STAGIAIRE.')
+                if f:
+                    raw=f.getvalue(); save_uploaded_source('CLARTE360',f.name,raw)
                 else:
-                    st.session_state.import_prefill=data;st.session_state.import_parts=parts;st.success(f"Action trouvée — {len(parts)} participant(s) détecté(s). Le NIR n’est pas importé.")
+                    raw,_=read_snapshot('CLARTE360')
+                if not raw:
+                    st.error('Chargez une base Clarté360 une première fois. Elle sera ensuite conservée sur le VPS pour les recherches suivantes.')
+                else:
+                    data,parts=read_clarte360_xlsm(raw,n,mode)
+                    if not data: st.error('Action introuvable dans les onglets CONV ADM et STAGIAIRE.')
+                    else:
+                        st.session_state.import_prefill=data;st.session_state.import_parts=parts;st.success(f"Action trouvée — {len(parts)} participant(s) détecté(s). Le NIR n’est pas importé.")
             except Exception as e: st.error(f"Lecture impossible : {e}")
         if st.session_state.get('import_prefill'):
             d=st.session_state.import_prefill;st.json({k:v for k,v in d.items() if k not in ['default_start','default_end']});
@@ -580,15 +670,25 @@ def import_screen():
                 st.session_state.import_create_active=True;st.session_state['_next_nav']='Nouvelle action';rerun()
     with tabadca:
         st.info('Import ADCA : permet notamment de reprendre une action historique pour activer uniquement la qualité à froid, sans recréer artificiellement des émargements.')
-        af=st.file_uploader('Sélectionnez GESTION OF ADCA (.xlsm)',type=['xlsm','xlsx'],key='adca_xlsm')
+        ainfo=source_info('ADCA')
+        if ainfo.get('snapshot_path'):
+            st.info(f"Base ADCA mémorisée sur le VPS : {ainfo.get('original_name') or Path(ainfo['snapshot_path']).name}. Vous pouvez rechercher plusieurs actions sans recharger le fichier.")
+        af=st.file_uploader('Charger / actualiser GESTION OF ADCA (.xlsm/.xlsx)',type=['xlsm','xlsx'],key='adca_xlsm')
         amode=st.selectbox('Mode de l’action',['INTRA','INTER','INDIVIDUEL'],key='adca_mode')
         an=st.text_input('N° ADCA à rechercher',placeholder='ADC4736').strip().upper()
-        if st.button('Lire l’action ADCA',type='primary') and af and an:
+        if st.button('Lire l’action ADCA',type='primary') and an:
             try:
-                data,parts=read_adca_xlsm(af.getvalue(),an,amode)
-                if not data: st.error('Action ADCA introuvable.')
+                if af:
+                    araw=af.getvalue(); save_uploaded_source('ADCA',af.name,araw)
                 else:
-                    st.session_state.import_prefill=data;st.session_state.import_parts=parts;st.success(f"Action trouvée — {len(parts)} participant(s). Source métier utilisée : {data.get('source_sheet')}.")
+                    araw,_=read_snapshot('ADCA')
+                if not araw:
+                    st.error('Chargez une base ADCA une première fois. Elle sera ensuite conservée sur le VPS pour les recherches suivantes.')
+                else:
+                    data,parts=read_adca_xlsm(araw,an,amode)
+                    if not data: st.error('Action ADCA introuvable.')
+                    else:
+                        st.session_state.import_prefill=data;st.session_state.import_parts=parts;st.success(f"Action trouvée — {len(parts)} participant(s). Source métier utilisée : {data.get('source_sheet')}.")
             except Exception as e: st.error(f'Lecture ADCA impossible : {e}')
         if st.session_state.get('import_prefill',{}).get('source')=='GESTION OF ADCA':
             d=st.session_state.import_prefill;st.json({k:v for k,v in d.items() if k not in ['default_start','default_end']})
@@ -827,7 +927,7 @@ def calendar_tab(a):
         c1,c2,c3=st.columns(3)
         send_mode=c1.selectbox('Envoi du lien d’émargement',['Au début du créneau','10 min avant la fin','À la fin du créneau','Personnalisé'],key=f'sendmode{a["id"]}')
         custom=c2.number_input('Décalage personnalisé (min / fin)',value=-10,step=5,key=f'customsend{a["id"]}',disabled=send_mode!='Personnalisé')
-        close=c3.number_input('Clôture après fin (min)',value=1440,step=60,key=f'add_close_offset_{a["id"]}')
+        close=c3.number_input('Émargement possible après la fin pendant (min)',value=1440,step=60,key=f'add_close_offset_{a["id"]}')
         c1,c2=st.columns(2)
         r1=c1.number_input('Relance 1 après fin (min)',value=20,step=5,key=f'r1{a["id"]}')
         r2=c2.number_input('Relance 2 après fin (min)',value=120,step=15,key=f'r2{a["id"]}')
@@ -871,7 +971,7 @@ def calendar_tab(a):
             edit_send_mode=c1.selectbox('Envoi initial',['Au début du créneau','Personnalisé'],index=0 if current_begin else 1)
             esend=c2.number_input('Décalage personnalisé (min / fin)',value=int(es['send_offset_min']),step=5,disabled=edit_send_mode!='Personnalisé')
             er1=c3.number_input('Relance 1',value=int(es['reminder1_offset_min']),step=5);er2=c4.number_input('Relance 2',value=int(es['reminder2_offset_min']),step=15)
-            eclose=st.number_input('Clôture après fin (min)',value=int(es['close_offset_min']),step=60)
+            eclose=st.number_input('Émargement possible après la fin pendant (min)',value=int(es['close_offset_min']),step=60)
             reason=st.text_input('Motif de modification (recommandé si l’action a commencé)');save_slot=st.form_submit_button('Enregistrer les modifications de cette séance')
         if save_slot:
             final_send=slot_start_offset_minutes(est.strftime('%H:%M'),eet.strftime('%H:%M')) if edit_send_mode=='Au début du créneau' else int(esend)
@@ -928,8 +1028,11 @@ def dispatch_tab(a):
     events=q(ENGINE,"""SELECT e.*,p.last_name,p.first_name,p.email,s.slot_date,s.start_time,s.end_time FROM email_events e JOIN participants p ON p.id=e.participant_id JOIN slots s ON s.id=e.slot_id WHERE p.action_id=:a ORDER BY e.due_at""",{'a':a['id']})
     if events:
         evrows=[]
+        tzname=organization_runtime_config(ENGINE,a['id'])['timezone']
         for e in events:
-            evrows.append({'Nom':e['last_name'],'Prénom':e['first_name'],'Email':e.get('email') or '','Date':e['slot_date'],'Début':e['start_time'],'Fin':e['end_time'],'Type':e['event_type'],'Échéance':e['due_at'],'Statut':e['status'],'Envoyé le':e.get('sent_at') or '','Dernière anomalie':friendly_mail_error(e.get('last_error'))})
+            due=local_dt(e['due_at'],tzname).strftime('%d/%m/%Y %H:%M') if e.get('due_at') else ''
+            sent_local=local_dt(e['sent_at'],tzname).strftime('%d/%m/%Y %H:%M') if e.get('sent_at') else ''
+            evrows.append({'Nom':e['last_name'],'Prénom':e['first_name'],'Email':e.get('email') or '','Date séance':datetime.fromisoformat(e['slot_date']).strftime('%d/%m/%Y'),'Début':e['start_time'],'Fin':e['end_time'],'Type':e['event_type'],'Échéance (heure locale)':due,'Statut':e['status'],'Envoyé le':sent_local,'Dernière anomalie':friendly_mail_error(e.get('last_error'))})
         st.dataframe(pd.DataFrame(evrows),use_container_width=True,hide_index=True)
     st.markdown('### Envoi / relance manuelle')
     smtp_enabled=bool(mail_cfg().get('enabled'))
@@ -1108,6 +1211,25 @@ def settings_screen():
         smtp_enabled=bool(mail_cfg().get('enabled'));st.write('Email automatique (secret MAIL) :', '✅ activé' if smtp_enabled else '⚠️ non activé')
         st.markdown(privacy_notice_html(),unsafe_allow_html=True)
         st.caption('Les paramètres sensibles sont stockés dans .streamlit/secrets.toml sur le VPS et ne doivent jamais être envoyés sur GitHub.')
+        st.markdown('### Bases d’import mémorisées')
+        st.caption("Une base chargée depuis votre navigateur est copiée instantanément sur le VPS. Cette copie de travail peut ensuite servir à importer plusieurs actions, même si le classeur d’origine est ouvert ou n’est plus accessible.")
+        ci=source_info('CLARTE360'); ai=source_info('ADCA')
+        st.write('Clarté360 :',ci.get('snapshot_path') or 'aucune copie mémorisée')
+        st.write('ADCA :',ai.get('snapshot_path') or 'aucune copie mémorisée')
+        with st.form('source_paths'):
+            cp=st.text_input('Chemin source Clarté360 sur le VPS / volume monté (optionnel)',value=ci.get('external_path') or '')
+            ap=st.text_input('Chemin source ADCA sur le VPS / volume monté (optionnel)',value=ai.get('external_path') or '')
+            sv=st.form_submit_button('Enregistrer les chemins')
+        if sv:
+            set_external_path('CLARTE360',cp); set_external_path('ADCA',ap); st.success('Chemins enregistrés.')
+        st.caption("Un chemin Windows de votre PC (ex. C:\\...) n’est pas directement accessible depuis le VPS. Dans ce cas, utilisez le chargement du fichier : la copie VPS est ensuite conservée.")
+        c1,c2=st.columns(2)
+        if c1.button('Actualiser la copie Clarté360 depuis le chemin serveur',disabled=not bool(ci.get('external_path'))):
+            try: refresh_from_external('CLARTE360'); st.success('Copie Clarté360 actualisée.')
+            except Exception as ex: st.error(str(ex))
+        if c2.button('Actualiser la copie ADCA depuis le chemin serveur',disabled=not bool(ai.get('external_path'))):
+            try: refresh_from_external('ADCA'); st.success('Copie ADCA actualisée.')
+            except Exception as ex: st.error(str(ex))
     with tabo:
         st.subheader('Identité de l’organisme')
         org=get_organization(ENGINE); oid=(org or {}).get('id')
@@ -1179,6 +1301,9 @@ def settings_screen():
     with tabt:
         st.subheader('Formateurs / accompagnants référencés')
         trainers=list_trainers(ENGINE)
+        tf=st.session_state.pop('_trainer_flash',None)
+        if tf:
+            (st.success(tf[1]) if tf[0]=='success' else st.warning(tf[1]))
         if trainers: st.dataframe(pd.DataFrame(trainers)[['id','full_name','email','phone','active']],use_container_width=True,hide_index=True)
         with st.expander('Ajouter un formateur / accompagnant',expanded=not trainers):
             with st.form('add_trainer'):
@@ -1186,13 +1311,26 @@ def settings_screen():
             if add:
                 if not n.strip(): st.error('Nom obligatoire.')
                 else:
-                    try: add_trainer(ENGINE,n,e,ph,st.session_state.admin_email);st.success('Intervenant ajouté.');rerun()
+                    try:
+                        tid=add_trainer(ENGINE,n,e,ph,st.session_state.admin_email)
+                        if e.strip():
+                            token=create_trainer_invitation(ENGINE,tid,st.session_state.admin_email)
+                            tr=one(ENGINE,'SELECT * FROM trainers WHERE id=:i',{'i':tid})
+                            okm,msgm=send_trainer_invitation_email(tr,token) if token else (False,'Invitation non créée.')
+                            st.session_state['_trainer_flash']=('success' if okm else 'warning',msgm)
+                        else:
+                            st.session_state['_trainer_flash']=('warning','Intervenant ajouté sans email : aucun accès personnel ne peut être créé tant qu’une adresse email n’est pas renseignée.')
+                        rerun()
                     except Exception as ex: st.error(f'Impossible : {ex}')
         if trainers:
             tmap={f"{x['full_name']} — {x.get('email') or 'sans email'}":x for x in trainers};tl=st.selectbox('Intervenant à gérer',list(tmap),key='tr_manage');tt=tmap[tl]
-            c1,c2=st.columns(2)
+            c1,c2,c3=st.columns(3)
             if c1.button('Désactiver' if tt['active'] else 'Réactiver',key='tr_toggle'): set_trainer_active(ENGINE,tt['id'],not bool(tt['active']),st.session_state.admin_email);rerun()
-            with c2.expander('🗑️ Supprimer définitivement'):
+            if c2.button('Envoyer / renouveler l’invitation d’accès',key='tr_invite',disabled=not bool(tt.get('email'))):
+                token=create_trainer_invitation(ENGINE,tt['id'],st.session_state.admin_email)
+                okm,msgm=send_trainer_invitation_email(tt,token) if token else (False,'Invitation non créée.')
+                st.success(msgm) if okm else st.warning(msgm)
+            with c3.expander('🗑️ Supprimer définitivement'):
                 pw=st.text_input('Votre mot de passe administrateur',type='password',key='trdelpw');conf=st.text_input('Saisissez SUPPRIMER',key='trdelconf')
                 if st.button('Supprimer du référentiel',key='trdel'):
                     if conf!='SUPPRIMER' or not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Confirmation ou mot de passe incorrect.')
@@ -1203,6 +1341,10 @@ def settings_screen():
 params=st.query_params
 if params.get('quality_token'):
     quality_page(params.get('quality_token'));st.stop()
+if params.get('trainer_invite'):
+    trainer_invitation_page(params.get('trainer_invite'));st.stop()
+if params.get('trainer_portal'):
+    trainer_portal_page();st.stop()
 if params.get('trainer_token'):
     trainer_page(params.get('trainer_token'));st.stop()
 if params.get('token'):

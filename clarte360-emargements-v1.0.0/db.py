@@ -199,6 +199,11 @@ def init_db(engine: Engine):
             "ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'ADMIN'",
             "ALTER TABLE actions ADD COLUMN trainer_id INTEGER",
             "ALTER TABLE trainer_access_tokens ADD COLUMN trainer_id INTEGER",
+            "ALTER TABLE trainers ADD COLUMN password_hash TEXT",
+            "ALTER TABLE trainers ADD COLUMN invite_token TEXT",
+            "ALTER TABLE trainers ADD COLUMN invite_expires_at TEXT",
+            "ALTER TABLE trainers ADD COLUMN invited_at TEXT",
+            "ALTER TABLE trainers ADD COLUMN last_login_at TEXT",
             "ALTER TABLE slots ADD COLUMN parent_slot_id INTEGER",
             "ALTER TABLE slots ADD COLUMN slot_kind TEXT NOT NULL DEFAULT 'NORMAL'",
             "ALTER TABLE slots ADD COLUMN change_reason TEXT",
@@ -237,6 +242,7 @@ def init_db(engine: Engine):
         extra = [
         """CREATE TABLE IF NOT EXISTS trainers (
           id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, email TEXT UNIQUE, phone TEXT,
+          password_hash TEXT, invite_token TEXT, invite_expires_at TEXT, invited_at TEXT, last_login_at TEXT,
           active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
         """CREATE TABLE IF NOT EXISTS attendance_status (
           id INTEGER PRIMARY KEY AUTOINCREMENT, participant_id INTEGER NOT NULL, slot_id INTEGER NOT NULL,

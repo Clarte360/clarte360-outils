@@ -3,7 +3,7 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import token_url, organization_runtime_config, quality_token_url
+from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc
 from mailer import send_mail, resolve_mail_config
 
 try:
@@ -111,11 +111,23 @@ def run_once():
        WHERE e.status='PENDING' AND e.due_at<=:n AND p.email IS NOT NULL AND TRIM(p.email)<>'' AND a.status IN ('ACTIVE','A_CLOTURER') ORDER BY e.due_at LIMIT 50""",{'n':now})
     sent=0
     for e in events:
+        runtime=organization_runtime_config(eng,e['action_id'])
+        tz_name=runtime.get('timezone') or 'Europe/Paris'
+        expected_due=email_event_due_utc(e,e['event_type'],tz_name)
+        now_dt=datetime.now(timezone.utc)
+        stored_due=datetime.fromisoformat(e['due_at'])
+        if stored_due.tzinfo is None:
+            stored_due=stored_due.replace(tzinfo=timezone.utc)
+        # Garde-fou : une échéance incohérente est réparée avant tout envoi.
+        if abs((stored_due.astimezone(timezone.utc)-expected_due).total_seconds())>1:
+            execute(eng,"UPDATE email_events SET due_at=:d,last_error=NULL WHERE id=:i AND status='PENDING'",{'d':expected_due.isoformat(),'i':e['id']})
+        if now_dt < expected_due:
+            continue
         claim=_claim_event(eng,e['id'])
         if not claim: continue
         if one(eng,'SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status="VALIDE"',{'p':e['participant_id'],'s':e['slot_id']}):
             execute(eng,"UPDATE email_events SET status='SKIPPED',claim_token=NULL WHERE id=:id AND claim_token=:c",{'id':e['id'],'c':claim});continue
-        runtime=organization_runtime_config(eng,e['action_id']); org=runtime['organization']
+        org=runtime['organization']
         org_name=org.get('name') or 'Organisme'; privacy=org.get('privacy_notice') or "Les informations nécessaires à l'organisation de l'action et à la justification de sa réalisation sont traitées pour la gestion et la preuve de l'action."
         privacy_contact=org.get('privacy_contact') or org.get('general_email') or ''
         if org.get('email_from_name'): smtp['from_name']=org['email_from_name']

@@ -107,3 +107,11 @@
 - Preparation automatique des campagnes qualite activees.
 - Qualite recalee sur la fin reelle de la derniere seance et recalcul dynamique des campagnes PENDING.
 - Correction des affichages parasites DeltaGenerator.
+
+## 2.1.4
+- Correction robuste des échéances d'émargement pour les séances passant minuit.
+- Garde-fou worker contre les envois anticipés sur échéance incohérente.
+- Affichage des échéances en heure locale organisme.
+- Espace intervenant authentifié avec invitation email et liste des actions affectées.
+- Copie persistante sur VPS des bases d'import Clarté360 / ADCA et réutilisation multi-actions.
+- Clarification du délai de régularisation après fin de séance.

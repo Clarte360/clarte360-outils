@@ -22,4 +22,4 @@ def test_candidate_transferable_pdf_branding():
 
 def test_candidate_version_is_rc():
     from branding import APP_VERSION
-    assert APP_VERSION=='2.1.3'
+    assert APP_VERSION=='2.1.4'
