@@ -3,7 +3,7 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc
+from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents
 from mailer import send_mail, resolve_mail_config
 
 try:
@@ -99,12 +99,93 @@ def _run_quality_events(eng,smtp,base,limit=50):
             execute(eng,"UPDATE quality_email_events SET status='PENDING',claim_token=NULL,claimed_at=NULL,last_error=:er WHERE id=:i AND claim_token=:c",{'er':str(ex)[:500],'i':e['id'],'c':claim})
     return sent
 
+def _claim_client_transmission(eng, transmission_id):
+    token=uuid.uuid4().hex; now=datetime.now(timezone.utc).isoformat()
+    with eng.begin() as c:
+        r=c.exec_driver_sql("UPDATE client_transmissions SET status='SENDING',claimed_at=?,claim_token=?,attempts=attempts+1 WHERE id=? AND status='PENDING'",(now,token,transmission_id))
+        if r.rowcount!=1:return None
+    return token
+
+def _quarantine_stale_client_transmissions(eng, minutes=15):
+    cutoff=(datetime.now(timezone.utc)-timedelta(minutes=minutes)).isoformat()
+    rows=q(eng,"SELECT id FROM client_transmissions WHERE status='SENDING' AND claimed_at<:c",{'c':cutoff})
+    for r in rows:
+        execute(eng,"UPDATE client_transmissions SET status='UNKNOWN_DELIVERY',last_error='Worker interrupted during SMTP delivery; manual review required to avoid duplicate send.' WHERE id=:i AND status='SENDING'",{'i':r['id']})
+    return len(rows)
+
+def _client_transmission_content(eng, row):
+    a=one(eng,'SELECT * FROM actions WHERE id=:a',{'a':row['action_id']}) or {}
+    runtime=organization_runtime_config(eng,row['action_id']); org=runtime['organization']; org_name=org.get('name') or 'Organisme'
+    dates=''
+    if a.get('start_date') or a.get('end_date'):
+        dates=f"{a.get('start_date') or ''} au {a.get('end_date') or a.get('start_date') or ''}".strip()
+    contact=org.get('general_email') or org.get('privacy_contact') or ''
+    if row['transmission_type']=='FINAL':
+        path=Path(a.get('final_bundle_path') or '')
+        if not path.is_file(): raise FileNotFoundError('Dossier final introuvable sur le serveur.')
+        subject=f"{org_name} — Dossier de fin d’action — {a.get('action_no') or ''} — {a.get('title') or ''}"
+        docs='feuille(s) d’émargement définitive(s), certificat(s) de réalisation et évaluation(s) à chaud disponible(s)'
+        body=f"""<p>Bonjour,</p><p>Veuillez trouver en pièce jointe le dossier de fin d’action.</p><p><strong>Organisme :</strong> {org_name}<br><strong>Action :</strong> {a.get('action_no') or ''} — {a.get('title') or ''}<br><strong>Prestation :</strong> {a.get('prestation_type') or a.get('nature') or ''}<br><strong>Dates :</strong> {dates}<br><strong>Client :</strong> {a.get('client_name') or ''}<br><strong>Documents transmis :</strong> {docs}</p><p>Contact organisme : {contact}</p>"""
+        return subject,body,{'filename':path.name,'data':path.read_bytes(),'maintype':'application','subtype':'zip'}
+    if row['transmission_type']=='COLD':
+        cid=row.get('campaign_id')
+        if not cid: raise ValueError('Campagne qualité à froid absente de la transmission.')
+        from pdf_utils import quality_response_pdf
+        data=quality_response_pdf(eng,cid)
+        camp=one(eng,"""SELECT c.*,p.first_name,p.last_name FROM quality_campaigns c LEFT JOIN participants p ON p.id=c.participant_id WHERE c.id=:c""",{'c':cid}) or {}
+        who=(f"{camp.get('first_name') or ''} {camp.get('last_name') or ''}").strip()
+        filename=row.get('document_name') or f'evaluation_a_froid_{cid}.pdf'
+        subject=f"{org_name} — Évaluation à froid — {a.get('action_no') or ''} — {a.get('title') or ''}"
+        body=f"""<p>Bonjour,</p><p>L’évaluation à froid suivante vient d’être complétée. Elle est transmise indépendamment du dossier initial de fin d’action.</p><p><strong>Organisme :</strong> {org_name}<br><strong>Action :</strong> {a.get('action_no') or ''} — {a.get('title') or ''}<br><strong>Prestation :</strong> {a.get('prestation_type') or a.get('nature') or ''}<br><strong>Dates :</strong> {dates}<br><strong>Client :</strong> {a.get('client_name') or ''}<br><strong>Participant :</strong> {who}<br><strong>Document transmis :</strong> évaluation à froid</p><p>Contact organisme : {contact}</p>"""
+        return subject,body,{'filename':filename,'data':data,'maintype':'application','subtype':'pdf'}
+    raise ValueError('Type de transmission client inconnu.')
+
+def _run_client_transmissions(eng,smtp,limit=30):
+    rows=q(eng,"SELECT * FROM client_transmissions WHERE status='PENDING' ORDER BY created_at,id LIMIT :lim",{'lim':limit});sent=0
+    for row in rows:
+        claim=_claim_client_transmission(eng,row['id'])
+        if not claim: continue
+        try:
+            subject,body,attachment=_client_transmission_content(eng,row)
+            runtime=organization_runtime_config(eng,row['action_id']);org=runtime['organization'];local_smtp=dict(smtp)
+            if org.get('email_from_name'):local_smtp['from_name']=org['email_from_name']
+            if org.get('email_from_address'):local_smtp['from_email']=org['email_from_address']
+            send_mail(local_smtp,row['recipient_email'],subject,body,[attachment])
+            sent_at=datetime.now(timezone.utc).isoformat()
+            execute(eng,"UPDATE client_transmissions SET status='SENT',sent_at=:s,claim_token=NULL,claimed_at=NULL,last_error=NULL WHERE id=:i AND claim_token=:c",{'s':sent_at,'i':row['id'],'c':claim})
+            audit(eng,'CLIENT_TRANSMISSION_SENT',row['action_id'],'worker','client_transmission',row['id'],{'type':row['transmission_type'],'recipient':row['recipient_email']});sent+=1
+        except Exception as ex:
+            execute(eng,"UPDATE client_transmissions SET status='PENDING',claim_token=NULL,claimed_at=NULL,last_error=:e WHERE id=:i AND claim_token=:c",{'e':str(ex)[:500],'i':row['id'],'c':claim})
+    return sent
+
+def _process_portal_retention(eng,smtp,base,warning_days=30):
+    changed=0
+    # Never purge before a warning has actually been sent.
+    for b in portal_retention_candidates(eng,12,warning_days):
+        if b.get('portal_warning_sent_at'): continue
+        email=(b.get('portal_email') or b.get('current_email') or '').strip()
+        if not email: continue
+        subject='Clarté360 — Votre espace personnel arrive à échéance'
+        link=f"{base.rstrip('/')}?beneficiary_portal=1"
+        body=f"""<p>Bonjour {b.get('first_name') or ''},</p><p>Votre dernière action remonte maintenant à plus de 12 mois. Votre espace documentaire personnel sera purgé dans {warning_days} jours si aucune nouvelle action n’est créée.</p><p>Vous pouvez dès maintenant vous connecter et télécharger l’intégralité de votre espace au format ZIP :</p><p><a href='{link}'>ACCÉDER À MON ESPACE</a></p><p>Cette purge concerne uniquement les documents mis à disposition dans votre portail et ne supprime pas les archives réglementaires internes de l’organisme.</p>"""
+        try:
+            send_mail(smtp,email,subject,body)
+            mark_portal_retention_warning(eng,b['id'],warning_days,'worker');changed+=1
+        except Exception as ex:
+            audit(eng,'BENEFICIARY_PORTAL_RETENTION_WARNING_FAILED',actor='worker',entity_type='beneficiary',entity_id=b['id'],details={'error':str(ex)[:500]})
+    for b in due_portal_purges(eng):
+        purge_beneficiary_portal_documents(eng,b['id'],'worker');changed+=1
+    return changed
+
 def run_once():
     cfg=load_cfg(); dburl=(cfg.get('database') or {}).get('url'); eng=make_engine(dburl);init_db(eng)
     smtp=resolve_mail_config(cfg); app=cfg.get('app') or {}; base=app.get('base_url','http://localhost:8501')
     _quarantine_stale_sending(eng)
     _quarantine_stale_quality(eng)
+    _quarantine_stale_client_transmissions(eng)
+    generate_due_final_bundles(eng,'worker')
     if not smtp.get('enabled'): return 0
+    _process_portal_retention(eng,smtp,base)
     now=datetime.now(timezone.utc).isoformat()
     events=q(eng,"""SELECT e.*,p.email,p.first_name,p.last_name,a.title,a.action_no,a.id action_id,s.slot_date,s.start_time,s.end_time
        FROM email_events e JOIN participants p ON p.id=e.participant_id JOIN slots s ON s.id=e.slot_id JOIN actions a ON a.id=p.action_id
@@ -144,6 +225,7 @@ def run_once():
             # Known SMTP failure: safe to retry because send_mail raised before success was acknowledged.
             execute(eng,"UPDATE email_events SET status='PENDING',claim_token=NULL,claimed_at=NULL,last_error=:er WHERE id=:id AND claim_token=:c",{'er':str(ex)[:500],'id':e['id'],'c':claim})
     sent += _run_quality_events(eng,smtp,base)
+    sent += _run_client_transmissions(eng,smtp)
     return sent
 
 if __name__=='__main__':

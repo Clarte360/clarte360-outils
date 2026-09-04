@@ -5,7 +5,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from db import q, one, execute, audit, new_token, utcnow_iso
-from security import hash_password
+from security import hash_password, verify_password, seal_short_secret, open_short_secret
 
 ROOT=Path(__file__).resolve().parent
 SIG_DIR=ROOT/'data'/'signatures'; SIG_DIR.mkdir(parents=True,exist_ok=True)
@@ -53,10 +53,12 @@ def update_action(engine, aid, d, actor):
 
 def add_participant(engine, aid, d, actor):
     pin = d.pop('pin', None) or f"{__import__('secrets').randbelow(10000):04d}"
-    pid=execute(engine,"""INSERT INTO participants(action_id,individual_action_no,last_name,birth_name,first_name,birth_date,email,employee_id,company_name,phone,pin_hash,created_at)
-    VALUES(:aid,:individual_action_no,:last_name,:birth_name,:first_name,:birth_date,:email,:employee_id,:company_name,:phone,:pin_hash,:created_at)""",{
+    try: pin_cipher=seal_short_secret(pin)
+    except Exception: pin_cipher=None
+    pid=execute(engine,"""INSERT INTO participants(action_id,individual_action_no,last_name,birth_name,first_name,birth_date,email,employee_id,company_name,phone,pin_hash,pin_recovery_cipher,created_at)
+    VALUES(:aid,:individual_action_no,:last_name,:birth_name,:first_name,:birth_date,:email,:employee_id,:company_name,:phone,:pin_hash,:pin_recovery_cipher,:created_at)""",{
      'aid':aid, **{k:d.get(k) for k in ['individual_action_no','last_name','birth_name','first_name','birth_date','email','employee_id','company_name','phone']},
-     'pin_hash':hash_password(pin),'created_at':utcnow_iso()})
+     'pin_hash':hash_password(pin),'pin_recovery_cipher':pin_cipher,'created_at':utcnow_iso()})
     audit(engine,'PARTICIPANT_ADDED',aid,actor,'participant',pid,{'last_name':d.get('last_name'),'first_name':d.get('first_name')})
     return pid,pin
 
@@ -259,8 +261,17 @@ def reset_participant_pin(engine,pid,actor):
     p=one(engine,'SELECT action_id FROM participants WHERE id=:p',{'p':pid})
     if not p: return None
     pin=f'{secrets.randbelow(10000):04d}'
-    execute(engine,'UPDATE participants SET pin_hash=:h WHERE id=:p',{'h':hash_password(pin),'p':pid})
+    try: cipher=seal_short_secret(pin)
+    except Exception: cipher=None
+    execute(engine,'UPDATE participants SET pin_hash=:h,pin_recovery_cipher=:c WHERE id=:p',{'h':hash_password(pin),'c':cipher,'p':pid})
     audit(engine,'PARTICIPANT_PIN_RESET',p['action_id'],actor,'participant',pid,{})
+    return pin
+
+def participant_pin_for_authorized_display(engine,pid,actor,action_id=None):
+    p=one(engine,'SELECT id,action_id,pin_recovery_cipher FROM participants WHERE id=:p',{'p':pid})
+    if not p or (action_id is not None and int(p['action_id'])!=int(action_id)): return None
+    pin=open_short_secret(p.get('pin_recovery_cipher'))
+    audit(engine,'PARTICIPANT_PIN_VIEWED',p['action_id'],actor,'participant',pid,{'recoverable':bool(pin)})
     return pin
 
 def report_slot(engine,sid,date_s,start_s,end_s,actor,reason='Report'):
@@ -337,6 +348,8 @@ def close_action(engine, aid, actor):
     if not ok:return False,issues
     execute(engine,"UPDATE actions SET status='CLOTUREE',updated_at=:u WHERE id=:a",{'u':utcnow_iso(),'a':aid})
     audit(engine,'ACTION_CLOSED',aid,actor,'action',aid,{})
+    try: schedule_final_bundle(engine,aid,3,actor)
+    except Exception: pass
     return True,[]
 
 
@@ -460,6 +473,63 @@ def trainer_token(engine,aid,trainer_id=None):
 def trainer_url(engine,aid,base_url):
     a=one(engine,'SELECT trainer_id FROM actions WHERE id=:a',{'a':aid})
     return f"{base_url.rstrip('/')}?trainer_token={trainer_token(engine,aid,(a or {}).get('trainer_id'))}"
+
+
+def create_trainer_password_reset(engine,email,valid_minutes=60):
+    t=one(engine,"SELECT * FROM trainers WHERE LOWER(email)=LOWER(:e) AND active=1",{'e':(email or '').strip()})
+    if not t: return None,None
+    token=new_token(32); now=utcnow_iso(); expires=(datetime.now(ZoneInfo('UTC'))+timedelta(minutes=valid_minutes)).isoformat()
+    execute(engine,'INSERT INTO trainer_password_resets(trainer_id,token,expires_at,created_at) VALUES(:i,:t,:e,:c)',{'i':t['id'],'t':token,'e':expires,'c':now})
+    execute(engine,'UPDATE trainers SET reset_requested_at=:n,updated_at=:n WHERE id=:i',{'n':now,'i':t['id']})
+    audit(engine,'TRAINER_PASSWORD_RESET_REQUESTED',None,t.get('email') or 'trainer','trainer',t['id'],{})
+    return t,token
+
+def trainer_by_reset_token(engine,token):
+    if not token: return None
+    row=one(engine,"""SELECT t.*,r.id reset_id,r.expires_at,r.used_at FROM trainer_password_resets r JOIN trainers t ON t.id=r.trainer_id
+      WHERE r.token=:t AND t.active=1 ORDER BY r.id DESC LIMIT 1""",{'t':token})
+    if not row or row.get('used_at'): return None
+    try:
+        if datetime.fromisoformat(row['expires_at']) < datetime.now(ZoneInfo('UTC')): return None
+    except Exception: return None
+    return row
+
+def complete_trainer_password_reset(engine,token,password):
+    t=trainer_by_reset_token(engine,token)
+    if not t:return False,'Lien invalide ou expiré.'
+    if len(password)<10:return False,'Le mot de passe doit comporter au moins 10 caractères.'
+    now=utcnow_iso(); execute(engine,'UPDATE trainers SET password_hash=:p,updated_at=:u WHERE id=:i',{'p':hash_password(password),'u':now,'i':t['id']})
+    execute(engine,'UPDATE trainer_password_resets SET used_at=:u WHERE id=:r',{'u':now,'r':t['reset_id']})
+    audit(engine,'TRAINER_PASSWORD_RESET_COMPLETED',None,t.get('email') or 'trainer','trainer',t['id'],{})
+    return True,''
+
+def trainer_action_authorized(engine,trainer_id,action_id):
+    return bool(one(engine,"SELECT id FROM actions WHERE id=:a AND trainer_id=:t",{'a':action_id,'t':trainer_id}))
+
+def trainer_action_dashboard(engine,trainer_id,action_id,tz_name='Europe/Paris'):
+    a=one(engine,'SELECT * FROM actions WHERE id=:a AND trainer_id=:t',{'a':action_id,'t':trainer_id})
+    if not a:return None
+    slots=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE') ORDER BY slot_date,start_time",{'a':action_id})
+    parts=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':action_id})
+    now=datetime.now(ZoneInfo(tz_name)); next_slot=None
+    for sl in slots:
+        try:
+            start,_=slot_start_end(sl,tz_name)
+            if start>=now: next_slot=sl; break
+        except Exception: pass
+    return {'action':a,'slots':slots,'participants':parts,'next_slot':next_slot}
+
+def create_trainer_report(engine,action_id,trainer_id,report_type,subject,description,quality_relevant=False,attachment_path=None,attachment_name=None):
+    if not trainer_action_authorized(engine,trainer_id,action_id): return None
+    now=utcnow_iso(); rid=execute(engine,"""INSERT INTO trainer_reports(action_id,trainer_id,report_type,subject,description,status,quality_relevant,attachment_path,attachment_name,created_at,updated_at)
+      VALUES(:a,:t,:rt,:s,:d,'NOUVEAU',:q,:ap,:an,:c,:c)""",{'a':action_id,'t':trainer_id,'rt':report_type,'s':subject,'d':description,'q':1 if quality_relevant else 0,'ap':attachment_path,'an':attachment_name,'c':now})
+    if quality_relevant:
+        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at) VALUES(:a,:i,:t,:d,'OUVERTE','Administration',:c)""",{'a':action_id,'i':'SIGNALEMENT_INTERVENANT','t':subject,'d':description,'c':now})
+    audit(engine,'TRAINER_REPORT_CREATED',action_id,f'trainer:{trainer_id}','trainer_report',rid,{'report_type':report_type,'quality_relevant':bool(quality_relevant),'attachment_name':attachment_name})
+    return rid
+
+def trainer_reports(engine,action_id,trainer_id):
+    return q(engine,'SELECT * FROM trainer_reports WHERE action_id=:a AND trainer_id=:t ORDER BY created_at DESC',{'a':action_id,'t':trainer_id})
 
 def purge_slot(engine,sid,actor):
     sl=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
@@ -816,6 +886,12 @@ def complete_quality_campaign(engine,campaign_id,answers,actor='beneficiary'):
     execute(engine,"UPDATE quality_email_events SET status='SKIPPED' WHERE campaign_id=:c AND status='PENDING'",{'c':campaign_id})
     _create_issue_from_quality(engine,campaign_id,answers,actor)
     audit(engine,'QUALITY_CAMPAIGN_COMPLETED',camp['action_id'],actor,'quality_campaign',campaign_id,{})
+    # V2.2 candidate: a completed cold evaluation is a second, independent client transmission.
+    if camp.get('campaign_kind')=='COLD':
+        action=one(engine,'SELECT transmit_final_bundle FROM actions WHERE id=:a',{'a':camp['action_id']}) or {}
+        recipients=configured_final_recipients(engine,camp['action_id']) if action.get('transmit_final_bundle') else []
+        if recipients:
+            queue_client_transmission(engine,camp['action_id'],'COLD',f'evaluation_a_froid_{campaign_id}.pdf',recipients,actor,campaign_id=campaign_id)
 
 def _create_issue_from_quality(engine,campaign_id,answers,actor):
     camp=one(engine,'SELECT action_id FROM quality_campaigns WHERE id=:c',{'c':campaign_id}); questions={x['id']:x for x in quality_questions(engine,campaign_id)}
@@ -908,3 +984,337 @@ def create_improvement_action(engine, action_id, title, description='', owner=No
 def update_improvement_action(engine, improvement_id, status, actor='system'):
     x=one(engine,'SELECT * FROM improvement_actions WHERE id=:i',{'i':improvement_id}); done=utcnow_iso() if status=='TERMINEE' else None
     execute(engine,'UPDATE improvement_actions SET status=:s,completed_at=:d WHERE id=:i',{'s':status,'d':done,'i':improvement_id});audit(engine,'IMPROVEMENT_ACTION_UPDATED',x.get('action_id') if x else None,actor,'improvement_action',improvement_id,{'status':status})
+
+# --- V2.2 LOT 2: beneficiaires permanents + portail documentaire ---
+BENEFICIARY_DOC_DIR=ROOT/'data'/'documents'/'blobs'
+BENEFICIARY_DOC_DIR.mkdir(parents=True,exist_ok=True)
+DEFAULT_ALLOWED_EXTENSIONS={'.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx','.txt','.csv','.jpg','.jpeg','.png','.webp','.zip'}
+DEFAULT_MAX_FILE_MB=25
+
+def _norm_identity(value):
+    import unicodedata, re
+    value=unicodedata.normalize('NFKD',str(value or '')).encode('ascii','ignore').decode('ascii').upper().strip()
+    return re.sub(r'[^A-Z0-9]+',' ',value).strip()
+
+def find_beneficiary_candidates(engine,last_name,first_name,birth_date,limit=8):
+    """Recherche aide a la decision. Jamais de fusion automatique."""
+    if not birth_date:
+        return []
+    rows=q(engine,"SELECT * FROM beneficiaries WHERE birth_date=:b AND active=1 ORDER BY last_name,first_name",{'b':birth_date})
+    from difflib import SequenceMatcher
+    nl=_norm_identity(last_name); nf=_norm_identity(first_name)
+    out=[]
+    for r in rows:
+        sl=SequenceMatcher(None,nl,_norm_identity(r['last_name'])).ratio()
+        sf=SequenceMatcher(None,nf,_norm_identity(r['first_name'])).ratio()
+        score=round((sl*.65+sf*.35)*100)
+        exact=(nl==_norm_identity(r['last_name']) and nf==_norm_identity(r['first_name']))
+        if exact or score>=68:
+            x=dict(r);x['match_score']=100 if exact else score;x['exact_match']=exact;out.append(x)
+    return sorted(out,key=lambda x:(not x['exact_match'],-x['match_score']))[:limit]
+
+def create_beneficiary(engine,last_name,first_name,birth_date,email=None,birth_name=None,phone=None,actor='system'):
+    if not (last_name and first_name and birth_date):
+        raise ValueError('Nom, prenom et date de naissance sont obligatoires pour creer un beneficiaire permanent.')
+    now=utcnow_iso(); public_id='BEN-'+new_token(9).replace('-','').replace('_','')[:12].upper()
+    bid=execute(engine,"""INSERT INTO beneficiaries(public_id,last_name,first_name,birth_date,birth_name,current_email,phone,active,created_at,updated_at)
+        VALUES(:u,:l,:f,:b,:bn,:e,:p,1,:c,:c)""",{'u':public_id,'l':str(last_name).strip().upper(),'f':str(first_name).strip().title(),'b':birth_date,'bn':birth_name,'e':(email or '').strip().lower() or None,'p':phone,'c':now})
+    audit(engine,'BENEFICIARY_CREATED',actor=actor,entity_type='beneficiary',entity_id=bid,details={'public_id':public_id})
+    return bid
+
+def link_participant_to_beneficiary(engine,participant_id,beneficiary_id,actor='system'):
+    p=one(engine,'SELECT * FROM participants WHERE id=:p',{'p':participant_id}); b=one(engine,'SELECT * FROM beneficiaries WHERE id=:b',{'b':beneficiary_id})
+    if not p or not b: raise ValueError('Participant ou beneficiaire introuvable.')
+    execute(engine,'UPDATE participants SET beneficiary_id=:b WHERE id=:p',{'b':beneficiary_id,'p':participant_id})
+    audit(engine,'PARTICIPANT_LINKED_TO_BENEFICIARY',p['action_id'],actor,'participant',participant_id,{'beneficiary_id':beneficiary_id})
+    return beneficiary_id
+
+def create_beneficiary_from_participant(engine,participant_id,actor='system'):
+    p=one(engine,'SELECT * FROM participants WHERE id=:p',{'p':participant_id})
+    if not p: raise ValueError('Participant introuvable.')
+    if p.get('beneficiary_id'): return p['beneficiary_id']
+    bid=create_beneficiary(engine,p['last_name'],p['first_name'],p.get('birth_date'),p.get('email'),p.get('birth_name'),p.get('phone'),actor)
+    return link_participant_to_beneficiary(engine,participant_id,bid,actor)
+
+def beneficiary_for_participant(engine,participant_id):
+    return one(engine,"""SELECT b.* FROM participants p JOIN beneficiaries b ON b.id=p.beneficiary_id WHERE p.id=:p""",{'p':participant_id})
+
+def beneficiary_participations(engine,beneficiary_id):
+    return q(engine,"""SELECT p.id participant_id,p.email participant_email,p.active participant_active,a.*
+        FROM participants p JOIN actions a ON a.id=p.action_id WHERE p.beneficiary_id=:b ORDER BY COALESCE(a.start_date,a.created_at) DESC""",{'b':beneficiary_id})
+
+def create_beneficiary_portal_invitation(engine,beneficiary_id,email=None,actor='system',valid_hours=72):
+    b=one(engine,'SELECT * FROM beneficiaries WHERE id=:b',{'b':beneficiary_id})
+    if not b: raise ValueError('Beneficiaire introuvable.')
+    target=(email or b.get('current_email') or '').strip().lower()
+    if not target or '@' not in target: raise ValueError('Une adresse email personnelle valide est obligatoire.')
+    now=datetime.now(ZoneInfo('UTC')); token=new_token(32); exp=(now+timedelta(hours=valid_hours)).isoformat()
+    acc=one(engine,'SELECT * FROM beneficiary_portal_accounts WHERE beneficiary_id=:b',{'b':beneficiary_id})
+    if acc:
+        changing=bool(acc.get('password_hash') and (acc.get('email') or '').lower()!=target.lower())
+        execute(engine,"""UPDATE beneficiary_portal_accounts SET email=CASE WHEN :chg=1 THEN email ELSE :e END,pending_email=CASE WHEN :chg=1 THEN :e ELSE NULL END,invite_token=:t,invite_expires_at=:x,invited_at=:n,active=1,updated_at=:n WHERE beneficiary_id=:b""",{'e':target,'chg':1 if changing else 0,'t':token,'x':exp,'n':now.isoformat(),'b':beneficiary_id})
+        if not changing:
+            execute(engine,'UPDATE beneficiaries SET current_email=:e,updated_at=:u WHERE id=:b',{'e':target,'u':utcnow_iso(),'b':beneficiary_id})
+    else:
+        execute(engine,"""INSERT INTO beneficiary_portal_accounts(beneficiary_id,email,active,invite_token,invite_expires_at,invited_at,created_at,updated_at)
+            VALUES(:b,:e,1,:t,:x,:n,:n,:n)""",{'b':beneficiary_id,'e':target,'t':token,'x':exp,'n':now.isoformat()})
+        execute(engine,'UPDATE beneficiaries SET current_email=:e,updated_at=:u WHERE id=:b',{'e':target,'u':utcnow_iso(),'b':beneficiary_id})
+    audit(engine,'BENEFICIARY_PORTAL_INVITED',actor=actor,entity_type='beneficiary',entity_id=beneficiary_id,details={'email':target})
+    return token
+
+def beneficiary_by_invite(engine,token):
+    return one(engine,"""SELECT b.*,pa.email portal_email,pa.pending_email,pa.invite_expires_at,pa.password_hash,pa.active portal_active FROM beneficiary_portal_accounts pa JOIN beneficiaries b ON b.id=pa.beneficiary_id WHERE pa.invite_token=:t""",{'t':token})
+
+def accept_beneficiary_invitation(engine,token,password):
+    b=beneficiary_by_invite(engine,token)
+    if not b or not b.get('portal_active'): return False,'Invitation invalide.'
+    try: exp=datetime.fromisoformat(b['invite_expires_at'])
+    except Exception: return False,'Invitation invalide.'
+    if exp < datetime.now(ZoneInfo('UTC')): return False,'Invitation expiree.'
+    if len(password or '')<10: return False,'Le mot de passe doit contenir au moins 10 caracteres.'
+    now=utcnow_iso();acc=one(engine,'SELECT * FROM beneficiary_portal_accounts WHERE beneficiary_id=:b',{'b':b['id']}); verified=(acc.get('pending_email') or acc.get('email'))
+    execute(engine,"""UPDATE beneficiary_portal_accounts SET email=:e,pending_email=NULL,password_hash=:p,email_verified_at=:n,invite_token=NULL,invite_expires_at=NULL,updated_at=:n WHERE beneficiary_id=:b""",{'e':verified,'p':hash_password(password),'n':now,'b':b['id']})
+    execute(engine,'UPDATE beneficiaries SET current_email=:e,updated_at=:n WHERE id=:b',{'e':verified,'n':now,'b':b['id']})
+    audit(engine,'BENEFICIARY_PORTAL_ACTIVATED',actor=verified or 'beneficiary',entity_type='beneficiary',entity_id=b['id'],details={'email_verified':verified})
+    return True,'Espace personnel active.'
+
+def verify_beneficiary_login(engine,email,password):
+    acc=one(engine,"""SELECT pa.*,b.public_id,b.last_name,b.first_name FROM beneficiary_portal_accounts pa JOIN beneficiaries b ON b.id=pa.beneficiary_id WHERE lower(pa.email)=lower(:e) AND pa.active=1 AND b.active=1""",{'e':(email or '').strip()})
+    if not acc or not acc.get('password_hash') or not verify_password(password,acc['password_hash']): return None
+    execute(engine,'UPDATE beneficiary_portal_accounts SET last_login_at=:n WHERE id=:i',{'n':utcnow_iso(),'i':acc['id']})
+    return acc
+
+def update_beneficiary_email(engine,beneficiary_id,new_email,actor='system'):
+    e=(new_email or '').strip().lower()
+    if not e or '@' not in e: raise ValueError('Adresse email invalide.')
+    other=one(engine,"SELECT beneficiary_id FROM beneficiary_portal_accounts WHERE (lower(email)=lower(:e) OR lower(COALESCE(pending_email,:empty))=lower(:e)) AND beneficiary_id<>:b",{'e':e,'b':beneficiary_id,'empty':''})
+    if other: raise ValueError('Cette adresse email est deja utilisee par un autre espace.')
+    token=create_beneficiary_portal_invitation(engine,beneficiary_id,e,actor)
+    audit(engine,'BENEFICIARY_EMAIL_CHANGE_REQUESTED',actor=actor,entity_type='beneficiary',entity_id=beneficiary_id,details={'pending_email':e})
+    return token
+
+def set_beneficiary_portal_active(engine,beneficiary_id,active,actor='system'):
+    execute(engine,'UPDATE beneficiary_portal_accounts SET active=:a,updated_at=:u WHERE beneficiary_id=:b',{'a':1 if active else 0,'u':utcnow_iso(),'b':beneficiary_id})
+    audit(engine,'BENEFICIARY_PORTAL_STATUS_CHANGED',actor=actor,entity_type='beneficiary',entity_id=beneficiary_id,details={'active':bool(active)})
+
+def store_document(engine,data:bytes,display_name,category,actor='system',action_id=None,beneficiary_id=None,participant_id=None,audience='ACTION_BENEFICIARIES',visible_to_beneficiary=True,max_file_mb=DEFAULT_MAX_FILE_MB,allowed_extensions=None):
+    import hashlib, mimetypes
+    if not data: raise ValueError('Fichier vide.')
+    if len(data)>int(max_file_mb)*1024*1024: raise ValueError(f'Fichier trop volumineux (maximum {max_file_mb} Mo).')
+    ext=Path(display_name or '').suffix.lower(); allowed=set(allowed_extensions or DEFAULT_ALLOWED_EXTENSIONS)
+    if ext not in allowed: raise ValueError('Type de fichier non autorise.')
+    digest=hashlib.sha256(data).hexdigest(); row=one(engine,'SELECT * FROM stored_files WHERE sha256=:h',{'h':digest})
+    if row:
+        sfid=row['id']; path=Path(row['storage_path'])
+        if not path.is_file(): path.write_bytes(data)
+    else:
+        path=BENEFICIARY_DOC_DIR/digest
+        if not path.exists(): path.write_bytes(data)
+        sfid=execute(engine,"""INSERT INTO stored_files(sha256,storage_path,size_bytes,mime_type,extension,created_at,last_verified_at) VALUES(:h,:p,:s,:m,:e,:c,:c)""",{'h':digest,'p':str(path),'s':len(data),'m':mimetypes.guess_type(display_name)[0] or 'application/octet-stream','e':ext,'c':utcnow_iso()})
+    rid=execute(engine,"""INSERT INTO document_references(stored_file_id,action_id,beneficiary_id,participant_id,category,display_name,audience,visible_to_beneficiary,uploaded_by,created_at)
+        VALUES(:f,:a,:b,:p,:c,:n,:au,:v,:u,:d)""",{'f':sfid,'a':action_id,'b':beneficiary_id,'p':participant_id,'c':category,'n':display_name,'au':audience,'v':1 if visible_to_beneficiary else 0,'u':actor,'d':utcnow_iso()})
+    audit(engine,'DOCUMENT_REFERENCE_CREATED',action_id,actor,'document_reference',rid,{'sha256':digest,'deduplicated':bool(row),'display_name':display_name,'beneficiary_id':beneficiary_id})
+    return rid,digest,bool(row)
+
+def list_action_documents(engine,action_id,include_deleted=False):
+    clause='' if include_deleted else 'AND dr.deleted_at IS NULL'
+    return q(engine,f"""SELECT dr.*,sf.sha256,sf.storage_path,sf.size_bytes,sf.mime_type,sf.extension FROM document_references dr JOIN stored_files sf ON sf.id=dr.stored_file_id WHERE dr.action_id=:a {clause} ORDER BY dr.created_at DESC""",{'a':action_id})
+
+def list_beneficiary_documents(engine,beneficiary_id):
+    return q(engine,"""SELECT DISTINCT dr.*,sf.sha256,sf.storage_path,sf.size_bytes,sf.mime_type,sf.extension,a.action_no,a.title
+      FROM document_references dr JOIN stored_files sf ON sf.id=dr.stored_file_id
+      LEFT JOIN actions a ON a.id=dr.action_id
+      LEFT JOIN participants p ON p.action_id=dr.action_id AND p.beneficiary_id=:b
+      WHERE dr.deleted_at IS NULL AND dr.visible_to_beneficiary=1 AND (
+        dr.beneficiary_id=:b OR dr.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) OR
+        (dr.audience='ACTION_BENEFICIARIES' AND dr.action_id IN (SELECT action_id FROM participants WHERE beneficiary_id=:b))
+      ) ORDER BY dr.created_at DESC""",{'b':beneficiary_id})
+
+def delete_document_reference(engine,reference_id,actor='system'):
+    r=one(engine,'SELECT * FROM document_references WHERE id=:i AND deleted_at IS NULL',{'i':reference_id})
+    if not r: return False
+    execute(engine,'UPDATE document_references SET deleted_at=:d WHERE id=:i',{'d':utcnow_iso(),'i':reference_id})
+    remaining=one(engine,'SELECT COUNT(*) n FROM document_references WHERE stored_file_id=:f AND deleted_at IS NULL',{'f':r['stored_file_id']})['n']
+    if not remaining:
+        sf=one(engine,'SELECT * FROM stored_files WHERE id=:f',{'f':r['stored_file_id']})
+        try:
+            if sf and Path(sf['storage_path']).is_file(): Path(sf['storage_path']).unlink()
+        except Exception: pass
+        execute(engine,'DELETE FROM document_references WHERE stored_file_id=:f AND deleted_at IS NOT NULL',{'f':r['stored_file_id']})
+        execute(engine,'DELETE FROM stored_files WHERE id=:f',{'f':r['stored_file_id']})
+    audit(engine,'DOCUMENT_REFERENCE_DELETED',r.get('action_id'),actor,'document_reference',reference_id,{'physical_deleted':not bool(remaining)})
+    return True
+
+def document_storage_stats(engine):
+    r=one(engine,'SELECT COALESCE(SUM(size_bytes),0) bytes,COUNT(*) files FROM stored_files') or {'bytes':0,'files':0}
+    refs=one(engine,'SELECT COUNT(*) n FROM document_references WHERE deleted_at IS NULL')['n']
+    return {'bytes':int(r['bytes'] or 0),'files':int(r['files'] or 0),'references':int(refs or 0)}
+
+def beneficiary_portal_zip(engine,beneficiary_id):
+    docs=list_beneficiary_documents(engine,beneficiary_id);bio=io.BytesIO()
+    used=set()
+    with zipfile.ZipFile(bio,'w',zipfile.ZIP_DEFLATED) as z:
+        for d in docs:
+            base=(d.get('action_no') or 'GENERAL')+'/'+(d.get('display_name') or ('document'+(d.get('extension') or '')))
+            name=base;n=2
+            while name in used:
+                p=Path(base);name=str(p.with_name(f'{p.stem}_{n}{p.suffix}'));n+=1
+            used.add(name)
+            path=Path(d['storage_path'])
+            if path.is_file(): z.writestr(name,path.read_bytes())
+    audit(engine,'BENEFICIARY_PORTAL_ZIP_CREATED',actor='beneficiary',entity_type='beneficiary',entity_id=beneficiary_id,details={'documents':len(docs)})
+    return bio.getvalue()
+
+# ---- V2.2 lot 3: fin d'action, transmission client, qualite direction ----
+FINAL_BUNDLE_ROOT = ROOT / 'data' / 'final_bundles'
+FINAL_BUNDLE_ROOT.mkdir(parents=True, exist_ok=True)
+
+def set_action_client_contacts(engine, action_id, admin_email=None, training_email=None, quality_email=None, billing_email=None, other_email=None, actor='system'):
+    vals={'client_admin_email':admin_email,'client_training_email':training_email,'client_quality_email':quality_email,'client_billing_email':billing_email,'client_other_email':other_email}
+    execute(engine,"""UPDATE actions SET client_admin_email=:client_admin_email,client_training_email=:client_training_email,client_quality_email=:client_quality_email,
+      client_billing_email=:client_billing_email,client_other_email=:client_other_email,updated_at=:u WHERE id=:a""",{**vals,'u':utcnow_iso(),'a':action_id})
+    audit(engine,'CLIENT_CONTACTS_UPDATED',action_id,actor,'action',action_id,{k:bool(v) for k,v in vals.items()})
+
+def action_client_recipients(engine, action_id, purpose='FINAL'):
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id}) or {}
+    keys=['client_admin_email','client_training_email','client_other_email'] if purpose=='FINAL' else ['client_quality_email','client_admin_email','client_other_email']
+    out=[]
+    for k in keys:
+        e=(a.get(k) or '').strip()
+        if e and e.lower() not in [x.lower() for x in out]: out.append(e)
+    return out
+
+def _safe_filename(v):
+    import re
+    return re.sub(r'[^A-Za-z0-9._-]+','_',str(v or '').strip()).strip('_') or 'document'
+
+def participant_final_zip(engine, participant_id):
+    import io, zipfile
+    from pdf_utils import individual_pdf, certificate_pdf
+    p=one(engine,'SELECT * FROM participants WHERE id=:p',{'p':participant_id});
+    if not p: raise ValueError('Participant introuvable')
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':p['action_id']})
+    if normalize_action_status(a.get('status')) not in ('CLOTUREE','ARCHIVEE'): raise ValueError("L'action doit etre cloturee.")
+    ok,issues=can_issue_certificate(engine,participant_id,require_closed=True)
+    if not ok: raise ValueError('Dossier incomplet : '+' ; '.join(issues[:5]))
+    bio=io.BytesIO(); base=f"{_safe_filename(p['last_name'])}_{_safe_filename(p['first_name'])}"
+    with zipfile.ZipFile(bio,'w',zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f'{base}/01_emargement_individuel.pdf',individual_pdf(engine,participant_id))
+        z.writestr(f'{base}/02_certificat_realisation.pdf',certificate_pdf(engine,participant_id))
+        hot=q(engine,"SELECT id FROM quality_campaigns WHERE participant_id=:p AND campaign_kind='HOT' AND status='COMPLETED' ORDER BY id DESC LIMIT 1",{'p':participant_id})
+        if hot:
+            try:
+                from pdf_utils import quality_response_pdf
+                z.writestr(f'{base}/03_evaluation_a_chaud.pdf',quality_response_pdf(engine,hot[0]['id']))
+            except Exception: pass
+        for d in list_beneficiary_documents(engine,p.get('beneficiary_id')) if p.get('beneficiary_id') else []:
+            if d.get('action_id')==a['id']:
+                fp=Path(d['storage_path'])
+                if fp.is_file(): z.writestr(f"{base}/documents/{_safe_filename(d['display_name'])}",fp.read_bytes())
+    return bio.getvalue()
+
+def action_final_bundle(engine, action_id, persist=True, actor='system'):
+    import io, zipfile
+    from pdf_utils import collective_pdf
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id});
+    if not a: raise ValueError('Action introuvable')
+    if normalize_action_status(a.get('status')) not in ('CLOTUREE','ARCHIVEE'): raise ValueError("L'action doit etre cloturee.")
+    parts=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':action_id})
+    bio=io.BytesIO()
+    with zipfile.ZipFile(bio,'w',zipfile.ZIP_DEFLATED) as z:
+        z.writestr('00_emargement_collectif.pdf',collective_pdf(engine,action_id))
+        for p in parts:
+            pzip=participant_final_zip(engine,p['id'])
+            with zipfile.ZipFile(io.BytesIO(pzip),'r') as pz:
+                for n in pz.namelist(): z.writestr(n,pz.read(n))
+        for c in list_quality_campaigns(engine,action_id):
+            if c.get('status')=='COMPLETED':
+                try:
+                    from pdf_utils import quality_response_pdf
+                    z.writestr(f"qualite/{c['campaign_kind']}_{c['id']}.pdf",quality_response_pdf(engine,c['id']))
+                except Exception: pass
+    data=bio.getvalue()
+    if persist:
+        bundle_date=(a.get('end_date') or datetime.now().date().isoformat())[:10]
+        try: prefix=datetime.fromisoformat(bundle_date).strftime('%y%m%d')
+        except Exception: prefix=datetime.now().strftime('%y%m%d')
+        fp=FINAL_BUNDLE_ROOT/f"{prefix} {_safe_filename(a['action_no'])} DOCS STAGIAIRES.zip"; fp.write_bytes(data); now=utcnow_iso()
+        execute(engine,'UPDATE actions SET final_bundle_generated_at=:n,final_bundle_path=:p WHERE id=:a',{'n':now,'p':str(fp),'a':action_id})
+        audit(engine,'FINAL_BUNDLE_GENERATED',action_id,actor,'action',action_id,{'path':str(fp),'bytes':len(data)})
+        if a.get('transmit_final_bundle'):
+            recipients=configured_final_recipients(engine,action_id)
+            if recipients:
+                queue_client_transmission(engine,action_id,'FINAL',fp.name,recipients,actor)
+    return data
+
+def schedule_final_bundle(engine, action_id, delay_hours=3, actor='system'):
+    from datetime import datetime, timezone, timedelta
+    due=(datetime.now(timezone.utc)+timedelta(hours=delay_hours)).isoformat()
+    execute(engine,'UPDATE actions SET final_bundle_due_at=:d WHERE id=:a',{'d':due,'a':action_id}); audit(engine,'FINAL_BUNDLE_SCHEDULED',action_id,actor,'action',action_id,{'due_at':due}); return due
+
+def generate_due_final_bundles(engine, actor='worker'):
+    now=utcnow_iso(); rows=q(engine,"SELECT id FROM actions WHERE status='CLOTUREE' AND final_bundle_due_at IS NOT NULL AND final_bundle_due_at<=:n AND final_bundle_generated_at IS NULL",{'n':now}); done=[]
+    for r in rows:
+        try: action_final_bundle(engine,r['id'],True,actor); done.append(r['id'])
+        except Exception as ex: audit(engine,'FINAL_BUNDLE_FAILED',r['id'],actor,'action',r['id'],{'error':str(ex)[:500]})
+    return done
+
+def quality_management_summary(engine, **filters):
+    base=quality_dashboard(engine,**filters); stats=quality_question_stats(engine,filters.get('organization_id'),filters.get('agency_id'),filters.get('prestation_type'))
+    rubric={}
+    for r in stats:
+        code=r.get('rubric_code') or 'AUTRE'; rubric.setdefault(code,[])
+        if r.get('average') is not None: rubric[code].append(float(r['average']))
+    rubric_avg={k:round(sum(v)/len(v),2) for k,v in rubric.items() if v}
+    nps=base.get('nps') or []; nps_score=None
+    if nps: nps_score=round(100*(sum(x>=9 for x in nps)-sum(x<=6 for x in nps))/len(nps),1)
+    return {**base,'rubric_averages':rubric_avg,'nps_score':nps_score}
+
+def configure_final_transmission(engine, action_id, enabled=False, to_quality=True, to_training=True, other_first_name=None, other_last_name=None, other_email=None, actor='system'):
+    execute(engine,"""UPDATE actions SET transmit_final_bundle=:e,send_final_to_quality=:q,send_final_to_training=:t,final_other_first_name=:of,final_other_last_name=:ol,final_other_email=:oe,updated_at=:u WHERE id=:a""",
+      {'e':int(bool(enabled)),'q':int(bool(to_quality)),'t':int(bool(to_training)),'of':other_first_name,'ol':other_last_name,'oe':other_email,'u':utcnow_iso(),'a':action_id})
+    audit(engine,'FINAL_TRANSMISSION_CONFIGURED',action_id,actor,'action',action_id,{'enabled':bool(enabled),'quality':bool(to_quality),'training':bool(to_training),'other':bool(other_email)})
+
+def configured_final_recipients(engine, action_id):
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id}) or {};out=[]
+    if a.get('send_final_to_quality') and a.get('client_quality_email'): out.append(a['client_quality_email'].strip())
+    if a.get('send_final_to_training') and a.get('client_training_email'): out.append(a['client_training_email'].strip())
+    if a.get('final_other_email'): out.append(a['final_other_email'].strip())
+    return list(dict.fromkeys(x for x in out if x))
+
+def queue_client_transmission(engine, action_id, transmission_type, document_name, recipients, actor='system', campaign_id=None):
+    ids=[]
+    for email in recipients:
+        email=(email or '').strip()
+        if not email: continue
+        exists=one(engine,"SELECT id FROM client_transmissions WHERE action_id=:a AND transmission_type=:t AND lower(recipient_email)=lower(:e) AND COALESCE(campaign_id,0)=COALESCE(:cid,0) AND status IN ('PENDING','SENDING','SENT')",{'a':action_id,'t':transmission_type,'e':email,'cid':campaign_id})
+        if exists: continue
+        ids.append(execute(engine,"INSERT INTO client_transmissions(action_id,transmission_type,recipient_email,document_name,campaign_id,status,created_at) VALUES(:a,:t,:e,:d,:cid,'PENDING',:c)",{'a':action_id,'t':transmission_type,'e':email,'d':document_name,'cid':campaign_id,'c':utcnow_iso()}))
+    if ids: audit(engine,'CLIENT_TRANSMISSION_QUEUED',action_id,actor,'action',action_id,{'type':transmission_type,'recipients':recipients,'document':document_name,'campaign_id':campaign_id})
+    return ids
+
+def portal_retention_candidates(engine, months=12, warning_days=30):
+    from datetime import datetime, timezone
+    cutoff=_add_months(datetime.now(timezone.utc).date(),-months).isoformat()
+    return q(engine,"""SELECT b.*,pa.email portal_email,pa.portal_warning_sent_at,pa.portal_purge_due_at,MAX(COALESCE(a.end_date,a.start_date,a.created_at)) last_action_date FROM beneficiaries b JOIN beneficiary_portal_accounts pa ON pa.beneficiary_id=b.id LEFT JOIN participants p ON p.beneficiary_id=b.id LEFT JOIN actions a ON a.id=p.action_id WHERE pa.active=1 GROUP BY b.id HAVING last_action_date IS NOT NULL AND substr(last_action_date,1,10)<=:c""",{'c':cutoff})
+
+def mark_portal_retention_warning(engine, beneficiary_id, warning_days=30, actor='worker'):
+    now=datetime.now(ZoneInfo('UTC')); due=now+timedelta(days=warning_days)
+    execute(engine,'UPDATE beneficiary_portal_accounts SET portal_warning_sent_at=:w,portal_purge_due_at=:d,updated_at=:w WHERE beneficiary_id=:b',{'w':now.isoformat(),'d':due.isoformat(),'b':beneficiary_id})
+    audit(engine,'BENEFICIARY_PORTAL_RETENTION_WARNING',actor=actor,entity_type='beneficiary',entity_id=beneficiary_id,details={'purge_due_at':due.isoformat()})
+    return due.isoformat()
+
+def due_portal_purges(engine, months=12):
+    cutoff=_add_months(datetime.now(ZoneInfo('UTC')).date(),-months).isoformat()
+    return q(engine,"""SELECT b.id,b.first_name,b.last_name,pa.email portal_email,pa.portal_purge_due_at,MAX(COALESCE(a.end_date,a.start_date,a.created_at)) last_action_date
+      FROM beneficiaries b JOIN beneficiary_portal_accounts pa ON pa.beneficiary_id=b.id
+      LEFT JOIN participants p ON p.beneficiary_id=b.id LEFT JOIN actions a ON a.id=p.action_id
+      WHERE pa.active=1 AND pa.portal_warning_sent_at IS NOT NULL AND pa.portal_purge_due_at IS NOT NULL AND pa.portal_purge_due_at<=:n
+      GROUP BY b.id HAVING last_action_date IS NOT NULL AND substr(last_action_date,1,10)<=:c""",{'n':utcnow_iso(),'c':cutoff})
+
+def purge_beneficiary_portal_documents(engine, beneficiary_id, actor='system'):
+    refs=q(engine,"SELECT id FROM document_references WHERE beneficiary_id=:b AND deleted_at IS NULL",{'b':beneficiary_id})
+    for r in refs: delete_document_reference(engine,r['id'],actor)
+    set_beneficiary_portal_active(engine,beneficiary_id,False,actor)
+    audit(engine,'BENEFICIARY_PORTAL_PURGED',actor=actor,entity_type='beneficiary',entity_id=beneficiary_id,details={'portal_documents_removed':len(refs),'regulatory_archives_preserved':True})
+    return len(refs)

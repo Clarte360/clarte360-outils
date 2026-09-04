@@ -115,3 +115,33 @@
 - Espace intervenant authentifié avec invitation email et liste des actions affectées.
 - Copie persistante sur VPS des bases d'import Clarté360 / ADCA et réutilisation multi-actions.
 - Clarification du délai de régularisation après fin de séance.
+
+## 2.2-Lot2 — bénéficiaires + portail documentaire
+- Identité bénéficiaire permanente multi-actions, rapprochement Nom/Prénom/date de naissance sans fusion automatique.
+- Espace bénéficiaire facultatif avec invitation et changement d'email vérifié.
+- Portail bénéficiaire : parcours, planning, documents, questionnaires et ZIP.
+- Stockage documentaire hors SQLite avec déduplication SHA-256 et références logiques.
+- Dépôt rapide par numéro d'action et droit de dépôt documentaire intervenant.
+- 63 tests automatisés réussis.
+
+## V2.2 Lot 3 - Fin d'action + qualite - 2026-09-04
+- Dossiers finaux stagiaires et ZIP collectif automatique apres cloture.
+- Evaluation HOT PDF incluse si completee ; COLD reste un second flux independant.
+- Contacts client structures/importes et destinataires configurables.
+- Socle de transmissions client journalisees.
+- Pilotage qualite direction enrichi.
+- Fin de vie du portail beneficiaire apres 12 mois sans nouvelle action, sans confusion avec les archives internes.
+- 69 tests automatises reussis.
+
+## V2.2-RC1 — Candidate de recette complète — 2026-09-04
+- Consolidation finale des Lots 1, 2 et 3 sur la base historique `clarte360-emargements-v1.0.0`.
+- Version d'interface corrigée en `2.2-RC1`.
+- Transmission réelle par le worker du dossier final client avec pièce jointe ZIP et journalisation.
+- Transmission indépendante de l'évaluation à froid en PDF aux destinataires configurés, après complétion.
+- Anti-doublon et réservation atomique des transmissions client ; quarantaine `UNKNOWN_DELIVERY` après interruption ambiguë.
+- Fin de vie du portail renforcée : avertissement après 12 mois sans nouvelle action, délai de 30 jours, puis purge du portail uniquement après avertissement effectivement envoyé.
+- Une nouvelle action avant la purge annule automatiquement la condition de purge.
+- Nommage du ZIP final basé prioritairement sur la date de fin d'action : `AAMMJJ NO_ACTION DOCS STAGIAIRES.zip`.
+- Journal des transmissions client visible dans l'administration.
+- Contrôle transversal : aucune expression conditionnelle Streamlit de type `DeltaGenerator` résiduelle dans `app.py`.
+- 75 tests automatisés réussis sur 75 + compilation Python des modules principaux.

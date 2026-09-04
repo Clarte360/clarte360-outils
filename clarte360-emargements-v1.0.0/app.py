@@ -1,5 +1,5 @@
 from __future__ import annotations
-import io, os, json, csv, base64
+import io, os, json, csv, base64, re
 from datetime import date, datetime, time
 from pathlib import Path
 from urllib.parse import quote
@@ -32,6 +32,9 @@ try:
 except Exception:
     pass
 BASE_URL=secret('app','base_url','http://localhost:8501');TZ=secret('app','timezone','Europe/Paris')
+_PIN_KEY=secret('security','participant_pin_key',secret('app','setup_key',''))
+if _PIN_KEY: os.environ['CLARTE360_PIN_KEY']=str(_PIN_KEY)
+TRAINER_REPORT_DIR=Path(__file__).resolve().parent/'data'/'trainer_reports'; TRAINER_REPORT_DIR.mkdir(parents=True,exist_ok=True)
 
 def privacy_notice_html(action_id=None):
     runtime=organization_runtime_config(ENGINE,action_id);org=runtime['organization'];name=org.get('name') or 'L’organisme'
@@ -199,6 +202,66 @@ def send_trainer_invitation_email(trainer, token):
         return False,f'Invitation non envoyée : {friendly_mail_error(ex)}'
 
 
+def send_trainer_password_reset_email(trainer, token):
+    cfg=mail_cfg(); email=(trainer.get('email') or '').strip()
+    if not email or not cfg.get('enabled'): return False,'Email non envoyé (adresse ou configuration MAIL indisponible).'
+    org=org_identity(); org_name=(org or {}).get('name') or 'Organisme'
+    url=f"{BASE_URL.rstrip('/')}?trainer_reset={quote(token)}"
+    body=f"""<p>Bonjour {trainer['full_name']},</p><p>Une demande de réinitialisation du mot de passe de votre espace intervenant {org_name} a été reçue.</p><p><a href='{url}' style='background:#008b8b;color:white;padding:12px 18px;text-decoration:none;border-radius:8px'>RÉINITIALISER MON MOT DE PASSE</a></p><p>Ce lien est temporaire. Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer ce message.</p>{privacy_notice_html()}"""
+    try:
+        send_mail(cfg,email,f"{org_name} — Réinitialisation de votre mot de passe intervenant",body); return True,'Email de réinitialisation envoyé.'
+    except Exception as ex:
+        return False,f'Email non envoyé : {friendly_mail_error(ex)}'
+
+
+def send_beneficiary_invitation_email(beneficiary, token):
+    email=(beneficiary.get('current_email') or beneficiary.get('portal_email') or '').strip()
+    if not email: return False,'Adresse email personnelle absente.'
+    org=org_identity(); link=f"{BASE_URL.rstrip('/')}?beneficiary_invite={quote(token)}"
+    body=f"""<p>Bonjour {beneficiary.get('first_name') or ''},</p><p>Votre espace personnel Clarté360 peut maintenant être activé.</p><p><a href='{link}'>ACTIVER MON ESPACE PERSONNEL</a></p><p>Ce lien est temporaire. Votre adresse email sert à la connexion mais ne constitue pas votre identité dans Clarté360.</p>{privacy_notice_html()}"""
+    try:
+        send_mail(mail_cfg(),email,f"{org.get('name') or 'Clarté360'} — activation de votre espace personnel",body)
+        audit(ENGINE,'BENEFICIARY_PORTAL_INVITATION_EMAIL_SENT',actor=st.session_state.get('admin_email','system'),entity_type='beneficiary',entity_id=beneficiary.get('id'),details={'email':email})
+        return True,'Invitation à l’espace bénéficiaire envoyée par email.'
+    except Exception as ex:
+        return False,f"Invitation créée mais email non envoyé : {friendly_mail_error(ex)}"
+
+def trainer_reset_request_page():
+    header('Clarté360 — Espace intervenant','Mot de passe oublié')
+    with st.form('trainer_reset_request_form'):
+        email=st.text_input('Votre adresse email').strip().lower()
+        submit=st.form_submit_button('Recevoir un lien de réinitialisation',type='primary')
+    if submit:
+        tr,token=create_trainer_password_reset(ENGINE,email)
+        if tr and token:
+            ok,msg=send_trainer_password_reset_email(tr,token)
+            audit(ENGINE,'TRAINER_PASSWORD_RESET_EMAIL_SENT' if ok else 'TRAINER_PASSWORD_RESET_EMAIL_FAILED',None,email,'trainer',tr['id'],{'message':msg})
+        st.success("Si cette adresse correspond à un accès intervenant actif, un email de réinitialisation vient d'être envoyé.")
+    st.link_button('Retour à la connexion',f"{BASE_URL.rstrip('/')}?trainer_portal=1")
+    footer()
+
+def trainer_reset_page(token):
+    header('Clarté360 — Espace intervenant','Réinitialisation du mot de passe')
+    tr=trainer_by_reset_token(ENGINE,token)
+    if not tr:
+        st.error('Ce lien est invalide, expiré ou a déjà été utilisé.')
+        st.link_button('Demander un nouveau lien',f"{BASE_URL.rstrip('/')}?trainer_reset_request=1")
+        footer(); return
+    st.info(f"Accès de {tr['full_name']} — {tr.get('email') or ''}")
+    with st.form('trainer_reset_form'):
+        p1=st.text_input('Nouveau mot de passe',type='password')
+        p2=st.text_input('Confirmez le nouveau mot de passe',type='password')
+        submit=st.form_submit_button('Enregistrer le nouveau mot de passe',type='primary')
+    if submit:
+        if p1!=p2: st.error('Les deux mots de passe ne sont pas identiques.')
+        else:
+            ok,msg=complete_trainer_password_reset(ENGINE,token,p1)
+            if ok:
+                st.success('Votre mot de passe a été modifié. Vous pouvez maintenant vous connecter.')
+                st.link_button('Se connecter',f"{BASE_URL.rstrip('/')}?trainer_portal=1")
+            else: st.error(msg)
+    footer()
+
 def trainer_invitation_page(token):
     header('Clarté360 — Accès intervenant','Création de votre accès sécurisé')
     tr=trainer_by_invite(ENGINE,token)
@@ -221,38 +284,261 @@ def trainer_invitation_page(token):
     footer()
 
 
+def _trainer_actor(trainer):
+    return f"trainer:{trainer.get('id')}:{trainer.get('email') or trainer.get('full_name') or ''}"
+
+def _slot_label(sl):
+    kind='' if (sl.get('slot_kind') or 'NORMAL')=='NORMAL' else f" — {sl.get('slot_kind')}"
+    return f"{sl['slot_date']} — {sl['start_time']}–{sl['end_time']}{kind}"
+
+def _trainer_slot_status_rows(action_id,slot_id):
+    parts=q(ENGINE,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':action_id})
+    sigs={x['participant_id']:x for x in q(ENGINE,'SELECT * FROM signatures WHERE slot_id=:s',{'s':slot_id})}
+    ats={x['participant_id']:x for x in q(ENGINE,'SELECT * FROM attendance_status WHERE slot_id=:s',{'s':slot_id})}
+    rows=[]
+    for p in parts:
+        at=ats.get(p['id']); sig=sigs.get(p['id']); status='SIGNÉ' if sig else (at['status'] if at else 'EN ATTENTE')
+        rows.append({'Participant':f"{p['last_name']} {p['first_name']}",'Statut':status,'Email':p.get('email') or ''})
+    return parts,rows
+
+def render_trainer_action(action, trainer):
+    tid=trainer['id']; aid=action['id']; actor=_trainer_actor(trainer)
+    data=trainer_action_dashboard(ENGINE,tid,aid,TZ)
+    if not data:
+        st.error("Cette action ne vous est pas affectée."); return
+    a=data['action']; slots=data['slots']; parts=data['participants']; next_slot=data['next_slot']
+    st.markdown(f"### {a['action_no']} — {a['title']}")
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric('Prestation',(a.get('prestation_type') or a.get('nature') or '—').replace('_',' '))
+    c2.metric('Client',a.get('client_name') or '—')
+    c3.metric('Modalité',a.get('mode') or '—')
+    c4.metric('Participants',len(parts))
+    st.caption(f"Lieu / modalité : {a.get('location') or 'Non renseigné'} · Période : {a.get('start_date') or '—'} → {a.get('end_date') or '—'} · Statut : {normalize_action_status(a.get('status'))}")
+    if next_slot:
+        st.success(f"Prochaine séance : {_slot_label(next_slot)}")
+    elif slots:
+        st.info('Aucune séance future : le calendrier affiché ci-dessous reprend les séances enregistrées.')
+    else:
+        st.warning('Aucun créneau n’est actuellement enregistré pour cette action.')
+
+    tab_plan,tab_em,tab_codes,tab_docs,tab_quality,tab_report=st.tabs(['📅 Planning','✍️ Émargements / QR','🔐 Codes participants','📚 Documents','📋 Qualité','📣 Signaler / informer'])
+    with tab_plan:
+        if slots:
+            cal=[]
+            for sl in slots:
+                signed=one(ENGINE,"SELECT COUNT(*) n FROM signatures WHERE slot_id=:s AND status='VALIDE'",{'s':sl['id']})['n']
+                absent=one(ENGINE,"SELECT COUNT(*) n FROM attendance_status WHERE slot_id=:s AND status='ABSENT'",{'s':sl['id']})['n']
+                cs=one(ENGINE,'SELECT id FROM trainer_countersignatures WHERE slot_id=:s',{'s':sl['id']})
+                cal.append({'Date':sl['slot_date'],'Début':sl['start_time'],'Fin':sl['end_time'],'Type':sl.get('slot_kind') or 'NORMAL','Signés':signed,'Absents':absent,'Contresigné':'Oui' if cs else 'Non'})
+            st.dataframe(pd.DataFrame(cal),use_container_width=True,hide_index=True)
+        else: st.info('Aucun créneau.')
+    with tab_em:
+        if not slots:
+            st.info('Aucun créneau à gérer.')
+        else:
+            smap={_slot_label(x):x for x in slots}; sl=smap[st.selectbox('Créneau à gérer',list(smap),key=f'tr_slot_{aid}') ]
+            qr=qrcode.make(public_slot_url(sl,BASE_URL)); buf=io.BytesIO(); qr.save(buf,format='PNG')
+            c1,c2=st.columns([1,2]); c1.image(buf.getvalue(),width=220); c2.markdown('**QR d’émargement**'); c2.caption('Vous pouvez présenter ce QR code aux participants. Le code personnel reste nécessaire sur la page QR.')
+            parts2,rows=_trainer_slot_status_rows(aid,sl['id']); st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+            if parts2:
+                pmap={f"{p['last_name']} {p['first_name']}":p for p in parts2}; pp=pmap[st.selectbox('Participant à gérer',list(pmap),key=f'tr_part_{aid}_{sl["id"]}') ]
+                c1,c2,c3=st.columns(3)
+                if c1.button('Marquer ABSENT',key=f'tr_abs_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
+                    ok,msg=set_attendance_status(ENGINE,pp['id'],sl['id'],'ABSENT','Déclaré par intervenant',actor)
+                    if ok: st.success('Absence enregistrée.'); rerun()
+                    else: st.error(msg)
+                if c2.button('Remettre EN ATTENTE',key=f'tr_wait_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
+                    set_attendance_status(ENGINE,pp['id'],sl['id'],'EN_ATTENTE','Correction intervenant',actor); rerun()
+                if c3.button('Relancer par email',key=f'tr_rem_{aid}_{sl["id"]}_{pp["id"]}',disabled=not bool(pp.get('email')),use_container_width=True):
+                    ensure_tokens_and_events(ENGINE,aid,BASE_URL,TZ); url=token_url(ENGINE,pp['id'],sl['id'],BASE_URL); cfg=mail_cfg(); org=org_identity(aid)
+                    body=f"<p>Bonjour {pp['first_name']},</p><p>Merci de régulariser votre émargement pour le {sl['slot_date']} de {sl['start_time']} à {sl['end_time']}.</p><p><a href='{url}'>SIGNER / RÉGULARISER</a></p>{privacy_notice_html(aid)}"
+                    try:
+                        send_mail(cfg,pp['email'],f"{org.get('name') or 'Organisme'} — émargement — {a['action_no']}",body); audit(ENGINE,'TRAINER_MANUAL_REMINDER',aid,actor,'participant',pp['id'],{'slot_id':sl['id']}); st.success('Relance envoyée.')
+                    except Exception as ex: st.error(f'Envoi impossible : {friendly_mail_error(ex)}')
+            st.markdown('#### Contresignature du créneau')
+            existing=one(ENGINE,'SELECT * FROM trainer_countersignatures WHERE slot_id=:s',{'s':sl['id']})
+            if existing: st.success(f"Créneau contresigné par {existing['trainer_name']} le {local_dt(existing['signed_at'],TZ).strftime('%d/%m/%Y à %H:%M')}")
+            else:
+                cert=st.checkbox("Je certifie l'exactitude des présences et absences indiquées pour ce créneau.",key=f'tr_cert_{aid}_{sl["id"]}')
+                if st.button('CONTRESIGNER CE CRÉNEAU',type='primary',key=f'tr_sign_{aid}_{sl["id"]}'):
+                    if not cert: st.error('La certification est obligatoire.')
+                    else:
+                        countersign_slot(ENGINE,sl['id'],trainer['full_name'],trainer.get('email'),actor,"Je certifie l'exactitude des présences et absences indiquées pour ce créneau."); st.success('Contresignature enregistrée.'); rerun()
+    with tab_codes:
+        st.caption("Accès limité aux participants de cette action. Toute consultation, tout renvoi et toute régénération sont journalisés.")
+        if not parts: st.info('Aucun participant.')
+        else:
+            pmap={f"{p['last_name']} {p['first_name']}":p for p in parts}; pp=pmap[st.selectbox('Participant',list(pmap),key=f'code_part_{aid}') ]
+            state_key=f'_trainer_pin_{aid}_{pp["id"]}'
+            c1,c2=st.columns(2)
+            if c1.button('Afficher le code personnel existant',key=f'view_pin_{aid}_{pp["id"]}',use_container_width=True):
+                pin=participant_pin_for_authorized_display(ENGINE,pp['id'],actor,aid); st.session_state[state_key]=pin or ''
+            pin=st.session_state.get(state_key)
+            if pin:
+                st.code(pin,language=None); st.caption('Ce code est une donnée d’accès : communiquez-le uniquement au participant concerné.')
+                if c2.button('Renvoyer ce code par email',key=f'send_pin_{aid}_{pp["id"]}',disabled=not bool(pp.get('email')),use_container_width=True):
+                    ok,msg=send_participant_code_email(pp,a,pin); audit(ENGINE,'TRAINER_PARTICIPANT_PIN_EMAIL_SENT' if ok else 'TRAINER_PARTICIPANT_PIN_EMAIL_FAILED',aid,actor,'participant',pp['id'],{'message':msg});
+                    if ok: st.success(msg)
+                    else: st.warning(msg)
+            elif pin=='':
+                st.warning("Le code historique n'est pas récupérable dans cette version de la base. Générez volontairement un nouveau code pour permettre son affichage futur.")
+            confirm=st.checkbox("Je confirme vouloir générer un NOUVEAU code et invalider l'ancien.",key=f'pin_reset_confirm_{aid}_{pp["id"]}')
+            if st.button('Générer un nouveau code',key=f'pin_reset_{aid}_{pp["id"]}',disabled=not confirm):
+                newpin=reset_participant_pin(ENGINE,pp['id'],actor); st.session_state[state_key]=newpin; st.success('Nouveau code généré. L’ancien code est désormais invalide.'); rerun()
+    with tab_docs:
+        docs=list_action_documents(ENGINE,aid)
+        if docs:
+            for d in docs:
+                path=Path(d['storage_path'])
+                if path.is_file(): st.download_button(d['display_name'],path.read_bytes(),file_name=d['display_name'],key=f"tr_doc_dl_{d['id']}")
+        else: st.info('Aucun document mis à disposition pour cette action.')
+        if trainer.get('can_upload_documents'):
+            st.markdown('#### Déposer un document pour tous les bénéficiaires de cette action')
+            updoc=st.file_uploader('Document',type=['pdf','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'tr_course_doc_{aid}')
+            if st.button('Déposer dans Documents de cours',key=f'tr_course_doc_btn_{aid}',disabled=updoc is None):
+                try:
+                    rid,h,dedup=store_document(ENGINE,updoc.getvalue(),updoc.name,'COURS',actor,action_id=aid,audience='ACTION_BENEFICIARIES')
+                    st.success('Document déposé. '+('Le contenu existait déjà : aucune seconde copie physique n’a été créée.' if dedup else 'Nouveau fichier physique enregistré.'));rerun()
+                except Exception as ex: st.error(str(ex))
+        else: st.caption("Le dépôt de documents n'est pas autorisé pour votre compte. L'administrateur peut activer ce droit.")
+    with tab_quality:
+        camp=one(ENGINE,"""SELECT qc.*,qt.title questionnaire_title FROM quality_campaigns qc JOIN questionnaire_templates qt ON qt.id=qc.template_id
+          WHERE qc.action_id=:a AND qc.trainer_id=:t AND qc.campaign_kind='TRAINER' ORDER BY qc.id DESC LIMIT 1""",{'a':aid,'t':tid})
+        if not a.get('use_trainer_feedback'):
+            st.info("Le questionnaire qualité intervenant n'est pas activé pour cette action.")
+        elif not camp:
+            st.info("Le questionnaire est activé mais n'a pas encore été généré. Il sera créé selon le calendrier qualité de l'action.")
+        elif camp.get('status')=='COMPLETED':
+            st.success('Votre questionnaire intervenant a été complété.')
+        else:
+            st.info(f"Questionnaire disponible : {camp.get('questionnaire_title') or 'Retour intervenant'}")
+            st.link_button('OUVRIR LE QUESTIONNAIRE',quality_token_url(camp['token'],BASE_URL),type='primary')
+    with tab_report:
+        st.caption("Vous pouvez transmettre une observation, une difficulté, un incident, un problème logistique ou une demande de contact à l'administration.")
+        with st.form(f'tr_report_{aid}',clear_on_submit=True):
+            rt=st.selectbox('Nature',['Observation','Difficulté','Incident','Problème logistique','Besoin de contact','Autre'])
+            subject=st.text_input('Objet *'); desc=st.text_area('Description *',height=150)
+            qrel=st.checkbox('Ce signalement doit également alimenter le suivi qualité',value=rt in ('Difficulté','Incident','Problème logistique'))
+            up=st.file_uploader('Joindre éventuellement un document (10 Mo max)',type=['pdf','docx','xlsx','png','jpg','jpeg','txt'],key=f'tr_report_file_{aid}')
+            submit=st.form_submit_button('TRANSMETTRE À L’ADMINISTRATION',type='primary')
+        if submit:
+            if not subject.strip() or not desc.strip(): st.error('Objet et description sont obligatoires.')
+            elif up is not None and up.size>10*1024*1024: st.error('Le fichier dépasse 10 Mo.')
+            else:
+                ap=an=None
+                if up is not None:
+                    safe=re.sub(r'[^A-Za-z0-9._-]+','_',up.name)[:120]; an=up.name; ap=str(TRAINER_REPORT_DIR/f"{aid}_{tid}_{int(datetime.now().timestamp())}_{safe}"); Path(ap).write_bytes(up.getvalue())
+                rid=create_trainer_report(ENGINE,aid,tid,rt,subject.strip(),desc.strip(),qrel,ap,an)
+                if rid: st.success('Votre message a été transmis à l’administration et journalisé.')
+                else: st.error('Transmission impossible : action non autorisée.')
+        history=trainer_reports(ENGINE,aid,tid)
+        if history:
+            st.markdown('#### Mes transmissions récentes')
+            st.dataframe(pd.DataFrame([{'Date':x['created_at'][:16].replace('T',' '),'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status']} for x in history]),use_container_width=True,hide_index=True)
+
 def trainer_portal_page():
     if not st.session_state.get('trainer_portal_id'):
         header('Clarté360 — Espace intervenant','Accès réservé aux formateurs / accompagnants')
         with st.form('trainer_login'):
-            email=st.text_input('Email').strip().lower()
-            pw=st.text_input('Mot de passe',type='password')
-            ok=st.form_submit_button('Se connecter',type='primary')
+            email=st.text_input('Email').strip().lower(); pw=st.text_input('Mot de passe',type='password'); ok=st.form_submit_button('Se connecter',type='primary')
         if ok:
             tr=verify_trainer_login(ENGINE,email,pw)
             if tr:
                 st.session_state.trainer_portal_id=tr['id']; st.session_state.trainer_portal_name=tr['full_name']; rerun()
             else: st.error('Identifiants intervenant incorrects ou accès non encore créé.')
+        st.link_button('Mot de passe oublié ?',f"{BASE_URL.rstrip('/')}?trainer_reset_request=1")
         footer(); return
     tid=st.session_state.trainer_portal_id
     tr=one(ENGINE,'SELECT * FROM trainers WHERE id=:i AND active=1',{'i':tid})
     if not tr:
-        st.session_state.pop('trainer_portal_id',None); rerun()
+        st.session_state.pop('trainer_portal_id',None); st.session_state.pop('trainer_portal_name',None); rerun()
     header('Clarté360 — Espace intervenant',f"Bienvenue {tr['full_name']}")
-    if st.button('Se déconnecter de l’espace intervenant'):
+    top1,top2=st.columns([4,1])
+    top1.caption('Tableau de bord sécurisé : seules les actions qui vous sont affectées sont visibles.')
+    if top2.button('Se déconnecter',use_container_width=True):
         st.session_state.pop('trainer_portal_id',None); st.session_state.pop('trainer_portal_name',None); rerun()
     acts=trainer_actions(ENGINE,tid)
     if not acts:
-        st.info('Aucune action ne vous est actuellement affectée.')
-    else:
+        st.info('Aucune action ne vous est actuellement affectée.'); footer(); return
+    cards=[]
+    for a in acts:
+        data=trainer_action_dashboard(ENGINE,tid,a['id'],TZ); nxt=data.get('next_slot') if data else None
+        cards.append({'Action':a['action_no'],'Intitulé':a['title'],'Client':a.get('client_name') or '','Début':a.get('start_date') or '','Fin':a.get('end_date') or '','Prochaine séance':_slot_label(nxt) if nxt else '—','Statut':normalize_action_status(a.get('status'))})
+    st.dataframe(pd.DataFrame(cards),use_container_width=True,hide_index=True)
+    labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a.get('status'))}":a for a in acts}
+    lab=st.selectbox('Action à ouvrir',list(labels),key='trainer_action_choice'); render_trainer_action(labels[lab],tr)
+    footer(labels[lab]['id'])
+
+
+def beneficiary_invitation_page(token):
+    header('Clarté360 — Activation de mon espace','Création de votre accès personnel')
+    b=beneficiary_by_invite(ENGINE,token)
+    if not b:
+        st.error('Invitation invalide ou déjà utilisée.'); footer(); return
+    st.info(f"Espace de {b['first_name']} {b['last_name']} — {b.get('portal_email') or b.get('current_email')}")
+    with st.form('beneficiary_invite_accept'):
+        p1=st.text_input('Choisissez un mot de passe (10 caractères minimum)',type='password')
+        p2=st.text_input('Confirmez le mot de passe',type='password')
+        ok=st.form_submit_button('ACTIVER MON ESPACE',type='primary')
+    if ok:
+        if p1!=p2: st.error('Les deux mots de passe sont différents.')
+        else:
+            done,msg=accept_beneficiary_invitation(ENGINE,token,p1)
+            if done:
+                st.success(msg);st.link_button('ACCÉDER À MON ESPACE',f"{BASE_URL.rstrip('/')}?beneficiary_portal=1")
+            else: st.error(msg)
+    footer()
+
+def beneficiary_portal_page():
+    if not st.session_state.get('beneficiary_portal_id'):
+        header('Clarté360 — Espace bénéficiaire','Mes formations, mon planning et mes documents')
+        with st.form('beneficiary_login'):
+            email=st.text_input('Email').strip().lower();pw=st.text_input('Mot de passe',type='password');ok=st.form_submit_button('Se connecter',type='primary')
+        if ok:
+            acc=verify_beneficiary_login(ENGINE,email,pw)
+            if acc:
+                st.session_state.beneficiary_portal_id=acc['beneficiary_id'];rerun()
+            else: st.error('Identifiants incorrects ou espace non activé.')
+        footer();return
+    bid=st.session_state.beneficiary_portal_id
+    b=one(ENGINE,'SELECT * FROM beneficiaries WHERE id=:b AND active=1',{'b':bid})
+    acc=one(ENGINE,'SELECT * FROM beneficiary_portal_accounts WHERE beneficiary_id=:b AND active=1',{'b':bid})
+    if not b or not acc:
+        st.session_state.pop('beneficiary_portal_id',None);rerun()
+    header('Clarté360 — Mon espace',f"Bienvenue {b['first_name']} {b['last_name']}")
+    c1,c2=st.columns([4,1]);c1.caption(f"Identifiant interne : {b['public_id']} · Connexion : {acc['email']}")
+    if c2.button('Se déconnecter',use_container_width=True): st.session_state.pop('beneficiary_portal_id',None);rerun()
+    acts=beneficiary_participations(ENGINE,bid);docs=list_beneficiary_documents(ENGINE,bid)
+    pending=q(ENGINE,"""SELECT qc.*,a.action_no,qt.title FROM quality_campaigns qc JOIN actions a ON a.id=qc.action_id JOIN questionnaire_templates qt ON qt.id=qc.template_id
+      WHERE qc.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) AND qc.status<>'COMPLETED' ORDER BY qc.due_at""",{'b':bid})
+    tabs=st.tabs(['🏠 Accueil','🎓 Mes formations / accompagnements','📅 Mon planning','📄 Mes documents administratifs','📚 Documents de cours','✅ Mes questionnaires / actions','🗂️ Mes archives / téléchargements'])
+    with tabs[0]:
+        st.metric('Parcours enregistrés',len(acts));st.metric('Documents disponibles',len(docs));st.metric('Actions à réaliser',len(pending))
+        if acts: st.dataframe(pd.DataFrame([{'Action':a['action_no'],'Intitulé':a['title'],'Prestation':a.get('prestation_type') or a.get('nature'),'Début':a.get('start_date') or '','Fin':a.get('end_date') or '','Statut':normalize_action_status(a.get('status'))} for a in acts]),use_container_width=True,hide_index=True)
+    with tabs[1]:
+        if acts: st.dataframe(pd.DataFrame([{'Action':a['action_no'],'Intitulé':a['title'],'Client':a.get('client_name') or '','Lieu / modalité':a.get('location') or a.get('mode') or '','Période':f"{a.get('start_date') or '—'} → {a.get('end_date') or '—'}"} for a in acts]),use_container_width=True,hide_index=True)
+        else: st.info('Aucun parcours.')
+    with tabs[2]:
         rows=[]
         for a in acts:
-            rows.append({'Action':a['action_no'],'Intitulé':a['title'],'Début':a.get('start_date') or '','Fin':a.get('end_date') or '','Statut':normalize_action_status(a.get('status'))})
-        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-        labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a.get('status'))}":a for a in acts}
-        lab=st.selectbox('Action à ouvrir',list(labels)); a=labels[lab]
-        st.link_button('OUVRIR MON ESPACE OPÉRATIONNEL POUR CETTE ACTION',trainer_url(ENGINE,a['id'],BASE_URL),type='primary')
-        st.caption('Vous n’accédez qu’aux actions qui vous sont affectées. Les paramètres administratifs et les autres actions restent invisibles.')
+            for sl in q(ENGINE,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE') ORDER BY slot_date,start_time",{'a':a['id']}): rows.append({'Action':a['action_no'],'Date':sl['slot_date'],'Début':sl['start_time'],'Fin':sl['end_time'],'Type':sl.get('slot_kind') or 'NORMAL'})
+        if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+        else: st.info('Aucun créneau disponible.')
+    def _show_docs(rows,empty):
+        if not rows: st.info(empty);return
+        for d in rows:
+            path=Path(d['storage_path'])
+            if path.is_file(): st.download_button(f"{d.get('action_no') or 'Général'} — {d['display_name']}",path.read_bytes(),file_name=d['display_name'],key=f"bdl_{d['id']}")
+    with tabs[3]: _show_docs([d for d in docs if d['category']!='COURS'],'Aucun document administratif disponible.')
+    with tabs[4]: _show_docs([d for d in docs if d['category']=='COURS'],'Aucun document de cours disponible.')
+    with tabs[5]:
+        if not pending: st.success('Aucune action à réaliser actuellement.')
+        for x in pending: st.link_button(f"{x['action_no']} — {x['title']}",quality_token_url(x['token'],BASE_URL))
+    with tabs[6]:
+        st.caption('Vous pouvez télécharger à tout moment une copie des documents actuellement mis à disposition dans votre portail.')
+        z=beneficiary_portal_zip(ENGINE,bid)
+        st.download_button('TÉLÉCHARGER MON ESPACE EN ZIP',z,file_name=f"{b['public_id']}_ESPACE_CLARTE360.zip",mime='application/zip',type='primary')
+        _show_docs(docs,'Aucun document disponible.')
     footer()
 
 def footer(action_id=None):
@@ -374,8 +660,10 @@ def render_sign_form(row,method):
         except Exception: st.info('Cet émargement a déjà été enregistré.')
 
 def trainer_page(token):
-    row=one(ENGINE,"""SELECT t.action_id,a.* FROM trainer_access_tokens t JOIN actions a ON a.id=t.action_id WHERE t.token=:t AND t.active=1""",{'t':token})
+    row=one(ENGINE,"""SELECT t.action_id,t.trainer_id token_trainer_id,a.* FROM trainer_access_tokens t JOIN actions a ON a.id=t.action_id WHERE t.token=:t AND t.active=1""",{'t':token})
     if not row: header('Clarté360 — Intervenant');st.error('Accès intervenant invalide.');footer();return
+    if row.get('token_trainer_id') and st.session_state.get('trainer_portal_id')!=row.get('token_trainer_id'):
+        header('Clarté360 — Intervenant'); st.error("Ce lien opérationnel nécessite d'abord une connexion à votre espace intervenant."); st.link_button('Se connecter',f"{BASE_URL.rstrip('/')}?trainer_portal=1"); footer(); return
     header('Clarté360 — Espace intervenant','Suivi, QR code, absences, relances et contresignature')
     st.markdown(f"<div class='c360-card'><b>{row['action_no']} — {row['title']}</b><br>Intervenant : {row.get('trainer_name') or 'Non renseigné'}</div>",unsafe_allow_html=True)
     slots=q(ENGINE,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':row['action_id']});parts=q(ENGINE,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':row['action_id']})
@@ -618,6 +906,9 @@ def create_action_screen(prefill=None,participants_prefill=None):
             )
             execute(ENGINE,'UPDATE actions SET start_date=:s,end_date=:e WHERE id=:a',
                     {'s':start_date.isoformat(),'e':end_date.isoformat(),'a':aid})
+            if p.get('client_quality_email') or p.get('client_training_email') or p.get('quality_contact_name') or p.get('training_contact_name'):
+                execute(ENGINE,'''UPDATE actions SET quality_contact_name=:qn,client_quality_email=:qe,training_contact_name=:tn,client_training_email=:te,training_contact_phone=:tp WHERE id=:a''',
+                    {'qn':p.get('quality_contact_name'),'qe':p.get('client_quality_email'),'tn':p.get('training_contact_name'),'te':p.get('client_training_email'),'tp':p.get('training_contact_phone'),'a':aid})
 
             pins=[]
             for participant_data in imported_parts:
@@ -729,11 +1020,26 @@ def dashboard():
     st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
     st.subheader('Pilotage qualité')
     orgs=list_organizations(ENGINE,active_only=True); om={'Tous':None,**{o['name']:o['id'] for o in orgs}}; c1,c2=st.columns(2); ol=c1.selectbox('Organisme',list(om),key='qd_org'); pts=['Tous','FORMATION','BILAN_COMPETENCES','VAE','COACHING','MENTORAT','AUTRE']; pt=c2.selectbox('Prestation',pts,key='qd_pt')
-    qd=quality_dashboard(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt)
+    qd=quality_management_summary(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt)
     c1,c2,c3,c4=st.columns(4)
-    for c,n,l in [(c1,qd['campaigns'],'Questionnaires prévus'),(c2,f"{qd['response_rate']}%",'Taux de réponse'),(c3,qd['issues_open'],'Difficultés ouvertes'),(c4,qd['improvements_open'],'Améliorations ouvertes')]: c.markdown(f"<div class='c360-kpi'><div class='n'>{n}</div><div class='l'>{l}</div></div>",unsafe_allow_html=True)
+    for c,n,l in [(c1,qd['campaigns'],'Questionnaires prévus'),(c2,f"{qd['response_rate']}%",'Taux de réponse'),(c3,('—' if qd.get('nps_score') is None else qd['nps_score']),'NPS'),(c4,qd['issues_open'],'Difficultés ouvertes')]: c.markdown(f"<div class='c360-kpi'><div class='n'>{n}</div><div class='l'>{l}</div></div>",unsafe_allow_html=True)
+    if qd.get('rubric_averages'):
+        st.caption('Lecture direction par rubriques stables : '+ ' · '.join(f"{k}: {v}" for k,v in sorted(qd['rubric_averages'].items())))
+    if qd['improvements_open']: st.info(f"{qd['improvements_open']} action(s) d’amélioration encore ouverte(s).")
     stats=quality_question_stats(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt)
     if stats: st.dataframe(pd.DataFrame(stats),use_container_width=True,hide_index=True)
+    st.subheader('Dépôt documentaire rapide')
+    st.caption('Indiquez simplement le numéro d’action : le document sera disponible pour les bénéficiaires rattachés à cette action.')
+    c1,c2=st.columns([1,2]); quick_no=c1.text_input('N° action',key='quick_doc_action').strip().upper(); quick_file=c2.file_uploader('Document',type=['pdf','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key='quick_doc_file')
+    quick_cat=st.selectbox('Catégorie',['COURS','ADMINISTRATIF'],format_func=lambda x:'Documents de cours' if x=='COURS' else 'Document administratif',key='quick_doc_cat')
+    if st.button('DÉPOSER PAR N° ACTION',key='quick_doc_btn',disabled=not bool(quick_no and quick_file)):
+        aa=one(ENGINE,'SELECT * FROM actions WHERE action_no=:n',{'n':quick_no})
+        if not aa: st.error('Action introuvable.')
+        else:
+            try:
+                rid,h,dedup=store_document(ENGINE,quick_file.getvalue(),quick_file.name,quick_cat,st.session_state.admin_email,action_id=aa['id'],audience='ACTION_BENEFICIARIES')
+                st.success(f"Document rattaché à {quick_no}. "+('Le contenu existait déjà : aucune duplication physique.' if dedup else 'Nouveau contenu enregistré.'))
+            except Exception as ex: st.error(str(ex))
     footer()
 
 def actions_list():
@@ -829,6 +1135,7 @@ def participants_tab(a):
             c1,c2,c3=st.columns(3);bdate=c1.text_input('Date de naissance (JJ/MM/AAAA)');email=c2.text_input('Email (facultatif)');emp=c3.text_input('Matricule entreprise')
             c1,c2,c3=st.columns(3);company=c1.text_input('Entreprise / client');phone=c2.text_input('Téléphone');indno=c3.text_input('N° action individuel (INTER)',value=a['action_no'] if a['mode']!='INTER' else '')
             send_code=st.checkbox('Envoyer immédiatement par email le code QR personnel et la notice sur les données (si une adresse email est renseignée)',value=True)
+            create_portal=st.checkbox('Créer / rattacher un espace personnel au stagiaire',value=False,help='Option facultative. Une adresse email personnelle et une date de naissance sont obligatoires. Aucun rattachement incertain n’est automatique.')
             submit=st.form_submit_button('Ajouter',type='primary')
         if submit:
             if not last.strip() or not first.strip(): st.error('Nom et prénom obligatoires.')
@@ -847,6 +1154,20 @@ def participants_tab(a):
                         st.success(msgm)
                     else:
                         st.warning(msgm)
+                if create_portal:
+                    pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':pid})
+                    if not pp.get('birth_date') or not pp.get('email') or '@' not in pp.get('email',''):
+                        st.warning('Participant ajouté, mais espace personnel non créé : date de naissance et email personnel valide sont obligatoires.')
+                    else:
+                        cand=find_beneficiary_candidates(ENGINE,pp['last_name'],pp['first_name'],pp['birth_date'])
+                        if cand:
+                            st.warning('Participant ajouté. Une correspondance bénéficiaire existe déjà ou paraît possible : aucun rattachement automatique n’a été effectué. Utilisez la rubrique « Espace bénéficiaire » ci-dessous pour décider.')
+                        else:
+                            bid=create_beneficiary_from_participant(ENGINE,pid,st.session_state.admin_email)
+                            tok=create_beneficiary_portal_invitation(ENGINE,bid,pp['email'],st.session_state.admin_email)
+                            bb=one(ENGINE,'SELECT * FROM beneficiaries WHERE id=:b',{'b':bid});okb,msgb=send_beneficiary_invitation_email(bb,tok)
+                            if okb: st.success(msgb)
+                            else: st.warning(msgb)
                 if one(ENGINE,'SELECT COUNT(*) n FROM slots WHERE action_id=:a',{'a':a['id']})['n']:
                     ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
                 sync_quality_schedule(a['id'],st.session_state.admin_email)
@@ -882,6 +1203,52 @@ def participants_tab(a):
                             rerun()
                         else:
                             st.error(msgd)
+        st.markdown('### 👤 Espace bénéficiaire permanent')
+        plab=st.selectbox('Participant pour l’espace personnel',list(ids),key=f'beneficiary_manage_{a["id"]}')
+        pid_sel=ids[plab]; pp=one(ENGINE,'SELECT * FROM participants WHERE id=:p',{'p':pid_sel}); linked=beneficiary_for_participant(ENGINE,pid_sel)
+        if linked:
+            acc=one(ENGINE,'SELECT * FROM beneficiary_portal_accounts WHERE beneficiary_id=:b',{'b':linked['id']})
+            st.success(f"Rattaché à {linked['public_id']} — {linked['first_name']} {linked['last_name']}")
+            st.caption(f"Email de connexion : {(acc or {}).get('email') or linked.get('current_email') or 'non configuré'}")
+            c1,c2=st.columns(2)
+            if c1.button('Envoyer / renouveler l’invitation espace',key=f'ben_inv_{pid_sel}',disabled=not bool(pp.get('email'))):
+                try:
+                    tok=create_beneficiary_portal_invitation(ENGINE,linked['id'],pp.get('email'),st.session_state.admin_email);bb=one(ENGINE,'SELECT * FROM beneficiaries WHERE id=:b',{'b':linked['id']});okb,msgb=send_beneficiary_invitation_email(bb,tok)
+                    if okb: st.success(msgb)
+                    else: st.warning(msgb)
+                except Exception as ex: st.error(str(ex))
+            new_email=c2.text_input('Nouvel email de connexion',value=(acc or {}).get('email') or linked.get('current_email') or '',key=f'ben_email_{pid_sel}')
+            if st.button('Enregistrer le nouvel email sans recréer la personne',key=f'ben_email_save_{pid_sel}'):
+                try:
+                    tok=update_beneficiary_email(ENGINE,linked['id'],new_email,st.session_state.admin_email)
+                    target=dict(linked);target['current_email']=new_email
+                    okb,msgb=send_beneficiary_invitation_email(target,tok)
+                    if okb: st.success('Demande de changement enregistrée. La nouvelle adresse deviendra l’identifiant de connexion après vérification par email.')
+                    else: st.warning(msgb)
+                    rerun()
+                except Exception as ex: st.error(str(ex))
+        else:
+            if not pp.get('birth_date'):
+                st.info('Ajoutez d’abord une date de naissance pour rechercher ou créer une identité bénéficiaire permanente.')
+            else:
+                cand=find_beneficiary_candidates(ENGINE,pp['last_name'],pp['first_name'],pp['birth_date'])
+                if cand:
+                    st.warning('Correspondance(s) possible(s) trouvée(s). Vérifiez avant de rattacher : aucune fusion n’est automatique.')
+                    cmap={f"{x['last_name']} {x['first_name']} — {x['birth_date']} — {x['public_id']} — correspondance {x['match_score']} %":x for x in cand}
+                    cl=st.selectbox('Espace existant possible',list(cmap),key=f'ben_candidate_{pid_sel}')
+                    if st.button('CONFIRMER LE RATTACHEMENT À CET ESPACE',key=f'ben_link_{pid_sel}'):
+                        link_participant_to_beneficiary(ENGINE,pid_sel,cmap[cl]['id'],st.session_state.admin_email);st.success('Rattachement effectué après confirmation.');rerun()
+                st.caption('Si aucune correspondance n’est la bonne, vous pouvez créer une nouvelle identité.')
+                can_create=bool(pp.get('email') and '@' in pp.get('email',''))
+                if st.button('Créer une nouvelle identité + espace personnel',key=f'ben_create_{pid_sel}',disabled=not can_create):
+                    try:
+                        bid=create_beneficiary_from_participant(ENGINE,pid_sel,st.session_state.admin_email);tok=create_beneficiary_portal_invitation(ENGINE,bid,pp.get('email'),st.session_state.admin_email);bb=one(ENGINE,'SELECT * FROM beneficiaries WHERE id=:b',{'b':bid});okb,msgb=send_beneficiary_invitation_email(bb,tok)
+                        if okb: st.success(msgb)
+                        else: st.warning(msgb)
+                        rerun()
+                    except Exception as ex: st.error(str(ex))
+                if not can_create: st.info('Une adresse email personnelle valide est obligatoire pour créer l’espace.')
+
         st.markdown('**Réinitialiser un code personnel QR**')
         rlab=st.selectbox('Participant concerné',list(ids),key=f'pinreset{a["id"]}')
         if st.button('Générer un nouveau code à 4 chiffres',key=f'pinbtn{a["id"]}'):
@@ -1163,6 +1530,51 @@ def quality_tab(a):
 
 def documents_tab(a):
     st.subheader('Documents et archivage')
+    st.markdown('### Contacts client et transmission')
+    with st.expander('Destinataires client',expanded=False):
+        with st.form(f'client_contacts_{a["id"]}'):
+            ca=st.text_input('Contact administratif',value=a.get('client_admin_email') or '')
+            cf=st.text_input('Contact formation / accompagnement',value=a.get('client_training_email') or '')
+            cq=st.text_input('Contact qualité',value=a.get('client_quality_email') or '')
+            cb=st.text_input('Contact facturation',value=a.get('client_billing_email') or '')
+            co=st.text_input('Autre contact',value=a.get('client_other_email') or '')
+            transmit=st.checkbox('Transmettre le dossier final stagiaire au client',value=bool(a.get('transmit_final_bundle')))
+            tq=st.checkbox('Responsable qualité / donneur d’ordre',value=bool(a.get('send_final_to_quality',1)))
+            tf=st.checkbox('Contact mise en place',value=bool(a.get('send_final_to_training',1)))
+            c1,c2,c3=st.columns(3);of=c1.text_input('Autre — prénom',value=a.get('final_other_first_name') or '');ol=c2.text_input('Autre — nom',value=a.get('final_other_last_name') or '');oe=c3.text_input('Autre — email',value=a.get('final_other_email') or '')
+            sv=st.form_submit_button('Enregistrer les destinataires')
+        if sv:
+            set_action_client_contacts(ENGINE,a['id'],ca,cf,cq,cb,co,st.session_state.admin_email);configure_final_transmission(ENGINE,a['id'],transmit,tq,tf,of,ol,oe,st.session_state.admin_email);st.success('Destinataires enregistrés.');rerun()
+    if normalize_action_status(a.get('status')) in ('CLOTUREE','ARCHIVEE'):
+        try:
+            bundle=action_final_bundle(ENGINE,a['id'],False,st.session_state.admin_email)
+            st.download_button('Télécharger le dossier final collectif',bundle,f"{a['action_no']}_dossier_final.zip",'application/zip',use_container_width=True)
+            st.caption('Destinataires dossier final : '+(', '.join(action_client_recipients(ENGINE,a['id'],'FINAL')) or 'aucun contact configuré')+' · Qualité à froid : '+(', '.join(action_client_recipients(ENGINE,a['id'],'QUALITY')) or 'aucun contact qualité configuré'))
+        except Exception as ex: st.warning(f'Dossier final : {ex}')
+    transmissions=q(ENGINE,"SELECT transmission_type,recipient_email,document_name,status,sent_at,last_error,created_at FROM client_transmissions WHERE action_id=:a ORDER BY id DESC",{'a':a['id']})
+    if transmissions:
+        st.markdown('### Journal des transmissions client')
+        st.dataframe(pd.DataFrame(transmissions),use_container_width=True,hide_index=True)
+    st.markdown('### Bibliothèque documentaire de l’action')
+    stats=document_storage_stats(ENGINE);st.caption(f"Stockage physique mutualisé : {stats['files']} fichier(s), {stats['bytes']/1024/1024:.2f} Mo, {stats['references']} référence(s) logique(s).")
+    with st.expander('Déposer un document par n° d’action',expanded=False):
+        st.caption(f"Action sélectionnée : {a['action_no']}. Le document de cours sera visible par tous les bénéficiaires de cette action disposant d’un espace personnel.")
+        category=st.selectbox('Catégorie',['COURS','ADMINISTRATIF'],format_func=lambda x:'Documents de cours' if x=='COURS' else 'Document administratif',key=f'doccat_{a["id"]}')
+        updoc=st.file_uploader('Fichier (25 Mo maximum)',type=['pdf','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'action_doc_{a["id"]}')
+        if st.button('DÉPOSER LE DOCUMENT',type='primary',key=f'action_doc_btn_{a["id"]}',disabled=updoc is None):
+            try:
+                rid,h,dedup=store_document(ENGINE,updoc.getvalue(),updoc.name,category,st.session_state.admin_email,action_id=a['id'],audience='ACTION_BENEFICIARIES')
+                st.success('Document enregistré. '+('Déduplication SHA-256 : le fichier physique existait déjà.' if dedup else 'Nouveau contenu physique enregistré.'));rerun()
+            except Exception as ex: st.error(str(ex))
+    refs=list_action_documents(ENGINE,a['id'])
+    if refs:
+        st.dataframe(pd.DataFrame([{'Nom':d['display_name'],'Catégorie':d['category'],'Taille (Ko)':round(d['size_bytes']/1024,1),'SHA-256':d['sha256'][:16]+'…','Déposé par':d.get('uploaded_by') or ''} for d in refs]),use_container_width=True,hide_index=True)
+        rmap={f"#{d['id']} — {d['display_name']}":d for d in refs};rl=st.selectbox('Document à gérer',list(rmap),key=f'docref_{a["id"]}');rr=rmap[rl];path=Path(rr['storage_path'])
+        cdl,cdel=st.columns(2)
+        if path.is_file(): cdl.download_button('Télécharger',path.read_bytes(),file_name=rr['display_name'],key=f'adm_doc_dl_{rr["id"]}',use_container_width=True)
+        if cdel.button('Retirer de cette action',key=f'adm_doc_del_{rr["id"]}',use_container_width=True): delete_document_reference(ENGINE,rr['id'],st.session_state.admin_email);st.success('Référence retirée. Le fichier physique n’est supprimé que s’il n’est plus utilisé ailleurs.');rerun()
+    else: st.info('Aucun document de bibliothèque pour cette action.')
+
     try:
         cpdf=collective_pdf(ENGINE,a['id']);st.download_button('Télécharger la feuille collective PDF',cpdf,f"{a['action_no']}_emargement_collectif.pdf",'application/pdf')
     except Exception as e: st.error(f'PDF collectif : {e}')
@@ -1303,7 +1715,8 @@ def settings_screen():
         trainers=list_trainers(ENGINE)
         tf=st.session_state.pop('_trainer_flash',None)
         if tf:
-            (st.success(tf[1]) if tf[0]=='success' else st.warning(tf[1]))
+            if tf[0]=='success': st.success(tf[1])
+            else: st.warning(tf[1])
         if trainers: st.dataframe(pd.DataFrame(trainers)[['id','full_name','email','phone','active']],use_container_width=True,hide_index=True)
         with st.expander('Ajouter un formateur / accompagnant',expanded=not trainers):
             with st.form('add_trainer'):
@@ -1324,25 +1737,51 @@ def settings_screen():
                     except Exception as ex: st.error(f'Impossible : {ex}')
         if trainers:
             tmap={f"{x['full_name']} — {x.get('email') or 'sans email'}":x for x in trainers};tl=st.selectbox('Intervenant à gérer',list(tmap),key='tr_manage');tt=tmap[tl]
+            allow_docs=st.checkbox('Autoriser cet intervenant à déposer des documents de cours sur ses actions',value=bool(tt.get('can_upload_documents')),key=f'tr_doc_perm_{tt["id"]}')
+            if allow_docs!=bool(tt.get('can_upload_documents')):
+                execute(ENGINE,'UPDATE trainers SET can_upload_documents=:v,updated_at=:u WHERE id=:i',{'v':1 if allow_docs else 0,'u':utcnow_iso(),'i':tt['id']});audit(ENGINE,'TRAINER_DOCUMENT_PERMISSION_CHANGED',actor=st.session_state.admin_email,entity_type='trainer',entity_id=tt['id'],details={'allowed':allow_docs});rerun()
             c1,c2,c3=st.columns(3)
             if c1.button('Désactiver' if tt['active'] else 'Réactiver',key='tr_toggle'): set_trainer_active(ENGINE,tt['id'],not bool(tt['active']),st.session_state.admin_email);rerun()
             if c2.button('Envoyer / renouveler l’invitation d’accès',key='tr_invite',disabled=not bool(tt.get('email'))):
                 token=create_trainer_invitation(ENGINE,tt['id'],st.session_state.admin_email)
                 okm,msgm=send_trainer_invitation_email(tt,token) if token else (False,'Invitation non créée.')
-                st.success(msgm) if okm else st.warning(msgm)
+                if okm: st.success(msgm)
+                else: st.warning(msgm)
             with c3.expander('🗑️ Supprimer définitivement'):
                 pw=st.text_input('Votre mot de passe administrateur',type='password',key='trdelpw');conf=st.text_input('Saisissez SUPPRIMER',key='trdelconf')
                 if st.button('Supprimer du référentiel',key='trdel'):
                     if conf!='SUPPRIMER' or not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Confirmation ou mot de passe incorrect.')
                     else: purge_trainer(ENGINE,tt['id'],st.session_state.admin_email);st.success('Intervenant supprimé.');rerun()
+        st.markdown('### Remontées des intervenants')
+        reports=q(ENGINE,"""SELECT r.*,t.full_name trainer_name,a.action_no,a.title action_title FROM trainer_reports r
+          JOIN trainers t ON t.id=r.trainer_id JOIN actions a ON a.id=r.action_id ORDER BY r.created_at DESC LIMIT 100""")
+        if not reports:
+            st.info('Aucune remontée intervenant.')
+        else:
+            st.dataframe(pd.DataFrame([{'Date':r['created_at'][:16].replace('T',' '),'Action':r['action_no'],'Intervenant':r['trainer_name'],'Nature':r['report_type'],'Objet':r['subject'],'Qualité':'Oui' if r['quality_relevant'] else 'Non','Statut':r['status']} for r in reports]),use_container_width=True,hide_index=True)
+            rmap={f"#{r['id']} — {r['action_no']} — {r['subject']}":r for r in reports}; rl=st.selectbox('Remontée à traiter',list(rmap),key='trainer_report_admin'); rr=rmap[rl]
+            st.write(rr['description'])
+            if rr.get('attachment_path') and Path(rr['attachment_path']).is_file():
+                st.download_button(f"Télécharger la pièce jointe — {rr.get('attachment_name') or 'document'}",Path(rr['attachment_path']).read_bytes(),file_name=rr.get('attachment_name') or Path(rr['attachment_path']).name,key=f"tr_report_dl_{rr['id']}")
+            statuses=['NOUVEAU','EN_COURS','TRAITE']; idx=statuses.index(rr['status']) if rr['status'] in statuses else 0; new_status=st.selectbox('Statut de traitement',statuses,index=idx,key=f"tr_report_status_{rr['id']}")
+            if st.button('Enregistrer le statut',key=f"tr_report_save_{rr['id']}"):
+                execute(ENGINE,'UPDATE trainer_reports SET status=:s,updated_at=:u WHERE id=:i',{'s':new_status,'u':utcnow_iso(),'i':rr['id']}); audit(ENGINE,'TRAINER_REPORT_STATUS_CHANGED',rr['action_id'],st.session_state.admin_email,'trainer_report',rr['id'],{'status':new_status}); st.success('Statut mis à jour.'); rerun()
     footer()
 
 # ROUTING PUBLIC SIGNATURE
 params=st.query_params
+if params.get('beneficiary_invite'):
+    beneficiary_invitation_page(params.get('beneficiary_invite'));st.stop()
+if params.get('beneficiary_portal'):
+    beneficiary_portal_page();st.stop()
 if params.get('quality_token'):
     quality_page(params.get('quality_token'));st.stop()
 if params.get('trainer_invite'):
     trainer_invitation_page(params.get('trainer_invite'));st.stop()
+if params.get('trainer_reset_request'):
+    trainer_reset_request_page();st.stop()
+if params.get('trainer_reset'):
+    trainer_reset_page(params.get('trainer_reset'));st.stop()
 if params.get('trainer_portal'):
     trainer_portal_page();st.stop()
 if params.get('trainer_token'):

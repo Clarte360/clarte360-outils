@@ -62,12 +62,18 @@ def validate_mail_config(cfg):
     return missing
 
 
-def send_mail(cfg, to_email, subject, html_body):
+def send_mail(cfg, to_email, subject, html_body, attachments=None):
     missing=validate_mail_config(cfg)
     if missing:
         raise ValueError('Configuration email incomplète : '+', '.join(missing))
     msg=EmailMessage();msg['Subject']=subject;msg['From']=f"{cfg.get('from_name','Clarté360')} <{cfg['from_email']}>";msg['To']=to_email
     msg.set_content('Veuillez consulter ce message au format HTML.');msg.add_alternative(html_body,subtype='html')
+    for att in attachments or []:
+        filename = att.get('filename') or 'document.bin'
+        data = att.get('data') or b''
+        maintype = att.get('maintype') or 'application'
+        subtype = att.get('subtype') or 'octet-stream'
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
     sec=str(cfg.get('security','ssl')).lower();host=cfg['host'];port=int(cfg.get('port',465))
     if sec=='ssl':
         with smtplib.SMTP_SSL(host,port,context=ssl.create_default_context()) as s:

@@ -74,3 +74,16 @@ Socle V1.1.1 conservé. Première incrémentation V2 : schéma organisme/agences
 
 ## V2 dev — incrément 2 Qualité
 Le jalon `2.0.0-dev-I2-qualite` ajoute le parcours qualité électronique versionné (chaud, froid et intervenant), ses campagnes/relances, ses liens sécurisés, la restitution PDF et l'intégration des données qualité à l'archive. Ce jalon est destiné à la poursuite du développement, pas à une recette VPS utilisateur.
+
+## V2.2-RC1 — Candidate de recette complète
+Cette candidate consolide les Lots 1 à 3 : espace intervenant complet, identité bénéficiaire permanente et portail documentaire, stockage SHA-256, fin d'action automatisée, transmissions client et pilotage qualité.
+
+Le dossier de déploiement reste volontairement nommé `clarte360-emargements-v1.0.0` afin de préserver le dépôt GitHub, les chemins VPS, Nginx et les services systemd existants.
+
+Commande de validation obligatoire avant redémarrage en production :
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+Résultat de référence de cette candidate : **75 tests réussis**.

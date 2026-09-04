@@ -1,20 +1,32 @@
-# RAPPORT DE TESTS — V2 CANDIDATE DE RECETTE RC1
+# RAPPORT TESTS — CLARTÉ360 ÉMARGEMENTS V2.2-RC1
 
-Date : 3 septembre 2026
-Version : 2.0.0-rc1
+Date : 4 septembre 2026
 
-## Résultat automatisé
-Commande : `PYTHONPATH=. pytest -q`
+## Base contrôlée
+Candidate construite exclusivement à partir du ZIP `V2.2 Lot 3 - fin d'action + qualité` fourni pour ce passage en recette complète.
 
-**35 tests réussis / 35 — 0 échec.**
+Dossier interne conservé : `clarte360-emargements-v1.0.0`.
 
-La campagne couvre le socle V1, les fonctions V1.1/V1.1.1, la fondation V2, le socle consolidé, le moteur qualité, le pilotage/imports et les contrôles candidate RC1.
+## Résultats automatisés
+Commande utilisée :
 
-## Contrôles RC1 ajoutés
-- compilation Python des modules principaux ;
-- génération des PDF sous l'identité d'un organisme fictif différent de Clarté360 ;
-- version applicative candidate `2.0.0-rc1` ;
-- non-régression des 33 tests du jalon I3.
+```bash
+python -m pytest -q
+```
 
-## Limites des tests automatisés
-Ces tests ne remplacent pas la recette réelle sur VPS pour : SMTP OVH, Nginx/HTTPS, QR sur smartphone, rendu tactile de signature, affichage multi-écrans, comportement réseau, permissions système et migration sur une copie de la base VPS réelle.
+Résultat : **75 passed**.
+
+Compilation complémentaire réussie pour : `app.py`, `db.py`, `worker.py`, `services.py`, `mailer.py`, `pdf_utils.py`, `excel_import.py`, `source_store.py`, `security.py`, `branding.py`, `backup.py`, `restore_backup.py`.
+
+## Contrôles de consolidation ajoutés
+- schéma additif des transmissions client et de la rétention portail ;
+- anti-doublon des transmissions client ;
+- transmission worker avec ZIP réellement passé en pièce jointe au moteur email ;
+- avertissement puis purge du portail avec délai ;
+- blocage de la purge lorsqu'une nouvelle action existe ;
+- version applicative `2.2-RC1` ;
+- contrôle AST de `app.py` : aucune expression conditionnelle Streamlit utilisée comme instruction autonome ;
+- absence de chaîne `DeltaGenerator` dans les modules applicatifs.
+
+## Point nécessitant recette VPS réelle
+La connexion SMTP réelle ne peut pas être testée dans l'environnement de fabrication de la candidate, car les secrets Clarté360 restent volontairement hors du ZIP et hors GitHub. Le worker et les pièces jointes sont testés avec SMTP simulé ; l'envoi réel doit être validé sur le VPS avec les secrets existants.

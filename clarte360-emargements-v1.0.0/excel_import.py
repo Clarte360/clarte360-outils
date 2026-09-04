@@ -20,7 +20,10 @@ def _read(file_bytes,key,action_no,mode='INTRA',source='GESTION'):
     data={'action_no':action_no,'title':clean(row.get('INTITULE_FORMA')) or 'Action sans intitulé','subtitle':clean(row.get('INTITULE_FORMA_COMPL')),
       'planned_hours':float(row.get('DUREE_HEURES_STAGIAIRE') or 0),'client_name':clean(row.get('NOM_ENT')),'trainer_name':clean(row.get('Nom_et_Prenom_du_formateur')) or clean(row.get('Nom_et_Prenom_du_formateur_PSIP_ATTTESTATION')),
       'location':clean(row.get('Nom_site')) or clean(row.get('Adresse_du_site')),'source':source,'date_start':clean(row.get('Date_debut_action')),'date_end':clean(row.get('Date_de_fin_d_action')),
-      'default_start':clean(row.get('Horaire_du_site_debut')),'default_end':clean(row.get('Horaire_du_site_fin')),'mode':mode,'source_sheet':'CONV ADM' if master is c else 'STAGIAIRE'}
+      'default_start':clean(row.get('Horaire_du_site_debut')),'default_end':clean(row.get('Horaire_du_site_fin')),'mode':mode,'source_sheet':'CONV ADM' if master is c else 'STAGIAIRE',
+      'quality_contact_name':clean(row.get('Responsable_d_agence_Qualite_Nom_et_ou_Prenom')),'client_quality_email':clean(row.get('Email_du_Responsable_Agence_Qualite')),
+      'training_contact_name':clean(row.get('Contact_mise_en_place_de_la_formation_Nom_et_ou_Prenom')),'client_training_email':clean(row.get('Email_du_contact_de_la_formation')),
+      'training_contact_phone':clean(row.get('No_de_telephone_du_contact_de_la_formation'))}
     # Participants : INTRA depuis STAGIAIRE ; INDIVIDUEL/INTER depuis CONV ADM, conformément au mapping validé. Repli contrôlé si noms absents.
     pdf=c if mode in ('INDIVIDUEL','INTER') else s
     def rows_from(df):

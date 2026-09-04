@@ -185,7 +185,34 @@ V2_SCHEMA = [
  id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id INTEGER NOT NULL, event_type TEXT NOT NULL, due_at TEXT NOT NULL,
  sent_at TEXT, status TEXT NOT NULL DEFAULT 'PENDING', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
  claimed_at TEXT, claim_token TEXT, created_at TEXT NOT NULL,
- UNIQUE(campaign_id,event_type), FOREIGN KEY(campaign_id) REFERENCES quality_campaigns(id) ON DELETE CASCADE)"""
+ UNIQUE(campaign_id,event_type), FOREIGN KEY(campaign_id) REFERENCES quality_campaigns(id) ON DELETE CASCADE)""",
+"""CREATE TABLE IF NOT EXISTS trainer_reports (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, trainer_id INTEGER NOT NULL, report_type TEXT NOT NULL,
+ subject TEXT NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'NOUVEAU', quality_relevant INTEGER NOT NULL DEFAULT 0,
+ attachment_path TEXT, attachment_name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE CASCADE)""",
+"""CREATE TABLE IF NOT EXISTS trainer_password_resets (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, trainer_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL,
+ FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE CASCADE)""",
+"""CREATE TABLE IF NOT EXISTS beneficiaries (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE, last_name TEXT NOT NULL, first_name TEXT NOT NULL, birth_date TEXT NOT NULL,
+ birth_name TEXT, current_email TEXT, phone TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+"""CREATE TABLE IF NOT EXISTS beneficiary_portal_accounts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, beneficiary_id INTEGER NOT NULL UNIQUE, email TEXT NOT NULL UNIQUE, password_hash TEXT, active INTEGER NOT NULL DEFAULT 1,
+ email_verified_at TEXT, invite_token TEXT UNIQUE, invite_expires_at TEXT, invited_at TEXT, last_login_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE CASCADE)""",
+"""CREATE TABLE IF NOT EXISTS beneficiary_password_resets (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, beneficiary_id INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL, used_at TEXT, created_at TEXT NOT NULL,
+ FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE CASCADE)""",
+"""CREATE TABLE IF NOT EXISTS stored_files (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, sha256 TEXT NOT NULL UNIQUE, storage_path TEXT NOT NULL, size_bytes INTEGER NOT NULL, mime_type TEXT, extension TEXT,
+ created_at TEXT NOT NULL, last_verified_at TEXT)""",
+"""CREATE TABLE IF NOT EXISTS document_references (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, stored_file_id INTEGER NOT NULL, action_id INTEGER, beneficiary_id INTEGER, participant_id INTEGER,
+ category TEXT NOT NULL, display_name TEXT NOT NULL, audience TEXT NOT NULL DEFAULT 'ACTION_BENEFICIARIES', visible_to_beneficiary INTEGER NOT NULL DEFAULT 1,
+ uploaded_by TEXT, created_at TEXT NOT NULL, deleted_at TEXT,
+ FOREIGN KEY(stored_file_id) REFERENCES stored_files(id), FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE,
+ FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE CASCADE, FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE CASCADE)"""
 ]
 
 def init_db(engine: Engine):
@@ -235,6 +262,30 @@ def init_db(engine: Engine):
             "ALTER TABLE quality_campaigns ADD COLUMN recipient_kind TEXT NOT NULL DEFAULT 'BENEFICIARY'",
             "ALTER TABLE quality_campaigns ADD COLUMN reminder1_due_at TEXT",
             "ALTER TABLE quality_campaigns ADD COLUMN reminder2_due_at TEXT",
+            "ALTER TABLE participants ADD COLUMN pin_recovery_cipher TEXT",
+            "ALTER TABLE trainers ADD COLUMN reset_requested_at TEXT",
+            "ALTER TABLE trainers ADD COLUMN can_upload_documents INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE participants ADD COLUMN beneficiary_id INTEGER",
+            "ALTER TABLE beneficiary_portal_accounts ADD COLUMN pending_email TEXT",
+            "ALTER TABLE actions ADD COLUMN client_admin_email TEXT",
+            "ALTER TABLE actions ADD COLUMN client_training_email TEXT",
+            "ALTER TABLE actions ADD COLUMN client_quality_email TEXT",
+            "ALTER TABLE actions ADD COLUMN client_billing_email TEXT",
+            "ALTER TABLE actions ADD COLUMN client_other_email TEXT",
+            "ALTER TABLE actions ADD COLUMN final_bundle_due_at TEXT",
+            "ALTER TABLE actions ADD COLUMN final_bundle_generated_at TEXT",
+            "ALTER TABLE actions ADD COLUMN final_bundle_path TEXT",
+            "ALTER TABLE actions ADD COLUMN portal_expires_at TEXT",
+            "ALTER TABLE actions ADD COLUMN portal_warning_sent_at TEXT",
+            "ALTER TABLE actions ADD COLUMN quality_contact_name TEXT",
+            "ALTER TABLE actions ADD COLUMN training_contact_name TEXT",
+            "ALTER TABLE actions ADD COLUMN training_contact_phone TEXT",
+            "ALTER TABLE actions ADD COLUMN transmit_final_bundle INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE actions ADD COLUMN send_final_to_quality INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE actions ADD COLUMN send_final_to_training INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE actions ADD COLUMN final_other_first_name TEXT",
+            "ALTER TABLE actions ADD COLUMN final_other_last_name TEXT",
+            "ALTER TABLE actions ADD COLUMN final_other_email TEXT",
         ]
         for sql in migrations:
             try: c.execute(text(sql))
@@ -242,7 +293,7 @@ def init_db(engine: Engine):
         extra = [
         """CREATE TABLE IF NOT EXISTS trainers (
           id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, email TEXT UNIQUE, phone TEXT,
-          password_hash TEXT, invite_token TEXT, invite_expires_at TEXT, invited_at TEXT, last_login_at TEXT,
+          password_hash TEXT, invite_token TEXT, invite_expires_at TEXT, invited_at TEXT, last_login_at TEXT, reset_requested_at TEXT,
           active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
         """CREATE TABLE IF NOT EXISTS attendance_status (
           id INTEGER PRIMARY KEY AUTOINCREMENT, participant_id INTEGER NOT NULL, slot_id INTEGER NOT NULL,
@@ -254,12 +305,28 @@ def init_db(engine: Engine):
           trainer_email TEXT, signed_at TEXT NOT NULL, declaration_text TEXT NOT NULL, signature_path TEXT,
           signature_sha256 TEXT, method TEXT NOT NULL DEFAULT 'NOM_PRENOM', actor TEXT,
           FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE)""",
+        """CREATE TABLE IF NOT EXISTS client_transmissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, transmission_type TEXT NOT NULL, recipient_email TEXT NOT NULL,
+          document_name TEXT, campaign_id INTEGER, status TEXT NOT NULL DEFAULT 'PENDING', sent_at TEXT, last_error TEXT, created_at TEXT NOT NULL,
+          claimed_at TEXT, claim_token TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+          FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(campaign_id) REFERENCES quality_campaigns(id) ON DELETE SET NULL)""",
         """CREATE TABLE IF NOT EXISTS trainer_access_tokens (
           id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, trainer_id INTEGER, token TEXT NOT NULL UNIQUE,
           created_at TEXT NOT NULL, expires_at TEXT, active INTEGER NOT NULL DEFAULT 1,
           FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE)"""
         ]
         for sql in extra: c.execute(text(sql))
+        post_migrations = [
+            "ALTER TABLE beneficiary_portal_accounts ADD COLUMN portal_warning_sent_at TEXT",
+            "ALTER TABLE beneficiary_portal_accounts ADD COLUMN portal_purge_due_at TEXT",
+            "ALTER TABLE client_transmissions ADD COLUMN campaign_id INTEGER",
+            "ALTER TABLE client_transmissions ADD COLUMN claimed_at TEXT",
+            "ALTER TABLE client_transmissions ADD COLUMN claim_token TEXT",
+            "ALTER TABLE client_transmissions ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+        ]
+        for sql in post_migrations:
+            try: c.execute(text(sql))
+            except Exception: pass
         indexes = [
             "CREATE INDEX IF NOT EXISTS ix_actions_status ON actions(status)",
             "CREATE INDEX IF NOT EXISTS ix_actions_org_agency ON actions(organization_id,agency_id)",
@@ -267,6 +334,12 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_email_events_due_status ON email_events(status,due_at)",
             "CREATE INDEX IF NOT EXISTS ix_quality_email_due_status ON quality_email_events(status,due_at)",
             "CREATE INDEX IF NOT EXISTS ix_quality_campaign_action ON quality_campaigns(action_id,status,campaign_kind)",
+            "CREATE INDEX IF NOT EXISTS ix_trainer_reports_action ON trainer_reports(action_id,trainer_id,status)",
+            "CREATE INDEX IF NOT EXISTS ix_trainer_password_resets_token ON trainer_password_resets(token,used_at)",
+            "CREATE INDEX IF NOT EXISTS ix_beneficiaries_identity ON beneficiaries(last_name,first_name,birth_date)",
+            "CREATE INDEX IF NOT EXISTS ix_participants_beneficiary ON participants(beneficiary_id)",
+            "CREATE INDEX IF NOT EXISTS ix_document_refs_action ON document_references(action_id,deleted_at)",
+            "CREATE INDEX IF NOT EXISTS ix_document_refs_beneficiary ON document_references(beneficiary_id,deleted_at)",
         ]
         for sql in indexes: c.execute(text(sql))
 
