@@ -59,3 +59,9 @@ Mise en conformité avec l'audit préparatoire du 4 septembre 2026 et le référ
 - après synthèse sans hypothèse : autre voie, nouveau bloc volontaire de 5 questions maximum ou arrêt ;
 - relances du même bloc renforcées pour rester sur le même fil et éviter les changements brutaux de sujet ;
 - compatibilité reprise JSON : un ancien cycle contenant déjà 5 réponses ou davantage est envoyé directement vers la synthèse globale.
+
+## V2.2.0-preproduction-5 — 04/09/2026
+- Correction du blocage « Faire le point avec mes réponses actuelles » du Module 4.
+- Correction de la limite obligatoire à 5 questions : un cycle repris contenant déjà 5 réponses ou plus bascule réellement vers la synthèse globale.
+- Cause : au rerun, l'application recréait une nouvelle question avant de traiter l'état `synthese_globale_pending`, annulant le point demandé ou obligatoire.
+- Référentiel métier inchangé : RVC360 V2.6 reste la source de vérité.

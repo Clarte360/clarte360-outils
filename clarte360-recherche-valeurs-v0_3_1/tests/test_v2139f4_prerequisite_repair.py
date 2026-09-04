@@ -2,7 +2,7 @@ from pathlib import Path
 SRC=Path(__file__).resolve().parents[1].joinpath("app.py").read_text(encoding="utf-8")
 
 def test_version_f4():
-    assert 'APP_VERSION = "2.2.0-preproduction-4"' in SRC
+    assert 'APP_VERSION = "2.2.0-preproduction-5"' in SRC
 
 def test_prerequisite_is_mandatory_and_gates_modules():
     assert 'Ce prérequis est obligatoire pour accéder à l’application.' in SRC

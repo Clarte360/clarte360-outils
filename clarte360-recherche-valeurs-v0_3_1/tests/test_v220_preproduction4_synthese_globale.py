@@ -6,7 +6,7 @@ SRC = APP.read_text(encoding="utf-8")
 
 
 def test_preproduction4_declared_and_compiles():
-    assert 'APP_VERSION = "2.2.0-preproduction-4"' in SRC
+    assert 'APP_VERSION = "2.2.0-preproduction-5"' in SRC
     ast.parse(SRC)
 
 

@@ -5,7 +5,7 @@ TEXT = APP.read_text(encoding='utf-8')
 
 
 def test_version_219a():
-    assert 'APP_VERSION = "2.2.0-preproduction-4"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction-5"' in TEXT
 
 
 def test_questionnaire_hec_mentions_value_three_times():

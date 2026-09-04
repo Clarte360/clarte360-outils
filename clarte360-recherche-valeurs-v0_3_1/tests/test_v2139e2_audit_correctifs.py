@@ -11,7 +11,7 @@ def _widget_source() -> str:
 
 
 def test_version_9e2_declared():
-    assert 'APP_VERSION = "2.2.0-preproduction-4"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction-5"' in TEXT
 
 
 def test_value_labels_always_keep_initial_written_formulation_option():

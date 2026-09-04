@@ -15,7 +15,7 @@ def _load_function(name):
 
 
 def test_version_9e1_declared():
-    assert 'APP_VERSION = "2.2.0-preproduction-4"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction-5"' in TEXT
 
 
 def test_ctrl_enter_is_a_real_browser_handler():

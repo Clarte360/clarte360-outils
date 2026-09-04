@@ -5,7 +5,7 @@ TEXT = APP.read_text(encoding="utf-8")
 
 
 def test_8c_version_and_removed_useless_accompanist_review():
-    assert 'APP_VERSION = "2.2.0-preproduction-4"' in TEXT
+    assert 'APP_VERSION = "2.2.0-preproduction-5"' in TEXT
     assert "Je souhaite revoir cette valeur avec mon accompagnateur" not in TEXT
 
 
