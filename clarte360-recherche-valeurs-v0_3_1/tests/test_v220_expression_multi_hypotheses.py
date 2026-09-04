@@ -49,3 +49,44 @@ def test_module4_can_keep_two_hypotheses_same_cycle():
     assert basket['Autonomie']['decision_module4']=='oui'
     assert basket['Créativité']['decision_module4']=='peut_etre'
     assert st.session_state.module4_rejected_hypotheses[0]['nom']=='Reconnaissance'
+
+
+def test_creativite_real_case_requires_substantive_reformulation():
+    mod, st = load_app(); seed(mod, st)
+    mod.ai_ready = lambda: True
+    calls=[]
+    def fake_response(*a, **k):
+        calls.append(1)
+        if len(calls)==1:
+            return {
+                'statut':'reformulation_expression',
+                'texte_propose':"Pour moi, la créativité, c'est savoir fabriquer des choses et essayer d'avoir des idées. Je ne sais pas quoi encore, mais c'est dans ce genre-là.",
+                'raison_courte':'Oralité.',
+                'question_clarification':''
+            }
+        return {
+            'statut':'reformulation_expression',
+            'texte_propose':"Pour moi, la créativité, c'est avoir des idées et savoir fabriquer ou créer des choses concrètes.",
+            'raison_courte':'Les idées explicites sont réorganisées dans une formulation plus nette.',
+            'question_clarification':''
+        }
+    mod.response_json = fake_response
+    original="En fait, pour moi, la créativité, c'est savoir fabriquer des choses, essayer d'avoir des idées, moi je ne sais pas quoi encore, ouais, c'est des trucs dans ce genre-là quoi."
+    result=mod.assess_response_expression(original)
+    assert result['statut']=='reformulation_expression'
+    assert result['texte_propose']=="Pour moi, la créativité, c'est avoir des idées et savoir fabriquer ou créer des choses concrètes."
+    assert len(calls)==2
+
+
+def test_reformulation_rejects_remaining_vague_oral_fragments():
+    mod, st = load_app(); seed(mod, st)
+    original="En fait je fais des trucs dans ce genre-là quoi et du coup ça me plaît."
+    issue=mod._expression_proposal_quality_issue(original,"Je fais des trucs dans ce genre-là et ça me plaît.","reformulation_expression")
+    assert issue
+
+
+def test_reformulation_accepts_condensed_explicit_meaning():
+    mod, st = load_app(); seed(mod, st)
+    original="En fait, pour moi, la créativité, c'est savoir fabriquer des choses, essayer d'avoir des idées, moi je ne sais pas quoi encore, ouais, c'est des trucs dans ce genre-là quoi."
+    proposal="Pour moi, la créativité, c'est avoir des idées et savoir fabriquer ou créer des choses concrètes."
+    assert mod._expression_proposal_quality_issue(original,proposal,"reformulation_expression")==''

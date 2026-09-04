@@ -1,10 +1,10 @@
-# Clarté360 Recherche des valeurs — V2.2.0-preproduction
+# Clarté360 Recherche des valeurs — V2.2.0-preproduction-2
 
 Date : 4 septembre 2026
 
 ## Objet
 
-Mise en conformité avec l'audit préparatoire du 4 septembre 2026 et le référentiel officiel RVC360 API V2.4.
+Mise en conformité avec l'audit préparatoire du 4 septembre 2026 et le référentiel officiel RVC360 API V2.5.
 
 ## Changements principaux
 
@@ -19,10 +19,22 @@ Mise en conformité avec l'audit préparatoire du 4 septembre 2026 et le référ
 - Schéma métier de reprise porté à `2.2.0`.
 - Suite de tests remise en cohérence avec la version courante et complétée par des tests V2.2.0.
 
+
+## Correctif preproduction-2 — qualité réelle de la proposition d’expression
+
+À la suite du test bénéficiaire réel sur la définition de « créativité », le moteur ne se contente plus d’un nettoyage superficiel de l’oral.
+
+- Le prompt demande désormais d’identifier les unités de sens explicitement présentes, puis de les recomposer dans un français naturel et réutilisable.
+- Les hésitations sans contenu (par exemple « je ne sais pas quoi encore », « des trucs dans ce genre-là quoi ») peuvent être supprimées sans être recopiées mécaniquement.
+- Une proposition qui conserve trop de marqueurs d’oralité ou d’imprécision est rejetée avant affichage.
+- En cas de proposition insuffisante, une deuxième tentative est déclenchée avec une consigne de reprise explicite.
+- Le cas réel « créativité » est désormais un test de non-régression.
+- Une réserve réellement porteuse de sens ne doit pas être gommée : le moteur la conserve ou demande une clarification.
+
 ## Contrôles réalisés
 
 - `python -m py_compile app.py` : OK
-- `pytest -q` : 129 tests réussis
+- `pytest -q` : 132 tests réussis
 
 ## Points à tester en passation bénéficiaire
 

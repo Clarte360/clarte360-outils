@@ -54,7 +54,7 @@ try:
 except Exception:
     st_autorefresh = None
 
-APP_VERSION = "2.2.0-preproduction"
+APP_VERSION = "2.2.0-preproduction-2"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Recherche de mes valeurs"
 APP_FULL_NAME = "Clarté360 - Recherche de mes valeurs"
@@ -2751,27 +2751,73 @@ def _expression_result(status: str, proposal: str="", reason: str="", clarificat
         "source": source,
     }
 
+def _expression_weak_marker_count(text: str) -> int:
+    """Compte les marqueurs qui rendent une formulation peu réutilisable sans juger son fond."""
+    raw=str(text or "").strip()
+    low=normalize(raw)
+    padded=f" {low} "
+    count=0
+    markers=(" du coup "," en fait "," ouais "," bah "," ben "," genre "," voila "," voilà ")
+    count += sum(padded.count(m) for m in markers)
+    # Fragments d'oralité / imprécision qui peuvent être légitimes isolément, mais qui signalent
+    # une proposition d'expression insuffisante lorsqu'ils survivent à une reformulation.
+    weak_patterns=(
+        r"\bdes trucs?\b", r"\bdes choses comme ca\b", r"\bdans ce genre(?:-la)?\b",
+        r"\bje ne sais pas quoi\b", r"\bje sais pas quoi\b", r"\bet tout ca\b",
+        r"\bcomme ca quoi\b", r"\bvoila quoi\b", r"\bquoi\s*$",
+    )
+    count += sum(len(re.findall(pattern, low, flags=re.I)) for pattern in weak_patterns)
+    return count
+
+
 def _looks_linguistically_weak(text: str) -> bool:
-    """Détecteur local volontairement conservateur : il interdit surtout les faux 'texte déjà propre'."""
+    """Détecteur local conservateur : interdit les faux 'texte déjà propre'."""
     raw=str(text or "").strip()
     low=normalize(raw)
     if not raw:
         return False
-    oral_markers=(" du coup "," en fait "," donc "," voila "," voilà "," genre "," quoi ")
-    padded=f" {low} "
-    if sum(padded.count(m) for m in oral_markers) >= 2:
+    if _expression_weak_marker_count(raw) >= 2:
         return True
     if re.search(r"\b(du coup|en fait)\b.*\b(du coup|en fait)\b", low):
         return True
     if re.search(r"(?i)\b([\wÀ-ÖØ-öø-ÿ'-]+(?:\s+[\wÀ-ÖØ-öø-ÿ'-]+){0,3})\s+\1\b", raw):
         return True
-    # Phrase longue sans ponctuation structurante : signal faible, uniquement pour éviter un faux positif.
     if len(raw.split()) >= 28 and not re.search(r"[;:.!?]", raw):
         return True
     return False
 
+
+def _expression_proposal_quality_issue(original: str, proposal: str, status: str) -> str:
+    # Une proposition ne peut jamais être strictement identique à l'original et doit apporter un gain réel.
+    """Retourne une raison de rejet si la proposition n'apporte pas un vrai gain d'expression."""
+    import difflib
+    a=" ".join(str(original or "").split()).strip()
+    b=" ".join(str(proposal or "").split()).strip()
+    if not b:
+        return "proposition vide"
+    if normalize(a)==normalize(b):
+        return "proposition identique à l'original"
+    if has_forbidden_language(b):
+        return "proposition interprétative"
+    # Une vraie reformulation doit normalement réduire l'oralité/imprécision plutôt que la recopier.
+    if status=="reformulation_expression":
+        before=_expression_weak_marker_count(a)
+        after=_expression_weak_marker_count(b)
+        if before >= 2 and after >= before:
+            return "oralité ou imprécision non réellement réduite"
+        if after >= 2:
+            return "la proposition reste trop orale ou imprécise"
+        # Si la phrase était manifestement faible et que la sortie est quasiment la même, le gain est insuffisant.
+        na=re.sub(r"[^a-z0-9à-ÿ]+"," ",normalize(a)).strip()
+        nb=re.sub(r"[^a-z0-9à-ÿ]+"," ",normalize(b)).strip()
+        ratio=difflib.SequenceMatcher(None,na,nb).ratio()
+        if _looks_linguistically_weak(a) and ratio > .94:
+            return "reformulation trop proche de l'original pour être utile"
+    return ""
+
+
 def assess_response_expression(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> dict[str, Any]:
-    """Contrat linguistique RVC360 V2.4 : N0/N1/N2/N3/E, identique pour clavier et voix."""
+    """Contrat linguistique RVC360 V2.5 : qualité d'expression réelle, identique clavier/voix."""
     original=str(text or "").strip()
     if not original:
         return _expression_result("aucune_modification", source="local")
@@ -2783,30 +2829,42 @@ def assess_response_expression(text: str, *, expected_value_label: bool=False, q
 
     local=_local_spoken_cleanup(original)
     if not ai_ready():
-        if local and local != original:
+        if local and local != original and not _looks_linguistically_weak(local):
             return _expression_result("correction_forme", local, "Correction locale de forme.", source="local")
         if _looks_linguistically_weak(original):
-            return _expression_result("echec_technique", reason="Le service de reformulation n'est pas disponible pour vérifier cette formulation.", source="local")
+            return _expression_result("echec_technique", reason="Le service de reformulation n'est pas disponible pour produire une proposition d'expression fiable.", source="local")
         return _expression_result("aucune_modification", reason="Aucune anomalie linguistique évidente détectée localement.", source="local")
 
-    instructions="""Vous êtes le moteur de qualité d'expression RVC360 V2.4.
-Évaluez une réponse française libre sans jamais interpréter la personne.
+    instructions="""Vous êtes le moteur de qualité d'expression RVC360 V2.5 de Clarté360.
+Votre tâche n'est pas seulement de comprendre la réponse : vous devez proposer, lorsque c'est utile, une expression française réellement claire, naturelle et réutilisable, tout en restant strictement fidèle à ce que le bénéficiaire a dit.
 
-Vous devez choisir EXACTEMENT un statut :
-- aucune_modification : uniquement si le texte est déjà correct, fluide et réutilisable tel quel ;
-- correction_forme : le sens et la structure sont bons, mais il faut corriger orthographe, grammaire, ponctuation ou petites maladresses ;
-- reformulation_expression : le sens est compris, mais l'expression reste orale, répétitive, télégraphique, lourde ou syntaxiquement faible ;
-- clarification_necessaire : une reformulation fidèle obligerait à deviner une idée ou une nuance.
+Choisissez EXACTEMENT un statut :
+- aucune_modification : seulement si le texte est déjà correct, fluide, naturel et réutilisable tel quel ;
+- correction_forme : le contenu et la construction sont déjà satisfaisants, seules des fautes ou micro-maladresses sont à corriger ;
+- reformulation_expression : le sens peut être restitué sans deviner, mais l'expression est orale, répétitive, floue, télégraphique, lourde ou mal construite ;
+- clarification_necessaire : produire une formulation nette obligerait à inventer, choisir entre deux sens possibles ou transformer une hésitation porteuse de sens.
 
-Règles absolues :
-- conservez la première personne, les faits, les nuances, réserves et mots importants ;
-- n'ajoutez aucune idée, valeur, cause, intention, émotion, diagnostic, conseil ou conclusion ;
-- supprimez seulement les tics de langage, répétitions accidentelles et faux départs sans portée de sens ;
-- une phrase compréhensible n'est PAS automatiquement une phrase bien formulée ;
-- si le texte est oral, répétitif ou maladroit mais compréhensible, utilisez reformulation_expression ;
-- texte_propose doit être vide pour aucune_modification et clarification_necessaire ;
-- pour correction_forme ou reformulation_expression, texte_propose doit être réellement amélioré et ne jamais être strictement identique à l'original ;
-- si clarification_necessaire, fournissez une question_clarification courte et neutre.
+MÉTHODE OBLIGATOIRE POUR reformulation_expression :
+1. Repérez silencieusement les UNITÉS DE SENS explicitement présentes (faits, actions, idées, nuances, réserves).
+2. Écartez les scories sans contenu : tics de langage, faux départs, répétitions accidentelles, "ouais", "du coup", "en fait", "quoi" final, expressions de remplissage.
+3. Recomposez les unités de sens dans un français naturel. Vous pouvez changer l'ordre et la syntaxe, fusionner des fragments et remplacer un terme vague uniquement par une formulation qui ne fait qu'expliciter ce qui est déjà dit.
+4. Ne conservez PAS une formule vague uniquement parce qu'elle figure dans l'original si elle n'apporte aucun contenu (ex. "je ne sais pas quoi encore", "des trucs dans ce genre-là quoi").
+5. Si cette formule vague contient au contraire une réserve indispensable au sens, conservez la réserve ou choisissez clarification_necessaire.
+
+RÈGLES ABSOLUES :
+- première personne conservée ; faits, idées, nuances et mots importants conservés ;
+- aucune idée, valeur, cause, intention, émotion, diagnostic, conseil ou conclusion ajoutée ;
+- intelligible ≠ bien formulé : une réponse compréhensible peut exiger une vraie proposition d'expression ;
+- texte_propose vide pour aucune_modification et clarification_necessaire ;
+- une proposition doit être sensiblement plus claire et réutilisable, pas seulement débarrassée de deux tics de langage ;
+- si la proposition reste avec des formules comme "des trucs", "dans ce genre-là", "je ne sais pas quoi", "ouais", "du coup", "en fait" sans nécessité de sens, elle est insuffisante ;
+- si clarification_necessaire, fournissez une question courte, neutre et non orientée.
+
+EXEMPLE DE NIVEAU ATTENDU :
+Original : "En fait, pour moi, la créativité, c'est savoir fabriquer des choses, essayer d'avoir des idées, moi je ne sais pas quoi encore, ouais, c'est des trucs dans ce genre-là quoi."
+Proposition fidèle attendue : "Pour moi, la créativité, c'est avoir des idées et savoir fabriquer ou créer des choses concrètes."
+Pourquoi c'est acceptable : seules les deux idées explicites "avoir des idées" et "fabriquer des choses" sont réorganisées ; les hésitations sans contenu sont supprimées.
+
 Retournez uniquement le JSON demandé."""
     schema={
         "type":"object","additionalProperties":False,
@@ -2819,25 +2877,27 @@ Retournez uniquement le JSON demandé."""
         "required":["statut","texte_propose","raison_courte","question_clarification"],
     }
     last_error=""
+    previous_bad=""
     for attempt in range(2):
         try:
-            out=response_json(instructions,{"reponse":original,"type_question":question_kind},"qualite_expression_rvc360_v24",schema,max_tokens=750)
+            payload={"reponse":original,"type_question":question_kind}
+            if attempt and previous_bad:
+                payload["proposition_precedente_rejetee"]=previous_bad
+                payload["consigne_de_reprise"]="La proposition précédente n'améliorait pas assez l'expression. Recomposez réellement les unités de sens explicites sans rien inventer."
+            out=response_json(instructions,payload,"qualite_expression_rvc360_v25",schema,max_tokens=850)
             status=str(out.get("statut") or "").strip()
             proposal=str(out.get("texte_propose") or "").strip()
             reason=str(out.get("raison_courte") or "").strip()
             clarification=str(out.get("question_clarification") or "").strip()
-            compact_original=re.sub(r"\s+"," ",original).strip()
-            compact_proposal=re.sub(r"\s+"," ",proposal).strip()
             if status in {"correction_forme","reformulation_expression"}:
-                if not proposal or compact_proposal==compact_original:
-                    raise ValueError("Proposition absente ou identique à l'original")
-                if has_forbidden_language(proposal):
-                    raise ValueError("Proposition interprétative")
+                issue=_expression_proposal_quality_issue(original,proposal,status)
+                if issue:
+                    previous_bad=proposal
+                    raise ValueError(issue)
                 return _expression_result(status,proposal,reason,source="ia")
             if status=="clarification_necessaire":
                 return _expression_result(status,"",reason,clarification or "Pouvez-vous préciser ce que vous souhaitez dire ici ?",source="ia")
             if status=="aucune_modification":
-                # Garde-fou local : l'IA ne peut déclarer 'propre' un texte manifestement oral/répétitif.
                 if _looks_linguistically_weak(original):
                     raise ValueError("Faux positif aucune_modification sur formulation faible")
                 return _expression_result(status,"",reason,source="ia")
@@ -2845,7 +2905,7 @@ Retournez uniquement le JSON demandé."""
         except Exception as exc:
             last_error=str(exc)
             continue
-    return _expression_result("echec_technique",reason=last_error or "Aucune proposition fiable n'a pu être obtenue.",source="ia")
+    return _expression_result("echec_technique",reason=last_error or "Aucune proposition suffisamment utile et fidèle n'a pu être obtenue.",source="ia")
 
 def reliable_expression_assessment(text: str, *, expected_value_label: bool=False, question_kind: str="open") -> dict[str, Any]:
     """Deuxième garde-fou : aucun échec ne peut être maquillé en texte 'déjà clair'."""
