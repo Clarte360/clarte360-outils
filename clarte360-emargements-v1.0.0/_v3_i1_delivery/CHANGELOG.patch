@@ -1,0 +1,22 @@
+--- clarte360-emargements-v1.0.0/CHANGELOG.md	2026-09-05 16:45:48.381976941 +0000
++++ clarte360-emargements-v1.0.0/CHANGELOG.md	2026-09-05 16:45:45.573981561 +0000
+@@ -159,3 +159,19 @@
+ - Une URL `?beneficiary_invite` sans jeton bascule vers la connexion bénéficiaire au lieu de l'administration.
+ - L'email d'activation distingue le lien temporaire d'activation et l'accès permanent.
+ - Ajout du parcours bénéficiaire « Mot de passe oublié » avec jeton temporaire à usage unique.
++
++## V3-I1 — Socle V3 + migration additive — 2026-09-05
++
++- nom produit principal : **Clarté360 — Gestion des actions** ;
++- migration additive et idempotente `V3_I1_SOCLE` ;
++- ajout `action_trainers` : relation action ↔ intervenants ;
++- ajout `slot_trainers` : relation créneau ↔ intervenants ;
++- ajout `trainer_assignment_history` pour préparer la traçabilité des remplacements/co-animations ;
++- ajout `action_modules` avec modules V3 indépendants ;
++- ajout de `actions.delivery_mode` sans réutiliser `actions.mode` (INTRA/INTER/INDIVIDUEL) ;
++- conservation volontaire de `actions.trainer_id` et des anciens drapeaux `use_*` pendant la transition ;
++- migration des actions V2 existantes : intervenant actuel → référent + principal des créneaux existants ;
++- synchronisation V2/V3 lors d'un changement d'intervenant référent et lors du paramétrage des quatre modules existants ;
++- module Teams initialisé **désactivé**, sans activation liée à la modalité ;
++- nouveaux tests de migration et de compatibilité ;
++- aucune modification d'URL, chemin VPS, service systemd ou secret.
