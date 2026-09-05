@@ -1,0 +1,47 @@
+--- clarte360-emargements-v1.0.0/app.py	2026-09-05 07:26:25.000000000 +0000
++++ clarte360-emargements-v1.0.0/app.py	2026-09-05 16:35:31.823758593 +0000
+@@ -813,7 +813,7 @@
+     p=prefill or {}
+     imported_parts=participants_prefill or []
+ 
+-    header('Clarté360 — Nouvelle action','Création d’une action et de son dossier d’émargement')
++    header('Clarté360 — Gestion des actions','Création d’une nouvelle action')
+ 
+     if st.session_state.get('import_create_active'):
+         st.info("Action préremplie depuis la base Excel. Les données importées restent conservées tant que l’action n’est pas créée ou que vous n’annulez pas l’import.")
+@@ -1010,7 +1010,7 @@
+             except Exception as e: st.error(f"Lecture impossible : {e}")
+         if st.session_state.get('import_prefill'):
+             d=st.session_state.import_prefill;st.json({k:v for k,v in d.items() if k not in ['default_start','default_end']});
+-            if st.button('Créer cette action dans Clarté360 Émargements'):
++            if st.button('Créer cette action dans Clarté360 — Gestion des actions'):
+                 st.session_state.import_create_active=True;st.session_state['_next_nav']='Nouvelle action';rerun()
+     with tabadca:
+         st.info('Import ADCA : permet notamment de reprendre une action historique pour activer uniquement la qualité à froid, sans recréer artificiellement des émargements.')
+@@ -1061,7 +1061,7 @@
+     footer()
+ 
+ def dashboard():
+-    header('Clarté360 — Tableau de bord','Vue globale des actions et émargements')
++    header('Clarté360 — Gestion des actions','Tableau de bord')
+     acts=q(ENGINE,'SELECT * FROM actions ORDER BY id DESC')
+     total=len(acts);open_n=sum(normalize_action_status(a['status'])!='ARCHIVEE' for a in acts);pending=one(ENGINE,"SELECT COUNT(*) n FROM email_events WHERE status='PENDING'")['n'];signed=one(ENGINE,"SELECT COUNT(*) n FROM signatures WHERE status='VALIDE'")['n']
+     c1,c2,c3,c4=st.columns(4)
+@@ -1096,7 +1096,7 @@
+     footer()
+ 
+ def actions_list():
+-    header('Clarté360 — Actions','Reprendre, modifier et suivre une action')
++    header('Clarté360 — Gestion des actions','Reprendre, modifier et suivre une action')
+     c1,c2=st.columns([3,1]); search=c1.text_input('Rechercher une action, un bénéficiaire, un client ou un email'); include_archived=c2.checkbox('Inclure les archives',value=False); acts=search_actions(ENGINE,search,include_archived=include_archived)
+     if not acts: st.info('Aucune action correspondant aux critères.');footer();return
+     labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a['status'])}":a['id'] for a in acts};sel=st.selectbox('Choisir une action',list(labels));aid=labels[sel];st.session_state.selected_action=aid
+@@ -1669,7 +1669,7 @@
+     if logs: st.dataframe(pd.DataFrame(logs),use_container_width=True,hide_index=True)
+ 
+ def settings_screen():
+-    header('Clarté360 — Paramètres','Administration de l’application')
++    header('Clarté360 — Gestion des actions','Administration de l’application')
+     tabg,tabo,tabag,taba,tabt=st.tabs(['Général','Organisme','Agences / établissements','Administrateurs','Formateurs / accompagnants'])
+     with tabg:
+         st.write(f"URL publique configurée : `{BASE_URL}`")
