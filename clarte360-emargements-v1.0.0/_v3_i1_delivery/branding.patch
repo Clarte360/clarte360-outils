@@ -1,0 +1,10 @@
+--- clarte360-emargements-v1.0.0/branding.py	2026-09-05 07:26:25.000000000 +0000
++++ clarte360-emargements-v1.0.0/branding.py	2026-09-05 16:34:17.922263313 +0000
+@@ -1,6 +1,6 @@
+ from pathlib import Path
+ 
+-APP_NAME = "Clarté360 — Émargements"
++APP_NAME = "Clarté360 — Gestion des actions"
+ APP_VERSION = "2.2-RC1.2"
+ BRAND = "#008080"
+ BRAND_LIGHT = "#F1F8F8"
