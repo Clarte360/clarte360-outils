@@ -1,0 +1,105 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 91e0734..a486fe6 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -159,3 +159,19 @@
+ - Une URL `?beneficiary_invite` sans jeton bascule vers la connexion bénéficiaire au lieu de l'administration.
+ - L'email d'activation distingue le lien temporaire d'activation et l'accès permanent.
+ - Ajout du parcours bénéficiaire « Mot de passe oublié » avec jeton temporaire à usage unique.
++
++## V3-I1 — Socle V3 + migration additive — 2026-09-05
++
++- nom produit principal : **Clarté360 — Gestion des actions** ;
++- migration additive et idempotente `V3_I1_SOCLE` ;
++- ajout `action_trainers` : relation action ↔ intervenants ;
++- ajout `slot_trainers` : relation créneau ↔ intervenants ;
++- ajout `trainer_assignment_history` pour préparer la traçabilité des remplacements/co-animations ;
++- ajout `action_modules` avec modules V3 indépendants ;
++- ajout de `actions.delivery_mode` sans réutiliser `actions.mode` (INTRA/INTER/INDIVIDUEL) ;
++- conservation volontaire de `actions.trainer_id` et des anciens drapeaux `use_*` pendant la transition ;
++- migration des actions V2 existantes : intervenant actuel → référent + principal des créneaux existants ;
++- synchronisation V2/V3 lors d'un changement d'intervenant référent et lors du paramétrage des quatre modules existants ;
++- module Teams initialisé **désactivé**, sans activation liée à la modalité ;
++- nouveaux tests de migration et de compatibilité ;
++- aucune modification d'URL, chemin VPS, service systemd ou secret.
+diff --git a/RAPPORT_V3_I1_SOCLE_MIGRATION_ADDITIVE.md b/RAPPORT_V3_I1_SOCLE_MIGRATION_ADDITIVE.md
+new file mode 100644
+index 0000000..fcc9c3c
+--- /dev/null
++++ b/RAPPORT_V3_I1_SOCLE_MIGRATION_ADDITIVE.md
+@@ -0,0 +1,156 @@
++# RAPPORT V3-I1 — SOCLE V3 + MIGRATION ADDITIVE
++
++**Base de départ :** V2.2-RC1.2 — correctif accès bénéficiaire  
++**Date :** 05 septembre 2026  
++**Statut :** livraison technique incrémentale — socle de construction de V3
++
++## Objectif
++
++Préparer la V3 **Clarté360 — Gestion des actions** sans casser le fonctionnement V2.2 existant et sans réécriture destructive de la base.
++
++Cet incrément ne cherche pas encore à exposer toute la gestion multi-intervenants dans l'interface. Il installe le modèle de données et les mécanismes de compatibilité nécessaires pour construire I2 et les lots suivants.
++
++## Modifications réalisées
++
++### 1. Identité produit
++
++Le nom principal devient **Clarté360 — Gestion des actions** dans le branding et les principaux écrans d'administration.
++
++Aucune modification n'est faite sur :
++
++- l'URL publique ;
++- le dépôt GitHub ;
++- le chemin VPS historique ;
++- les services systemd.
++
++### 2. Migration V3 additive et versionnée
++
++Ajout de la table `schema_migrations` et de la migration idempotente :
++
++`V3_I1_SOCLE`
++
++La migration est rejouable sans créer de doublons.
++
++### 3. Multi-intervenants : socle de données
++
++Ajout des tables :
++
++- `action_trainers` ;
++- `slot_trainers` ;
++- `trainer_assignment_history`.
++
++Pour chaque action V2 existante ayant un `trainer_id` :
++
++- l'intervenant devient `REFERENT` de l'action ;
++- il devient `PRINCIPAL` de chacun des créneaux déjà existants.
++
++La colonne historique `actions.trainer_id` est volontairement conservée pendant la transition V3.
++
++### 4. Synchronisation de compatibilité V2 / V3
++
++Pendant I1, le fonctionnement V2 reste autoritaire pour l'interface existante, mais les nouvelles structures V3 sont synchronisées :
++
++- lorsqu'un intervenant référent est affecté ou changé ;
++- lorsqu'un nouveau créneau est créé ;
++- lorsqu'un des quatre modules V2 existants est modifié.
++
++Cette stratégie permet de continuer à utiliser les actions existantes tout en préparant I2.
++
++### 5. Modules V3 par action
++
++Ajout de `action_modules` avec les codes :
++
++- `ATTENDANCE` ;
++- `QUALITY_HOT` ;
++- `QUALITY_COLD` ;
++- `TRAINER_FEEDBACK` ;
++- `BENEFICIARY_PORTAL` ;
++- `COURSE_DOCUMENTS` ;
++- `CLIENT_TRANSMISSION` ;
++- `TEAMS`.
++
++Les quatre modules V2 sont recopiés fidèlement depuis leurs colonnes historiques.
++
++**Teams est toujours initialisé désactivé.** Aucune modalité ou action existante ne peut l'activer automatiquement dans I1.
++
