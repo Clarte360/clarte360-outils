@@ -152,3 +152,10 @@
 - Journal des transmissions client visible dans l'administration.
 - Contrôle transversal : aucune expression conditionnelle Streamlit de type `DeltaGenerator` résiduelle dans `app.py`.
 - 75 tests automatisés réussis sur 75 + compilation Python des modules principaux.
+
+## V2.2-RC1.2 — Correctif accès bénéficiaire — 2026-09-05
+- Ajout d'un accès permanent visible « Accès stagiaire / bénéficiaire ».
+- Un lien d'activation déjà utilisé/expiré propose désormais explicitement la connexion permanente.
+- Une URL `?beneficiary_invite` sans jeton bascule vers la connexion bénéficiaire au lieu de l'administration.
+- L'email d'activation distingue le lien temporaire d'activation et l'accès permanent.
+- Ajout du parcours bénéficiaire « Mot de passe oublié » avec jeton temporaire à usage unique.

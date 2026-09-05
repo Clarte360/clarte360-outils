@@ -1084,6 +1084,38 @@ def verify_beneficiary_login(engine,email,password):
     execute(engine,'UPDATE beneficiary_portal_accounts SET last_login_at=:n WHERE id=:i',{'n':utcnow_iso(),'i':acc['id']})
     return acc
 
+def create_beneficiary_password_reset(engine,email,valid_minutes=60):
+    acc=one(engine,"""SELECT pa.*,b.first_name,b.last_name,b.current_email FROM beneficiary_portal_accounts pa
+      JOIN beneficiaries b ON b.id=pa.beneficiary_id
+      WHERE lower(pa.email)=lower(:e) AND pa.active=1 AND b.active=1""",{'e':(email or '').strip()})
+    if not acc or not acc.get('password_hash'): return None,None
+    token=new_token(32); now=utcnow_iso(); expires=(datetime.now(ZoneInfo('UTC'))+timedelta(minutes=valid_minutes)).isoformat()
+    execute(engine,'INSERT INTO beneficiary_password_resets(beneficiary_id,token,expires_at,created_at) VALUES(:i,:t,:e,:c)',{'i':acc['beneficiary_id'],'t':token,'e':expires,'c':now})
+    audit(engine,'BENEFICIARY_PASSWORD_RESET_REQUESTED',actor=acc.get('email') or 'beneficiary',entity_type='beneficiary',entity_id=acc['beneficiary_id'],details={})
+    return acc,token
+
+def beneficiary_by_reset_token(engine,token):
+    if not token: return None
+    row=one(engine,"""SELECT pa.*,b.first_name,b.last_name,r.id reset_id,r.expires_at,r.used_at
+      FROM beneficiary_password_resets r JOIN beneficiary_portal_accounts pa ON pa.beneficiary_id=r.beneficiary_id
+      JOIN beneficiaries b ON b.id=r.beneficiary_id
+      WHERE r.token=:t AND pa.active=1 AND b.active=1 ORDER BY r.id DESC LIMIT 1""",{'t':token})
+    if not row or row.get('used_at'): return None
+    try:
+        if datetime.fromisoformat(row['expires_at']) < datetime.now(ZoneInfo('UTC')): return None
+    except Exception: return None
+    return row
+
+def complete_beneficiary_password_reset(engine,token,password):
+    acc=beneficiary_by_reset_token(engine,token)
+    if not acc:return False,'Lien invalide ou expiré.'
+    if len(password or '')<10:return False,'Le mot de passe doit comporter au moins 10 caractères.'
+    now=utcnow_iso()
+    execute(engine,'UPDATE beneficiary_portal_accounts SET password_hash=:p,updated_at=:u WHERE beneficiary_id=:i',{'p':hash_password(password),'u':now,'i':acc['beneficiary_id']})
+    execute(engine,'UPDATE beneficiary_password_resets SET used_at=:u WHERE id=:r',{'u':now,'r':acc['reset_id']})
+    audit(engine,'BENEFICIARY_PASSWORD_RESET_COMPLETED',actor=acc.get('email') or 'beneficiary',entity_type='beneficiary',entity_id=acc['beneficiary_id'],details={})
+    return True,''
+
 def update_beneficiary_email(engine,beneficiary_id,new_email,actor='system'):
     e=(new_email or '').strip().lower()
     if not e or '@' not in e: raise ValueError('Adresse email invalide.')

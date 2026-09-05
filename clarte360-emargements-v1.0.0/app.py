@@ -218,7 +218,8 @@ def send_beneficiary_invitation_email(beneficiary, token):
     email=(beneficiary.get('current_email') or beneficiary.get('portal_email') or '').strip()
     if not email: return False,'Adresse email personnelle absente.'
     org=org_identity(); link=f"{BASE_URL.rstrip('/')}?beneficiary_invite={quote(token)}"
-    body=f"""<p>Bonjour {beneficiary.get('first_name') or ''},</p><p>Votre espace personnel Clarté360 peut maintenant être activé.</p><p><a href='{link}'>ACTIVER MON ESPACE PERSONNEL</a></p><p>Ce lien est temporaire. Votre adresse email sert à la connexion mais ne constitue pas votre identité dans Clarté360.</p>{privacy_notice_html()}"""
+    portal=f"{BASE_URL.rstrip('/')}?beneficiary_portal=1"
+    body=f"""<p>Bonjour {beneficiary.get('first_name') or ''},</p><p>Votre espace personnel Clarté360 peut maintenant être activé.</p><p><a href='{link}'>ACTIVER MON ESPACE PERSONNEL</a></p><p><b>Ce lien d'activation est temporaire et ne sert qu'à créer votre accès.</b> Après activation, connectez-vous à tout moment depuis votre accès permanent :</p><p><a href='{portal}'>ACCÉDER À MON ESPACE BÉNÉFICIAIRE</a></p><p>Votre adresse email sert à la connexion mais ne constitue pas votre identité dans Clarté360.</p>{privacy_notice_html()}"""
     try:
         send_mail(mail_cfg(),email,f"{org.get('name') or 'Clarté360'} — activation de votre espace personnel",body)
         audit(ENGINE,'BENEFICIARY_PORTAL_INVITATION_EMAIL_SENT',actor=st.session_state.get('admin_email','system'),entity_type='beneficiary',entity_id=beneficiary.get('id'),details={'email':email})
@@ -474,7 +475,10 @@ def beneficiary_invitation_page(token):
     header('Clarté360 — Activation de mon espace','Création de votre accès personnel')
     b=beneficiary_by_invite(ENGINE,token)
     if not b:
-        st.error('Invitation invalide ou déjà utilisée.'); footer(); return
+        st.warning("Ce lien d’activation a déjà été utilisé, a expiré ou n’est plus valide.")
+        st.info("Si votre espace a déjà été activé, utilisez désormais l’accès permanent bénéficiaire.")
+        st.link_button('SE CONNECTER À MON ESPACE',f"{BASE_URL.rstrip('/')}?beneficiary_portal=1",type='primary')
+        footer(); return
     st.info(f"Espace de {b['first_name']} {b['last_name']} — {b.get('portal_email') or b.get('current_email')}")
     with st.form('beneficiary_invite_accept'):
         p1=st.text_input('Choisissez un mot de passe (10 caractères minimum)',type='password')
@@ -489,6 +493,52 @@ def beneficiary_invitation_page(token):
             else: st.error(msg)
     footer()
 
+def send_beneficiary_password_reset_email(acc, token):
+    email=(acc.get('email') or '').strip()
+    if not email: return False,'Adresse email absente.'
+    org=org_identity(); org_name=(org or {}).get('name') or 'Clarté360'
+    url=f"{BASE_URL.rstrip('/')}?beneficiary_reset={quote(token)}"
+    body=f"""<p>Bonjour {acc.get('first_name') or ''},</p><p>Une demande de réinitialisation du mot de passe de votre espace bénéficiaire {org_name} a été reçue.</p><p><a href='{url}'>RÉINITIALISER MON MOT DE PASSE</a></p><p>Ce lien est temporaire. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message.</p>{privacy_notice_html()}"""
+    try:
+        send_mail(mail_cfg(),email,f"{org_name} — Réinitialisation de votre mot de passe bénéficiaire",body); return True,'Email de réinitialisation envoyé.'
+    except Exception as ex:
+        return False,f'Email non envoyé : {friendly_mail_error(ex)}'
+
+def beneficiary_reset_request_page():
+    header('Clarté360 — Espace bénéficiaire','Mot de passe oublié')
+    with st.form('beneficiary_reset_request_form'):
+        email=st.text_input('Votre adresse email').strip().lower()
+        submit=st.form_submit_button('Recevoir un lien de réinitialisation',type='primary')
+    if submit:
+        acc,token=create_beneficiary_password_reset(ENGINE,email)
+        if acc and token:
+            ok,msg=send_beneficiary_password_reset_email(acc,token)
+            audit(ENGINE,'BENEFICIARY_PASSWORD_RESET_EMAIL_SENT' if ok else 'BENEFICIARY_PASSWORD_RESET_EMAIL_FAILED',actor=email,entity_type='beneficiary',entity_id=acc['beneficiary_id'],details={'message':msg})
+        st.success("Si cette adresse correspond à un espace bénéficiaire actif, un email de réinitialisation vient d'être envoyé.")
+    st.link_button('Retour à la connexion',f"{BASE_URL.rstrip('/')}?beneficiary_portal=1")
+    footer()
+
+def beneficiary_reset_page(token):
+    header('Clarté360 — Espace bénéficiaire','Choisir un nouveau mot de passe')
+    acc=beneficiary_by_reset_token(ENGINE,token)
+    if not acc:
+        st.error('Lien invalide, expiré ou déjà utilisé.')
+        st.link_button('Demander un nouveau lien',f"{BASE_URL.rstrip('/')}?beneficiary_reset_request=1")
+        footer(); return
+    with st.form('beneficiary_reset_form'):
+        p1=st.text_input('Nouveau mot de passe (10 caractères minimum)',type='password')
+        p2=st.text_input('Confirmez le mot de passe',type='password')
+        submit=st.form_submit_button('ENREGISTRER LE NOUVEAU MOT DE PASSE',type='primary')
+    if submit:
+        if p1!=p2: st.error('Les deux mots de passe sont différents.')
+        else:
+            ok,msg=complete_beneficiary_password_reset(ENGINE,token,p1)
+            if ok:
+                st.success('Votre mot de passe a été modifié.')
+                st.link_button('SE CONNECTER À MON ESPACE',f"{BASE_URL.rstrip('/')}?beneficiary_portal=1",type='primary')
+            else: st.error(msg)
+    footer()
+
 def beneficiary_portal_page():
     if not st.session_state.get('beneficiary_portal_id'):
         header('Clarté360 — Espace bénéficiaire','Mes formations, mon planning et mes documents')
@@ -499,6 +549,7 @@ def beneficiary_portal_page():
             if acc:
                 st.session_state.beneficiary_portal_id=acc['beneficiary_id'];rerun()
             else: st.error('Identifiants incorrects ou espace non activé.')
+        st.link_button('Mot de passe oublié',f"{BASE_URL.rstrip('/')}?beneficiary_reset_request=1")
         footer();return
     bid=st.session_state.beneficiary_portal_id
     b=one(ENGINE,'SELECT * FROM beneficiaries WHERE id=:b AND active=1',{'b':bid})
@@ -580,7 +631,9 @@ def setup_or_login():
             else: st.error('Identifiants incorrects.')
     with c2:
         st.markdown("<div class='c360-card'><h3>À quoi sert cet espace ?</h3>Créer ou importer une action, définir ses créneaux, gérer les stagiaires, suivre les signatures, relancer et générer les justificatifs.</div>",unsafe_allow_html=True)
-    st.link_button('Accès formateur / accompagnant',f"{BASE_URL.rstrip('/')}?trainer_portal=1")
+    ac1,ac2=st.columns(2)
+    ac1.link_button('Accès formateur / accompagnant',f"{BASE_URL.rstrip('/')}?trainer_portal=1",use_container_width=True)
+    ac2.link_button('Accès stagiaire / bénéficiaire',f"{BASE_URL.rstrip('/')}?beneficiary_portal=1",use_container_width=True)
     footer();return False
 
 def signature_page(token=None,slot_token=None):
@@ -1770,8 +1823,15 @@ def settings_screen():
 
 # ROUTING PUBLIC SIGNATURE
 params=st.query_params
-if params.get('beneficiary_invite'):
-    beneficiary_invitation_page(params.get('beneficiary_invite'));st.stop()
+if 'beneficiary_invite' in params:
+    token=params.get('beneficiary_invite')
+    if token: beneficiary_invitation_page(token)
+    else: beneficiary_portal_page()
+    st.stop()
+if params.get('beneficiary_reset_request'):
+    beneficiary_reset_request_page();st.stop()
+if params.get('beneficiary_reset'):
+    beneficiary_reset_page(params.get('beneficiary_reset'));st.stop()
 if params.get('beneficiary_portal'):
     beneficiary_portal_page();st.stop()
 if params.get('quality_token'):
