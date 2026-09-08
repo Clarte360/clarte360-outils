@@ -89,8 +89,14 @@ def collective_pdf(engine,aid):
             data.append(row)
         csrow=[Paragraph('<b>Contresignature intervenant</b>',ss['C360Small'])]
         for s in ds:
-            cs=one(engine,'SELECT * FROM trainer_countersignatures WHERE slot_id=:s',{'s':s['id']})
-            csrow.append(Paragraph(f"{cs['trainer_name']}<br/>{_local(cs['signed_at']).strftime('%d/%m/%Y %H:%M')}" if cs else 'À contresigner',ss['C360Small']))
+            css=q(engine,'SELECT * FROM trainer_countersignatures_v3 WHERE slot_id=:s ORDER BY signed_at,id',{'s':s['id']})
+            if css:
+                items=[]
+                for cs in css:
+                    sig=_sig_image(cs.get('signature_path'),22*mm,8*mm)
+                    items.append([sig,Paragraph(f"{cs['trainer_name']}<br/>{_local(cs['signed_at']).strftime('%d/%m/%Y %H:%M')}",ss['C360Small'])])
+                csrow.append(items)
+            else: csrow.append(Paragraph('À contresigner',ss['C360Small']))
         data.append(csrow)
         widths=[65*mm]+[(landscape(A4)[0]-20*mm-65*mm)/max(1,len(ds))]*len(ds)
         tbl=Table(data,colWidths=widths,repeatRows=1)
@@ -113,8 +119,9 @@ def individual_pdf(engine,pid):
         elif att and att['status']=='NON_CONCERNE': sig=Paragraph('Non concerné',ss['C360Small'])
         else: sig=Paragraph('Non signé',ss['C360Small'])
         data.append([datetime.fromisoformat(s['slot_date']).strftime('%d/%m/%Y'),f"{s['start_time']}–{s['end_time']}",f"{slot_duration_hours(s):g} h",sig])
-        cs=one(engine,'SELECT * FROM trainer_countersignatures WHERE slot_id=:s',{'s':s['id']})
-        if cs: data.append(['','','',Paragraph(f"Contresigné par {cs['trainer_name']} le {_local(cs['signed_at']).strftime('%d/%m/%Y à %H:%M')}",ss['C360Small'])])
+        css=q(engine,'SELECT * FROM trainer_countersignatures_v3 WHERE slot_id=:s ORDER BY signed_at,id',{'s':s['id']})
+        for cs in css:
+            data.append(['','','',[_sig_image(cs.get('signature_path'),26*mm,9*mm),Paragraph(f"Contresigné par {cs['trainer_name']} le {_local(cs['signed_at']).strftime('%d/%m/%Y à %H:%M')}",ss['C360Small'])]])
     tbl=Table(data,colWidths=[28*mm,34*mm,20*mm,90*mm],repeatRows=1);tbl.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),TEAL),('TEXTCOLOR',(0,0),(-1,0),colors.white),('GRID',(0,0),(-1,-1),.35,colors.HexColor('#B8CCCC')),('VALIGN',(0,0),(-1,-1),'MIDDLE'),('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white,LIGHT])]))
     story.append(tbl);doc.build(story,onFirstPage=_footer_for(org),onLaterPages=_footer_for(org));return buf.getvalue()
 

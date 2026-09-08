@@ -87,3 +87,6 @@ Commande de validation obligatoire avant redémarrage en production :
 ```
 
 Résultat de référence de cette candidate : **75 tests réussis**.
+
+### V3 I7 — Microsoft Teams / Graph
+Le module Teams est optionnel et indépendant de la modalité. Il utilise Microsoft Graph en app-only avec certificat VPS. Voir `INCREMENT_V3_I7_MICROSOFT_TEAMS_GRAPH.md` avant toute activation réelle. La recette Microsoft/Entra du tenant est obligatoire avant mise en production du module Teams.

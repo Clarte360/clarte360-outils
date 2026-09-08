@@ -1,3 +1,27 @@
+# V3.0.0-I6 — Import générique + multi-organisme — 05/09/2026
+
+- ajout de profils d’import configurables par organisme (`organization_import_profiles`) ;
+- moteur Excel générique piloté par clé, onglets et mapping JSON ;
+- suppression des onglets d’import visibles spécifiques Clarté360 / ADCA ;
+- source persistante et snapshot isolés par profil d’import ;
+- création et gestion de plusieurs organismes depuis les paramètres ;
+- rattachement automatique des actions importées à leur organisme ;
+- compatibilité interne maintenue avec les lecteurs historiques ;
+- migration additive du profil principal Clarté360 et reprise de la copie source historique lorsqu’elle existe ;
+- 114 tests automatisés réussis sur 114 ;
+- Teams / Graph non commencé.
+
+# V3.0.0-I1 — Socle V3 + migration additive — 05/09/2026
+
+- identité produit : Clarté360 — Gestion des actions ;
+- ajout `action_trainers`, `slot_trainers`, `trainer_assignment_history`, `action_modules` ;
+- migration additive et idempotente des actions V2.2 existantes ;
+- conservation de `actions.trainer_id` et des colonnes `use_*` pendant la transition ;
+- synchronisation des affectations V2 avec le socle V3 ;
+- Teams créé comme module futur désactivé et jamais activé automatiquement ;
+- 85 tests automatisés réussis sur 85 ;
+- compilation réussie de `app.py`, `worker.py`, `services.py`, `db.py`.
+
 
 ## 2.2 RC1.1 - Correctif urgent envois (2026-09-04)
 - Correction de l'envoi manuel d'emargement : remplacement de la constante obsolete `PRIVACY_NOTICE` par `privacy_notice_html(action_id)`.
@@ -159,3 +183,60 @@
 - Une URL `?beneficiary_invite` sans jeton bascule vers la connexion bénéficiaire au lieu de l'administration.
 - L'email d'activation distingue le lien temporaire d'activation et l'accès permanent.
 - Ajout du parcours bénéficiaire « Mot de passe oublié » avec jeton temporaire à usage unique.
+
+
+## V3.0.0-I2 — Multi-intervenants — 2026-09-05
+- Plusieurs intervenants par action et par créneau.
+- Référent, principal, co-intervenant et remplaçant.
+- Historique des affectations et remplacements sans effacement.
+- Portail intervenant fondé sur les affectations V3 et créneaux réellement affectés.
+- Reports et rattrapages conservent les affectations du créneau source.
+- Nouvel onglet Intervenants dans l'administration de l'action.
+- Compatibilité conservée avec `actions.trainer_id` et les actions V2 migrées.
+- 88 tests automatisés réussis sur 88.
+
+## V3.0.0-I3 — Contresignatures + émargement V3 — 2026-09-05
+- Blocage serveur et interface de toute contresignature avant la fin réelle du créneau, fuseau organisme et créneaux traversant minuit compris.
+- Contresignature refusée tant qu'un participant concerné reste EN_ATTENTE.
+- Nouvelle preuve additive `trainer_countersignatures_v3`, sans modification des preuves V2 historiques.
+- Une contresignature immuable par intervenant actif du créneau ; co-animation compatible.
+- Signature graphique intervenant avec fichier PNG, empreinte SHA-256, identité, horodatage, déclaration et audit.
+- Les contresignatures deviennent des preuves bloquant la réécriture/report du créneau.
+- PDF d'émargement adaptés aux contresignatures multiples et signatures graphiques intervenants.
+- Emargement automatique V3 : un seul email INITIAL au début réel du créneau ; aucune RELANCE_1/RELANCE_2 automatique.
+- Les rappels V2 encore PENDING sont neutralisés en SKIPPED sans effacer l'historique déjà envoyé.
+- Relance manuelle conservée pour administration/intervenant.
+- Export JSON/ZIP enrichi avec les preuves de contresignature V3.
+
+## V3.0.0-I4 — Portails séparés + planning intervenant — 2026-09-05
+- Écran Administration isolé : aucun lien vers les autres portails sur la page de connexion.
+- Libellés dédiés « Espace intervenant » et « Espace bénéficiaire ».
+- Droits explicites de gestion planning au niveau action et au niveau créneau.
+- Modification, report et ajout de créneaux depuis l'espace intervenant selon autorisations.
+- Garde-fous serveur : action clôturée, preuves, séance passée, volume, bornes, chevauchements, conflits intervenants et co-animation.
+- Synchronisation des échéances d'émargement et qualité après modification validée.
+- Journal additif `planning_change_events` avec hook Teams différé à I7.
+- Notifications planning aux personnes concernées sur action active, sans envoi en BROUILLON/PLANIFIÉE.
+- Export calendrier ICS avec UID stable par créneau dans les espaces intervenant et bénéficiaire.
+- 102 tests automatisés réussis sur 102 + compilation Python des modules principaux.
+
+## 3.0.0-I5 — Qualité, relances manuelles et documents finaux
+- Suppression des relances automatiques HOT / COLD / TRAINER : un seul envoi automatique INITIAL par campagne.
+- Neutralisation additive des anciennes relances PENDING sans effacement de l'historique.
+- Relances qualité manuelles réutilisant la campagne et le lien existants, avec compteur, auteur, date et audit.
+- Nouvel écran Administration « Relances » avec sélection groupée des questionnaires non revenus et liste des émargements à régulariser.
+- Nouvel écran Administration « Qualité » orienté métier : taux de réponse, rubriques libellées, points faibles, difficultés et améliorations.
+- Retour intervenant qualité étendu à tous les intervenants actifs d'une action multi-intervenants.
+- PDF des questionnaires complétés directement téléchargeables depuis Documents de l'action.
+- Conservation du dossier final, des transmissions client anti-doublon et de l'envoi COLD ultérieur séparé.
+
+## V3.0.0-I7 — Microsoft Teams / Graph — 05/09/2026
+- Module Teams indépendant par action, activation prospective uniquement.
+- Authentification Graph app-only par certificat, secrets hors Git.
+- Tables additives salles, occurrences, rôles Entra, rapports et synchronisations.
+- Lien Teams stable par action comme stratégie cible soumise à POC réel Microsoft.
+- Intervenants externes préparés pour Entra B2B Guest et rôles avancés.
+- Récupération automatique des rapports de présence par le worker.
+- Rapprochement Teams / émargement sans substitution de signature.
+- Liens Teams dans espaces intervenant et bénéficiaire.
+- 122 tests réussis.

@@ -27,8 +27,7 @@ def test_overnight_email_deadlines_cross_midnight(tmp_path):
     ensure_tokens_and_events(e,aid,'https://example.org','Europe/Paris')
     rows={x['event_type']:x['due_at'] for x in __import__('db').q(e,'SELECT event_type,due_at FROM email_events WHERE slot_id=:s',{'s':sid})}
     assert rows['INITIAL']=='2026-09-03T21:25:00+00:00'
-    assert rows['RELANCE_1']=='2026-09-03T22:45:00+00:00'
-    assert rows['RELANCE_2']=='2026-09-04T00:25:00+00:00'
+    assert 'RELANCE_1' not in rows and 'RELANCE_2' not in rows
 
 
 def test_trainer_invitation_and_portal_actions(tmp_path):

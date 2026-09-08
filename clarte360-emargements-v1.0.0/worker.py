@@ -3,8 +3,9 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents
+from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report
 from mailer import send_mail, resolve_mail_config
+from graph_client import GraphClient, graph_config_from_mapping, graph_config_missing
 
 try:
  import tomllib
@@ -65,7 +66,7 @@ def _quality_mail_content(e, org_name, link, privacy, privacy_contact):
     else:
         subject=f"{org_name} — Retour qualité intervenant — {title}"
         intro=f"L’action <strong>{title}</strong> est terminée. Nous vous invitons à renseigner votre retour sur les conditions de réalisation : organisation, logistique, moyens, supports, environnement et éventuels aléas. Ce questionnaire ne porte pas sur l’évaluation des participants."
-    if et!='INITIAL': subject='Rappel — '+subject
+    if et!='INITIAL': subject='Relance — '+subject
     body=f"""<p>Bonjour {first},</p><p>{intro}</p><p><a href='{link}'>OUVRIR LE QUESTIONNAIRE</a></p><p>Il peut être complété depuis un ordinateur, une tablette ou un téléphone.</p><hr><p style='font-size:12px;color:#555'><strong>Information données personnelles :</strong> {privacy} {'Contact : '+privacy_contact if privacy_contact else ''}</p>"""
     return subject,body
 
@@ -76,7 +77,7 @@ def _run_quality_events(eng,smtp,base,limit=50):
       FROM quality_email_events qe JOIN quality_campaigns c ON c.id=qe.campaign_id
       JOIN questionnaire_templates qt ON qt.id=c.template_id JOIN actions a ON a.id=c.action_id
       LEFT JOIN participants p ON p.id=c.participant_id LEFT JOIN trainers t ON t.id=c.trainer_id
-      WHERE qe.status='PENDING' AND qe.due_at<=:n AND c.status<>'COMPLETED' AND a.status NOT IN ('BROUILLON','PLANIFIEE') ORDER BY qe.due_at LIMIT :lim""",{'n':now,'lim':limit})
+      WHERE qe.status='PENDING' AND qe.due_at<=:n AND c.status<>'COMPLETED' AND a.status NOT IN ('BROUILLON','PLANIFIEE') AND (qe.event_type='INITIAL' OR qe.event_type LIKE 'MANUAL_%') ORDER BY qe.due_at LIMIT :lim""",{'n':now,'lim':limit})
     sent=0
     for e in events:
         recipient=e.get('participant_email') or e.get('trainer_email')
@@ -177,6 +178,98 @@ def _process_portal_retention(eng,smtp,base,warning_days=30):
         purge_beneficiary_portal_documents(eng,b['id'],'worker');changed+=1
     return changed
 
+
+def _sync_teams_trainer_identities(eng, client, action_id, base_url):
+    """Resolve internal users and invite external trainers when configured.
+
+    Advanced presenter/co-organizer roles require an Entra identity. External users are
+    therefore invited as B2B Guests only when the tenant configuration explicitly allows it.
+    """
+    roles=teams_roles(eng,action_id)
+    organizer=(client.cfg.get('organizer_upn') or '').lower()
+    org_domain=organizer.split('@',1)[1] if '@' in organizer else ''
+    for role in roles:
+        if role.get('entra_user_id'):
+            continue
+        email=(role.get('email') or '').strip().lower()
+        if not email:
+            continue
+        try:
+            # Internal tenant account: resolve directly. This path needs User.Read.All.
+            if org_domain and email.endswith('@'+org_domain):
+                user=client.get_user(email)
+                execute(eng,"UPDATE teams_participant_roles SET entra_user_id=:u,guest_status='NOT_REQUIRED',updated_at=:n WHERE id=:i",{'u':user.get('id'),'n':datetime.now(timezone.utc).isoformat(),'i':role['id']})
+                continue
+            if not client.cfg.get('guest_invites_enabled'):
+                execute(eng,"UPDATE teams_participant_roles SET guest_status='INVITE_DISABLED',updated_at=:n WHERE id=:i",{'n':datetime.now(timezone.utc).isoformat(),'i':role['id']})
+                continue
+            inv=client.invite_guest(email,base_url,True,role.get('display_name'))
+            mark_teams_guest_invitation(eng,role['id'],inv,'worker')
+        except Exception as ex:
+            execute(eng,"UPDATE teams_participant_roles SET guest_status='ERROR',updated_at=:n WHERE id=:i",{'n':datetime.now(timezone.utc).isoformat(),'i':role['id']})
+            audit(eng,'TEAMS_IDENTITY_SYNC_FAILED',action_id,'worker','teams_participant_role',role['id'],{'error':str(ex)[:500]})
+
+
+def _apply_teams_advanced_roles(eng, client, action_id):
+    room=teams_room(eng,action_id)
+    if not room or not room.get('online_meeting_id'):
+        return 0
+    attendees=[]
+    seen=set()
+    for r in teams_roles(eng,action_id):
+        uid=r.get('entra_user_id'); email=(r.get('email') or '').strip()
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        role='coorganizer' if (r.get('role') or '').upper()=='COORGANIZER' else 'presenter'
+        attendees.append({'upn':email,'role':role,'identity':{'user':{'id':uid}}})
+    if attendees:
+        client.update_online_meeting(room['online_meeting_id'],{'participants':{'attendees':attendees}})
+        audit(eng,'TEAMS_ROLES_SYNCED',action_id,'worker','teams_action_room',room['id'],{'attendees':len(attendees)})
+    return len(attendees)
+
+
+def _sync_teams_attendance(eng, client, action_id):
+    room=teams_room(eng,action_id)
+    if not room or not room.get('online_meeting_id'):
+        return 0
+    imported=0
+    reports=client.list_attendance_reports(room['online_meeting_id'])
+    for report in reports:
+        if one(eng,'SELECT id FROM teams_attendance_reports WHERE report_id=:r',{'r':str(report.get('id') or '')}):
+            continue
+        records=client.list_attendance_records(room['online_meeting_id'],report.get('id'))
+        if store_teams_attendance_report(eng,action_id,room['id'],report,records,'worker'):
+            imported+=1
+    return imported
+
+
+def _process_teams(eng, cfg, base_url):
+    gcfg=graph_config_from_mapping(cfg)
+    if not gcfg.get('enabled'):
+        return 0
+    missing=graph_config_missing(gcfg)
+    if missing:
+        audit(eng,'TEAMS_GRAPH_CONFIG_INVALID',actor='worker',entity_type='microsoft_graph',details={'missing':missing})
+        return 0
+    client=GraphClient(gcfg); changed=0
+    actions=q(eng,"""SELECT DISTINCT a.id FROM actions a JOIN action_modules m ON m.action_id=a.id
+      WHERE m.module_code='TEAMS' AND m.enabled=1 AND a.status IN ('PLANIFIEE','ACTIVE','A_CLOTURER') ORDER BY a.id""")
+    for a in actions:
+        aid=a['id']
+        try:
+            create_or_sync_teams_room(eng,aid,client,'worker')
+            _sync_teams_trainer_identities(eng,client,aid,base_url)
+            _apply_teams_advanced_roles(eng,client,aid)
+            changed += _sync_teams_attendance(eng,client,aid)
+            execute(eng,"UPDATE teams_sync_events SET status='DONE',processed_at=:n,last_error=NULL WHERE action_id=:a AND status='PENDING'",{'n':datetime.now(timezone.utc).isoformat(),'a':aid})
+            execute(eng,"UPDATE planning_change_events SET teams_status='SYNCED' WHERE action_id=:a AND teams_required=1 AND teams_status IN ('PENDING_I7','PENDING')",{'a':aid})
+        except Exception as ex:
+            execute(eng,"UPDATE teams_sync_events SET attempts=attempts+1,last_error=:e WHERE action_id=:a AND status='PENDING'",{'e':str(ex)[:500],'a':aid})
+            execute(eng,"UPDATE planning_change_events SET teams_status='ERROR' WHERE action_id=:a AND teams_required=1 AND teams_status IN ('PENDING_I7','PENDING')",{'a':aid})
+            audit(eng,'TEAMS_SYNC_FAILED',aid,'worker','action',aid,{'error':str(ex)[:500]})
+    return changed
+
 def run_once():
     cfg=load_cfg(); dburl=(cfg.get('database') or {}).get('url'); eng=make_engine(dburl);init_db(eng)
     smtp=resolve_mail_config(cfg); app=cfg.get('app') or {}; base=app.get('base_url','http://localhost:8501')
@@ -184,7 +277,8 @@ def run_once():
     _quarantine_stale_quality(eng)
     _quarantine_stale_client_transmissions(eng)
     generate_due_final_bundles(eng,'worker')
-    if not smtp.get('enabled'): return 0
+    teams_changed=_process_teams(eng,cfg,base)
+    if not smtp.get('enabled'): return teams_changed
     _process_portal_retention(eng,smtp,base)
     now=datetime.now(timezone.utc).isoformat()
     # Ne pas filtrer les candidats sur due_at avant le garde-fou métier :
@@ -233,7 +327,7 @@ def run_once():
             execute(eng,"UPDATE email_events SET status='PENDING',claim_token=NULL,claimed_at=NULL,last_error=:er WHERE id=:id AND claim_token=:c",{'er':str(ex)[:500],'id':e['id'],'c':claim})
     sent += _run_quality_events(eng,smtp,base)
     sent += _run_client_transmissions(eng,smtp)
-    return sent
+    return sent + teams_changed
 
 if __name__=='__main__':
     print('Clarté360 worker démarré')

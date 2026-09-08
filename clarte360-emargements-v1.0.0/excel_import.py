@@ -1,48 +1,140 @@
 from __future__ import annotations
-import io
+import io, json
 import pandas as pd
 
 NULLS={"","0","0.0","nan","NaT","None"}
+
+DEFAULT_MAPPING = {
+    'title':['INTITULE_FORMA'],
+    'subtitle':['INTITULE_FORMA_COMPL'],
+    'planned_hours':['DUREE_HEURES_STAGIAIRE'],
+    'client_name':['NOM_ENT'],
+    'trainer_name':['Nom_et_Prenom_du_formateur','Nom_et_Prenom_du_formateur_PSIP_ATTTESTATION'],
+    'location':['Nom_site','Adresse_du_site'],
+    'date_start':['Date_debut_action'],
+    'date_end':['Date_de_fin_d_action'],
+    'default_start':['Horaire_du_site_debut'],
+    'default_end':['Horaire_du_site_fin'],
+    'quality_contact_name':['Responsable_d_agence_Qualite_Nom_et_ou_Prenom'],
+    'client_quality_email':['Email_du_Responsable_Agence_Qualite'],
+    'training_contact_name':['Contact_mise_en_place_de_la_formation_Nom_et_ou_Prenom'],
+    'client_training_email':['Email_du_contact_de_la_formation'],
+    'training_contact_phone':['No_de_telephone_du_contact_de_la_formation'],
+    'participant_last_name':['NOM_STAGIAIRE'],
+    'participant_birth_name':['NOM_NAISSANCE','NOM_DE_NAISSANCE'],
+    'participant_first_name':['PRENOM_STAGIAIRE'],
+    'participant_birth_date':['DATE_NAISSANCE'],
+    'participant_email':['EMAIL'],
+    'participant_employee_id':['MATRICULE_entreprise'],
+    'participant_company':['NOM_ENT'],
+    'participant_phone':['No_de_telephone','TELEPHONE'],
+}
+
 def clean(v):
     if pd.isna(v): return None
     if hasattr(v,'to_pydatetime'): v=v.to_pydatetime()
     if hasattr(v,'isoformat'): return v.isoformat()[:10] if hasattr(v,'year') else str(v)
     s=str(v).strip(); return None if s in NULLS else s
 
-def _read(file_bytes,key,action_no,mode='INTRA',source='GESTION'):
-    bio=io.BytesIO(file_bytes); conv=pd.read_excel(bio,sheet_name='CONV ADM',engine='openpyxl'); bio.seek(0); stag=pd.read_excel(bio,sheet_name='STAGIAIRE',engine='openpyxl')
-    action_no=action_no.strip().upper(); c=conv[conv[key].astype(str).str.strip().str.upper()==action_no]; s=stag[stag[key].astype(str).str.strip().str.upper()==action_no]
+def _mapping(profile):
+    raw=(profile or {}).get('mapping_json')
+    if isinstance(raw,str) and raw.strip():
+        try: raw=json.loads(raw)
+        except Exception: raw={}
+    if not isinstance(raw,dict): raw={}
+    out={k:list(v) for k,v in DEFAULT_MAPPING.items()}
+    for k,v in raw.items():
+        if v is None: continue
+        out[k]=v if isinstance(v,list) else [v]
+    return out
+
+def _value(row, mapping, key):
+    for col in mapping.get(key,[]):
+        if col in row.index:
+            val=clean(row.get(col))
+            if val is not None: return val
+    return None
+
+def _hours(v):
+    try: return float(v or 0)
+    except Exception: return 0.0
+
+def read_action_xlsm(file_bytes, action_no, profile, mode='INTRA'):
+    """Generic workbook reader driven by an organization import profile."""
+    profile=profile or {}
+    action_key=(profile.get('action_key') or '').strip()
+    if not action_key: raise ValueError("Le profil d'import ne définit pas de colonne clé d'action.")
+    action_sheet=profile.get('action_sheet') or 'CONV ADM'
+    participant_sheet=profile.get('participant_sheet') or 'STAGIAIRE'
+    mapping=_mapping(profile)
+    bio=io.BytesIO(file_bytes)
+    conv=pd.read_excel(bio,sheet_name=action_sheet,engine='openpyxl')
+    bio.seek(0)
+    stag=pd.read_excel(bio,sheet_name=participant_sheet,engine='openpyxl')
+    for sheet_name,df in ((action_sheet,conv),(participant_sheet,stag)):
+        if action_key not in df.columns:
+            raise ValueError(f"Colonne clé '{action_key}' absente de l'onglet {sheet_name}.")
+    action_no=(action_no or '').strip().upper()
+    c=conv[conv[action_key].astype(str).str.strip().str.upper()==action_no]
+    s=stag[stag[action_key].astype(str).str.strip().str.upper()==action_no]
     if c.empty and s.empty:return None,[]
-    # Règle métier : INDIVIDUEL/INTER = CONV ADM fait foi ; INTRA = STAGIAIRE fait foi. Repli uniquement si la source attendue est absente.
-    mode=(mode or 'INTRA').upper(); master=c if mode in ('INDIVIDUEL','INTER') else s
+    mode=(mode or 'INTRA').upper()
+    master=c if mode in ('INDIVIDUEL','INTER') else s
     if master.empty: master=s if not s.empty else c
     row=master.iloc[0]
-    data={'action_no':action_no,'title':clean(row.get('INTITULE_FORMA')) or 'Action sans intitulé','subtitle':clean(row.get('INTITULE_FORMA_COMPL')),
-      'planned_hours':float(row.get('DUREE_HEURES_STAGIAIRE') or 0),'client_name':clean(row.get('NOM_ENT')),'trainer_name':clean(row.get('Nom_et_Prenom_du_formateur')) or clean(row.get('Nom_et_Prenom_du_formateur_PSIP_ATTTESTATION')),
-      'location':clean(row.get('Nom_site')) or clean(row.get('Adresse_du_site')),'source':source,'date_start':clean(row.get('Date_debut_action')),'date_end':clean(row.get('Date_de_fin_d_action')),
-      'default_start':clean(row.get('Horaire_du_site_debut')),'default_end':clean(row.get('Horaire_du_site_fin')),'mode':mode,'source_sheet':'CONV ADM' if master is c else 'STAGIAIRE',
-      'quality_contact_name':clean(row.get('Responsable_d_agence_Qualite_Nom_et_ou_Prenom')),'client_quality_email':clean(row.get('Email_du_Responsable_Agence_Qualite')),
-      'training_contact_name':clean(row.get('Contact_mise_en_place_de_la_formation_Nom_et_ou_Prenom')),'client_training_email':clean(row.get('Email_du_contact_de_la_formation')),
-      'training_contact_phone':clean(row.get('No_de_telephone_du_contact_de_la_formation'))}
-    # Participants : INTRA depuis STAGIAIRE ; INDIVIDUEL/INTER depuis CONV ADM, conformément au mapping validé. Repli contrôlé si noms absents.
+    data={
+      'action_no':action_no,
+      'title':_value(row,mapping,'title') or 'Action sans intitulé',
+      'subtitle':_value(row,mapping,'subtitle'),
+      'planned_hours':_hours(_value(row,mapping,'planned_hours')),
+      'client_name':_value(row,mapping,'client_name'),
+      'trainer_name':_value(row,mapping,'trainer_name'),
+      'location':_value(row,mapping,'location'),
+      'source':profile.get('name') or profile.get('code') or 'BASE DE GESTION',
+      'import_profile_id':profile.get('id'),
+      'organization_id':profile.get('organization_id'),
+      'date_start':_value(row,mapping,'date_start'),
+      'date_end':_value(row,mapping,'date_end'),
+      'default_start':_value(row,mapping,'default_start'),
+      'default_end':_value(row,mapping,'default_end'),
+      'mode':mode,
+      'source_sheet':action_sheet if master is c else participant_sheet,
+      'quality_contact_name':_value(row,mapping,'quality_contact_name'),
+      'client_quality_email':_value(row,mapping,'client_quality_email'),
+      'training_contact_name':_value(row,mapping,'training_contact_name'),
+      'client_training_email':_value(row,mapping,'client_training_email'),
+      'training_contact_phone':_value(row,mapping,'training_contact_phone'),
+    }
     pdf=c if mode in ('INDIVIDUEL','INTER') else s
     def rows_from(df):
       out=[];seen=set()
       for _,r in df.iterrows():
-        last=clean(r.get('NOM_STAGIAIRE'));first=clean(r.get('PRENOM_STAGIAIRE'))
+        last=_value(r,mapping,'participant_last_name');first=_value(r,mapping,'participant_first_name')
         if not last or not first:continue
-        k=(last.upper(),first.upper(),clean(r.get('DATE_NAISSANCE')))
+        birth=_value(r,mapping,'participant_birth_date')
+        k=(last.upper(),first.upper(),birth)
         if k in seen:continue
-        seen.add(k);out.append({'last_name':last,'birth_name':clean(r.get('NOM_NAISSANCE')) or clean(r.get('NOM_DE_NAISSANCE')),'first_name':first,'birth_date':clean(r.get('DATE_NAISSANCE')),
-          'email':clean(r.get('EMAIL')),'employee_id':clean(r.get('MATRICULE_entreprise')),'company_name':clean(r.get('NOM_ENT')),'phone':clean(r.get('No_de_telephone')) or clean(r.get('TELEPHONE')),'individual_action_no':action_no})
+        seen.add(k);out.append({
+          'last_name':last,'birth_name':_value(r,mapping,'participant_birth_name'),'first_name':first,'birth_date':birth,
+          'email':_value(r,mapping,'participant_email'),'employee_id':_value(r,mapping,'participant_employee_id'),
+          'company_name':_value(r,mapping,'participant_company'),'phone':_value(r,mapping,'participant_phone'),'individual_action_no':action_no})
       return out
     participants=rows_from(pdf)
     if not participants and pdf is not s: participants=rows_from(s)
     return data,participants
 
-def read_clarte360_xlsm(file_bytes,action_no,mode='INTRA'): return _read(file_bytes,'NO_CLAR',action_no,mode,'GESTION OF CLARTE360')
-def read_adca_xlsm(file_bytes,action_no,mode='INTRA'): return _read(file_bytes,'NO_ADCA',action_no,mode,'GESTION OF ADCA')
+def list_action_numbers_for_profile(file_bytes, profile):
+    key=(profile or {}).get('action_key')
+    sheet=(profile or {}).get('action_sheet') or 'CONV ADM'
+    if not key: return []
+    bio=io.BytesIO(file_bytes); df=pd.read_excel(bio,sheet_name=sheet,usecols=[key],engine='openpyxl')
+    return sorted({str(x).strip().upper() for x in df[key].dropna() if str(x).strip()})
 
+# Backward-compatible wrappers retained for existing tests and historical imports.
+def read_clarte360_xlsm(file_bytes,action_no,mode='INTRA'):
+    return read_action_xlsm(file_bytes,action_no,{'action_key':'NO_CLAR','action_sheet':'CONV ADM','participant_sheet':'STAGIAIRE','name':'GESTION OF CLARTE360'},mode)
+def read_adca_xlsm(file_bytes,action_no,mode='INTRA'):
+    return read_action_xlsm(file_bytes,action_no,{'action_key':'NO_ADCA','action_sheet':'CONV ADM','participant_sheet':'STAGIAIRE','name':'GESTION OF ADCA'},mode)
 def list_action_numbers(file_bytes,source='CLARTE360'):
-    key='NO_ADCA' if source.upper()=='ADCA' else 'NO_CLAR'; bio=io.BytesIO(file_bytes); conv=pd.read_excel(bio,sheet_name='CONV ADM',usecols=[key],engine='openpyxl')
-    return sorted({str(x).strip().upper() for x in conv[key].dropna() if str(x).strip()})
+    key='NO_ADCA' if str(source).upper()=='ADCA' else 'NO_CLAR'
+    return list_action_numbers_for_profile(file_bytes,{'action_key':key,'action_sheet':'CONV ADM'})

@@ -262,6 +262,9 @@ def init_db(engine: Engine):
             "ALTER TABLE quality_campaigns ADD COLUMN recipient_kind TEXT NOT NULL DEFAULT 'BENEFICIARY'",
             "ALTER TABLE quality_campaigns ADD COLUMN reminder1_due_at TEXT",
             "ALTER TABLE quality_campaigns ADD COLUMN reminder2_due_at TEXT",
+            "ALTER TABLE quality_campaigns ADD COLUMN manual_reminder_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE quality_campaigns ADD COLUMN last_manual_reminder_at TEXT",
+            "ALTER TABLE quality_campaigns ADD COLUMN last_manual_reminder_by TEXT",
             "ALTER TABLE participants ADD COLUMN pin_recovery_cipher TEXT",
             "ALTER TABLE trainers ADD COLUMN reset_requested_at TEXT",
             "ALTER TABLE trainers ADD COLUMN can_upload_documents INTEGER NOT NULL DEFAULT 0",
@@ -286,6 +289,8 @@ def init_db(engine: Engine):
             "ALTER TABLE actions ADD COLUMN final_other_first_name TEXT",
             "ALTER TABLE actions ADD COLUMN final_other_last_name TEXT",
             "ALTER TABLE actions ADD COLUMN final_other_email TEXT",
+            "ALTER TABLE action_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE slot_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
         ]
         for sql in migrations:
             try: c.execute(text(sql))
@@ -316,6 +321,170 @@ def init_db(engine: Engine):
           FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE)"""
         ]
         for sql in extra: c.execute(text(sql))
+
+        # V3 I1 additive foundation. These structures coexist with the V2 columns
+        # during the transition so existing actions and proofs remain readable.
+        v3_i1_schema = [
+        """CREATE TABLE IF NOT EXISTS action_trainers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, trainer_id INTEGER NOT NULL,
+          role TEXT NOT NULL DEFAULT 'INTERVENANT', is_referent INTEGER NOT NULL DEFAULT 0,
+          start_date TEXT, end_date TEXT, can_manage_planning INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE(action_id,trainer_id), FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE,
+          FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE CASCADE)""",
+        """CREATE TABLE IF NOT EXISTS slot_trainers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, slot_id INTEGER NOT NULL, trainer_id INTEGER NOT NULL,
+          role TEXT NOT NULL DEFAULT 'PRINCIPAL', assignment_status TEXT NOT NULL DEFAULT 'ACTIVE',
+          replaced_assignment_id INTEGER, reason TEXT, created_by TEXT, can_manage_planning INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(slot_id,trainer_id),
+          FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE, FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE CASCADE,
+          FOREIGN KEY(replaced_assignment_id) REFERENCES slot_trainers(id) ON DELETE SET NULL)""",
+        """CREATE TABLE IF NOT EXISTS trainer_assignment_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, scope_type TEXT NOT NULL, action_id INTEGER NOT NULL, slot_id INTEGER, trainer_id INTEGER,
+          event_type TEXT NOT NULL, old_role TEXT, new_role TEXT, old_status TEXT, new_status TEXT, reason TEXT, actor TEXT,
+          created_at TEXT NOT NULL, migration_key TEXT UNIQUE, FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE,
+          FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE, FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE SET NULL)""",
+        """CREATE TABLE IF NOT EXISTS action_modules (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, module_code TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0,
+          enabled_at TEXT, enabled_by TEXT, effective_from TEXT, config_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE(action_id,module_code), FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE)"""
+        ]
+        for sql in v3_i1_schema: c.execute(text(sql))
+        # I4 permissions must also be added to production databases where the I1 tables already exist.
+        for sql in [
+            "ALTER TABLE action_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE slot_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
+        ]:
+            try: c.execute(text(sql))
+            except Exception: pass
+
+        # V3 I3 additive evidence table. The legacy trainer_countersignatures table is kept
+        # untouched so historical V2 proofs are never rewritten. New V3 proofs support one
+        # immutable countersignature per active trainer assigned to the slot.
+        v3_i3_schema = [
+        """CREATE TABLE IF NOT EXISTS trainer_countersignatures_v3 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, slot_id INTEGER NOT NULL, trainer_id INTEGER, trainer_name TEXT NOT NULL,
+          trainer_email TEXT, signed_at TEXT NOT NULL, declaration_text TEXT NOT NULL, signature_path TEXT,
+          signature_sha256 TEXT, method TEXT NOT NULL DEFAULT 'MANUSCRITE', actor TEXT, ip_address TEXT, user_agent TEXT,
+          legacy_source_id INTEGER UNIQUE, created_at TEXT NOT NULL,
+          UNIQUE(slot_id,trainer_id), FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE,
+          FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE SET NULL)"""
+        ]
+        for sql in v3_i3_schema: c.execute(text(sql))
+
+        # V3 I4 planning coordination log. It records the propagation work created by a
+        # validated planning change without coupling the core planning rules to email/Teams.
+        v3_i4_schema = [
+        """CREATE TABLE IF NOT EXISTS planning_change_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, slot_id INTEGER, change_type TEXT NOT NULL,
+          actor TEXT NOT NULL, affected_participants INTEGER NOT NULL DEFAULT 0, affected_trainers INTEGER NOT NULL DEFAULT 0,
+          attendance_synced INTEGER NOT NULL DEFAULT 0, quality_synced INTEGER NOT NULL DEFAULT 0, portals_synced INTEGER NOT NULL DEFAULT 1,
+          teams_required INTEGER NOT NULL DEFAULT 0, teams_status TEXT NOT NULL DEFAULT 'NOT_ENABLED', notification_status TEXT NOT NULL DEFAULT 'PENDING',
+          details_json TEXT, created_at TEXT NOT NULL, FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE,
+          FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE SET NULL)"""
+        ]
+        for sql in v3_i4_schema: c.execute(text(sql))
+
+        # V3 I6 generic import profiles. A profile belongs to an organization and
+        # describes how its management workbook is read. Source files stay outside
+        # SQLite; only mapping/configuration is stored here.
+        v3_i6_schema = [
+        """CREATE TABLE IF NOT EXISTS organization_import_profiles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL,
+          source_type TEXT NOT NULL DEFAULT 'EXCEL', action_key TEXT NOT NULL, action_sheet TEXT NOT NULL DEFAULT 'CONV ADM',
+          participant_sheet TEXT NOT NULL DEFAULT 'STAGIAIRE', mapping_json TEXT, config_json TEXT, active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(organization_id,code),
+          FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE)"""
+        ]
+        for sql in v3_i6_schema: c.execute(text(sql))
+
+        # V3 I7 Microsoft Teams / Graph.  These tables are additive and remain inert
+        # until the TEAMS module is explicitly enabled for an action and Graph is configured.
+        v3_i7_schema = [
+        """CREATE TABLE IF NOT EXISTS teams_action_rooms (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL UNIQUE, provider TEXT NOT NULL DEFAULT 'MICROSOFT_TEAMS',
+          organizer_user_id TEXT, organizer_upn TEXT, online_meeting_id TEXT, join_web_url TEXT, subject TEXT,
+          strategy TEXT NOT NULL DEFAULT 'STABLE_ACTION_LINK', lifecycle_status TEXT NOT NULL DEFAULT 'PENDING',
+          raw_json TEXT, last_sync_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE)""",
+        """CREATE TABLE IF NOT EXISTS teams_occurrences (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_room_id INTEGER, action_id INTEGER NOT NULL, slot_id INTEGER NOT NULL UNIQUE,
+          scheduled_start_utc TEXT NOT NULL, scheduled_end_utc TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PLANNED',
+          attendance_report_id TEXT, attendance_synced_at TEXT, last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          FOREIGN KEY(action_room_id) REFERENCES teams_action_rooms(id) ON DELETE CASCADE,
+          FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE)""",
+        """CREATE TABLE IF NOT EXISTS teams_participant_roles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, slot_id INTEGER, trainer_id INTEGER, email TEXT NOT NULL,
+          display_name TEXT, entra_user_id TEXT, role TEXT NOT NULL DEFAULT 'PRESENTER', guest_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED',
+          invitation_id TEXT, invited_at TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE(action_id,slot_id,email), FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE,
+          FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE, FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE SET NULL)""",
+        """CREATE TABLE IF NOT EXISTS teams_attendance_reports (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_room_id INTEGER NOT NULL, occurrence_id INTEGER, report_id TEXT NOT NULL UNIQUE,
+          meeting_start_utc TEXT, meeting_end_utc TEXT, total_participants INTEGER NOT NULL DEFAULT 0, raw_json TEXT, retrieved_at TEXT NOT NULL,
+          FOREIGN KEY(action_room_id) REFERENCES teams_action_rooms(id) ON DELETE CASCADE,
+          FOREIGN KEY(occurrence_id) REFERENCES teams_occurrences(id) ON DELETE SET NULL)""",
+        """CREATE TABLE IF NOT EXISTS teams_attendance_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, report_row_id INTEGER NOT NULL, participant_id INTEGER, display_name TEXT, email TEXT,
+          join_time_utc TEXT, leave_time_utc TEXT, duration_seconds INTEGER, role TEXT, identity_json TEXT, raw_json TEXT, created_at TEXT NOT NULL,
+          FOREIGN KEY(report_row_id) REFERENCES teams_attendance_reports(id) ON DELETE CASCADE,
+          FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE SET NULL)""",
+        """CREATE TABLE IF NOT EXISTS teams_sync_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, slot_id INTEGER, event_type TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'PENDING', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, details_json TEXT,
+          created_at TEXT NOT NULL, processed_at TEXT, UNIQUE(action_id,slot_id,event_type),
+          FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE)"""
+        ]
+        for sql in v3_i7_schema: c.execute(text(sql))
+
+        # Copy legacy evidence once, without modifying the original record. When possible,
+        # attach it to the V3 trainer assignment by email/name; otherwise keep trainer_id NULL.
+        c.execute(text("""INSERT OR IGNORE INTO trainer_countersignatures_v3(
+          slot_id,trainer_id,trainer_name,trainer_email,signed_at,declaration_text,signature_path,signature_sha256,method,actor,legacy_source_id,created_at)
+          SELECT tc.slot_id,
+                 COALESCE((SELECT st.trainer_id FROM slot_trainers st JOIN trainers t ON t.id=st.trainer_id
+                           WHERE st.slot_id=tc.slot_id AND st.active=1 AND st.assignment_status='ACTIVE'
+                             AND ((tc.trainer_email IS NOT NULL AND LOWER(t.email)=LOWER(tc.trainer_email))
+                                  OR LOWER(t.full_name)=LOWER(tc.trainer_name)) ORDER BY st.id LIMIT 1),
+                          (SELECT a.trainer_id FROM slots s JOIN actions a ON a.id=s.action_id WHERE s.id=tc.slot_id)),
+                 tc.trainer_name,tc.trainer_email,tc.signed_at,tc.declaration_text,tc.signature_path,tc.signature_sha256,tc.method,tc.actor,tc.id,tc.signed_at
+          FROM trainer_countersignatures tc"""))
+
+        # V3 I3: automatic attendance reminders no longer exist. Preserve sent history,
+        # neutralise only pending V2 reminders already present in a production database.
+        c.execute(text("""UPDATE email_events SET status='SKIPPED',last_error='Désactivé par règle V3 I3'
+          WHERE event_type IN ('RELANCE_1','RELANCE_2') AND status='PENDING'"""))
+
+        # Idempotent V2 -> V3 backfill. V2 trainer_id remains untouched and becomes
+        # the V3 referent plus principal on every existing slot.
+        now_v3 = utcnow_iso()
+        c.execute(text("""INSERT OR IGNORE INTO action_trainers(action_id,trainer_id,role,is_referent,active,created_at,updated_at)
+          SELECT a.id,a.trainer_id,'REFERENT',1,1,:n,:n FROM actions a JOIN trainers t ON t.id=a.trainer_id WHERE a.trainer_id IS NOT NULL"""), {'n':now_v3})
+        c.execute(text("""UPDATE action_trainers SET role='REFERENT',is_referent=1,active=1,updated_at=:n
+          WHERE EXISTS (SELECT 1 FROM actions a WHERE a.id=action_trainers.action_id AND a.trainer_id=action_trainers.trainer_id)"""), {'n':now_v3})
+        c.execute(text("""INSERT OR IGNORE INTO slot_trainers(slot_id,trainer_id,role,assignment_status,created_by,active,created_at,updated_at)
+          SELECT s.id,a.trainer_id,'PRINCIPAL','ACTIVE','migration-v2',1,:n,:n
+          FROM slots s JOIN actions a ON a.id=s.action_id JOIN trainers t ON t.id=a.trainer_id WHERE a.trainer_id IS NOT NULL"""), {'n':now_v3})
+        c.execute(text("""INSERT OR IGNORE INTO trainer_assignment_history(scope_type,action_id,trainer_id,event_type,new_role,new_status,reason,actor,created_at,migration_key)
+          SELECT 'ACTION',a.id,a.trainer_id,'MIGRATED_FROM_V2','REFERENT','ACTIVE','Migration additive V2.2 vers V3 I1','migration-v2',:n,
+                 'V2_ACTION_'||a.id||'_'||a.trainer_id FROM actions a JOIN trainers t ON t.id=a.trainer_id WHERE a.trainer_id IS NOT NULL"""), {'n':now_v3})
+        c.execute(text("""INSERT OR IGNORE INTO trainer_assignment_history(scope_type,action_id,slot_id,trainer_id,event_type,new_role,new_status,reason,actor,created_at,migration_key)
+          SELECT 'SLOT',s.action_id,s.id,a.trainer_id,'MIGRATED_FROM_V2','PRINCIPAL','ACTIVE','Migration additive V2.2 vers V3 I1','migration-v2',:n,
+                 'V2_SLOT_'||s.id||'_'||a.trainer_id FROM slots s JOIN actions a ON a.id=s.action_id JOIN trainers t ON t.id=a.trainer_id WHERE a.trainer_id IS NOT NULL"""), {'n':now_v3})
+
+        # Mirror the four V2 modules and create the future V3 module switches disabled.
+        # In particular, TEAMS is NEVER activated by migration or by the action modality.
+        module_rows = [
+            ('ATTENDANCE','use_attendance'), ('QUALITY_HOT','use_quality_hot'),
+            ('QUALITY_COLD','use_quality_cold'), ('TRAINER_FEEDBACK','use_trainer_feedback')
+        ]
+        for module_code, col in module_rows:
+            c.execute(text(f"""INSERT OR IGNORE INTO action_modules(action_id,module_code,enabled,enabled_at,enabled_by,created_at,updated_at)
+              SELECT id,:m,CASE WHEN COALESCE({col},0)<>0 THEN 1 ELSE 0 END,
+                     CASE WHEN COALESCE({col},0)<>0 THEN :n ELSE NULL END,'migration-v2',:n,:n FROM actions"""), {'m':module_code,'n':now_v3})
+        for module_code in ('BENEFICIARY_PORTAL','COURSE_DOCUMENTS','CLIENT_TRANSMISSION','TEAMS'):
+            c.execute(text("""INSERT OR IGNORE INTO action_modules(action_id,module_code,enabled,enabled_by,created_at,updated_at)
+              SELECT id,:m,0,'migration-v2',:n,:n FROM actions"""), {'m':module_code,'n':now_v3})
+
         post_migrations = [
             "ALTER TABLE beneficiary_portal_accounts ADD COLUMN portal_warning_sent_at TEXT",
             "ALTER TABLE beneficiary_portal_accounts ADD COLUMN portal_purge_due_at TEXT",
@@ -340,6 +509,17 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_participants_beneficiary ON participants(beneficiary_id)",
             "CREATE INDEX IF NOT EXISTS ix_document_refs_action ON document_references(action_id,deleted_at)",
             "CREATE INDEX IF NOT EXISTS ix_document_refs_beneficiary ON document_references(beneficiary_id,deleted_at)",
+            "CREATE INDEX IF NOT EXISTS ix_action_trainers_action ON action_trainers(action_id,active,is_referent)",
+            "CREATE INDEX IF NOT EXISTS ix_action_trainers_trainer ON action_trainers(trainer_id,active)",
+            "CREATE INDEX IF NOT EXISTS ix_slot_trainers_slot ON slot_trainers(slot_id,active)",
+            "CREATE INDEX IF NOT EXISTS ix_slot_trainers_trainer ON slot_trainers(trainer_id,active)",
+            "CREATE INDEX IF NOT EXISTS ix_assignment_history_action ON trainer_assignment_history(action_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_action_modules_action ON action_modules(action_id,enabled)",
+            "CREATE INDEX IF NOT EXISTS ix_import_profiles_org ON organization_import_profiles(organization_id,active)",
+            "CREATE INDEX IF NOT EXISTS ix_teams_occurrences_action ON teams_occurrences(action_id,status)",
+            "CREATE INDEX IF NOT EXISTS ix_teams_roles_action_slot ON teams_participant_roles(action_id,slot_id,active)",
+            "CREATE INDEX IF NOT EXISTS ix_teams_reports_room ON teams_attendance_reports(action_room_id,retrieved_at)",
+            "CREATE INDEX IF NOT EXISTS ix_teams_sync_status ON teams_sync_events(status,created_at)",
         ]
         for sql in indexes: c.execute(text(sql))
 

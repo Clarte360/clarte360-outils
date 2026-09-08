@@ -30,7 +30,8 @@ def slot_start_end(slot, tz_name='Europe/Paris'):
 def email_event_due_utc(slot,event_type,tz_name='Europe/Paris'):
     start,end=slot_start_end(slot,tz_name)
     if event_type=='INITIAL':
-        due=end+timedelta(minutes=int(slot.get('send_offset_min') or 0))
+        # V3 I3: the single automatic attendance request is due at the real slot start.
+        due=start
     elif event_type=='RELANCE_1':
         due=end+timedelta(minutes=int(slot.get('reminder1_offset_min') or 0))
     elif event_type=='RELANCE_2':
@@ -71,6 +72,20 @@ def add_slot(engine, aid, date_s,start_s,end_s,actor,send=-10,r1=20,r2=120,close
     now=utcnow_iso(); public=new_token(18)
     sid=execute(engine,"""INSERT INTO slots(action_id,slot_date,start_time,end_time,original_start_time,original_end_time,send_offset_min,reminder1_offset_min,reminder2_offset_min,close_offset_min,public_token,created_at,updated_at)
       VALUES(:a,:d,:s,:e,:s,:e,:send,:r1,:r2,:close,:t,:c,:c)""",{'a':aid,'d':date_s,'s':start_s,'e':end_s,'send':send,'r1':r1,'r2':r2,'close':close,'t':public,'c':now})
+    # V3 I2: a new slot inherits only the current referent as PRINCIPAL. Other action-level
+    # intervenants are assigned explicitly to the slots where they actually intervene.
+    ref=one(engine,"""SELECT at.trainer_id FROM action_trainers at WHERE at.action_id=:a AND at.active=1 AND at.is_referent=1
+      ORDER BY at.id DESC LIMIT 1""",{'a':aid})
+    if not ref:
+        ref=one(engine,'SELECT trainer_id FROM actions WHERE id=:a AND trainer_id IS NOT NULL',{'a':aid})
+    if ref and ref.get('trainer_id'):
+        now2=utcnow_iso()
+        execute(engine,"""INSERT INTO slot_trainers(slot_id,trainer_id,role,assignment_status,created_by,active,created_at,updated_at)
+          VALUES(:s,:t,'PRINCIPAL','ACTIVE',:by,1,:n,:n)
+          ON CONFLICT(slot_id,trainer_id) DO UPDATE SET role='PRINCIPAL',assignment_status='ACTIVE',active=1,created_by=excluded.created_by,updated_at=excluded.updated_at""",
+          {'s':sid,'t':ref['trainer_id'],'by':actor,'n':now2})
+        execute(engine,"""INSERT INTO trainer_assignment_history(scope_type,action_id,slot_id,trainer_id,event_type,new_role,new_status,actor,created_at)
+          VALUES('SLOT',:a,:s,:t,'ASSIGNED','PRINCIPAL','ACTIVE',:by,:n)""",{'a':aid,'s':sid,'t':ref['trainer_id'],'by':actor,'n':now2})
     audit(engine,'SLOT_ADDED',aid,actor,'slot',sid,{'date':date_s,'start':start_s,'end':end_s});return sid
 
 def update_slot(engine,sid,d,actor):
@@ -83,7 +98,8 @@ def delete_slot(engine,sid,actor):
     old=one(engine,'SELECT * FROM slots WHERE id=:id',{'id':sid});
     if not old:return False,'Créneau introuvable.'
     signed=one(engine,'SELECT COUNT(*) n FROM signatures WHERE slot_id=:id',{'id':sid})['n']
-    if signed:return False,"Impossible : ce créneau contient déjà des signatures."
+    countersigned=one(engine,'SELECT COUNT(*) n FROM trainer_countersignatures_v3 WHERE slot_id=:id',{'id':sid})['n']
+    if signed or countersigned:return False,"Impossible : ce créneau contient déjà des preuves de signature."
     execute(engine,'DELETE FROM slots WHERE id=:id',{'id':sid});audit(engine,'SLOT_DELETED',old['action_id'],actor,'slot',sid,old);return True,''
 
 def ensure_tokens_and_events(engine, aid, base_url,tz_name='Europe/Paris'):
@@ -94,11 +110,13 @@ def ensure_tokens_and_events(engine, aid, base_url,tz_name='Europe/Paris'):
         tok=one(engine,'SELECT * FROM signature_tokens WHERE participant_id=:p AND slot_id=:s',{'p':p['id'],'s':s['id']})
         if not tok:
           token=new_token(24); execute(engine,'INSERT INTO signature_tokens(participant_id,slot_id,token,created_at) VALUES(:p,:s,:t,:c)',{'p':p['id'],'s':s['id'],'t':token,'c':utcnow_iso()})
-        for et in ('INITIAL','RELANCE_1','RELANCE_2'):
-          due=email_event_due_utc(s,et,tz_name).isoformat()
-          execute(engine,"""INSERT OR IGNORE INTO email_events(participant_id,slot_id,event_type,due_at) VALUES(:p,:s,:e,:d)""",{'p':p['id'],'s':s['id'],'e':et,'d':due})
-          execute(engine,"""UPDATE email_events SET due_at=:d,last_error=NULL WHERE participant_id=:p AND slot_id=:s AND event_type=:e AND status='PENDING'""",{'p':p['id'],'s':s['id'],'e':et,'d':due})
-    audit(engine,'SIGNATURE_REQUESTS_PREPARED',aid,'system','action',aid,{'base_url':base_url})
+        due=email_event_due_utc(s,'INITIAL',tz_name).isoformat()
+        execute(engine,"""INSERT OR IGNORE INTO email_events(participant_id,slot_id,event_type,due_at) VALUES(:p,:s,'INITIAL',:d)""",{'p':p['id'],'s':s['id'],'d':due})
+        execute(engine,"""UPDATE email_events SET due_at=:d,last_error=NULL WHERE participant_id=:p AND slot_id=:s AND event_type='INITIAL' AND status='PENDING'""",{'p':p['id'],'s':s['id'],'d':due})
+        # Pending V2 automatic reminders are neutralised, but already-sent historical events are preserved.
+        execute(engine,"""UPDATE email_events SET status='SKIPPED',last_error='Désactivé par règle V3 I3'
+          WHERE participant_id=:p AND slot_id=:s AND event_type IN ('RELANCE_1','RELANCE_2') AND status='PENDING'""",{'p':p['id'],'s':s['id']})
+    audit(engine,'SIGNATURE_REQUESTS_PREPARED',aid,'system','action',aid,{'base_url':base_url,'automatic_events':['INITIAL']})
 
 
 
@@ -155,7 +173,8 @@ def export_action_json(engine,aid):
       'slots':q(engine,'SELECT * FROM slots WHERE action_id=:a',{'a':aid}),
       'signatures':q(engine,'SELECT x.* FROM signatures x JOIN participants p ON p.id=x.participant_id WHERE p.action_id=:a',{'a':aid}),
       'attendance':q(engine,'SELECT x.* FROM attendance_status x JOIN participants p ON p.id=x.participant_id WHERE p.action_id=:a',{'a':aid}),
-      'trainer_countersignatures':q(engine,'SELECT x.* FROM trainer_countersignatures x JOIN slots s ON s.id=x.slot_id WHERE s.action_id=:a',{'a':aid}),
+      'trainer_countersignatures_legacy':q(engine,'SELECT x.* FROM trainer_countersignatures x JOIN slots s ON s.id=x.slot_id WHERE s.action_id=:a',{'a':aid}),
+      'trainer_countersignatures':q(engine,'SELECT x.* FROM trainer_countersignatures_v3 x JOIN slots s ON s.id=x.slot_id WHERE s.action_id=:a',{'a':aid}),
       'email_events':q(engine,'SELECT e.* FROM email_events e JOIN participants p ON p.id=e.participant_id WHERE p.action_id=:a',{'a':aid}),
       'quality_campaigns':q(engine,'SELECT * FROM quality_campaigns WHERE action_id=:a',{'a':aid}),
       'quality_responses':q(engine,'SELECT r.* FROM quality_responses r JOIN quality_campaigns c ON c.id=r.campaign_id WHERE c.action_id=:a',{'a':aid}),
@@ -173,8 +192,9 @@ def export_action_zip(engine,aid,pdf_files:dict[str,bytes]|None=None):
       if pdf_files:
         for name,b in pdf_files.items(): z.writestr(f'documents/{name}',b)
       sigs=q(engine,'SELECT x.signature_path FROM signatures x JOIN participants p ON p.id=x.participant_id WHERE p.action_id=:a',{'a':aid})
+      sigs += q(engine,'SELECT x.signature_path FROM trainer_countersignatures_v3 x JOIN slots s ON s.id=x.slot_id WHERE s.action_id=:a',{'a':aid})
       for s in sigs:
-        p=Path(s['signature_path'])
+        p=Path(s.get('signature_path') or '')
         if p.exists(): z.write(p,f'signatures/{p.name}')
     return buf.getvalue()
 
@@ -203,10 +223,25 @@ def set_attendance_status(engine,pid,sid,status,reason,actor):
     audit(engine,'ATTENDANCE_STATUS_CHANGED',p['action_id'] if p else None,actor,'attendance',f'{pid}/{sid}',{'status':status,'reason':reason})
     return True, ''
 
+def _copy_slot_trainer_assignments(engine, original_sid, new_sid, actor, reason):
+    """Copy current active assignments to a report/catch-up occurrence without altering history."""
+    old=one(engine,'SELECT action_id FROM slots WHERE id=:s',{'s':original_sid})
+    if not old:return
+    # add_slot may have inherited the current referent; normalize the new occurrence to the original assignment set.
+    inherited=q(engine,'SELECT * FROM slot_trainers WHERE slot_id=:s AND active=1',{'s':new_sid})
+    source=q(engine,"SELECT * FROM slot_trainers WHERE slot_id=:s AND active=1 AND assignment_status='ACTIVE' ORDER BY id",{'s':original_sid})
+    source_ids={x['trainer_id'] for x in source}
+    for row in inherited:
+        if row['trainer_id'] not in source_ids:
+            execute(engine,"UPDATE slot_trainers SET active=0,assignment_status='INACTIVE',reason=:r,updated_at=:u WHERE id=:i",{'r':'Normalisation affectations report/rattrapage','u':utcnow_iso(),'i':row['id']})
+    for row in source:
+        assign_slot_trainer(engine,new_sid,row['trainer_id'],actor,row.get('role') or 'PRINCIPAL',reason)
+
 def create_catchup_slot(engine, original_sid, date_s,start_s,end_s, participant_ids, actor, reason='Rattrapage'):
     old=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':original_sid})
     sid=add_slot(engine,old['action_id'],date_s,start_s,end_s,actor,old['send_offset_min'],old['reminder1_offset_min'],old['reminder2_offset_min'],old['close_offset_min'])
     execute(engine,"UPDATE slots SET parent_slot_id=:p,slot_kind='RATTRAPAGE',change_reason=:r WHERE id=:s",{'p':original_sid,'r':reason,'s':sid})
+    _copy_slot_trainer_assignments(engine,original_sid,sid,actor,'Rattrapage : '+str(reason or ''))
     # Only selected participants are expected on this catch-up slot.
     allp=q(engine,'SELECT id FROM participants WHERE action_id=:a AND active=1',{'a':old['action_id']})
     selected=set(int(x) for x in participant_ids)
@@ -216,7 +251,7 @@ def create_catchup_slot(engine, original_sid, date_s,start_s,end_s, participant_
     return sid
 
 def safe_update_slot(engine,sid,d,actor):
-    evidence=one(engine,"SELECT (SELECT COUNT(*) FROM signatures WHERE slot_id=:s)+(SELECT COUNT(*) FROM attendance_status WHERE slot_id=:s AND status IN ('ABSENT','PRESENT_REGULARISE')) n",{'s':sid})['n']
+    evidence=one(engine,"SELECT (SELECT COUNT(*) FROM signatures WHERE slot_id=:s)+(SELECT COUNT(*) FROM attendance_status WHERE slot_id=:s AND status IN ('ABSENT','PRESENT_REGULARISE'))+(SELECT COUNT(*) FROM trainer_countersignatures_v3 WHERE slot_id=:s) n",{'s':sid})['n']
     if evidence: return False,"Ce créneau contient déjà une preuve (signature/absence). Il ne peut plus être réécrit : utilisez Report / Rattrapage."
     update_slot(engine,sid,d,actor); return True,''
 
@@ -227,25 +262,96 @@ def trainer_token(engine,aid):
 
 def trainer_url(engine,aid,base_url): return f"{base_url.rstrip('/')}?trainer_token={trainer_token(engine,aid)}"
 
-def countersign_slot(engine,sid,name,email,actor,declaration):
-    s=one(engine,'SELECT action_id FROM slots WHERE id=:s',{'s':sid})
-    execute(engine,"""INSERT INTO trainer_countersignatures(slot_id,trainer_name,trainer_email,signed_at,declaration_text,method,actor)
-      VALUES(:s,:n,:e,:at,:d,'NOM_PRENOM',:a) ON CONFLICT(slot_id) DO UPDATE SET trainer_name=excluded.trainer_name,trainer_email=excluded.trainer_email,signed_at=excluded.signed_at,declaration_text=excluded.declaration_text,actor=excluded.actor""",
-      {'s':sid,'n':name,'e':email or None,'at':utcnow_iso(),'d':declaration,'a':actor})
-    audit(engine,'TRAINER_COUNTERSIGNED',s['action_id'] if s else None,actor,'slot',sid,{'trainer_name':name})
+def _slot_participant_states(engine, sid):
+    slot=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
+    if not slot: return []
+    parts=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':slot['action_id']})
+    out=[]
+    for p in parts:
+        sig=one(engine,"SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':p['id'],'s':sid})
+        att=one(engine,'SELECT status,reason FROM attendance_status WHERE participant_id=:p AND slot_id=:s',{'p':p['id'],'s':sid})
+        if sig:
+            status='SIGNE'
+        elif att and att.get('status') in ('ABSENT','NON_CONCERNE','PRESENT_REGULARISE'):
+            status=att['status']
+        else:
+            status='EN_ATTENTE'
+        out.append({'participant_id':p['id'],'name':f"{p['first_name']} {p['last_name']}",'status':status})
+    return out
 
-def can_issue_certificate(engine,pid):
-    p=one(engine,'SELECT action_id FROM participants WHERE id=:p',{'p':pid});
-    if not p:return False,['Participant introuvable']
-    slots=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE')",{'a':p['action_id']}); problems=[]
-    for s in slots:
-        att=one(engine,'SELECT status FROM attendance_status WHERE participant_id=:p AND slot_id=:s',{'p':pid,'s':s['id']})
-        sig=one(engine,"SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':pid,'s':s['id']})
-        if att and att['status']=='NON_CONCERNE': continue
-        if att and att['status']=='ABSENT': problems.append(f"Absence non rattrapée sur le créneau #{s['id']}"); continue
-        if not sig: problems.append(f"Signature manquante sur le créneau #{s['id']}")
-        if not one(engine,'SELECT id FROM trainer_countersignatures WHERE slot_id=:s',{'s':s['id']}): problems.append(f"Contresignature intervenant manquante sur le créneau #{s['id']}")
-    return not problems,problems
+
+def slot_countersignature_eligibility(engine, sid, trainer_id=None, tz_name=None, now=None):
+    """Server-side V3 I3 gate. UI state alone is never considered sufficient."""
+    slot=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
+    if not slot: return False,'Créneau introuvable.',{}
+    action=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':slot['action_id']})
+    tz_name=tz_name or organization_runtime_config(engine,slot['action_id'])['timezone']
+    current=now or datetime.now(ZoneInfo(tz_name))
+    if current.tzinfo is None: current=current.replace(tzinfo=ZoneInfo(tz_name))
+    _,end=slot_start_end(slot,tz_name)
+    if current < end:
+        return False,f"Contresignature impossible avant la fin réelle du créneau ({end.strftime('%d/%m/%Y %H:%M')}).",{'end':end.isoformat()}
+    if (slot.get('status') or 'PREVU') in ('ANNULE','REPORTE'):
+        return False,'Ce créneau annulé ou reporté ne peut pas être contresigné comme occurrence réalisée.',{}
+    states=_slot_participant_states(engine,sid)
+    pending=[x for x in states if x['status']=='EN_ATTENTE']
+    if pending:
+        return False,'Situation non finalisée pour : '+', '.join(x['name'] for x in pending)+'.',{'pending':pending}
+    assigned=list_slot_trainers(engine,sid)
+    if trainer_id is not None and assigned and int(trainer_id) not in {int(x['trainer_id']) for x in assigned}:
+        return False,"Cet intervenant n'est pas affecté à ce créneau.",{}
+    return True,'',{'participants':states,'assigned_trainers':assigned,'end':end.isoformat()}
+
+
+def list_slot_countersignatures(engine,sid):
+    return q(engine,"""SELECT c.*,t.full_name assigned_trainer_name FROM trainer_countersignatures_v3 c
+      LEFT JOIN trainers t ON t.id=c.trainer_id WHERE c.slot_id=:s ORDER BY c.signed_at,c.id""",{'s':sid})
+
+
+def required_slot_countersignatures_complete(engine,sid):
+    assigned=list_slot_trainers(engine,sid)
+    signed=list_slot_countersignatures(engine,sid)
+    if assigned:
+        signed_ids={int(x['trainer_id']) for x in signed if x.get('trainer_id') is not None}
+        missing=[x for x in assigned if int(x['trainer_id']) not in signed_ids]
+        return not missing,missing
+    # Legacy fallback: a historical countersignature is sufficient where no V3 assignment exists.
+    return bool(signed),([] if signed else [{'full_name':'Intervenant'}])
+
+
+def countersign_slot(engine,sid,name,email,actor,declaration,trainer_id=None,signature_bytes=None,ip_address=None,user_agent=None,now=None):
+    """Create an immutable V3 countersignature after all server-side gates pass.
+
+    signature_bytes is mandatory for V3 assigned trainers. Legacy unassigned test/data paths may
+    still create a NOM_PRENOM proof so historical APIs remain readable during migration.
+    """
+    slot=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
+    if not slot:return False,'Créneau introuvable.'
+    assigned=list_slot_trainers(engine,sid)
+    if trainer_id is None and assigned:
+        matches=[x for x in assigned if (email and x.get('email') and x['email'].lower()==email.lower()) or x.get('full_name','').strip().lower()==(name or '').strip().lower()]
+        if len(matches)==1: trainer_id=matches[0]['trainer_id']
+    ok,msg,_=slot_countersignature_eligibility(engine,sid,trainer_id=trainer_id,now=now)
+    if not ok:return False,msg
+    existing=one(engine,'SELECT id FROM trainer_countersignatures_v3 WHERE slot_id=:s AND trainer_id IS :t',{'s':sid,'t':trainer_id})
+    if existing:return False,'Cette contresignature est déjà enregistrée et ne peut pas être modifiée.'
+    method='NOM_PRENOM'; path=None; digest=None
+    if assigned:
+        if not signature_bytes:return False,'La signature manuscrite de l’intervenant est obligatoire.'
+        digest=__import__('hashlib').sha256(signature_bytes).hexdigest()
+        path=SIG_DIR/f"trainer_sig_{slot['action_id']}_{sid}_{trainer_id}_{digest[:12]}.png"
+        path.write_bytes(signature_bytes); method='MANUSCRITE'
+    elif signature_bytes:
+        digest=__import__('hashlib').sha256(signature_bytes).hexdigest()
+        path=SIG_DIR/f"trainer_sig_{slot['action_id']}_{sid}_legacy_{digest[:12]}.png"; path.write_bytes(signature_bytes); method='MANUSCRITE'
+    signed_at=(now.astimezone(ZoneInfo('UTC')).isoformat() if now is not None and now.tzinfo else utcnow_iso())
+    execute(engine,"""INSERT INTO trainer_countersignatures_v3(slot_id,trainer_id,trainer_name,trainer_email,signed_at,declaration_text,
+      signature_path,signature_sha256,method,actor,ip_address,user_agent,created_at)
+      VALUES(:s,:t,:n,:e,:at,:d,:p,:h,:m,:a,:ip,:ua,:c)""",
+      {'s':sid,'t':trainer_id,'n':name,'e':email or None,'at':signed_at,'d':declaration,'p':str(path) if path else None,'h':digest,
+       'm':method,'a':actor,'ip':ip_address,'ua':user_agent,'c':signed_at})
+    audit(engine,'TRAINER_COUNTERSIGNED',slot['action_id'],actor,'slot',sid,{'trainer_id':trainer_id,'trainer_name':name,'method':method,'signature_sha256':digest})
+    return True,''
 
 def update_participant(engine,pid,d,actor):
     p=one(engine,'SELECT * FROM participants WHERE id=:p',{'p':pid})
@@ -277,11 +383,12 @@ def participant_pin_for_authorized_display(engine,pid,actor,action_id=None):
 def report_slot(engine,sid,date_s,start_s,end_s,actor,reason='Report'):
     old=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
     if not old: return None
-    evidence=one(engine,"SELECT (SELECT COUNT(*) FROM signatures WHERE slot_id=:s)+(SELECT COUNT(*) FROM attendance_status WHERE slot_id=:s AND status='ABSENT') n",{'s':sid})['n']
+    evidence=one(engine,"SELECT (SELECT COUNT(*) FROM signatures WHERE slot_id=:s)+(SELECT COUNT(*) FROM attendance_status WHERE slot_id=:s AND status='ABSENT')+(SELECT COUNT(*) FROM trainer_countersignatures_v3 WHERE slot_id=:s) n",{'s':sid})['n']
     if evidence: return None
     execute(engine,"UPDATE slots SET status='REPORTE',change_reason=:r,updated_at=:u WHERE id=:s",{'r':reason,'u':utcnow_iso(),'s':sid})
     ns=add_slot(engine,old['action_id'],date_s,start_s,end_s,actor,old['send_offset_min'],old['reminder1_offset_min'],old['reminder2_offset_min'],old['close_offset_min'])
     execute(engine,"UPDATE slots SET parent_slot_id=:p,slot_kind='REPORT',change_reason=:r WHERE id=:s",{'p':sid,'r':reason,'s':ns})
+    _copy_slot_trainer_assignments(engine,sid,ns,actor,'Report : '+str(reason or ''))
     audit(engine,'SLOT_REPORTED',old['action_id'],actor,'slot',ns,{'from_slot_id':sid,'reason':reason})
     return ns
 
@@ -310,12 +417,14 @@ def can_issue_certificate(engine,pid, require_closed=False):
         if att and att['status']=='NON_CONCERNE': continue
         # A valid signature always takes precedence over a stale absence marker.
         if sig:
-            if not one(engine,'SELECT id FROM trainer_countersignatures WHERE slot_id=:s',{'s':sl['id']}):
-                problems.append(f"Contresignature intervenant manquante sur le créneau #{sl['id']}")
+            cs_ok,missing=required_slot_countersignatures_complete(engine,sl['id'])
+            if not cs_ok:
+                problems.append(f"Contresignature intervenant manquante sur le créneau #{sl['id']}" + (" : "+', '.join(x.get('full_name') or 'Intervenant' for x in missing) if missing else ''))
             continue
         if att and att['status']=='ABSENT':
-            if not one(engine,'SELECT id FROM trainer_countersignatures WHERE slot_id=:s',{'s':sl['id']}):
-                problems.append(f"Contresignature intervenant manquante sur le créneau absent #{sl['id']}")
+            cs_ok,missing=required_slot_countersignatures_complete(engine,sl['id'])
+            if not cs_ok:
+                problems.append(f"Contresignature intervenant manquante sur le créneau absent #{sl['id']}" + (" : "+', '.join(x.get('full_name') or 'Intervenant' for x in missing) if missing else ''))
             if not catchup_for_absence(engine,pid,sl['id']):
                 problems.append(f"Absence non rattrapée sur le créneau #{sl['id']}")
             continue
@@ -325,8 +434,9 @@ def can_issue_certificate(engine,pid, require_closed=False):
                 continue
         except Exception: pass
         problems.append(f"Signature manquante sur le créneau #{sl['id']}")
-        if not one(engine,'SELECT id FROM trainer_countersignatures WHERE slot_id=:s',{'s':sl['id']}):
-            problems.append(f"Contresignature intervenant manquante sur le créneau #{sl['id']}")
+        cs_ok,missing=required_slot_countersignatures_complete(engine,sl['id'])
+        if not cs_ok:
+            problems.append(f"Contresignature intervenant manquante sur le créneau #{sl['id']}" + (" : "+', '.join(x.get('full_name') or 'Intervenant' for x in missing) if missing else ''))
     return not problems,problems
 
 
@@ -443,27 +553,187 @@ def verify_trainer_login(engine,email,password):
     return t
 
 def trainer_actions(engine,trainer_id):
-    return q(engine,"SELECT * FROM actions WHERE trainer_id=:t AND status<>'ARCHIVEE' ORDER BY COALESCE(start_date,''),action_no",{'t':trainer_id})
+    """Return all non-archived actions for which the trainer has an active V3 assignment.
+
+    Action-level assignments grant visibility to the action. Slot-level assignments also grant
+    visibility so a punctual replacement remains able to reach the relevant action even if no
+    action-level row was created explicitly.
+    """
+    return q(engine,"""SELECT DISTINCT a.* FROM actions a
+      WHERE a.status<>'ARCHIVEE' AND (
+        EXISTS (SELECT 1 FROM action_trainers at WHERE at.action_id=a.id AND at.trainer_id=:t AND at.active=1)
+        OR EXISTS (SELECT 1 FROM slots s JOIN slot_trainers st ON st.slot_id=s.id
+                   WHERE s.action_id=a.id AND st.trainer_id=:t AND st.active=1 AND st.assignment_status='ACTIVE')
+        OR a.trainer_id=:t
+      ) ORDER BY COALESCE(a.start_date,''),a.action_no""",{'t':trainer_id})
+
+
+def list_action_trainers(engine, action_id, active_only=True):
+    wh=" AND at.active=1" if active_only else ""
+    return q(engine,f"""SELECT at.*,t.full_name,t.email,t.phone,t.active trainer_active
+      FROM action_trainers at JOIN trainers t ON t.id=at.trainer_id
+      WHERE at.action_id=:a{wh}
+      ORDER BY at.is_referent DESC, CASE at.role WHEN 'REFERENT' THEN 0 WHEN 'INTERVENANT' THEN 1 ELSE 2 END, t.full_name""",{'a':action_id})
+
+
+def list_slot_trainers(engine, slot_id, active_only=True):
+    wh=" AND st.active=1 AND st.assignment_status='ACTIVE'" if active_only else ""
+    return q(engine,f"""SELECT st.*,t.full_name,t.email,t.phone,t.active trainer_active
+      FROM slot_trainers st JOIN trainers t ON t.id=st.trainer_id
+      WHERE st.slot_id=:s{wh}
+      ORDER BY CASE st.role WHEN 'PRINCIPAL' THEN 0 WHEN 'CO_INTERVENANT' THEN 1 WHEN 'REMPLACANT' THEN 2 ELSE 3 END, t.full_name""",{'s':slot_id})
+
+
+def trainer_assignment_history(engine, action_id, slot_id=None):
+    if slot_id is None:
+        return q(engine,"""SELECT h.*,t.full_name FROM trainer_assignment_history h LEFT JOIN trainers t ON t.id=h.trainer_id
+          WHERE h.action_id=:a ORDER BY h.created_at,h.id""",{'a':action_id})
+    return q(engine,"""SELECT h.*,t.full_name FROM trainer_assignment_history h LEFT JOIN trainers t ON t.id=h.trainer_id
+      WHERE h.action_id=:a AND h.slot_id=:s ORDER BY h.created_at,h.id""",{'a':action_id,'s':slot_id})
+
+
+def _log_assignment(engine, scope_type, action_id, trainer_id, event_type, actor, *, slot_id=None,
+                    old_role=None,new_role=None,old_status=None,new_status=None,reason=None):
+    execute(engine,"""INSERT INTO trainer_assignment_history(scope_type,action_id,slot_id,trainer_id,event_type,
+      old_role,new_role,old_status,new_status,reason,actor,created_at)
+      VALUES(:scope,:a,:s,:t,:ev,:orole,:nrole,:ost,:nst,:r,:by,:n)""",
+      {'scope':scope_type,'a':action_id,'s':slot_id,'t':trainer_id,'ev':event_type,'orole':old_role,
+       'nrole':new_role,'ost':old_status,'nst':new_status,'r':reason,'by':actor,'n':utcnow_iso()})
+
+
+def assign_action_trainer(engine, action_id, trainer_id, actor, role='INTERVENANT', is_referent=False, reason=None):
+    """Add/reactivate an action-level trainer without removing other active trainers."""
+    t=one(engine,'SELECT * FROM trainers WHERE id=:i AND active=1',{'i':trainer_id})
+    if not t: return False,'Intervenant introuvable ou inactif.'
+    role='REFERENT' if is_referent else (role or 'INTERVENANT').upper()
+    now=utcnow_iso()
+    if is_referent:
+        # Only one referent is kept at action level. Other intervenants remain active.
+        olds=q(engine,"SELECT * FROM action_trainers WHERE action_id=:a AND is_referent=1 AND active=1 AND trainer_id<>:t",{'a':action_id,'t':trainer_id})
+        for old in olds:
+            execute(engine,"UPDATE action_trainers SET is_referent=0,role=CASE WHEN role='REFERENT' THEN 'INTERVENANT' ELSE role END,updated_at=:u WHERE id=:i",{'u':now,'i':old['id']})
+            _log_assignment(engine,'ACTION',action_id,old['trainer_id'],'REFERENT_CHANGED',actor,
+                            old_role=old.get('role'),new_role='INTERVENANT',old_status='ACTIVE',new_status='ACTIVE',reason=reason)
+    old=one(engine,'SELECT * FROM action_trainers WHERE action_id=:a AND trainer_id=:t',{'a':action_id,'t':trainer_id})
+    execute(engine,"""INSERT INTO action_trainers(action_id,trainer_id,role,is_referent,active,created_at,updated_at)
+      VALUES(:a,:t,:r,:ref,1,:n,:n)
+      ON CONFLICT(action_id,trainer_id) DO UPDATE SET role=excluded.role,is_referent=excluded.is_referent,active=1,updated_at=excluded.updated_at""",
+      {'a':action_id,'t':trainer_id,'r':role,'ref':1 if is_referent else 0,'n':now})
+    _log_assignment(engine,'ACTION',action_id,trainer_id,'ASSIGNED' if not old or not old.get('active') else 'UPDATED',actor,
+                    old_role=(old or {}).get('role'),new_role=role,old_status='ACTIVE' if old and old.get('active') else 'INACTIVE',new_status='ACTIVE',reason=reason)
+    if is_referent:
+        execute(engine,'UPDATE actions SET trainer_id=:i,trainer_name=:n,trainer_email=:e,updated_at=:u WHERE id=:a',
+                {'i':trainer_id,'n':t['full_name'],'e':t.get('email'),'u':now,'a':action_id})
+    audit(engine,'ACTION_TRAINER_ASSIGNED',action_id,actor,'trainer',trainer_id,{'role':role,'is_referent':bool(is_referent),'reason':reason})
+    return True,''
+
+
+def unassign_action_trainer(engine, action_id, trainer_id, actor, reason=None):
+    row=one(engine,'SELECT * FROM action_trainers WHERE action_id=:a AND trainer_id=:t',{'a':action_id,'t':trainer_id})
+    if not row or not row.get('active'): return False,'Affectation active introuvable.'
+    now=utcnow_iso()
+    execute(engine,'UPDATE action_trainers SET active=0,is_referent=0,updated_at=:u WHERE id=:i',{'u':now,'i':row['id']})
+    _log_assignment(engine,'ACTION',action_id,trainer_id,'UNASSIGNED',actor,old_role=row.get('role'),old_status='ACTIVE',new_status='INACTIVE',reason=reason)
+    # Do not erase historical/slot assignments. Current future/present slot rights remain explicit.
+    if row.get('is_referent'):
+        execute(engine,'UPDATE actions SET trainer_id=NULL,trainer_name=NULL,trainer_email=NULL,updated_at=:u WHERE id=:a AND trainer_id=:t',{'u':now,'a':action_id,'t':trainer_id})
+    audit(engine,'ACTION_TRAINER_UNASSIGNED',action_id,actor,'trainer',trainer_id,{'reason':reason})
+    return True,''
+
+
+def assign_slot_trainer(engine, slot_id, trainer_id, actor, role='PRINCIPAL', reason=None, replaced_assignment_id=None):
+    sl=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':slot_id})
+    t=one(engine,'SELECT * FROM trainers WHERE id=:i AND active=1',{'i':trainer_id})
+    if not sl: return False,'Créneau introuvable.'
+    if not t: return False,'Intervenant introuvable ou inactif.'
+    role=(role or 'PRINCIPAL').upper()
+    now=utcnow_iso(); old=one(engine,'SELECT * FROM slot_trainers WHERE slot_id=:s AND trainer_id=:t',{'s':slot_id,'t':trainer_id})
+    execute(engine,"""INSERT INTO slot_trainers(slot_id,trainer_id,role,assignment_status,replaced_assignment_id,reason,created_by,active,created_at,updated_at)
+      VALUES(:s,:t,:r,'ACTIVE',:rep,:why,:by,1,:n,:n)
+      ON CONFLICT(slot_id,trainer_id) DO UPDATE SET role=excluded.role,assignment_status='ACTIVE',replaced_assignment_id=excluded.replaced_assignment_id,
+        reason=excluded.reason,created_by=excluded.created_by,active=1,updated_at=excluded.updated_at""",
+      {'s':slot_id,'t':trainer_id,'r':role,'rep':replaced_assignment_id,'why':reason,'by':actor,'n':now})
+    _log_assignment(engine,'SLOT',sl['action_id'],trainer_id,'ASSIGNED' if not old or not old.get('active') else 'UPDATED',actor,
+                    slot_id=slot_id,old_role=(old or {}).get('role'),new_role=role,
+                    old_status=(old or {}).get('assignment_status') or 'INACTIVE',new_status='ACTIVE',reason=reason)
+    # A punctual slot assignment grants action visibility without forcing action-level membership.
+    audit(engine,'SLOT_TRAINER_ASSIGNED',sl['action_id'],actor,'slot',slot_id,{'trainer_id':trainer_id,'role':role,'reason':reason})
+    return True,''
+
+
+def unassign_slot_trainer(engine, slot_id, trainer_id, actor, reason=None, status='INACTIVE'):
+    sl=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':slot_id}); row=one(engine,'SELECT * FROM slot_trainers WHERE slot_id=:s AND trainer_id=:t',{'s':slot_id,'t':trainer_id})
+    if not sl or not row or not row.get('active'): return False,'Affectation active introuvable.'
+    now=utcnow_iso(); status=(status or 'INACTIVE').upper()
+    execute(engine,'UPDATE slot_trainers SET active=0,assignment_status=:st,reason=:r,updated_at=:u WHERE id=:i',{'st':status,'r':reason,'u':now,'i':row['id']})
+    _log_assignment(engine,'SLOT',sl['action_id'],trainer_id,'UNASSIGNED',actor,slot_id=slot_id,old_role=row.get('role'),old_status=row.get('assignment_status'),new_status=status,reason=reason)
+    audit(engine,'SLOT_TRAINER_UNASSIGNED',sl['action_id'],actor,'slot',slot_id,{'trainer_id':trainer_id,'status':status,'reason':reason})
+    return True,''
+
+
+def replace_slot_trainer(engine, slot_id, old_trainer_id, new_trainer_id, actor, reason=None, role='REMPLACANT'):
+    """Replace one active slot assignment while retaining immutable history of who was planned."""
+    old=one(engine,'SELECT * FROM slot_trainers WHERE slot_id=:s AND trainer_id=:t AND active=1',{'s':slot_id,'t':old_trainer_id})
+    if not old: return False,'Intervenant initial non affecté à ce créneau.'
+    ok,msg=unassign_slot_trainer(engine,slot_id,old_trainer_id,actor,reason,status='REPLACED')
+    if not ok: return ok,msg
+    ok,msg=assign_slot_trainer(engine,slot_id,new_trainer_id,actor,role=role,reason=reason,replaced_assignment_id=old['id'])
+    if ok:
+        sl=one(engine,'SELECT action_id FROM slots WHERE id=:s',{'s':slot_id})
+        audit(engine,'SLOT_TRAINER_REPLACED',sl['action_id'],actor,'slot',slot_id,{'old_trainer_id':old_trainer_id,'new_trainer_id':new_trainer_id,'reason':reason})
+    return ok,msg
+
 
 def set_trainer_active(engine,tid,active,actor):
     execute(engine,'UPDATE trainers SET active=:x,updated_at=:u WHERE id=:i',{'x':1 if active else 0,'u':utcnow_iso(),'i':tid}); audit(engine,'TRAINER_STATUS_CHANGED',None,actor,'trainer',tid,{'active':bool(active)})
 
+
 def purge_trainer(engine,tid,actor):
     t=one(engine,'SELECT * FROM trainers WHERE id=:i',{'i':tid})
     if not t:return False,'Intervenant introuvable.'
+    # I2: never purge a trainer that has assignment history or proofs; deactivate instead.
+    used=one(engine,"""SELECT
+      (SELECT COUNT(*) FROM action_trainers WHERE trainer_id=:i)+
+      (SELECT COUNT(*) FROM slot_trainers WHERE trainer_id=:i)+
+      (SELECT COUNT(*) FROM trainer_assignment_history WHERE trainer_id=:i)+
+      (SELECT COUNT(*) FROM trainer_reports WHERE trainer_id=:i) n""",{'i':tid})['n']
+    if used:
+        return False,"Impossible de supprimer cet intervenant : des affectations ou preuves historiques existent. Désactivez son compte."
     execute(engine,'UPDATE actions SET trainer_id=NULL,trainer_name=NULL,trainer_email=NULL WHERE trainer_id=:i',{'i':tid})
     execute(engine,'DELETE FROM trainer_access_tokens WHERE trainer_id=:i',{'i':tid})
     execute(engine,'DELETE FROM trainers WHERE id=:i',{'i':tid})
     audit(engine,'TRAINER_PURGED',None,actor,'trainer',tid,{'name':t.get('full_name')}); return True,''
 
+
 def assign_trainer(engine,aid,tid,actor):
-    execute(engine,'UPDATE trainer_access_tokens SET active=0 WHERE action_id=:a',{'a':aid})
+    """V2-compatible setter: change the action REFERENT while preserving other I2 assignments."""
+    old=one(engine,'SELECT trainer_id FROM actions WHERE id=:a',{'a':aid}) or {}; old_tid=old.get('trainer_id')
     if not tid:
-        execute(engine,'UPDATE actions SET trainer_id=NULL,trainer_name=NULL,trainer_email=NULL,updated_at=:u WHERE id=:a',{'u':utcnow_iso(),'a':aid}); return
-    t=one(engine,'SELECT * FROM trainers WHERE id=:i AND active=1',{'i':tid})
-    if not t:return
-    execute(engine,'UPDATE actions SET trainer_id=:i,trainer_name=:n,trainer_email=:e,updated_at=:u WHERE id=:a',{'i':tid,'n':t['full_name'],'e':t.get('email'),'u':utcnow_iso(),'a':aid})
-    audit(engine,'TRAINER_ASSIGNED',aid,actor,'trainer',tid,{'name':t['full_name']})
+        if old_tid:
+            unassign_action_trainer(engine,aid,old_tid,actor,'Retrait du référent via compatibilité V2')
+            # Deactivate the former referent on slots only; co-intervenants/remplaçants remain untouched.
+            for sl in q(engine,'SELECT id FROM slots WHERE action_id=:a',{'a':aid}):
+                row=one(engine,'SELECT * FROM slot_trainers WHERE slot_id=:s AND trainer_id=:t AND active=1',{'s':sl['id'],'t':old_tid})
+                if row and row.get('role')=='PRINCIPAL': unassign_slot_trainer(engine,sl['id'],old_tid,actor,'Retrait du référent','INACTIVE')
+        execute(engine,'UPDATE actions SET trainer_id=NULL,trainer_name=NULL,trainer_email=NULL,updated_at=:u WHERE id=:a',{'u':utcnow_iso(),'a':aid})
+        return
+    ok,msg=assign_action_trainer(engine,aid,tid,actor,role='REFERENT',is_referent=True,reason='Référent défini')
+    if not ok:return
+    # The legacy single-trainer setter means replacement: deactivate the former referent at action level,
+    # while preserving any other I2 intervenants that were added explicitly.
+    if old_tid and old_tid!=tid:
+        oldar=one(engine,'SELECT * FROM action_trainers WHERE action_id=:a AND trainer_id=:t AND active=1',{'a':aid,'t':old_tid})
+        if oldar: unassign_action_trainer(engine,aid,old_tid,actor,'Changement du référent via compatibilité V2')
+    # Existing slots keep explicit co-intervenants. Replace only the former referent/principal.
+    for sl in q(engine,'SELECT id FROM slots WHERE action_id=:a',{'a':aid}):
+        if old_tid and old_tid!=tid:
+            oldrow=one(engine,'SELECT * FROM slot_trainers WHERE slot_id=:s AND trainer_id=:t AND active=1',{'s':sl['id'],'t':old_tid})
+            if oldrow and oldrow.get('role')=='PRINCIPAL': unassign_slot_trainer(engine,sl['id'],old_tid,actor,'Changement du référent','REPLACED')
+        # Do not overwrite a role already explicitly configured for the new referent.
+        cur=one(engine,'SELECT * FROM slot_trainers WHERE slot_id=:s AND trainer_id=:t AND active=1',{'s':sl['id'],'t':tid})
+        if not cur: assign_slot_trainer(engine,sl['id'],tid,actor,'PRINCIPAL','Affectation du référent')
+    execute(engine,'UPDATE trainer_access_tokens SET active=0 WHERE action_id=:a',{'a':aid})
+    audit(engine,'TRAINER_ASSIGNED',aid,actor,'trainer',tid,{'name':(one(engine,'SELECT full_name FROM trainers WHERE id=:i',{'i':tid}) or {}).get('full_name'),'compatibility':'V2_REFERENT'})
 
 def trainer_token(engine,aid,trainer_id=None):
     t=one(engine,'SELECT token FROM trainer_access_tokens WHERE action_id=:a AND active=1 ORDER BY id DESC',{'a':aid})
@@ -504,12 +774,21 @@ def complete_trainer_password_reset(engine,token,password):
     return True,''
 
 def trainer_action_authorized(engine,trainer_id,action_id):
-    return bool(one(engine,"SELECT id FROM actions WHERE id=:a AND trainer_id=:t",{'a':action_id,'t':trainer_id}))
+    return bool(one(engine,"""SELECT a.id FROM actions a WHERE a.id=:a AND (
+      a.trainer_id=:t
+      OR EXISTS (SELECT 1 FROM action_trainers at WHERE at.action_id=a.id AND at.trainer_id=:t AND at.active=1)
+      OR EXISTS (SELECT 1 FROM slots s JOIN slot_trainers st ON st.slot_id=s.id
+                 WHERE s.action_id=a.id AND st.trainer_id=:t AND st.active=1 AND st.assignment_status='ACTIVE'))""",{'a':action_id,'t':trainer_id}))
 
 def trainer_action_dashboard(engine,trainer_id,action_id,tz_name='Europe/Paris'):
-    a=one(engine,'SELECT * FROM actions WHERE id=:a AND trainer_id=:t',{'a':action_id,'t':trainer_id})
-    if not a:return None
-    slots=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE') ORDER BY slot_date,start_time",{'a':action_id})
+    if not trainer_action_authorized(engine,trainer_id,action_id): return None
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
+    # I2 principle: an intervenant sees the slots to which they are really assigned.
+    # The V2 compatibility trainer_id is accepted as a fallback for unmigrated databases.
+    slots=q(engine,"""SELECT DISTINCT s.* FROM slots s WHERE s.action_id=:a AND s.status NOT IN ('ANNULE','REPORTE') AND (
+      EXISTS (SELECT 1 FROM slot_trainers st WHERE st.slot_id=s.id AND st.trainer_id=:t AND st.active=1 AND st.assignment_status='ACTIVE')
+      OR (NOT EXISTS (SELECT 1 FROM slot_trainers sx WHERE sx.slot_id=s.id AND sx.active=1) AND :t=(SELECT trainer_id FROM actions WHERE id=:a))
+      ) ORDER BY s.slot_date,s.start_time""",{'a':action_id,'t':trainer_id})
     parts=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':action_id})
     now=datetime.now(ZoneInfo(tz_name)); next_slot=None
     for sl in slots:
@@ -517,7 +796,204 @@ def trainer_action_dashboard(engine,trainer_id,action_id,tz_name='Europe/Paris')
             start,_=slot_start_end(sl,tz_name)
             if start>=now: next_slot=sl; break
         except Exception: pass
-    return {'action':a,'slots':slots,'participants':parts,'next_slot':next_slot}
+    action_assignment=one(engine,"SELECT * FROM action_trainers WHERE action_id=:a AND trainer_id=:t AND active=1",{'a':action_id,'t':trainer_id})
+    return {'action':a,'slots':slots,'participants':parts,'next_slot':next_slot,'assignment':action_assignment}
+
+
+def set_action_trainer_planning_permission(engine, action_id, trainer_id, allowed, actor):
+    row=one(engine,'SELECT * FROM action_trainers WHERE action_id=:a AND trainer_id=:t AND active=1',{'a':action_id,'t':trainer_id})
+    if not row: return False,"L'intervenant n'est pas affecté à cette action."
+    execute(engine,'UPDATE action_trainers SET can_manage_planning=:v,updated_at=:u WHERE id=:i',{'v':1 if allowed else 0,'u':utcnow_iso(),'i':row['id']})
+    audit(engine,'TRAINER_ACTION_PLANNING_PERMISSION_CHANGED',action_id,actor,'trainer',trainer_id,{'allowed':bool(allowed)})
+    return True,''
+
+
+def set_slot_trainer_planning_permission(engine, slot_id, trainer_id, allowed, actor):
+    sl=one(engine,'SELECT action_id FROM slots WHERE id=:s',{'s':slot_id})
+    row=one(engine,"SELECT * FROM slot_trainers WHERE slot_id=:s AND trainer_id=:t AND active=1 AND assignment_status='ACTIVE'",{'s':slot_id,'t':trainer_id})
+    if not sl or not row: return False,"L'intervenant n'est pas affecté à ce créneau."
+    execute(engine,'UPDATE slot_trainers SET can_manage_planning=:v,updated_at=:u WHERE id=:i',{'v':1 if allowed else 0,'u':utcnow_iso(),'i':row['id']})
+    audit(engine,'TRAINER_SLOT_PLANNING_PERMISSION_CHANGED',sl['action_id'],actor,'slot',slot_id,{'trainer_id':trainer_id,'allowed':bool(allowed)})
+    return True,''
+
+
+def trainer_planning_scope(engine, trainer_id, action_id):
+    """Return explicit I4 planning rights. Visibility alone never grants modification rights."""
+    ar=one(engine,"SELECT * FROM action_trainers WHERE action_id=:a AND trainer_id=:t AND active=1",{'a':action_id,'t':trainer_id})
+    whole=bool(ar and ar.get('can_manage_planning'))
+    slot_ids={int(x['slot_id']) for x in q(engine,"""SELECT st.slot_id FROM slot_trainers st JOIN slots s ON s.id=st.slot_id
+      WHERE s.action_id=:a AND st.trainer_id=:t AND st.active=1 AND st.assignment_status='ACTIVE' AND st.can_manage_planning=1""",{'a':action_id,'t':trainer_id})}
+    return {'can_manage_action':whole,'slot_ids':slot_ids,'assignment':ar}
+
+
+def slot_has_historical_evidence(engine, sid):
+    """Central I4 evidence gate used by every trainer-side planning mutation."""
+    r=one(engine,"""SELECT
+      (SELECT COUNT(*) FROM signatures WHERE slot_id=:s AND status='VALIDE')+
+      (SELECT COUNT(*) FROM attendance_status WHERE slot_id=:s AND status IN ('ABSENT','PRESENT_REGULARISE'))+
+      (SELECT COUNT(*) FROM trainer_countersignatures_v3 WHERE slot_id=:s) n""",{'s':sid})
+    return bool(r and r['n'])
+
+
+def _active_action_slots(engine, action_id, exclude_slot_id=None):
+    rows=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE') ORDER BY slot_date,start_time",{'a':action_id})
+    return [x for x in rows if exclude_slot_id is None or int(x['id'])!=int(exclude_slot_id)]
+
+
+def _intervals_overlap(a_start,a_end,b_start,b_end):
+    return a_start < b_end and b_start < a_end
+
+
+def validate_trainer_planning_change(engine, trainer_id, action_id, *, slot_id=None, date_s=None, start_s=None, end_s=None, operation='UPDATE', now=None):
+    """Server-side I4 guardrails. Returns (allowed, message, details)."""
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
+    if not a: return False,'Action introuvable.',{}
+    if normalize_action_status(a.get('status')) in ('CLOTUREE','ARCHIVEE'):
+        return False,'Une action clôturée ou archivée ne peut pas être modifiée par un intervenant.',{}
+    scope=trainer_planning_scope(engine,trainer_id,action_id)
+    op=(operation or 'UPDATE').upper()
+    old=None
+    if slot_id is not None:
+        old=one(engine,'SELECT * FROM slots WHERE id=:s AND action_id=:a',{'s':slot_id,'a':action_id})
+        if not old: return False,'Créneau introuvable.',{}
+        if not scope['can_manage_action'] and int(slot_id) not in scope['slot_ids']:
+            return False,"Vous n'êtes pas autorisé à modifier ce créneau.",{}
+        if slot_has_historical_evidence(engine,slot_id):
+            return False,'Ce créneau contient déjà une preuve historique et ne peut plus être modifié.',{}
+    elif not scope['can_manage_action']:
+        return False,"Seul un intervenant autorisé à gérer le planning de l'action peut ajouter une séance.",{}
+    if op in ('UPDATE','REPORT') and old:
+        assigned=list_slot_trainers(engine,slot_id)
+        others=[x for x in assigned if int(x['trainer_id'])!=int(trainer_id)]
+        if others and not scope['can_manage_action']:
+            return False,"Ce créneau concerne un autre intervenant : une autorisation de gestion du planning de l'action est requise.",{'other_trainers':others}
+    date_s=date_s or (old or {}).get('slot_date'); start_s=start_s or (old or {}).get('start_time'); end_s=end_s or (old or {}).get('end_time')
+    if not (date_s and start_s and end_s): return False,'Date et horaires obligatoires.',{}
+    tz_name=organization_runtime_config(engine,action_id)['timezone']
+    candidate={'slot_date':date_s,'start_time':start_s,'end_time':end_s}
+    try: start,end=slot_start_end(candidate,tz_name)
+    except Exception: return False,'Date ou horaires invalides.',{}
+    current=now or datetime.now(ZoneInfo(tz_name))
+    if current.tzinfo is None: current=current.replace(tzinfo=ZoneInfo(tz_name))
+    if old:
+        _,old_end=slot_start_end(old,tz_name)
+        if old_end <= current:
+            return False,"Une séance déjà terminée ne peut pas être déplacée directement par un intervenant.",{}
+    if a.get('start_date') and date_s < a['start_date']:
+        return False,"La séance ne peut pas être placée avant la date de début de l'action.",{}
+    if a.get('end_date') and date_s > a['end_date']:
+        return False,"La séance ne peut pas être placée après la date de fin de l'action.",{}
+    for other in _active_action_slots(engine,action_id,slot_id):
+        os,oe=slot_start_end(other,tz_name)
+        if _intervals_overlap(start,end,os,oe):
+            return False,f"Chevauchement avec le créneau du {other['slot_date']} {other['start_time']}–{other['end_time']}.",{'conflict_slot_id':other['id']}
+    # I4: an intervenant cannot silently change the contractual/scheduled volume of an existing slot.
+    if old and abs(slot_duration_hours(old)-slot_duration_hours(candidate))>0.001:
+        return False,"La modification changerait le volume horaire. Seule l'administration peut valider ce changement.",{}
+    active=_active_action_slots(engine,action_id,slot_id)
+    total=round(sum(slot_duration_hours(x) for x in active)+slot_duration_hours(candidate),2)
+    planned=round(float(a.get('planned_hours') or 0),2)
+    if not old and planned>0 and total>planned+0.001:
+        return False,f"L'ajout porterait le planning à {total:g} h pour {planned:g} h contractuelles.",{'total_hours':total,'planned_hours':planned}
+    # Detect conflicts for all trainers who would remain assigned to the slot.
+    affected_ids={int(trainer_id)}
+    if old:
+        affected_ids.update(int(x['trainer_id']) for x in list_slot_trainers(engine,slot_id))
+    for tid in affected_ids:
+        other_slots=q(engine,"""SELECT DISTINCT s.* FROM slots s JOIN slot_trainers st ON st.slot_id=s.id
+          WHERE st.trainer_id=:t AND st.active=1 AND st.assignment_status='ACTIVE' AND s.status NOT IN ('ANNULE','REPORTE')
+            AND (:sid IS NULL OR s.id<>:sid)""",{'t':tid,'sid':slot_id})
+        for oslot in other_slots:
+            os,oe=slot_start_end(oslot,organization_runtime_config(engine,oslot['action_id'])['timezone'])
+            # Comparing aware datetimes also catches overlaps across actions/timezones.
+            if _intervals_overlap(start,end,os,oe):
+                return False,"Un intervenant affecté à ce créneau est déjà engagé sur un autre créneau à cet horaire.",{'trainer_id':tid,'conflict_slot_id':oslot['id']}
+    return True,'',{'start':start.isoformat(),'end':end.isoformat(),'total_hours':total,'planned_hours':planned,'scope':scope}
+
+
+def propagate_planning_change(engine, action_id, slot_id, change_type, actor, *, base_url=None, tz_name=None, details=None):
+    """Synchronize all implemented I4 dependants and record hooks for future Teams/notifications."""
+    tz_name=tz_name or organization_runtime_config(engine,action_id)['timezone']
+    participants=one(engine,'SELECT COUNT(*) n FROM participants WHERE action_id=:a AND active=1',{'a':action_id})['n']
+    trainers=len(list_slot_trainers(engine,slot_id)) if slot_id else len(list_action_trainers(engine,action_id))
+    attendance_synced=0
+    if base_url:
+        ensure_tokens_and_events(engine,action_id,base_url,tz_name); attendance_synced=1
+    try:
+        reschedule_pending_quality_campaigns(engine,action_id,actor); quality_synced=1
+    except Exception:
+        quality_synced=0
+    teams=one(engine,"SELECT enabled FROM action_modules WHERE action_id=:a AND module_code='TEAMS'",{'a':action_id})
+    teams_required=bool(teams and teams.get('enabled'))
+    payload=details or {}
+    eid=execute(engine,"""INSERT INTO planning_change_events(action_id,slot_id,change_type,actor,affected_participants,affected_trainers,
+      attendance_synced,quality_synced,portals_synced,teams_required,teams_status,notification_status,details_json,created_at)
+      VALUES(:a,:s,:c,:by,:p,:t,:att,:q,1,:tr,:ts,'PENDING',:d,:n)""",
+      {'a':action_id,'s':slot_id,'c':change_type,'by':actor,'p':participants,'t':trainers,'att':attendance_synced,'q':quality_synced,
+       'tr':1 if teams_required else 0,'ts':'PENDING_I7' if teams_required else 'NOT_ENABLED','d':json.dumps(payload,ensure_ascii=False,default=str),'n':utcnow_iso()})
+    audit(engine,'PLANNING_CHANGE_PROPAGATED',action_id,actor,'slot',slot_id,{'change_type':change_type,'event_id':eid,'attendance':bool(attendance_synced),'quality':bool(quality_synced),'teams':'PENDING_I7' if teams_required else 'NOT_ENABLED'})
+    return eid
+
+
+def trainer_update_slot(engine, trainer_id, sid, date_s,start_s,end_s,actor, *, base_url=None, now=None):
+    sl=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
+    if not sl:return False,'Créneau introuvable.'
+    ok,msg,_=validate_trainer_planning_change(engine,trainer_id,sl['action_id'],slot_id=sid,date_s=date_s,start_s=start_s,end_s=end_s,operation='UPDATE',now=now)
+    if not ok:return False,msg
+    d={'slot_date':date_s,'start_time':start_s,'end_time':end_s,'send_offset_min':sl['send_offset_min'],'reminder1_offset_min':sl['reminder1_offset_min'],'reminder2_offset_min':sl['reminder2_offset_min'],'close_offset_min':sl['close_offset_min']}
+    update_slot(engine,sid,d,actor)
+    propagate_planning_change(engine,sl['action_id'],sid,'TRAINER_UPDATE',actor,base_url=base_url,details={'before':{'slot_date':sl['slot_date'],'start_time':sl['start_time'],'end_time':sl['end_time']},'after':{'slot_date':date_s,'start_time':start_s,'end_time':end_s}})
+    return True,''
+
+
+def trainer_add_slot(engine, trainer_id, action_id, date_s,start_s,end_s,actor, *, base_url=None, now=None):
+    ok,msg,_=validate_trainer_planning_change(engine,trainer_id,action_id,date_s=date_s,start_s=start_s,end_s=end_s,operation='ADD',now=now)
+    if not ok:return None,msg
+    sid=add_slot(engine,action_id,date_s,start_s,end_s,actor)
+    # The action-level planner owns the new slot operationally; preserve the inherited referent and add the editor when needed.
+    if not one(engine,"SELECT id FROM slot_trainers WHERE slot_id=:s AND trainer_id=:t AND active=1",{'s':sid,'t':trainer_id}):
+        assign_slot_trainer(engine,sid,trainer_id,actor,'PRINCIPAL','Séance ajoutée par intervenant')
+    propagate_planning_change(engine,action_id,sid,'TRAINER_ADD',actor,base_url=base_url,details={'slot_date':date_s,'start_time':start_s,'end_time':end_s})
+    return sid,''
+
+
+def trainer_report_slot(engine, trainer_id, sid, date_s,start_s,end_s,actor,reason='Report', *, base_url=None, now=None):
+    sl=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
+    if not sl:return None,'Créneau introuvable.'
+    ok,msg,_=validate_trainer_planning_change(engine,trainer_id,sl['action_id'],slot_id=sid,date_s=date_s,start_s=start_s,end_s=end_s,operation='REPORT',now=now)
+    if not ok:return None,msg
+    ns=report_slot(engine,sid,date_s,start_s,end_s,actor,reason)
+    if not ns:return None,'Ce créneau ne peut pas être reporté.'
+    propagate_planning_change(engine,sl['action_id'],ns,'TRAINER_REPORT',actor,base_url=base_url,details={'from_slot_id':sid,'reason':reason})
+    return ns,''
+
+
+def action_calendar_ics(engine, action_id, *, trainer_id=None, beneficiary_id=None, prodid='-//Clarte360//Gestion des actions V3//FR'):
+    """Generate a stable-UID ICS view. Re-downloading it reflects moves/reports without changing slot UIDs."""
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
+    if not a:return b''
+    if trainer_id is not None and not trainer_action_authorized(engine,trainer_id,action_id): return b''
+    if beneficiary_id is not None:
+        allowed=one(engine,"SELECT p.id FROM participants p WHERE p.action_id=:a AND p.beneficiary_id=:b AND p.active=1",{'a':action_id,'b':beneficiary_id})
+        if not allowed:return b''
+    tz=organization_runtime_config(engine,action_id)['timezone']
+    rows=q(engine,"SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time,id",{'a':action_id})
+    if trainer_id is not None:
+        visible={int(x['id']) for x in (trainer_action_dashboard(engine,trainer_id,action_id,tz) or {}).get('slots',[])}
+        rows=[x for x in rows if int(x['id']) in visible or x.get('status') in ('ANNULE','REPORTE')]
+    def esc(v):
+        return str(v or '').replace('\\','\\\\').replace(';','\\;').replace(',','\\,').replace('\n','\\n')
+    lines=['BEGIN:VCALENDAR','VERSION:2.0',f'PRODID:{prodid}','CALSCALE:GREGORIAN','METHOD:PUBLISH']
+    for sl in rows:
+        start,end=slot_start_end(sl,tz)
+        lines += ['BEGIN:VEVENT',f"UID:clarte360-slot-{sl['id']}@gestion-actions",f"DTSTAMP:{datetime.now(ZoneInfo('UTC')).strftime('%Y%m%dT%H%M%SZ')}",
+                  f"DTSTART;TZID={tz}:{start.strftime('%Y%m%dT%H%M%S')}",f"DTEND;TZID={tz}:{end.strftime('%Y%m%dT%H%M%S')}",
+                  f"SUMMARY:{esc(a['action_no']+' — '+a['title'])}",f"LOCATION:{esc(a.get('location') or '')}",f"DESCRIPTION:{esc((a.get('client_name') or '')+' — '+(sl.get('slot_kind') or 'NORMAL'))}"]
+        if sl.get('status') in ('ANNULE','REPORTE'): lines.append('STATUS:CANCELLED')
+        lines.append('END:VEVENT')
+    lines.append('END:VCALENDAR')
+    return ('\r\n'.join(lines)+'\r\n').encode('utf-8')
+
 
 def create_trainer_report(engine,action_id,trainer_id,report_type,subject,description,quality_relevant=False,attachment_path=None,attachment_name=None):
     if not trainer_action_authorized(engine,trainer_id,action_id): return None
@@ -572,8 +1048,22 @@ def archive_action(engine, aid, actor):
     execute(engine,"UPDATE actions SET status='ARCHIVEE',archived_at=:t,updated_at=:t WHERE id=:a",{'t':utcnow_iso(),'a':aid}); audit(engine,'ACTION_ARCHIVED',aid,actor,'action',aid,{}); return True,''
 
 def set_action_modules(engine, aid, prestation_type, attendance, hot, cold, trainer_feedback, organization_id=None, agency_id=None, actor='system'):
+    now=utcnow_iso()
     execute(engine,"""UPDATE actions SET prestation_type=:p,use_attendance=:e,use_quality_hot=:h,use_quality_cold=:c,use_trainer_feedback=:t,
-      organization_id=:o,agency_id=:g,updated_at=:u WHERE id=:a""",{'p':prestation_type,'e':int(bool(attendance)),'h':int(bool(hot)),'c':int(bool(cold)),'t':int(bool(trainer_feedback)),'o':organization_id,'g':agency_id,'u':utcnow_iso(),'a':aid})
+      organization_id=:o,agency_id=:g,updated_at=:u WHERE id=:a""",{'p':prestation_type,'e':int(bool(attendance)),'h':int(bool(hot)),'c':int(bool(cold)),'t':int(bool(trainer_feedback)),'o':organization_id,'g':agency_id,'u':now,'a':aid})
+    values={'ATTENDANCE':attendance,'QUALITY_HOT':hot,'QUALITY_COLD':cold,'TRAINER_FEEDBACK':trainer_feedback}
+    for code,enabled in values.items():
+        en=1 if enabled else 0
+        execute(engine,"""INSERT INTO action_modules(action_id,module_code,enabled,enabled_at,enabled_by,created_at,updated_at)
+          VALUES(:a,:m,:e,CASE WHEN :e=1 THEN :n ELSE NULL END,:by,:n,:n)
+          ON CONFLICT(action_id,module_code) DO UPDATE SET enabled=excluded.enabled,
+          enabled_at=CASE WHEN excluded.enabled=1 AND action_modules.enabled=0 THEN excluded.enabled_at ELSE action_modules.enabled_at END,
+          enabled_by=excluded.enabled_by,updated_at=excluded.updated_at""",{'a':aid,'m':code,'e':en,'n':now,'by':actor})
+    # Create future switches disabled if absent. TEAMS is intentionally never inferred
+    # from mode/location and can only be enabled explicitly in a later increment.
+    for code in ('BENEFICIARY_PORTAL','COURSE_DOCUMENTS','CLIENT_TRANSMISSION','TEAMS'):
+        execute(engine,"""INSERT OR IGNORE INTO action_modules(action_id,module_code,enabled,enabled_by,created_at,updated_at)
+          VALUES(:a,:m,0,:by,:n,:n)""",{'a':aid,'m':code,'by':actor,'n':now})
     audit(engine,'ACTION_MODULES_UPDATED',aid,actor,'action',aid,{'prestation_type':prestation_type,'attendance':attendance,'hot':hot,'cold':cold,'trainer_feedback':trainer_feedback})
 
 def create_questionnaire_template(engine, organization_id, code, version, prestation_type, campaign_kind, title, questions, actor='system'):
@@ -624,6 +1114,70 @@ def get_organization(engine, org_id=None):
 
 def list_agencies(engine, organization_id, active_only=False):
     return q(engine,'SELECT * FROM agencies WHERE organization_id=:o '+('AND active=1 ' if active_only else '')+'ORDER BY name,id',{'o':organization_id})
+
+def list_import_profiles(engine, organization_id=None, active_only=False):
+    wh=[]; params={}
+    if organization_id is not None:
+        wh.append('organization_id=:o'); params['o']=organization_id
+    if active_only:
+        wh.append('active=1')
+    sql='SELECT * FROM organization_import_profiles'
+    if wh:
+        sql+=' WHERE '+' AND '.join(wh)
+    sql+=' ORDER BY organization_id,name,id'
+    return q(engine,sql,params)
+
+
+def get_import_profile(engine, profile_id):
+    return one(engine,'SELECT * FROM organization_import_profiles WHERE id=:i',{'i':profile_id})
+
+
+def save_import_profile(engine, profile_id, organization_id, data, actor):
+    now=utcnow_iso()
+    fields=['code','name','source_type','action_key','action_sheet','participant_sheet','mapping_json','config_json','active']
+    vals={
+        'code':(data.get('code') or '').strip().upper(),
+        'name':(data.get('name') or '').strip(),
+        'source_type':(data.get('source_type') or 'EXCEL').strip().upper(),
+        'action_key':(data.get('action_key') or '').strip(),
+        'action_sheet':(data.get('action_sheet') or 'CONV ADM').strip(),
+        'participant_sheet':(data.get('participant_sheet') or 'STAGIAIRE').strip(),
+        'mapping_json':data.get('mapping_json') if isinstance(data.get('mapping_json'),str) else json.dumps(data.get('mapping_json') or {},ensure_ascii=False),
+        'config_json':data.get('config_json') if isinstance(data.get('config_json'),str) else json.dumps(data.get('config_json') or {},ensure_ascii=False),
+        'active':int(bool(data.get('active',True))),
+    }
+    if not vals['code'] or not vals['name'] or not vals['action_key']:
+        raise ValueError("Code, nom et colonne clé d'action obligatoires.")
+    for key in ('mapping_json','config_json'):
+        try:
+            json.loads(vals[key] or '{}')
+        except Exception as ex:
+            raise ValueError(f'{key} invalide : {ex}')
+    if profile_id:
+        execute(engine,'UPDATE organization_import_profiles SET '+','.join(f'{k}=:{k}' for k in fields)+',updated_at=:u WHERE id=:id',{**vals,'u':now,'id':profile_id})
+        pid=profile_id; event='IMPORT_PROFILE_UPDATED'
+    else:
+        sql=("INSERT INTO organization_import_profiles(organization_id,code,name,source_type,action_key,action_sheet,participant_sheet,mapping_json,config_json,active,created_at,updated_at) "
+             "VALUES(:o,:code,:name,:source_type,:action_key,:action_sheet,:participant_sheet,:mapping_json,:config_json,:active,:u,:u)")
+        pid=execute(engine,sql,{**vals,'o':organization_id,'u':now})
+        event='IMPORT_PROFILE_CREATED'
+    audit(engine,event,actor=actor,entity_type='import_profile',entity_id=pid,details={'organization_id':organization_id,'code':vals['code'],'name':vals['name']})
+    return pid
+
+
+def set_import_profile_active(engine, profile_id, active, actor):
+    execute(engine,'UPDATE organization_import_profiles SET active=:a,updated_at=:u WHERE id=:i',{'a':int(bool(active)),'u':utcnow_iso(),'i':profile_id})
+    audit(engine,'IMPORT_PROFILE_ACTIVATION_CHANGED',actor=actor,entity_type='import_profile',entity_id=profile_id,details={'active':bool(active)})
+
+
+def ensure_default_import_profile(engine, organization_id, action_key='NO_CLAR', actor='system'):
+    existing=one(engine,'SELECT id FROM organization_import_profiles WHERE organization_id=:o ORDER BY id LIMIT 1',{'o':organization_id})
+    if existing:
+        return existing['id']
+    return save_import_profile(engine,None,organization_id,{
+        'code':'GESTION_PRINCIPALE','name':'Base de gestion principale','source_type':'EXCEL','action_key':action_key,
+        'action_sheet':'CONV ADM','participant_sheet':'STAGIAIRE','mapping_json':'{}','config_json':'{}','active':True
+    },actor)
 
 def update_agency(engine, agency_id, data, actor):
     old=one(engine,'SELECT * FROM agencies WHERE id=:i',{'i':agency_id})
@@ -783,19 +1337,12 @@ def reschedule_pending_quality_campaigns(engine, action_id, actor='system'):
             execute(engine,'UPDATE quality_campaigns SET due_at=:d WHERE id=:c',{'d':due,'c':camp['id']})
             changed+=1
         due_dt=datetime.fromisoformat(due)
-        offsets=(2,7) if camp['campaign_kind'] in ('HOT','TRAINER') else (7,14)
-        event_due={
-            'INITIAL': due_dt,
-            'REMINDER_1': due_dt+timedelta(days=offsets[0]),
-            'REMINDER_2': due_dt+timedelta(days=offsets[1]),
-        }
-        for event_type,dt in event_due.items():
-            iso=dt.astimezone(ZoneInfo('UTC')).isoformat()
-            execute(engine,"""UPDATE quality_email_events SET due_at=:d,last_error=NULL
-              WHERE campaign_id=:c AND event_type=:e AND status='PENDING'""",{'d':iso,'c':camp['id'],'e':event_type})
-        execute(engine,'UPDATE quality_campaigns SET reminder1_due_at=:r1,reminder2_due_at=:r2 WHERE id=:c',
-                {'r1':event_due['REMINDER_1'].astimezone(ZoneInfo('UTC')).isoformat(),
-                 'r2':event_due['REMINDER_2'].astimezone(ZoneInfo('UTC')).isoformat(),'c':camp['id']})
+        iso=due_dt.astimezone(ZoneInfo('UTC')).isoformat()
+        execute(engine,"""UPDATE quality_email_events SET due_at=:d,last_error=NULL
+          WHERE campaign_id=:c AND event_type='INITIAL' AND status='PENDING'""",{'d':iso,'c':camp['id']})
+        # V3 I5: no automatic quality reminders. Historical pending reminder rows are neutralized, never deleted.
+        execute(engine,"UPDATE quality_email_events SET status='SKIPPED',last_error='V3 I5: relance automatique désactivée' WHERE campaign_id=:c AND event_type IN ('REMINDER_1','REMINDER_2') AND status='PENDING'",{'c':camp['id']})
+        execute(engine,'UPDATE quality_campaigns SET reminder1_due_at=NULL,reminder2_due_at=NULL WHERE id=:c',{'c':camp['id']})
     if changed:
         audit(engine,'QUALITY_CAMPAIGNS_RESCHEDULED',action_id,actor,'action',action_id,{'campaigns':changed})
     return changed
@@ -830,11 +1377,15 @@ def prepare_quality_campaigns(engine, action_id, base_url, actor='system'):
             if is_new:
                 schedule_quality_email_events(engine,cid,due,kind)
                 created.append({'campaign_id':cid,'kind':kind,'recipient':f"{p['first_name']} {p['last_name']}",'url':quality_token_url(token,base_url)})
-    if a.get('use_trainer_feedback') and a.get('trainer_id'):
-        tr=one(engine,"SELECT * FROM trainers WHERE id=:i AND active=1 AND email IS NOT NULL AND TRIM(email)<>''",{'i':a['trainer_id']})
-        if tr:
-            tpl=get_standard_template(engine,org_id,a.get('prestation_type'),'TRAINER')
-            due=standard_quality_due(engine,action_id,'TRAINER')
+    if a.get('use_trainer_feedback'):
+        trainers=q(engine,"""SELECT DISTINCT t.* FROM action_trainers at JOIN trainers t ON t.id=at.trainer_id
+          WHERE at.action_id=:a AND at.active=1 AND t.active=1 AND t.email IS NOT NULL AND TRIM(t.email)<>'' ORDER BY t.full_name""",{'a':action_id})
+        if not trainers and a.get('trainer_id'):
+            tr=one(engine,"SELECT * FROM trainers WHERE id=:i AND active=1 AND email IS NOT NULL AND TRIM(email)<>''",{'i':a['trainer_id']})
+            trainers=[tr] if tr else []
+        tpl=get_standard_template(engine,org_id,a.get('prestation_type'),'TRAINER') if trainers else None
+        due=standard_quality_due(engine,action_id,'TRAINER') if trainers else None
+        for tr in trainers:
             cid,token,is_new=create_quality_campaign_safe(engine,action_id,tpl['id'],'TRAINER',due,trainer_id=tr['id'],actor=actor)
             if is_new:
                 schedule_quality_email_events(engine,cid,due,'TRAINER')
@@ -846,13 +1397,22 @@ def prepare_quality_campaigns(engine, action_id, base_url, actor='system'):
 def schedule_quality_email_events(engine,campaign_id,due_at,campaign_kind):
     due=datetime.fromisoformat(due_at)
     if due.tzinfo is None: due=due.replace(tzinfo=ZoneInfo('UTC'))
-    # Standard: hot/trainer J+2/J+7, cold +7/+14.
-    offsets=(2,7) if campaign_kind in ('HOT','TRAINER') else (7,14)
-    ds=[due,due+timedelta(days=offsets[0]),due+timedelta(days=offsets[1])]
-    for et,d in zip(('INITIAL','REMINDER_1','REMINDER_2'),ds):
-        execute(engine,"""INSERT OR IGNORE INTO quality_email_events(campaign_id,event_type,due_at,created_at)
-          VALUES(:c,:e,:d,:n)""",{'c':campaign_id,'e':et,'d':d.astimezone(ZoneInfo('UTC')).isoformat(),'n':utcnow_iso()})
-    execute(engine,'UPDATE quality_campaigns SET reminder1_due_at=:r1,reminder2_due_at=:r2 WHERE id=:c',{'r1':ds[1].astimezone(ZoneInfo('UTC')).isoformat(),'r2':ds[2].astimezone(ZoneInfo('UTC')).isoformat(),'c':campaign_id})
+    execute(engine,"""INSERT OR IGNORE INTO quality_email_events(campaign_id,event_type,due_at,created_at)
+      VALUES(:c,'INITIAL',:d,:n)""",{'c':campaign_id,'d':due.astimezone(ZoneInfo('UTC')).isoformat(),'n':utcnow_iso()})
+    execute(engine,"UPDATE quality_email_events SET status='SKIPPED',last_error='V3 I5: relance automatique désactivée' WHERE campaign_id=:c AND event_type IN ('REMINDER_1','REMINDER_2') AND status='PENDING'",{'c':campaign_id})
+    execute(engine,'UPDATE quality_campaigns SET reminder1_due_at=NULL,reminder2_due_at=NULL WHERE id=:c',{'c':campaign_id})
+
+def queue_quality_manual_reminder(engine,campaign_id,actor='system'):
+    camp=one(engine,'SELECT * FROM quality_campaigns WHERE id=:c',{'c':campaign_id})
+    if not camp: raise ValueError('Campagne introuvable')
+    if camp.get('status')=='COMPLETED': raise ValueError('Ce questionnaire est déjà complété.')
+    count=int(camp.get('manual_reminder_count') or 0)+1
+    et=f'MANUAL_{count}'
+    now=utcnow_iso()
+    execute(engine,"INSERT INTO quality_email_events(campaign_id,event_type,due_at,created_at) VALUES(:c,:e,:n,:n)",{'c':campaign_id,'e':et,'n':now})
+    execute(engine,'UPDATE quality_campaigns SET manual_reminder_count=:x,last_manual_reminder_at=:n,last_manual_reminder_by=:b WHERE id=:c',{'x':count,'n':now,'b':actor,'c':campaign_id})
+    audit(engine,'QUALITY_MANUAL_REMINDER_QUEUED',camp['action_id'],actor,'quality_campaign',campaign_id,{'count':count,'event_type':et})
+    return et
 
 def quality_campaign_context(engine, token):
     return one(engine,"""SELECT c.*,qt.title questionnaire_title,qt.version questionnaire_version,qt.prestation_type,
@@ -958,10 +1518,11 @@ def quality_question_stats(engine, organization_id=None, agency_id=None, prestat
     if agency_id: wh.append('a.agency_id=:g');p['g']=agency_id
     if prestation_type: wh.append('a.prestation_type=:pt');p['pt']=prestation_type
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
-    rows=q(engine,'''SELECT qq.question_code,qq.rubric_code,r.response_type,r.answer_json FROM quality_responses r JOIN questionnaire_questions qq ON qq.id=r.question_id JOIN quality_campaigns c ON c.id=r.campaign_id JOIN actions a ON a.id=c.action_id'''+where,p)
+    rows=q(engine,"""SELECT qq.question_code,qq.rubric_code,qq.question_text,r.response_type,r.answer_json FROM quality_responses r JOIN questionnaire_questions qq ON qq.id=r.question_id JOIN quality_campaigns c ON c.id=r.campaign_id JOIN actions a ON a.id=c.action_id"""+where,p)
+    rubric_labels={'R01':'Information et objectifs','R02':'Organisation','R03':'Moyens et environnement','R04':'Supports et ressources','R05':'Intervenant / animation','R06':'Adaptation et accompagnement','R07':'Accessibilité','R08':'Atteinte des objectifs','R09':'Utilité / transfert','R10':'Satisfaction globale','R11':'Recommandation','R12':'Difficultés / réclamations','I06':'Difficultés / aléas'}
     agg={}
     for r in rows:
-      k=(r['rubric_code'],r['question_code']); x=agg.setdefault(k,{'Rubrique':k[0],'Question':k[1],'Réponses':0,'Moyenne':None,'NPS':None,'_vals':[]})
+      k=(r['rubric_code'],r['question_code']); x=agg.setdefault(k,{'Rubrique':rubric_labels.get(k[0],k[0]),'Code rubrique':k[0],'Question':r.get('question_text') or k[1],'Code question':k[1],'Réponses':0,'Moyenne':None,'_vals':[]})
       try:v=json.loads(r.get('answer_json') or 'null')
       except:v=None
       if v is not None:x['Réponses']+=1
@@ -969,7 +1530,34 @@ def quality_question_stats(engine, organization_id=None, agency_id=None, prestat
     out=[]
     for x in agg.values():
       vals=x.pop('_vals'); x['Moyenne']=round(sum(vals)/len(vals),2) if vals else None; out.append(x)
-    return sorted(out,key=lambda x:(x['Rubrique'],x['Question']))
+    return sorted(out,key=lambda x:(x['Code rubrique'],x['Code question']))
+
+def quality_reminders(engine, organization_id=None, agency_id=None, action_id=None, trainer_id=None, kind=None):
+    wh=["c.status<>'COMPLETED'"]; p={}
+    if organization_id: wh.append('a.organization_id=:o');p['o']=organization_id
+    if agency_id: wh.append('a.agency_id=:g');p['g']=agency_id
+    if action_id: wh.append('a.id=:a');p['a']=action_id
+    if trainer_id: wh.append('c.trainer_id=:t');p['t']=trainer_id
+    if kind: wh.append('c.campaign_kind=:k');p['k']=kind
+    return q(engine,"""SELECT c.id campaign_id,c.campaign_kind,c.status,c.due_at,c.sent_at,c.manual_reminder_count,c.last_manual_reminder_at,c.last_manual_reminder_by,c.token,a.id action_id,a.action_no,a.title action_title,a.organization_id,a.agency_id,p.id participant_id,p.first_name,p.last_name,p.email participant_email,t.id trainer_id,t.full_name trainer_full_name,t.email trainer_email FROM quality_campaigns c JOIN actions a ON a.id=c.action_id LEFT JOIN participants p ON p.id=c.participant_id LEFT JOIN trainers t ON t.id=c.trainer_id WHERE """+' AND '.join(wh)+" ORDER BY c.due_at,c.id",p)
+
+def attendance_regularization_items(engine, organization_id=None, agency_id=None, action_id=None, trainer_id=None):
+    wh=["a.status NOT IN ('BROUILLON','ARCHIVEE')","p.active=1","s.status<>'ANNULE'"]; p={}
+    if organization_id: wh.append('a.organization_id=:o');p['o']=organization_id
+    if agency_id: wh.append('a.agency_id=:g');p['g']=agency_id
+    if action_id: wh.append('a.id=:a');p['a']=action_id
+    if trainer_id:
+        wh.append('EXISTS (SELECT 1 FROM slot_trainers st WHERE st.slot_id=s.id AND st.trainer_id=:t AND st.active=1)');p['t']=trainer_id
+    rows=q(engine,"""SELECT a.id action_id,a.action_no,a.title action_title,s.id slot_id,s.slot_date,s.start_time,s.end_time,p.id participant_id,p.first_name,p.last_name,p.email FROM actions a JOIN slots s ON s.action_id=a.id JOIN participants p ON p.action_id=a.id WHERE """+' AND '.join(wh)+" ORDER BY s.slot_date,s.start_time,p.last_name,p.first_name",p)
+    out=[]
+    for r in rows:
+        _,end=slot_start_end(r,organization_runtime_config(engine,r['action_id'])['timezone'])
+        if datetime.now(end.tzinfo)<end: continue
+        sig=one(engine,"SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':r['participant_id'],'s':r['slot_id']})
+        att=one(engine,"SELECT status FROM attendance_status WHERE participant_id=:p AND slot_id=:s",{'p':r['participant_id'],'s':r['slot_id']})
+        if sig or (att and att.get('status') in ('ABSENT','NON_CONCERNE','PRESENT_REGULARISE')): continue
+        out.append(r)
+    return out
 
 def create_quality_issue(engine, action_id, issue_type, title, description='', owner=None, actor='system'):
     iid=execute(engine,"INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at) VALUES(:a,:t,:x,:d,'OUVERTE',:o,:c)",{'a':action_id,'t':issue_type,'x':title,'d':description or None,'o':owner or None,'c':utcnow_iso()});audit(engine,'QUALITY_ISSUE_CREATED',action_id,actor,'quality_issue',iid,{'manual':True});return iid
@@ -1295,12 +1883,13 @@ def quality_management_summary(engine, **filters):
     base=quality_dashboard(engine,**filters); stats=quality_question_stats(engine,filters.get('organization_id'),filters.get('agency_id'),filters.get('prestation_type'))
     rubric={}
     for r in stats:
-        code=r.get('rubric_code') or 'AUTRE'; rubric.setdefault(code,[])
-        if r.get('average') is not None: rubric[code].append(float(r['average']))
+        label=r.get('Rubrique') or 'Autre'; rubric.setdefault(label,[])
+        if r.get('Moyenne') is not None: rubric[label].append(float(r['Moyenne']))
     rubric_avg={k:round(sum(v)/len(v),2) for k,v in rubric.items() if v}
     nps=base.get('nps') or []; nps_score=None
     if nps: nps_score=round(100*(sum(x>=9 for x in nps)-sum(x<=6 for x in nps))/len(nps),1)
-    return {**base,'rubric_averages':rubric_avg,'nps_score':nps_score}
+    weak=sorted([{'Rubrique':k,'Moyenne':v} for k,v in rubric_avg.items()],key=lambda x:x['Moyenne'])[:5]
+    return {**base,'rubric_averages':rubric_avg,'nps_score':nps_score,'weak_points':weak}
 
 def configure_final_transmission(engine, action_id, enabled=False, to_quality=True, to_training=True, other_first_name=None, other_last_name=None, other_email=None, actor='system'):
     execute(engine,"""UPDATE actions SET transmit_final_bundle=:e,send_final_to_quality=:q,send_final_to_training=:t,final_other_first_name=:of,final_other_last_name=:ol,final_other_email=:oe,updated_at=:u WHERE id=:a""",
@@ -1350,3 +1939,257 @@ def purge_beneficiary_portal_documents(engine, beneficiary_id, actor='system'):
     set_beneficiary_portal_active(engine,beneficiary_id,False,actor)
     audit(engine,'BENEFICIARY_PORTAL_PURGED',actor=actor,entity_type='beneficiary',entity_id=beneficiary_id,details={'portal_documents_removed':len(refs),'regulatory_archives_preserved':True})
     return len(refs)
+
+# ---- V3 I7: Microsoft Teams / Graph ---------------------------------------
+
+def action_module(engine, action_id, module_code):
+    return one(engine,"SELECT * FROM action_modules WHERE action_id=:a AND module_code=:m",{'a':action_id,'m':module_code})
+
+
+def action_module_enabled(engine, action_id, module_code):
+    row=action_module(engine,action_id,module_code)
+    return bool(row and row.get('enabled'))
+
+
+def next_future_slot(engine, action_id, now=None):
+    tz_name=organization_runtime_config(engine,action_id)['timezone']
+    now=now or datetime.now(ZoneInfo(tz_name))
+    rows=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REMPLACE') ORDER BY slot_date,start_time,id",{'a':action_id})
+    for sl in rows:
+        start,_=slot_start_end(sl,tz_name)
+        if start>now:
+            return sl,start
+    return None,None
+
+
+def set_generic_action_module(engine, action_id, module_code, enabled, actor='system', effective_from=None, config=None):
+    """Enable/disable an independent V3 module without deleting produced evidence.
+
+    TEAMS activation is deliberately prospective: absent an explicit effective date, the
+    first future slot becomes the effect boundary.  Past slots are never retrofitted.
+    """
+    code=(module_code or '').upper().strip()
+    if code not in ('BENEFICIARY_PORTAL','COURSE_DOCUMENTS','CLIENT_TRANSMISSION','TEAMS'):
+        raise ValueError('Module générique inconnu.')
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
+    if not a: raise ValueError('Action introuvable.')
+    old=action_module(engine,action_id,code)
+    now=utcnow_iso()
+    eff=effective_from
+    if code=='TEAMS' and enabled and not eff:
+        _,start=next_future_slot(engine,action_id)
+        eff=start.isoformat() if start else None
+    if code=='TEAMS' and enabled and not eff:
+        raise ValueError("Teams ne peut pas être activé : aucun créneau futur n'est disponible.")
+    config_json=json.dumps(config or {},ensure_ascii=False) if config is not None else (old or {}).get('config_json')
+    execute(engine,"""INSERT INTO action_modules(action_id,module_code,enabled,enabled_at,enabled_by,effective_from,config_json,created_at,updated_at)
+      VALUES(:a,:m,:e,CASE WHEN :e=1 THEN :n ELSE NULL END,:by,:f,:c,:n,:n)
+      ON CONFLICT(action_id,module_code) DO UPDATE SET enabled=excluded.enabled,
+      enabled_at=CASE WHEN excluded.enabled=1 AND action_modules.enabled=0 THEN excluded.enabled_at ELSE action_modules.enabled_at END,
+      enabled_by=excluded.enabled_by,effective_from=CASE WHEN excluded.enabled=1 THEN excluded.effective_from ELSE action_modules.effective_from END,
+      config_json=COALESCE(excluded.config_json,action_modules.config_json),updated_at=excluded.updated_at""",
+      {'a':action_id,'m':code,'e':1 if enabled else 0,'n':now,'by':actor,'f':eff,'c':config_json})
+    if code=='TEAMS':
+        if enabled:
+            queue_teams_sync(engine,action_id,None,'ACTION_ACTIVATED',actor,{'effective_from':eff})
+        else:
+            # Existing room/reports are historical evidence; only future automation stops.
+            execute(engine,"UPDATE teams_occurrences SET status='DISABLED',updated_at=:u WHERE action_id=:a AND status='PLANNED'",{'u':now,'a':action_id})
+    audit(engine,'ACTION_MODULE_TOGGLED',action_id,actor,'action_module',code,{'enabled':bool(enabled),'effective_from':eff})
+    return eff
+
+
+def teams_room(engine, action_id):
+    return one(engine,'SELECT * FROM teams_action_rooms WHERE action_id=:a',{'a':action_id})
+
+
+def teams_occurrences(engine, action_id):
+    return q(engine,"""SELECT o.*,s.slot_date,s.start_time,s.end_time FROM teams_occurrences o
+      JOIN slots s ON s.id=o.slot_id WHERE o.action_id=:a ORDER BY s.slot_date,s.start_time,s.id""",{'a':action_id})
+
+
+def teams_roles(engine, action_id, slot_id=None):
+    sql='SELECT * FROM teams_participant_roles WHERE action_id=:a AND active=1'
+    p={'a':action_id}
+    if slot_id is not None:
+        sql+=' AND (slot_id=:s OR slot_id IS NULL)';p['s']=slot_id
+    return q(engine,sql+' ORDER BY display_name,email,id',p)
+
+
+def queue_teams_sync(engine, action_id, slot_id, event_type, actor='system', details=None):
+    now=utcnow_iso()
+    # SQLite UNIQUE treats NULLs as distinct, so action-level events are manually deduplicated.
+    if slot_id is None:
+        row=one(engine,"SELECT id FROM teams_sync_events WHERE action_id=:a AND slot_id IS NULL AND event_type=:e AND status='PENDING'",{'a':action_id,'e':event_type})
+        if row:return row['id']
+    try:
+        eid=execute(engine,"""INSERT INTO teams_sync_events(action_id,slot_id,event_type,status,details_json,created_at)
+          VALUES(:a,:s,:e,'PENDING',:d,:n)""",{'a':action_id,'s':slot_id,'e':event_type,'d':json.dumps(details or {},ensure_ascii=False,default=str),'n':now})
+    except Exception:
+        row=one(engine,"SELECT id FROM teams_sync_events WHERE action_id=:a AND ((slot_id=:s) OR (slot_id IS NULL AND :s IS NULL)) AND event_type=:e",{'a':action_id,'s':slot_id,'e':event_type})
+        return row['id'] if row else None
+    audit(engine,'TEAMS_SYNC_QUEUED',action_id,actor,'teams_sync_event',eid,{'event_type':event_type,'slot_id':slot_id})
+    return eid
+
+
+def _teams_effective_slots(engine, action_id):
+    mod=action_module(engine,action_id,'TEAMS')
+    if not mod or not mod.get('enabled'):return []
+    eff=mod.get('effective_from')
+    tz_name=organization_runtime_config(engine,action_id)['timezone']
+    rows=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REMPLACE') ORDER BY slot_date,start_time,id",{'a':action_id})
+    out=[]
+    for sl in rows:
+        start,end=slot_start_end(sl,tz_name)
+        if eff:
+            e=datetime.fromisoformat(eff)
+            if e.tzinfo is None:e=e.replace(tzinfo=ZoneInfo(tz_name))
+            if start<e:continue
+        out.append((sl,start,end))
+    return out
+
+
+def refresh_teams_occurrences(engine, action_id, actor='system'):
+    """Mirror future Teams-managed slots into the additive occurrence table."""
+    rows=_teams_effective_slots(engine,action_id); now=utcnow_iso(); active_slot_ids=set()
+    room=teams_room(engine,action_id)
+    for sl,start,end in rows:
+        active_slot_ids.add(int(sl['id']))
+        execute(engine,"""INSERT INTO teams_occurrences(action_room_id,action_id,slot_id,scheduled_start_utc,scheduled_end_utc,status,created_at,updated_at)
+          VALUES(:r,:a,:s,:b,:e,'PLANNED',:n,:n)
+          ON CONFLICT(slot_id) DO UPDATE SET action_room_id=excluded.action_room_id,scheduled_start_utc=excluded.scheduled_start_utc,
+          scheduled_end_utc=excluded.scheduled_end_utc,status=CASE WHEN teams_occurrences.attendance_report_id IS NULL THEN 'PLANNED' ELSE teams_occurrences.status END,
+          updated_at=excluded.updated_at""",{'r':room.get('id') if room else None,'a':action_id,'s':sl['id'],'b':start.astimezone(ZoneInfo('UTC')).isoformat(),'e':end.astimezone(ZoneInfo('UTC')).isoformat(),'n':now})
+    existing=q(engine,"SELECT id,slot_id,attendance_report_id FROM teams_occurrences WHERE action_id=:a",{'a':action_id})
+    for x in existing:
+        if int(x['slot_id']) not in active_slot_ids and not x.get('attendance_report_id'):
+            execute(engine,"UPDATE teams_occurrences SET status='OUT_OF_SCOPE',updated_at=:n WHERE id=:i",{'n':now,'i':x['id']})
+    audit(engine,'TEAMS_OCCURRENCES_REFRESHED',action_id,actor,'action',action_id,{'count':len(rows)})
+    return len(rows)
+
+
+def refresh_teams_trainer_roles(engine, action_id, actor='system'):
+    """Persist desired advanced Teams roles. Guests are invited separately by the worker."""
+    now=utcnow_iso(); effective=_teams_effective_slots(engine,action_id); wanted=set()
+    for sl,_,_ in effective:
+        for tr in list_slot_trainers(engine,sl['id'],active_only=True):
+            email=(tr.get('email') or '').strip().lower()
+            if not email:continue
+            key=(int(sl['id']),email);wanted.add(key)
+            role='COORGANIZER' if (tr.get('role') or '').upper() in ('PRINCIPAL','REFERENT') else 'PRESENTER'
+            execute(engine,"""INSERT INTO teams_participant_roles(action_id,slot_id,trainer_id,email,display_name,role,guest_status,active,created_at,updated_at)
+              VALUES(:a,:s,:t,:e,:d,:r,'PENDING',1,:n,:n)
+              ON CONFLICT(action_id,slot_id,email) DO UPDATE SET trainer_id=excluded.trainer_id,display_name=excluded.display_name,
+              role=excluded.role,active=1,updated_at=excluded.updated_at""",{'a':action_id,'s':sl['id'],'t':tr['trainer_id'],'e':email,'d':tr.get('full_name'),'r':role,'n':now})
+    for row in q(engine,'SELECT id,slot_id,email FROM teams_participant_roles WHERE action_id=:a AND active=1',{'a':action_id}):
+        if (int(row['slot_id']) if row.get('slot_id') is not None else None,(row.get('email') or '').lower()) not in wanted:
+            execute(engine,'UPDATE teams_participant_roles SET active=0,updated_at=:n WHERE id=:i',{'n':now,'i':row['id']})
+    return len(wanted)
+
+
+def create_or_sync_teams_room(engine, action_id, graph_client, actor='worker'):
+    if not action_module_enabled(engine,action_id,'TEAMS'):
+        return None
+    slots=_teams_effective_slots(engine,action_id)
+    if not slots:raise ValueError("Aucun créneau Teams futur dans la période d'effet.")
+    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
+    room=teams_room(engine,action_id)
+    first_start=slots[0][1].astimezone(ZoneInfo('UTC')).isoformat()
+    last_end=slots[-1][2].astimezone(ZoneInfo('UTC')).isoformat()
+    subject=f"{a.get('action_no') or ''} — {a.get('title') or 'Action'}".strip(' —')
+    if not room or not room.get('online_meeting_id'):
+        payload=graph_client.create_online_meeting(subject,first_start,last_end)
+        now=utcnow_iso()
+        if room:
+            execute(engine,"""UPDATE teams_action_rooms SET organizer_user_id=:u,organizer_upn=:up,online_meeting_id=:m,join_web_url=:j,
+              subject=:s,lifecycle_status='ACTIVE',raw_json=:r,last_sync_at=:n,updated_at=:n WHERE id=:i""",
+              {'u':graph_client.cfg.get('organizer_user_id'),'up':graph_client.cfg.get('organizer_upn'),'m':payload.get('id'),'j':payload.get('joinWebUrl'),'s':subject,'r':json.dumps(payload,ensure_ascii=False),'n':now,'i':room['id']})
+            rid=room['id']
+        else:
+            rid=execute(engine,"""INSERT INTO teams_action_rooms(action_id,organizer_user_id,organizer_upn,online_meeting_id,join_web_url,subject,strategy,lifecycle_status,raw_json,last_sync_at,created_at,updated_at)
+              VALUES(:a,:u,:up,:m,:j,:s,'STABLE_ACTION_LINK','ACTIVE',:r,:n,:n,:n)""",
+              {'a':action_id,'u':graph_client.cfg.get('organizer_user_id'),'up':graph_client.cfg.get('organizer_upn'),'m':payload.get('id'),'j':payload.get('joinWebUrl'),'s':subject,'r':json.dumps(payload,ensure_ascii=False),'n':now})
+        audit(engine,'TEAMS_ROOM_CREATED',action_id,actor,'teams_action_room',rid,{'meeting_id':payload.get('id'),'strategy':'STABLE_ACTION_LINK'})
+    else:
+        rid=room['id'];payload={'id':room.get('online_meeting_id'),'joinWebUrl':room.get('join_web_url')}
+        # Keep the reusable action meeting window aligned with the managed schedule.
+        graph_client.update_online_meeting(room['online_meeting_id'],{'startDateTime':first_start,'endDateTime':last_end,'subject':subject})
+        execute(engine,"UPDATE teams_action_rooms SET subject=:s,last_sync_at=:n,updated_at=:n WHERE id=:i",{'s':subject,'n':utcnow_iso(),'i':rid})
+        audit(engine,'TEAMS_ROOM_SYNCED',action_id,actor,'teams_action_room',rid,{'meeting_id':room.get('online_meeting_id')})
+    refresh_teams_occurrences(engine,action_id,actor)
+    execute(engine,'UPDATE teams_occurrences SET action_room_id=:r WHERE action_id=:a',{'r':rid,'a':action_id})
+    refresh_teams_trainer_roles(engine,action_id,actor)
+    return teams_room(engine,action_id)
+
+
+def mark_teams_guest_invitation(engine, role_id, invitation, actor='worker'):
+    user=(invitation or {}).get('invitedUser') or {}
+    execute(engine,"""UPDATE teams_participant_roles SET entra_user_id=:u,invitation_id=:i,guest_status='INVITED',invited_at=:n,updated_at=:n WHERE id=:r""",
+      {'u':user.get('id'),'i':(invitation or {}).get('id'),'n':utcnow_iso(),'r':role_id})
+    row=one(engine,'SELECT * FROM teams_participant_roles WHERE id=:r',{'r':role_id}) or {}
+    audit(engine,'TEAMS_GUEST_INVITED',row.get('action_id'),actor,'teams_participant_role',role_id,{'email':row.get('email')})
+
+
+def _report_window(report):
+    start=report.get('meetingStartDateTime') or report.get('startDateTime')
+    end=report.get('meetingEndDateTime') or report.get('endDateTime')
+    return start,end
+
+
+def match_attendance_report_occurrence(engine, action_id, report):
+    start_s,end_s=_report_window(report)
+    if not start_s:return None
+    start=datetime.fromisoformat(start_s.replace('Z','+00:00'))
+    candidates=q(engine,"SELECT * FROM teams_occurrences WHERE action_id=:a AND status NOT IN ('OUT_OF_SCOPE','DISABLED')",{'a':action_id})
+    best=None;delta=None
+    for c in candidates:
+        cs=datetime.fromisoformat(c['scheduled_start_utc'].replace('Z','+00:00'))
+        d=abs((cs-start).total_seconds())
+        if delta is None or d<delta:best=c;delta=d
+    # Refuse arbitrary mapping beyond 12 hours; leave the report unassociated for review.
+    return best if best and delta<=12*3600 else None
+
+
+def store_teams_attendance_report(engine, action_id, room_id, report, records, actor='worker'):
+    rid=str(report.get('id') or '')
+    if not rid:raise ValueError('Rapport Teams sans identifiant.')
+    if one(engine,'SELECT id FROM teams_attendance_reports WHERE report_id=:r',{'r':rid}):return False
+    occ=match_attendance_report_occurrence(engine,action_id,report)
+    start,end=_report_window(report);now=utcnow_iso()
+    row_id=execute(engine,"""INSERT INTO teams_attendance_reports(action_room_id,occurrence_id,report_id,meeting_start_utc,meeting_end_utc,total_participants,raw_json,retrieved_at)
+      VALUES(:room,:o,:r,:s,:e,:n,:raw,:d)""",{'room':room_id,'o':occ.get('id') if occ else None,'r':rid,'s':start,'e':end,'n':len(records or []),'raw':json.dumps(report,ensure_ascii=False,default=str),'d':now})
+    for rec in records or []:
+        identity=rec.get('identity') or {};email=(rec.get('emailAddress') or '').strip() or None;display=rec.get('identity',{}).get('displayName') or rec.get('displayName')
+        participant=None
+        if email:
+            participant=one(engine,"SELECT id FROM participants WHERE action_id=:a AND lower(email)=lower(:e) LIMIT 1",{'a':action_id,'e':email})
+        intervals=rec.get('attendanceIntervals') or []
+        if intervals:
+            for iv in intervals:
+                execute(engine,"""INSERT INTO teams_attendance_records(report_row_id,participant_id,display_name,email,join_time_utc,leave_time_utc,duration_seconds,role,identity_json,raw_json,created_at)
+                  VALUES(:r,:p,:d,:e,:j,:l,:du,:ro,:i,:raw,:n)""",{'r':row_id,'p':participant.get('id') if participant else None,'d':display,'e':email,'j':iv.get('joinDateTime'),'l':iv.get('leaveDateTime'),'du':iv.get('durationInSeconds'),'ro':rec.get('role'),'i':json.dumps(identity,ensure_ascii=False),'raw':json.dumps(rec,ensure_ascii=False,default=str),'n':now})
+        else:
+            execute(engine,"""INSERT INTO teams_attendance_records(report_row_id,participant_id,display_name,email,duration_seconds,role,identity_json,raw_json,created_at)
+              VALUES(:r,:p,:d,:e,:du,:ro,:i,:raw,:n)""",{'r':row_id,'p':participant.get('id') if participant else None,'d':display,'e':email,'du':rec.get('totalAttendanceInSeconds'),'ro':rec.get('role'),'i':json.dumps(identity,ensure_ascii=False),'raw':json.dumps(rec,ensure_ascii=False,default=str),'n':now})
+    if occ:
+        execute(engine,"UPDATE teams_occurrences SET attendance_report_id=:r,attendance_synced_at=:n,status='REPORT_RETRIEVED',last_error=NULL,updated_at=:n WHERE id=:o",{'r':rid,'n':now,'o':occ['id']})
+    audit(engine,'TEAMS_ATTENDANCE_IMPORTED',action_id,actor,'teams_attendance_report',row_id,{'report_id':rid,'occurrence_id':occ.get('id') if occ else None,'records':len(records or [])})
+    return True
+
+
+def teams_attendance_reconciliation(engine, action_id):
+    """Evidence comparison: Teams presence complements but never replaces attendance signature."""
+    rows=[]
+    for occ in teams_occurrences(engine,action_id):
+        participants=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':action_id})
+        report=one(engine,'SELECT * FROM teams_attendance_reports WHERE occurrence_id=:o ORDER BY id DESC LIMIT 1',{'o':occ['id']})
+        for p in participants:
+            signed=bool(one(engine,"SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':p['id'],'s':occ['slot_id']}))
+            absent=bool(one(engine,"SELECT id FROM attendance_status WHERE participant_id=:p AND slot_id=:s AND status='ABSENT'",{'p':p['id'],'s':occ['slot_id']}))
+            presence=False;seconds=0
+            if report:
+                recs=q(engine,'SELECT * FROM teams_attendance_records WHERE report_row_id=:r AND participant_id=:p',{'r':report['id'],'p':p['id']})
+                presence=bool(recs);seconds=sum(int(x.get('duration_seconds') or 0) for x in recs)
+            anomaly=(presence and absent) or (signed and not presence and bool(report)) or (presence and not signed and not absent)
+            rows.append({'slot_id':occ['slot_id'],'slot_date':occ['slot_date'],'start_time':occ['start_time'],'participant_id':p['id'],'participant':f"{p.get('first_name') or ''} {p.get('last_name') or ''}".strip(),'teams_present':presence,'teams_seconds':seconds,'signed':signed,'absent':absent,'anomaly':anomaly})
+    return rows

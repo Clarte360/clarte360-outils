@@ -35,7 +35,7 @@ def test_prepare_hot_and_cold_campaigns_without_attendance():
     camps=q(e,'SELECT * FROM quality_campaigns WHERE action_id=:a ORDER BY campaign_kind',{'a':aid})
     assert {x['campaign_kind'] for x in camps}=={'HOT','COLD'}
     assert all(quality_token_url(x['token'],'https://example.test').startswith('https://example.test?quality_token=') for x in camps)
-    assert one(e,'SELECT COUNT(*) n FROM quality_email_events')['n']==6
+    assert one(e,'SELECT COUNT(*) n FROM quality_email_events')['n']==2  # V3 I5: un seul envoi automatique par campagne
 
 def test_bilan_cold_due_is_about_six_months():
     e=eng();oid=get_organization(e)['id'];seed_standard_questionnaires(e,oid)
