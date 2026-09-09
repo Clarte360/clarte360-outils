@@ -86,6 +86,17 @@ def add_slot(engine, aid, date_s,start_s,end_s,actor,send=-10,r1=20,r2=120,close
           {'s':sid,'t':ref['trainer_id'],'by':actor,'n':now2})
         execute(engine,"""INSERT INTO trainer_assignment_history(scope_type,action_id,slot_id,trainer_id,event_type,new_role,new_status,actor,created_at)
           VALUES('SLOT',:a,:s,:t,'ASSIGNED','PRINCIPAL','ACTIVE',:by,:n)""",{'a':aid,'s':sid,'t':ref['trainer_id'],'by':actor,'n':now2})
+    if action_module_enabled(engine,aid,'TEAMS'):
+        mod=action_module(engine,aid,'TEAMS') or {}
+        try:
+            tz_name=organization_runtime_config(engine,aid)['timezone']
+            sl=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
+            start,_=slot_start_end(sl,tz_name)
+            if not mod.get('effective_from') and start>=datetime.now(ZoneInfo(tz_name)):
+                execute(engine,"UPDATE action_modules SET effective_from=:f,updated_at=:u WHERE action_id=:a AND module_code='TEAMS'",{'f':start.isoformat(),'u':utcnow_iso(),'a':aid})
+            queue_teams_sync(engine,aid,sid,'SLOT_ADDED',actor,{'slot_id':sid})
+        except Exception:
+            pass
     audit(engine,'SLOT_ADDED',aid,actor,'slot',sid,{'date':date_s,'start':start_s,'end':end_s});return sid
 
 def update_slot(engine,sid,d,actor):
@@ -127,6 +138,9 @@ def activate_action(engine, aid, actor):
     participants=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1',{'a':aid})
     slots=q(engine,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':aid})
     if not participants: issues.append('Aucun participant actif.')
+    expected=int(a.get('expected_participants') or 0)
+    if expected>0 and len(participants)!=expected:
+        issues.append(f'Nombre de participants incohérent : {len(participants)} inscrit(s) pour {expected} prévu(s).')
     if bool(a.get('use_attendance',1)) and not slots: issues.append("Aucun créneau d'émargement.")
     if bool(a.get('use_attendance',1)) and slots and float(a.get('planned_hours') or 0)>0:
         total=round(sum(slot_duration_hours(x) for x in slots),2)
@@ -1979,8 +1993,8 @@ def set_generic_action_module(engine, action_id, module_code, enabled, actor='sy
     if code=='TEAMS' and enabled and not eff:
         _,start=next_future_slot(engine,action_id)
         eff=start.isoformat() if start else None
-    if code=='TEAMS' and enabled and not eff:
-        raise ValueError("Teams ne peut pas être activé : aucun créneau futur n'est disponible.")
+    # I8: Teams peut être activé dès la création de l'action, avant tout calendrier.
+    # effective_from reste vide jusqu'au premier créneau futur.
     config_json=json.dumps(config or {},ensure_ascii=False) if config is not None else (old or {}).get('config_json')
     execute(engine,"""INSERT INTO action_modules(action_id,module_code,enabled,enabled_at,enabled_by,effective_from,config_json,created_at,updated_at)
       VALUES(:a,:m,:e,CASE WHEN :e=1 THEN :n ELSE NULL END,:by,:f,:c,:n,:n)
@@ -2038,13 +2052,14 @@ def _teams_effective_slots(engine, action_id):
     eff=mod.get('effective_from')
     tz_name=organization_runtime_config(engine,action_id)['timezone']
     rows=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REMPLACE') ORDER BY slot_date,start_time,id",{'a':action_id})
-    out=[]
+    out=[]; now_local=datetime.now(ZoneInfo(tz_name)); e=None
+    if eff:
+        e=datetime.fromisoformat(eff)
+        if e.tzinfo is None:e=e.replace(tzinfo=ZoneInfo(tz_name))
     for sl in rows:
         start,end=slot_start_end(sl,tz_name)
-        if eff:
-            e=datetime.fromisoformat(eff)
-            if e.tzinfo is None:e=e.replace(tzinfo=ZoneInfo(tz_name))
-            if start<e:continue
+        if e and start<e:continue
+        if not e and start<now_local:continue
         out.append((sl,start,end))
     return out
 

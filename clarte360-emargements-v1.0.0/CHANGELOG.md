@@ -240,3 +240,12 @@
 - Rapprochement Teams / émargement sans substitution de signature.
 - Liens Teams dans espaces intervenant et bénéficiaire.
 - 122 tests réussis.
+
+## V3.0.0-I8 — recette métier et simplification Teams
+- Teams sélectionnable dès l'ouverture/création de l'action, sans exiger un planning préalable.
+- Premier créneau futur = date d'effet Teams automatique + synchronisation en file worker.
+- Contrôle strict du nombre prévu/réel de participants à l'activation.
+- Rattachement bénéficiaire exact automatique ; correspondances approximatives manuelles.
+- Nouveau participant ajouté à une action active : planning existant envoyé automatiquement.
+- Relances automatiques d'émargement retirées de l'UI.
+- Portail bénéficiaire enrichi : questionnaires terminés et feuilles d'émargement.

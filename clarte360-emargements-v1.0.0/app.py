@@ -114,9 +114,9 @@ def schedule_confirmation_html(action, participant, slots):
     {privacy}<p>{org_name}</p>"""
 
 
-def send_schedule_confirmations(action_id, actor):
+def send_schedule_confirmations(action_id, actor, participant_id=None):
     action=one(ENGINE,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
-    parts=q(ENGINE,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':action_id})
+    parts=q(ENGINE,'SELECT * FROM participants WHERE action_id=:a AND active=1 AND (:p IS NULL OR id=:p) ORDER BY last_name,first_name',{'a':action_id,'p':participant_id})
     slots=q(ENGINE,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':action_id})
     cfg=mail_cfg(); missing=validate_mail_config(cfg)
     if not cfg.get('enabled') or missing:
@@ -696,6 +696,8 @@ def beneficiary_portal_page():
     acts=beneficiary_participations(ENGINE,bid);docs=list_beneficiary_documents(ENGINE,bid)
     pending=q(ENGINE,"""SELECT qc.*,a.action_no,qt.title FROM quality_campaigns qc JOIN actions a ON a.id=qc.action_id JOIN questionnaire_templates qt ON qt.id=qc.template_id
       WHERE qc.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) AND qc.status<>'COMPLETED' ORDER BY qc.due_at""",{'b':bid})
+    completed=q(ENGINE,"""SELECT qc.*,a.action_no,a.title action_title,qt.title FROM quality_campaigns qc JOIN actions a ON a.id=qc.action_id JOIN questionnaire_templates qt ON qt.id=qc.template_id
+      WHERE qc.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) AND qc.status='COMPLETED' ORDER BY COALESCE(qc.completed_at,qc.updated_at,qc.created_at) DESC""",{'b':bid})
     tabs=st.tabs(['🏠 Accueil','🎓 Mes formations / accompagnements','📅 Mon planning','💻 Mes réunions Teams','📄 Mes documents administratifs','📚 Documents de cours','✅ Mes questionnaires / actions','🗂️ Mes archives / téléchargements'])
     with tabs[0]:
         st.metric('Parcours enregistrés',len(acts));st.metric('Documents disponibles',len(docs));st.metric('Actions à réaliser',len(pending))
@@ -736,6 +738,23 @@ def beneficiary_portal_page():
     with tabs[6]:
         if not pending: st.success('Aucune action à réaliser actuellement.')
         for x in pending: st.link_button(f"{x['action_no']} — {x['title']}",quality_token_url(x['token'],BASE_URL))
+        if completed:
+            st.markdown('#### Questionnaires terminés')
+            for x in completed:
+                try:
+                    data=quality_response_pdf(ENGINE,x['id'])
+                    st.download_button(f"✅ {x['action_no']} — {x['title']}",data,file_name=f"{x['action_no']}_questionnaire_{x['id']}.pdf",mime='application/pdf',key=f"benef_qpdf_{x['id']}")
+                except Exception as ex:
+                    st.caption(f"{x['action_no']} — questionnaire terminé (PDF indisponible : {ex})")
+        st.markdown('#### Mes feuilles d’émargement')
+        for aa in acts:
+            pp=one(ENGINE,'SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1',{'a':aa['id'],'b':bid})
+            if pp:
+                try:
+                    epdf=individual_pdf(ENGINE,pp['id'])
+                    st.download_button(f"✍️ {aa['action_no']} — feuille d’émargement",epdf,file_name=f"{aa['action_no']}_emargement.pdf",mime='application/pdf',key=f"benef_epdf_{pp['id']}")
+                except Exception:
+                    pass
     with tabs[7]:
         st.caption('Vous pouvez télécharger à tout moment une copie des documents actuellement mis à disposition dans votre portail.')
         z=beneficiary_portal_zip(ENGINE,bid)
@@ -1047,11 +1066,12 @@ def create_action_screen(prefill=None,participants_prefill=None):
         agency_id=agency_opts[agency_label]
 
         st.markdown('**Modules activés pour cette action**')
-        m1,m2,m3,m4=st.columns(4)
+        m1,m2,m3,m4,m5=st.columns(5)
         use_attendance=m1.checkbox('Émargement',value=True)
         use_hot=m2.checkbox('Évaluation à chaud',value=False)
         use_cold=m3.checkbox('Évaluation à froid',value=False)
         use_trainer=m4.checkbox('Retour intervenant',value=False)
+        use_teams=m5.checkbox('Gestion Teams',value=False,help='À cocher dès la création si les rendez-vous Teams doivent être gérés automatiquement. Le lieu/modalité reste libre et n’active jamais Teams à lui seul.')
 
         trainers=list_trainers(ENGINE,active_only=True)
         trainer_opts={'— Aucun intervenant référencé —':None,**{f"{t['full_name']} — {t.get('email') or 'sans email'}":t['id'] for t in trainers}}
@@ -1128,6 +1148,8 @@ def create_action_screen(prefill=None,participants_prefill=None):
                 ENGINE,aid,prestation_type,use_attendance,use_hot,use_cold,use_trainer,
                 organization_id,agency_id,st.session_state.admin_email
             )
+            if use_teams:
+                set_generic_action_module(ENGINE,aid,'TEAMS',True,st.session_state.admin_email)
             execute(ENGINE,'UPDATE actions SET start_date=:s,end_date=:e WHERE id=:a',
                     {'s':start_date.isoformat(),'e':end_date.isoformat(),'a':aid})
             if p.get('client_quality_email') or p.get('client_training_email') or p.get('quality_contact_name') or p.get('training_contact_name'):
@@ -1151,7 +1173,7 @@ def create_action_screen(prefill=None,participants_prefill=None):
             if imported_parts:
                 st.success(f'Action créée avec {len(imported_parts)} participant(s) importé(s).')
             else:
-                st.success('Action créée. Vous pouvez maintenant ajouter les participants et les créneaux.')
+                st.success('Action créée. Étape suivante : ajoutez les participants, puis les intervenants et le calendrier. La validation finale sera proposée lorsque le dossier sera cohérent.')
             st.session_state['_next_nav']='Actions'
             rerun()
     footer()
@@ -1358,23 +1380,33 @@ def teams_tab(a):
     if not mod.get('enabled'):
         st.info('Le module Teams est désactivé pour cette action. Il ne sera jamais activé automatiquement par la modalité online/mixte.')
         return
-    st.success(f"Teams activé — date d’effet : {mod.get('effective_from') or 'non définie'}")
+    if mod.get('effective_from'):
+        st.success(f"Teams activé à partir du {mod.get('effective_from')}.")
+    else:
+        st.success("Teams activé pour cette action. La première séance future fixera automatiquement la date d’effet.")
     try:
         cfg=graph_config_from_mapping(dict(st.secrets))
     except Exception:
         cfg=graph_config_from_mapping({})
     missing=graph_config_missing(cfg) if cfg.get('enabled') else ['configuration Microsoft Graph non activée']
     if missing:
-        st.warning('Configuration VPS/Entra non opérationnelle : '+', '.join(missing)+'. Le code reste inerte tant que cette configuration n’est pas prête.')
+        st.warning('Connexion Microsoft 365 non prête : '+', '.join(missing)+'.')
     else:
-        st.success(f"Graph configuré pour l’organisateur technique {cfg.get('organizer_upn') or '—'}.")
+        st.success(f"Microsoft 365 prêt — organisateur : {cfg.get('organizer_upn') or '—'}.")
     room=teams_room(ENGINE,a['id'])
     if room:
         c1,c2,c3=st.columns(3);c1.metric('Stratégie',room.get('strategy') or '—');c2.metric('Statut',room.get('lifecycle_status') or '—');c3.metric('Occurrences',len(teams_occurrences(ENGINE,a['id'])))
         if room.get('join_web_url'): st.link_button('OUVRIR LE LIEN TEAMS DE L’ACTION',room['join_web_url'],type='primary')
         st.caption(f"Meeting ID Graph : {room.get('online_meeting_id') or '—'}")
     else:
-        st.info('Aucune salle Teams n’a encore été créée. Le worker la créera après configuration Graph valide.')
+        slot_count=one(ENGINE,"SELECT COUNT(*) n FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REMPLACE')",{'a':a['id']})['n']
+        if slot_count:
+            st.info('La réunion Teams n’est pas encore créée. Elle est mise en file de synchronisation automatique.')
+            if st.button('🔄 Synchroniser Teams maintenant',key=f'teams_sync_now_{a["id"]}'):
+                queue_teams_sync(ENGINE,a['id'],None,'MANUAL_SYNC',st.session_state.admin_email)
+                st.success('Synchronisation demandée. Le worker va traiter la réunion Teams.');rerun()
+        else:
+            st.info('Ajoutez d’abord une séance future : la réunion Teams sera ensuite créée automatiquement.')
     occ=teams_occurrences(ENGINE,a['id'])
     if occ:
         st.markdown('#### Occurrences / créneaux')
@@ -1533,17 +1565,27 @@ def participants_tab(a):
                         st.warning('Participant ajouté, mais espace personnel non créé : date de naissance et email personnel valide sont obligatoires.')
                     else:
                         cand=find_beneficiary_candidates(ENGINE,pp['last_name'],pp['first_name'],pp['birth_date'])
-                        if cand:
-                            st.warning('Participant ajouté. Une correspondance bénéficiaire existe déjà ou paraît possible : aucun rattachement automatique n’a été effectué. Utilisez la rubrique « Espace bénéficiaire » ci-dessous pour décider.')
+                        exact=[x for x in cand if x.get('exact_match')]
+                        if len(exact)==1:
+                            link_participant_to_beneficiary(ENGINE,pid,exact[0]['id'],st.session_state.admin_email)
+                            st.success('Participant rattaché automatiquement à son identité bénéficiaire permanente existante.')
+                        elif cand:
+                            st.warning('Participant ajouté. Une correspondance bénéficiaire possible existe, mais elle n’est pas certaine : utilisez la rubrique « Espace bénéficiaire » ci-dessous pour confirmer manuellement.')
                         else:
                             bid=create_beneficiary_from_participant(ENGINE,pid,st.session_state.admin_email)
                             tok=create_beneficiary_portal_invitation(ENGINE,bid,pp['email'],st.session_state.admin_email)
                             bb=one(ENGINE,'SELECT * FROM beneficiaries WHERE id=:b',{'b':bid});okb,msgb=send_beneficiary_invitation_email(bb,tok)
                             if okb: st.success(msgb)
                             else: st.warning(msgb)
-                if one(ENGINE,'SELECT COUNT(*) n FROM slots WHERE action_id=:a',{'a':a['id']})['n']:
+                has_slots=bool(one(ENGINE,'SELECT COUNT(*) n FROM slots WHERE action_id=:a',{'a':a['id']})['n'])
+                if has_slots:
                     ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
                 sync_quality_schedule(a['id'],st.session_state.admin_email)
+                if has_slots and normalize_action_status(a.get('status')) in ('ACTIVE','A_CLOTURER') and email.strip():
+                    sent,failed=send_schedule_confirmations(a['id'],st.session_state.admin_email,participant_id=pid)
+                    if sent: st.success('Le planning existant a été envoyé automatiquement à ce nouveau participant.')
+                    elif failed: st.warning('Participant ajouté, mais son planning n’a pas pu être envoyé : '+failed[0][1])
+                rerun()
     if parts:
         ids={f"{p['last_name']} {p['first_name']}":p['id'] for p in parts}
         with st.expander('✏️ Modifier un participant'):
@@ -1652,7 +1694,7 @@ def calendar_tab(a):
         display=[]
         for i,x in enumerate(slots,1):
             initial='Au début' if int(x.get('send_offset_min') or 0)==slot_start_offset_minutes(x['start_time'],x['end_time']) else f"{x['send_offset_min']} min / fin"
-            display.append({'Séance':i,'Date':x['slot_date'],'Début':x['start_time'],'Fin':x['end_time'],'Durée':slot_duration_hours(x),'Envoi initial':initial,'Relance 1':x['reminder1_offset_min'],'Relance 2':x['reminder2_offset_min']})
+            display.append({'Séance':i,'Date':x['slot_date'],'Début':x['start_time'],'Fin':x['end_time'],'Durée':slot_duration_hours(x),'Envoi initial':initial})
         st.dataframe(pd.DataFrame(display),use_container_width=True,hide_index=True)
 
     st.markdown('### Ajouter une nouvelle séance')
@@ -1668,16 +1710,14 @@ def calendar_tab(a):
         send_mode=c1.selectbox('Envoi du lien d’émargement',['Au début du créneau','10 min avant la fin','À la fin du créneau','Personnalisé'],key=f'sendmode{a["id"]}')
         custom=c2.number_input('Décalage personnalisé (min / fin)',value=-10,step=5,key=f'customsend{a["id"]}',disabled=send_mode!='Personnalisé')
         close=c3.number_input('Émargement possible après la fin pendant (min)',value=1440,step=60,key=f'add_close_offset_{a["id"]}')
-        c1,c2=st.columns(2)
-        r1=c1.number_input('Relance 1 après fin (min)',value=20,step=5,key=f'r1{a["id"]}')
-        r2=c2.number_input('Relance 2 après fin (min)',value=120,step=15,key=f'r2{a["id"]}')
+        st.caption('Les relances d’émargement sont manuelles. Aucun rappel automatique n’est programmé.')
         add=st.form_submit_button('➕ AJOUTER CETTE NOUVELLE SÉANCE',type='primary')
     if add:
         if send_mode=='Au début du créneau': send=slot_start_offset_minutes(stt.strftime('%H:%M'),ett.strftime('%H:%M'))
         elif send_mode=='10 min avant la fin': send=-10
         elif send_mode=='À la fin du créneau': send=0
         else: send=int(custom)
-        add_slot(ENGINE,a['id'],d.isoformat(),stt.strftime('%H:%M'),ett.strftime('%H:%M'),st.session_state.admin_email,int(send),int(r1),int(r2),int(close))
+        add_slot(ENGINE,a['id'],d.isoformat(),stt.strftime('%H:%M'),ett.strftime('%H:%M'),st.session_state.admin_email,int(send),20,120,int(close))
         if one(ENGINE,'SELECT COUNT(*) n FROM participants WHERE action_id=:a AND active=1',{'a':a['id']})['n']:
             ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ)
         sync_quality_schedule(a['id'],st.session_state.admin_email)
@@ -1707,15 +1747,15 @@ def calendar_tab(a):
         current_begin=int(es.get('send_offset_min') or 0)==slot_start_offset_minutes(es['start_time'],es['end_time'])
         with st.form(f'editslot{es["id"]}'):
             c1,c2,c3=st.columns(3);ed=c1.date_input('Date',value=date.fromisoformat(es['slot_date']));est=c2.time_input('Début',value=time.fromisoformat(es['start_time']));eet=c3.time_input('Fin',value=time.fromisoformat(es['end_time']))
-            c1,c2,c3,c4=st.columns(4)
+            c1,c2=st.columns(2)
             edit_send_mode=c1.selectbox('Envoi initial',['Au début du créneau','Personnalisé'],index=0 if current_begin else 1)
             esend=c2.number_input('Décalage personnalisé (min / fin)',value=int(es['send_offset_min']),step=5,disabled=edit_send_mode!='Personnalisé')
-            er1=c3.number_input('Relance 1',value=int(es['reminder1_offset_min']),step=5);er2=c4.number_input('Relance 2',value=int(es['reminder2_offset_min']),step=15)
             eclose=st.number_input('Émargement possible après la fin pendant (min)',value=int(es['close_offset_min']),step=60)
+            st.caption('Relances automatiques désactivées : les relances restent manuelles.')
             reason=st.text_input('Motif de modification (recommandé si l’action a commencé)');save_slot=st.form_submit_button('Enregistrer les modifications de cette séance')
         if save_slot:
             final_send=slot_start_offset_minutes(est.strftime('%H:%M'),eet.strftime('%H:%M')) if edit_send_mode=='Au début du créneau' else int(esend)
-            ok,msg=safe_update_slot(ENGINE,es['id'],{'slot_date':ed.isoformat(),'start_time':est.strftime('%H:%M'),'end_time':eet.strftime('%H:%M'),'send_offset_min':final_send,'reminder1_offset_min':int(er1),'reminder2_offset_min':int(er2),'close_offset_min':int(eclose),'reason':reason},st.session_state.admin_email)
+            ok,msg=safe_update_slot(ENGINE,es['id'],{'slot_date':ed.isoformat(),'start_time':est.strftime('%H:%M'),'end_time':eet.strftime('%H:%M'),'send_offset_min':final_send,'reminder1_offset_min':int(es['reminder1_offset_min']),'reminder2_offset_min':int(es['reminder2_offset_min']),'close_offset_min':int(eclose),'reason':reason},st.session_state.admin_email)
             if ok:
                 propagate_planning_change(ENGINE,a['id'],es['id'],'ADMIN_UPDATE',st.session_state.admin_email,base_url=BASE_URL,details={'reason':reason or None})
                 sent,failed=send_planning_change_notifications(a['id'],es['id'],st.session_state.admin_email)
