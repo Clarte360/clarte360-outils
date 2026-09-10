@@ -1,0 +1,36 @@
+# ==============================
+# CLARTE360 - MONOREPO ROOT IGNORE
+# ==============================
+
+# Environnements Python
+**/.venv/
+**/venv/
+
+# Caches Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+
+# Secrets Streamlit
+**/.streamlit/secrets.toml
+
+# Secrets / certificats
+**/*.pem
+**/*.key
+**/*.pfx
+**/*.p12
+
+# Données persistantes
+**/data/
+
+# Exports / sauvegardes / logs
+**/exports/
+**/backups/
+**/*.log
+
+# Fichiers temporaires / sauvegardes locales
+**/*.bak
+**/*.tmp
+**/*~
+**/*.bak*
