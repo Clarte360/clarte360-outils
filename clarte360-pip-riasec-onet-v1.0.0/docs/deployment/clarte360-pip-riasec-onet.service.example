@@ -1,0 +1,16 @@
+[Unit]
+Description=Clarte360 PIP RIASEC + O*NET
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-pip-riasec-onet-v1.0.0
+Environment=PYTHONPATH=.
+Environment=CLARTE360_PIP_DATA_DIR=/opt/clarte360/clarte360-outils/clarte360-pip-riasec-onet-v1.0.0/data
+ExecStart=/opt/clarte360/clarte360-outils/clarte360-pip-riasec-onet-v1.0.0/.venv/bin/streamlit run app.py --server.address 127.0.0.1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

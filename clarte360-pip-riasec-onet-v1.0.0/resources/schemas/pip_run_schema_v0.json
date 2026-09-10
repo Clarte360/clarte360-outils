@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clarte360.pip.run.v0",
+  "title": "Clarte360 PIP run scaffold - L1-A",
+  "type": "object",
+  "required": ["schema", "app_version", "passation_id", "launch_context", "pip_state"],
+  "properties": {
+    "schema": {"const": "clarte360.pip.run.v0"},
+    "app_version": {"type": "string"},
+    "passation_id": {"type": "string", "minLength": 1},
+    "launch_context": {"type": "object"},
+    "pip_state": {"type": "object"}
+  },
+  "additionalProperties": true
+}

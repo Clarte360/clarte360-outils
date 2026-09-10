@@ -1,0 +1,24 @@
+# Compatible avec le .gitignore racine du monorepo clarte360-outils
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.streamlit/secrets.toml
+*.pem
+*.key
+*.pfx
+*.p12
+*.bak
+*.tmp
+*~
+.DS_Store
+.env
+*.log
+
+# Donnees d'execution / production : jamais versionnees.
+data/
+
+# Les ressources applicatives versionnees sont dans resources/ et non data/.
