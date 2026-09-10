@@ -1,6 +1,6 @@
 from collections import Counter
-from clarte360_pip.data.loader import load_pip_bank
-from clarte360_pip.data.validation import validate_bank
+from clarte360_pip.pip_data.loader import load_pip_bank
+from clarte360_pip.pip_data.validation import validate_bank
 from clarte360_pip.questionnaire import QuestionnaireEngine, build_order
 
 def test_runtime_bank_valid():

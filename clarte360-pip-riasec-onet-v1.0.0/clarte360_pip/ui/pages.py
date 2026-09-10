@@ -8,8 +8,8 @@ from clarte360_pip.framework.persistence import snapshot_bytes, restore_snapshot
 from clarte360_pip.scoring import score_pip
 from clarte360_pip.journey import results_allowed, next_after_pip
 from clarte360_pip.framework.rgpd import render_rgpd
-from clarte360_pip.data.loader import load_pip_bank
-from clarte360_pip.data.validation import assert_valid_bank
+from clarte360_pip.pip_data.loader import load_pip_bank
+from clarte360_pip.pip_data.validation import assert_valid_bank
 from clarte360_pip.questionnaire import QuestionnaireEngine, build_order
 
 

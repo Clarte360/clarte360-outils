@@ -1,7 +1,7 @@
 from pathlib import Path
 from clarte360_pip.version import APP_VERSION, BUILD_INCREMENT, FRAMEWORK_VPS_VERSION
-from clarte360_pip.data.loader import load_pip_bank, RUNTIME_FILE
-from clarte360_pip.data.validation import assert_valid_bank
+from clarte360_pip.pip_data.loader import load_pip_bank, RUNTIME_FILE
+from clarte360_pip.pip_data.validation import assert_valid_bank
 from clarte360_pip.journey import results_allowed
 from clarte360_pip.framework.config import BASE_DIR, PERSISTENT_DATA_DIR, RESOURCES_DIR, TEMP_DIR
 
@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_final_version():
-    assert APP_VERSION == "1.0.1-l1-vps"
+    assert APP_VERSION == "1.0.2-l1-vps"
     assert BUILD_INCREMENT == "L1-D"
     assert FRAMEWORK_VPS_VERSION == "1.0"
 

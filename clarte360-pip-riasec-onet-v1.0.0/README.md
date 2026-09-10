@@ -1,6 +1,6 @@
 # Clarté360 — PIP RIASEC + O*NET Interest Profiler
 
-**Version : 1.0.1-l1-vps**  
+**Version : 1.0.2-l1-vps**  
 **Incrément : L1-D — LIVRABLE 1 FINAL**  
 **Framework : Clarté360 V4.0 + FRAMEWORK VPS CLARTÉ360 V1.0**
 

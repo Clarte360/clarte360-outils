@@ -1,4 +1,4 @@
-from clarte360_pip.data.loader import load_pip_bank
+from clarte360_pip.pip_data.loader import load_pip_bank
 from clarte360_pip.scoring import score_pip
 from clarte360_pip.journey import results_allowed,next_after_pip
 from clarte360_pip.feeling import build_feeling_record,QUESTIONS

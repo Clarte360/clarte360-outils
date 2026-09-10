@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_versions_and_required_layout():
-    assert APP_VERSION == "1.0.1-l1-vps"
+    assert APP_VERSION == "1.0.2-l1-vps"
     assert BUILD_INCREMENT == "L1-D"
     assert FRAMEWORK_VERSION == "4.0"
     assert FRAMEWORK_VPS_VERSION == "1.0"
@@ -77,3 +77,10 @@ def test_l1a_runtime_does_not_embed_pilot_item_ids():
         text = path.read_text(encoding="utf-8")
         assert "PIP-ACT-R-R1-001" not in text
         assert "Assembler des elements pour fabriquer" not in text
+
+
+def test_python_source_package_is_not_named_data():
+    """Le .gitignore racine du monorepo ignore **/data/ : aucun code Python ne doit y vivre."""
+    assert not (ROOT / "clarte360_pip" / "data").exists()
+    assert (ROOT / "clarte360_pip" / "pip_data" / "loader.py").is_file()
+    assert (ROOT / "clarte360_pip" / "pip_data" / "validation.py").is_file()
