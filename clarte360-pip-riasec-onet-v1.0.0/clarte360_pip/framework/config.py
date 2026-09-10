@@ -59,6 +59,15 @@ class OnetSettings:
 
 
 @dataclass(frozen=True)
+class GestionActionsSettings:
+    launch_signing_key: str | None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.launch_signing_key and self.launch_signing_key.strip())
+
+
+@dataclass(frozen=True)
 class SmtpSettings:
     server: str | None
     port: int
@@ -87,6 +96,12 @@ def load_onet_settings(secrets: Mapping[str, Any] | None = None) -> OnetSettings
     key = str(section.get("ONET_API_KEY", "")).strip() or None
     base = str(section.get("ONET_API_BASE_URL", "https://api-v2.onetcenter.org")).strip()
     return OnetSettings(api_key=key, base_url=base or "https://api-v2.onetcenter.org")
+
+
+def load_gestion_actions_settings(secrets: Mapping[str, Any] | None = None) -> GestionActionsSettings:
+    section = _section(secrets, "PIP_CONNECTOR")
+    key = str(section.get("LAUNCH_SIGNING_KEY", "")).strip() or None
+    return GestionActionsSettings(launch_signing_key=key)
 
 
 def load_smtp_settings(secrets: Mapping[str, Any] | None = None) -> SmtpSettings:

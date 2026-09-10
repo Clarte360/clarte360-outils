@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_versions_and_required_layout():
-    assert APP_VERSION == "1.0.2-l1-vps"
+    assert APP_VERSION == "1.0.4-l1-vps"
     assert BUILD_INCREMENT == "L1-D"
     assert FRAMEWORK_VERSION == "4.0"
     assert FRAMEWORK_VPS_VERSION == "1.0"
@@ -33,7 +33,9 @@ def test_four_master_sources_are_carried_forward():
         "CLARTE360_PIP_RIASEC_TABLEUR_MAITRE_V0_3.xlsx",
         "PIP_RIASEC_CLARTE360_BANQUE_EXPERIMENTALE_120_ITEMS_REVUE_V0_1.docx",
     }
-    assert expected == {p.name for p in src.iterdir() if p.is_file()}
+    names = {p.name for p in src.iterdir() if p.is_file()}
+    assert expected.issubset(names)
+    assert names - expected <= {"CLARTE360_PIP_RIASEC_TABLEUR_MAITRE_V0_4_CONTEXTES.xlsx"}
     assert (ROOT / "docs" / "references" / "rome_riasec_clarte360.xlsx").exists()
 
 

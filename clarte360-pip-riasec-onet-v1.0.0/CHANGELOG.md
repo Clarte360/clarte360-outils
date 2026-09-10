@@ -35,3 +35,20 @@
 - Audit banque runtime, parcours, verrou anti-influence, sauvegarde/reprise et absence de secrets.
 - Ajout des tests de consolidation L1-D.
 - Ajout de la checklist de recette utilisateur du Livrable 1.
+
+## 1.0.3-l1-vps — 2026-09-10 — correctif recette réelle L1
+- Branding Clarté360 visible avec logo officiel de l'application Gestion des actions.
+- Sauvegarde JSON accessible pendant toute la passation et reprise depuis l'accueil.
+- Fin de parcours PIP seul : restitution minimale des six indices, code Holland seulement si non ambigu, questionnaire fermé de ressenti, sauvegarde finale.
+- Ajout d'un exemple concret séparé pour chacun des 120 items, issu du tableur maître V0.4 de contextualisation ; formulations source et scoring inchangés.
+- Le mode accompagné reste préparé mais son authentification/prescription doit être fournie par le connecteur Gestion des actions ; aucun second compte PIP n'est créé.
+
+## 1.0.4-l1-vps — 2026-09-10 — RC2 seconde partie
+- Préparation réelle du mode ACCOMPAGNEMENT sans créer de compte PIP parallèle.
+- Suppression du scaffold par identifiants URL libres : l'entrée accompagnée exige désormais un jeton HMAC signé et expirant.
+- Ajout du contrat de jeton commun Gestion des actions ↔ PIP, sans dépendance externe.
+- Ajout d'une persistance serveur atomique des passations accompagnées sous `data/accompanied_runs/`.
+- Ajout d'une outbox locale d'événements minimisés `CONSULTE / EN_COURS / TERMINE`, prête pour le transport futur vers Gestion des actions.
+- Le mode PUBLIC reste étanche et refuse tout identifiant Clarté360 injecté dans l'URL.
+- Export JSON public renforcé : aucun scoring intermédiaire n'est exporté avant complétude du PIP.
+- Sauvegarde JSON visible uniquement en PUBLIC ; en ACCOMPAGNEMENT la sauvegarde est automatique côté serveur.

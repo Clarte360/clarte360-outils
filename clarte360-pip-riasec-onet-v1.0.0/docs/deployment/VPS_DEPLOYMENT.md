@@ -44,3 +44,13 @@ Le code n'écrit aucune ressource métier versionnée dans `data/`. La banque PI
 
 ## Retour arrière
 Un retour arrière Git porte uniquement sur le code. Les données persistantes doivent disposer d'une sauvegarde indépendante avant toute future migration destructive.
+
+## Secret connecteur Gestion des actions (à partir de v1.0.4)
+Le mode `ACCOMPAGNEMENT` nécessite une clé HMAC partagée, hors Git, dans `/opt/clarte360/secrets/secrets.toml` :
+
+```toml
+[PIP_CONNECTOR]
+LAUNCH_SIGNING_KEY = "<secret réel>"
+```
+
+La même clé devra être utilisée côté Gestion des actions pour produire les jetons de lancement. Ne jamais afficher cette valeur dans les logs ou commandes de recette.

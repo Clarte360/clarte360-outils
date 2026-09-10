@@ -15,6 +15,7 @@ h1, h2, h3 {{ color: {OFFICIAL_TEAL}; }}
 div.stButton > button[kind="primary"] {{ background-color: {OFFICIAL_TEAL}; border-color: {OFFICIAL_TEAL}; }}
 div.stButton > button[kind="primary"]:hover {{ background-color: #006f6f; border-color: #006f6f; }}
 .clarte-box {{ border-left: 6px solid {OFFICIAL_TEAL}; background: {LIGHT_TEAL}; padding: 1rem 1.1rem; border-radius: .55rem; margin: 1rem 0; color: {DARK_TEXT}; }}
+.clarte-example {{ border-left: 4px solid #9acaca; background:#f7fbfb; padding:.7rem .9rem; border-radius:.4rem; margin:.5rem 0 1rem 0; color:#405858; font-size:.95rem; }}
 .clarte-card {{ border: 1px solid #d9eeee; border-radius: .8rem; padding: 1rem; background: #fff; box-shadow: 0 1px 8px rgba(0,128,128,.08); margin-bottom: 1rem; }}
 .clarte-muted {{ color:#666; font-size:.92rem; }}
 .clarte-mode {{ display:inline-block; padding:.25rem .6rem; border:1px solid #cfe6e6; border-radius:999px; color:{OFFICIAL_TEAL}; font-weight:700; font-size:.82rem; }}

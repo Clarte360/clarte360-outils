@@ -51,3 +51,9 @@ Aucune clé réelle ne doit être présente dans le dépôt. Sur le VPS : `/opt/
 - Environnement Python local : `.venv/`
 
 Procédure détaillée : `docs/deployment/VPS_DEPLOYMENT.md`.
+
+## Correctif recette réelle 1.0.3
+La première passation réelle VPS a conduit à un correctif additif : contextualisation des 120 items, sauvegarde/reprise publique accessible pendant la passation, restitution minimale après PIP seul, ressenti fermé et branding Clarté360. Le raccordement ACCOMPAGNEMENT reste conditionné au connecteur de prescription Gestion des actions afin de réutiliser l’identité permanente existante sans créer de compte parallèle.
+
+## RC2 — raccordement bénéficiaire préparé
+Le mode `ACCOMPAGNEMENT` n'accepte plus d'identifiants libres dans l'URL. Il exige un paramètre `launch` signé en HMAC-SHA256 par Gestion des actions. La clé partagée `PIP_CONNECTOR.LAUNCH_SIGNING_KEY` reste exclusivement dans les secrets VPS. Les passations accompagnées sont sauvegardées automatiquement sous le dossier persistant `data/` et produisent une outbox d'événements techniques minimisés en attendant le transport I9.

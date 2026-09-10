@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import streamlit as st
 
+from clarte360_pip.connectors.gestion_actions import GestionActionsPort
 from clarte360_pip.domain import LaunchContext, RunMode
+from clarte360_pip.framework.config import load_gestion_actions_settings
 
 
 def _query_value(name: str) -> str | None:
@@ -18,20 +20,20 @@ def _query_value(name: str) -> str | None:
 def resolve_launch_context() -> LaunchContext:
     mode_raw = (_query_value("mode") or "public").strip().lower()
     if mode_raw == "public":
+        # Public mode must not accept Clarté360 dossier identifiers even if a user adds them to the URL.
+        forbidden = ("beneficiary_id", "action_id", "participant_id", "prescription_id", "launch")
+        if any(_query_value(name) for name in forbidden):
+            raise ValueError("Le point d'entrée PUBLIC ne peut contenir aucun identifiant Clarté360.")
         ctx = LaunchContext(mode=RunMode.PUBLIC)
         ctx.validate()
         return ctx
+
     if mode_raw == "accompagnement":
-        # L1-A accepts explicit dev identifiers only to prove the domain boundary.
-        # Signed token verification belongs to the future Gestion des actions connector increment.
-        ctx = LaunchContext(
-            mode=RunMode.ACCOMPANIMENT,
-            beneficiary_id=_query_value("beneficiary_id"),
-            action_id=_query_value("action_id"),
-            participant_id=_query_value("participant_id"),
-            prescription_id=_query_value("prescription_id"),
-            raw={"entry": "dev-scaffold-l1a"},
-        )
-        ctx.validate()
-        return ctx
-    raise ValueError("Point d'entree invalide.")
+        token = _query_value("launch")
+        if not token:
+            raise ValueError("Lien d'accompagnement incomplet : jeton de lancement absent.")
+        settings = load_gestion_actions_settings(st.secrets)
+        port = GestionActionsPort(settings.launch_signing_key)
+        return port.resolve_launch(token)
+
+    raise ValueError("Point d'entrée invalide.")

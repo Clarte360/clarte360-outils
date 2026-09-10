@@ -32,7 +32,7 @@ def build_snapshot(session_state: dict[str, Any]) -> dict[str, Any]:
         "navigation_page": session_state.get("navigation_page"),
         "journey": session_state.get("journey", "PIP_SEUL"),
         "pip_state": _jsonable(session_state.get("pip_state", {})),
-        "pip_scoring": _jsonable(session_state.get("pip_scoring", {})),
+        "pip_scoring": _jsonable(session_state.get("pip_scoring", {})) if bool(session_state.get("pip_state", {}).get("completed")) else {},
         "onet_state": _jsonable(session_state.get("onet_state", {})),
         "feeling": _jsonable(session_state.get("feeling", {})),
         "session_history": _jsonable(session_state.get("session_history", [])),
