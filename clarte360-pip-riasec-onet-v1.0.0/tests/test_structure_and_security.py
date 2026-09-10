@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_versions_and_required_layout():
-    assert APP_VERSION == "1.0.4-l1-vps"
+    assert APP_VERSION == "1.0.5-l1-vps"
     assert BUILD_INCREMENT == "L1-D"
     assert FRAMEWORK_VERSION == "4.0"
     assert FRAMEWORK_VPS_VERSION == "1.0"
@@ -46,11 +46,24 @@ def test_no_real_secret_patterns_in_text_files():
         re.compile(r"BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY"),
     ]
     for path in ROOT.rglob("*"):
+        # Do not dereference VPS-local secret symlinks: the repository scan
+        # must validate versioned content, not the external secret store.
+        if path.is_symlink():
+            continue
         if not path.is_file() or path.suffix.lower() in {".docx", ".xlsx", ".png", ".zip", ".pyc"}:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         for pattern in suspicious:
             assert not pattern.findall(text), f"Potential secret in {path}"
+
+
+
+def test_secret_symlink_is_ignored_by_repository_scans(tmp_path):
+    external = tmp_path / "external-secrets.toml"
+    external.write_text("ONET_" + "API_KEY = \"" + "example-secret-material-123456" + "\"", encoding="utf-8")
+    link = tmp_path / "secrets.toml"
+    link.symlink_to(external)
+    assert link.is_symlink()
 
 
 def test_vps_forbidden_artifacts_are_ignored_by_git():

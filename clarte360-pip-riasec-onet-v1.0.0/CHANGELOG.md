@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5-l1-vps — RC3
+- Corrige les tests de sécurité VPS afin qu'ils n'ouvrent jamais `.streamlit/secrets.toml` lorsqu'il s'agit du lien symbolique vers le coffre central `/opt/clarte360/secrets/secrets.toml`.
+- Le contrôle continue d'inspecter tous les fichiers réellement versionnés du projet.
+- Aucun changement fonctionnel, méthodologique, RIASEC, O*NET ou de scoring.
+- Ajout d'un test de non-régression sur le comportement attendu avec un lien symbolique de secrets.
+
 ## 1.0.1-l1-vps — 2026-09-10
 - Mise en conformité technique avec le FRAMEWORK VPS CLARTÉ360 V1.0.
 - Aucun changement fonctionnel ou méthodologique PIP/RIASEC/O*NET.

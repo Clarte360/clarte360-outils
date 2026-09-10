@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_final_version():
-    assert APP_VERSION == "1.0.4-l1-vps"
+    assert APP_VERSION == "1.0.5-l1-vps"
     assert BUILD_INCREMENT == "L1-D"
     assert FRAMEWORK_VPS_VERSION == "1.0"
 
@@ -30,6 +30,11 @@ def test_onet_anti_influence_gate():
 def test_no_real_secret_material_in_repository():
     forbidden = ("sk-" + "proj-", "BEGIN " + "PRIVATE KEY")
     for p in ROOT.rglob("*"):
+        # VPS may expose the central secret store through .streamlit/secrets.toml
+        # as a symlink. Security scans must inspect repository content only,
+        # never dereference local secrets deliberately kept outside Git.
+        if p.is_symlink():
+            continue
         if p.is_file() and p != Path(__file__) and p.suffix.lower() in {".py", ".md", ".toml", ".txt", ".json"}:
             text = p.read_text(errors="ignore")
             assert not any(x in text for x in forbidden), p
