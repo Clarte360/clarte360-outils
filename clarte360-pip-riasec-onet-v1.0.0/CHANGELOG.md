@@ -58,3 +58,11 @@
 - Le mode PUBLIC reste étanche et refuse tout identifiant Clarté360 injecté dans l'URL.
 - Export JSON public renforcé : aucun scoring intermédiaire n'est exporté avant complétude du PIP.
 - Sauvegarde JSON visible uniquement en PUBLIC ; en ACCOMPAGNEMENT la sauvegarde est automatique côté serveur.
+
+## 1.0.6-l1-vps — RC4 Accès public professionnel
+- Nouvelle landing page RIASEC orientée découverte et compréhension du résultat.
+- Accès public avec identité complète et vérification e-mail par code temporaire.
+- Consentement marketing facultatif et séparé du traitement nécessaire à la passation.
+- Consentement étude PIP/O*NET séparé ; stockage de recherche pseudonymisé distinct des coordonnées.
+- Préparation maintenue de l'accès bénéficiaire par prescription signée Gestion des actions (I9 à venir).
+- Aucune modification des 120 formulations, exemples concrets, scoring ou verrou anti-influence O*NET.

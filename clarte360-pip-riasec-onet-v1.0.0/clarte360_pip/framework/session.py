@@ -26,6 +26,10 @@ def initialize_session(launch: LaunchContext) -> None:
         "launch_context": launch,
         "pip_state": {},
         "technical_state": {},
+        "public_access_verified": False,
+        "public_identity": {},
+        "public_marketing_opt_in": False,
+        "study_consent": False,
         "last_activity_at": now_iso(),
     }
     for key, value in defaults.items():

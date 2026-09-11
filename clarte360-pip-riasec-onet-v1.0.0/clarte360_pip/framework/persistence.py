@@ -29,6 +29,11 @@ def build_snapshot(session_state: dict[str, Any]) -> dict[str, Any]:
         "session_id": session_state.get("session_id"),
         "launch_context": _jsonable(launch),
         "rgpd_acceptance": _jsonable(session_state.get("rgpd_acceptance")),
+        "public_participant_id": session_state.get("public_participant_id"),
+        "public_identity": _jsonable(session_state.get("public_identity", {})),
+        "public_access_verified": bool(session_state.get("public_access_verified")),
+        "public_marketing_opt_in": bool(session_state.get("public_marketing_opt_in")),
+        "study_consent": bool(session_state.get("study_consent")),
         "navigation_page": session_state.get("navigation_page"),
         "journey": session_state.get("journey", "PIP_SEUL"),
         "pip_state": _jsonable(session_state.get("pip_state", {})),
@@ -56,6 +61,6 @@ def validate_snapshot(payload: dict[str, Any]) -> list[str]:
 def restore_snapshot(payload: dict[str, Any], session_state: Any) -> None:
     errors=validate_snapshot(payload)
     if errors: raise ValueError(" ".join(errors))
-    for key in ("passation_id","session_id","navigation_page","pip_state","pip_scoring","onet_state","feeling","session_history"):
+    for key in ("passation_id","session_id","navigation_page","pip_state","pip_scoring","onet_state","feeling","session_history","public_participant_id","public_identity","public_access_verified","public_marketing_opt_in","study_consent"):
         if key in payload: session_state[key]=payload[key]
     session_state["journey"]=payload.get("journey","PIP_SEUL")

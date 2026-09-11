@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 import streamlit as st
 
 from clarte360_pip.domain import LaunchContext, RunMode
-from clarte360_pip.framework.config import LOGO_PATH, ASSETS_DIR
+from clarte360_pip.framework.config import LOGO_PATH, ASSETS_DIR, load_smtp_settings
 from clarte360_pip.framework.contact import render_contact
 from clarte360_pip.framework.persistence import snapshot_bytes, restore_snapshot
 from clarte360_pip.scoring import score_pip
@@ -16,6 +17,7 @@ from clarte360_pip.questionnaire import QuestionnaireEngine, build_order
 from clarte360_pip.feeling import QUESTIONS, build_feeling_record
 from clarte360_pip.framework.server_store import save_accompanied_snapshot
 from clarte360_pip.connectors.gestion_actions import GestionActionsPort
+from clarte360_pip.framework.public_access import (validate_public_identity, issue_public_code, verify_public_code, save_public_lead, save_public_study_record)
 
 
 
@@ -63,48 +65,78 @@ def _restore_uploaded(uploaded) -> None:
 
 def render_home(launch: LaunchContext) -> None:
     _render_logo()
-    st.title("PIP RIASEC Clarté360")
-    st.caption("Profil d’Intérêts Professionnels")
-    st.markdown(f'<span class="clarte-mode">{launch.mode.value}</span>', unsafe_allow_html=True)
-    st.markdown(
-        """
-<div class="clarte-box">
-<b>Le PIP est un questionnaire français complet et autonome.</b><br>
-Il explore l’attraction pour des activités, situations et environnements professionnels selon le modèle RIASEC.
+    st.markdown("# Découvrez ce qui vous attire vraiment dans le travail")
+    st.markdown("### Votre Profil d’Intérêts Professionnels RIASEC Clarté360")
+    st.markdown("""
+<div class="clarte-hero">
+<b>Le RIASEC, c’est une boussole pour mieux comprendre vos préférences professionnelles.</b><br><br>
+Le modèle de Holland distingue six grandes familles d’intérêts : <b>Réaliste, Investigateur, Artistique, Social, Entreprenant et Conventionnel</b>.
+Le PIP Clarté360 explore, au travers de 120 situations concrètes, les activités, situations et environnements qui vous attirent le plus — et ceux qui vous attirent moins.
 </div>
-""",
-        unsafe_allow_html=True,
-    )
-    st.info("Banque pilote : 120 items. Aucun score ni aucune interprétation ne sont affichés pendant la passation.")
+""", unsafe_allow_html=True)
+    st.markdown("**À l’issue du questionnaire :** découvrez vos six dimensions RIASEC et, lorsque les résultats le permettent, votre code de synthèse Holland. Ce profil n’est ni un test de compétences ni un verdict : il éclaire vos préférences et vos choix professionnels.")
+    st.markdown('<div class="clarte-stats"><b>120 situations</b> &nbsp; • &nbsp; <b>≈ 15–20 min</b> &nbsp; • &nbsp; <b>Résultat personnel</b> &nbsp; • &nbsp; <b>Sauvegarde possible</b></div>', unsafe_allow_html=True)
 
-    if launch.mode is RunMode.PUBLIC:
-        st.markdown("### Reprendre une passation publique")
-        uploaded = st.file_uploader("Choisissez votre fichier JSON de sauvegarde", type=["json"], key="resume_json")
-        if uploaded is not None and st.button("Reprendre cette passation", use_container_width=True):
+    if launch.mode is RunMode.ACCOMPANIMENT:
+        st.success("Accès bénéficiaire Clarté360 reconnu.")
+        if st.session_state.get("server_resume_restored"): st.info("Votre passation précédente a été retrouvée automatiquement.")
+        st.markdown(f"**Action :** {launch.action_id}  \n**Bénéficiaire :** {launch.beneficiary_id}")
+        st.caption("Cet outil vous a été adressé depuis votre parcours Clarté360. Votre progression est sauvegardée automatiquement.")
+        if not st.session_state.get("consulted_event_published"):
+            _publish_if_accompanied("CONSULTE"); st.session_state.consulted_event_published=True
+        if st.button("Commencer / reprendre mon PIP", type="primary", use_container_width=True):
+            st.session_state.navigation_page="rgpd"; st.rerun()
+        return
+
+    st.markdown("## Accès public — découvrez gratuitement votre profil")
+    st.caption("Identifiez-vous puis confirmez votre adresse e-mail avec le code reçu. Vos coordonnées ne sont pas intégrées à un dossier bénéficiaire Clarté360.")
+    identity = st.session_state.get("public_identity", {})
+    c1,c2=st.columns(2)
+    with c1:
+        first=st.text_input("Prénom *", value=identity.get("first_name",""))
+        job=st.text_input("Fonction / titre *", value=identity.get("job_title",""))
+        phone=st.text_input("Téléphone *", value=identity.get("phone",""))
+    with c2:
+        last=st.text_input("Nom *", value=identity.get("last_name",""))
+        company=st.text_input("Entreprise / organisation *", value=identity.get("company",""))
+        email=st.text_input("E-mail *", value=identity.get("email",""))
+    marketing=st.checkbox("Je souhaite recevoir les actualités, ressources et offres Clarté360. (facultatif)", value=bool(st.session_state.get("public_marketing_opt_in",False)))
+    current={"first_name":first,"last_name":last,"job_title":job,"company":company,"phone":phone,"email":email}
+    if not st.session_state.get("public_access_verified"):
+        if st.button("Recevoir mon code d’accès", type="primary", use_container_width=True):
+            errors=validate_public_identity(current)
+            if errors:
+                for e in errors: st.error(e)
+            else:
+                participant_id=st.session_state.get("public_participant_id") or str(uuid4())
+                st.session_state.public_participant_id=participant_id; st.session_state.public_identity=current; st.session_state.public_marketing_opt_in=bool(marketing)
+                save_public_lead(participant_id,current,marketing,False)
+                ok,msg,state=issue_public_code(current,load_smtp_settings(st.secrets))
+                if ok:
+                    st.session_state.public_code_state=state; st.success("Code envoyé. Consultez votre messagerie puis saisissez-le ci-dessous.")
+                else: st.error(msg)
+        if st.session_state.get("public_code_state"):
+            code=st.text_input("Code d’accès reçu par e-mail", max_chars=6)
+            if st.button("Valider mon code", use_container_width=True):
+                if verify_public_code(code,st.session_state.public_code_state):
+                    st.session_state.public_access_verified=True
+                    save_public_lead(st.session_state.public_participant_id,st.session_state.public_identity,st.session_state.public_marketing_opt_in,True)
+                    st.success("Adresse e-mail vérifiée. Votre accès est ouvert."); st.rerun()
+                else: st.error("Code incorrect, expiré ou nombre maximal d’essais atteint.")
+    else:
+        st.success(f"Accès vérifié pour {st.session_state.public_identity.get('first_name','')} {st.session_state.public_identity.get('last_name','')}.")
+        if st.button("Commencer mon profil RIASEC", type="primary", use_container_width=True):
+            st.session_state.navigation_page="rgpd"; st.rerun()
+
+    st.markdown("---")
+    with st.expander("J’ai déjà commencé : reprendre avec ma sauvegarde JSON"):
+        uploaded=st.file_uploader("Choisissez votre fichier JSON",type=["json"],key="resume_json")
+        if uploaded is not None and st.button("Reprendre cette passation",use_container_width=True):
             try:
                 _restore_uploaded(uploaded)
-                st.success("Sauvegarde reconnue. Reprise de la passation…")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Sauvegarde incompatible : {exc}")
-        st.caption("Le mode accompagné utilise l’identité permanente de l’Espace bénéficiaire Clarté360. Aucun second compte PIP n’est créé.")
-    else:
-        st.success("Accès bénéficiaire Clarté360 reconnu.")
-        if st.session_state.get("server_resume_restored"):
-            st.info("Votre passation précédente a été retrouvée automatiquement. Vous pouvez la poursuivre là où vous l’aviez laissée.")
-        if st.session_state.get("server_resume_error"):
-            st.warning("La reprise automatique n’a pas pu être chargée. Votre accès reste valide ; contactez Clarté360 si nécessaire.")
-        st.markdown(f"**Action :** {launch.action_id}  ")
-        st.markdown(f"**Bénéficiaire :** {launch.beneficiary_id}")
-        st.caption("Votre progression est sauvegardée automatiquement sur le serveur Clarté360.")
-        if not st.session_state.get("consulted_event_published"):
-            _publish_if_accompanied("CONSULTE")
-            st.session_state.consulted_event_published = True
-
-    if st.button("Commencer une nouvelle passation", type="primary", use_container_width=True):
-        st.session_state.navigation_page = "rgpd"
-        st.rerun()
-
+                if not st.session_state.get("public_access_verified"): raise ValueError("La sauvegarde ne contient pas d’accès public vérifié.")
+                st.success("Sauvegarde reconnue."); st.rerun()
+            except Exception as exc: st.error(f"Sauvegarde incompatible : {exc}")
 
 def render_pip_intro() -> None:
     _render_logo()
@@ -222,6 +254,9 @@ def render_feeling() -> None:
     required = [answers[k] for k in ("global","dominants","nuances","useful","dialogue")]
     if st.button("Valider mon ressenti", type="primary", disabled=any(v is None for v in required), use_container_width=True):
         st.session_state.feeling = build_feeling_record(answers, st.session_state.get("journey", "PIP_SEUL"), "PIP-RPT-L1-MIN")
+        launch=st.session_state.get("launch_context")
+        if launch and launch.mode is RunMode.PUBLIC and st.session_state.get("study_consent"):
+            save_public_study_record(dict(st.session_state))
         st.session_state.navigation_page = "finished"; st.rerun()
 
 

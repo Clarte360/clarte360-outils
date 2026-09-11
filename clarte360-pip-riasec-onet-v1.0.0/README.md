@@ -57,3 +57,6 @@ La première passation réelle VPS a conduit à un correctif additif : contextua
 
 ## RC2 — raccordement bénéficiaire préparé
 Le mode `ACCOMPAGNEMENT` n'accepte plus d'identifiants libres dans l'URL. Il exige un paramètre `launch` signé en HMAC-SHA256 par Gestion des actions. La clé partagée `PIP_CONNECTOR.LAUNCH_SIGNING_KEY` reste exclusivement dans les secrets VPS. Les passations accompagnées sont sauvegardées automatiquement sous le dossier persistant `data/` et produisent une outbox d'événements techniques minimisés en attendant le transport I9.
+
+### RC4 — accès public et étude
+Le mode PUBLIC impose désormais une identification complète et une vérification e-mail par code avant la passation. Les coordonnées sont stockées séparément des données de recherche. Si le participant consent à l'étude, un enregistrement pseudonymisé PIP/O*NET est créé sous `data/public/study/`. Le mode ACCOMPAGNEMENT reste exclusivement accessible par jeton signé issu de Gestion des actions ; son interface de prescription sera réalisée côté Gestion des actions I9.
