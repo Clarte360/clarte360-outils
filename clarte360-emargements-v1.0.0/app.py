@@ -513,6 +513,21 @@ def render_trainer_action(action, trainer):
     else:
         st.warning('Aucun créneau n’est actuellement enregistré pour cette action.')
 
+    # H2 — visibilité immédiate de l'activation des espaces bénéficiaires avant la première séance.
+    ben_rows=[]
+    for p in parts:
+        if p.get('beneficiary_id'):
+            binfo=one(ENGINE,'SELECT id,public_id,first_name,last_name FROM beneficiaries WHERE id=:b',{'b':p['beneficiary_id']})
+            ps=beneficiary_portal_status(ENGINE,p['beneficiary_id'])
+            ben_rows.append({'Bénéficiaire':f"{(binfo or {}).get('last_name') or p.get('last_name','')} {(binfo or {}).get('first_name') or p.get('first_name','')}".strip(),
+                             'Espace personnel':ps['label'],
+                             'Dernière connexion':(ps.get('last_login_at') or '').replace('T',' ')[:16] or '—'})
+        else:
+            ben_rows.append({'Bénéficiaire':f"{p.get('last_name','')} {p.get('first_name','')}".strip(),'Espace personnel':'Non rattaché à une identité permanente','Dernière connexion':'—'})
+    if ben_rows:
+        st.markdown('#### Accès bénéficiaire avant séance')
+        st.dataframe(pd.DataFrame(ben_rows),use_container_width=True,hide_index=True)
+
     tab_plan,tab_teams,tab_em,tab_codes,tab_docs,tab_tools,tab_quality,tab_report=st.tabs(['📅 Planning','💻 Teams','✍️ Émargements / QR','🔐 Codes participants','📚 Documents','🧭 Outils Clarté360','📋 Qualité','📣 Signaler / informer'])
     with tab_plan:
         if slots:
@@ -641,7 +656,8 @@ def render_trainer_action(action, trainer):
             else:
                 if not eligible: st.warning(why)
                 st.caption('Signature manuscrite de l’intervenant')
-                tr_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=3,stroke_color='#1F2937',background_color='#FFFFFF',height=190,width=320,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f'tr_csig_{aid}_{sl["id"]}_{trainer["id"]}')
+                st.info('Signez dans le cadre gris ci-dessous avec la souris, le doigt ou un stylet.')
+                tr_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=4,stroke_color='#0F172A',background_color='#EEF2F3',height=190,width=520,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f'tr_csig_{aid}_{sl["id"]}_{trainer["id"]}')
                 cert=st.checkbox("Je certifie l'exactitude des présences et absences indiquées pour ce créneau.",key=f'tr_cert_{aid}_{sl["id"]}')
                 if st.button('CONTRESIGNER CE CRÉNEAU',type='primary',key=f'tr_sign_{aid}_{sl["id"]}',disabled=not eligible):
                     if not cert: st.error('La certification est obligatoire.')
@@ -777,7 +793,10 @@ def trainer_portal_page():
     if not acts:
         st.info('Aucune action ne vous est actuellement affectée.'); footer(); return
     tasks=trainer_countersign_tasks(ENGINE,tid)
-    st.info(f"{len(tasks)} créneau(x) à contresigner ou à finaliser.") if tasks else st.success('Aucune contresignature en attente actuellement.')
+    if tasks:
+        st.info(f"{len(tasks)} créneau(x) à contresigner ou à finaliser.")
+    else:
+        st.success('Aucune contresignature en attente actuellement.')
     cards=[]
     for a in acts:
         data=trainer_action_dashboard(ENGINE,tid,a['id'],TZ); nxt=data.get('next_slot') if data else None
@@ -886,7 +905,7 @@ def beneficiary_portal_page():
     pending=q(ENGINE,"""SELECT qc.*,a.action_no,qt.title FROM quality_campaigns qc JOIN actions a ON a.id=qc.action_id JOIN questionnaire_templates qt ON qt.id=qc.template_id
       WHERE qc.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) AND qc.status<>'COMPLETED' ORDER BY qc.due_at""",{'b':bid})
     completed=q(ENGINE,"""SELECT qc.*,a.action_no,a.title action_title,qt.title FROM quality_campaigns qc JOIN actions a ON a.id=qc.action_id JOIN questionnaire_templates qt ON qt.id=qc.template_id
-      WHERE qc.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) AND qc.status='COMPLETED' ORDER BY COALESCE(qc.completed_at,qc.updated_at,qc.created_at) DESC""",{'b':bid})
+      WHERE qc.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) AND qc.status='COMPLETED' ORDER BY COALESCE(qc.completed_at,qc.created_at) DESC""",{'b':bid})
     prescriptions=list_tool_prescriptions(ENGINE,beneficiary_id=bid,include_cancelled=False)
     tabs=st.tabs(['🏠 Accueil','🎓 Mes formations / accompagnements','📅 Mon planning','💻 Mes réunions Teams','🧭 Mes outils Clarté360','📄 Mes documents administratifs','📚 Documents de cours','✅ Mes questionnaires / actions','🗂️ Mes archives / téléchargements'])
     with tabs[0]:
@@ -1065,7 +1084,8 @@ def render_sign_form(row,method):
     canvas=None; typed_name=''
     if sig_mode=='Signature manuscrite':
         st.caption('Signez dans le cadre avec votre doigt, votre stylet ou votre souris.')
-        canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=3,stroke_color='#1F2937',background_color='#FFFFFF',height=190,width=320,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f"sig_{row['id']}_{row['slot_id']}")
+        st.info('Signez dans le cadre gris ci-dessous avec la souris, le doigt ou un stylet.')
+        canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=4,stroke_color='#0F172A',background_color='#EEF2F3',height=190,width=520,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f"sig_{row['id']}_{row['slot_id']}")
     else:
         typed_name=st.text_input('Saisissez vos nom et prénom',value=f"{row['first_name']} {row['last_name']}")
         st.caption("La validation associe votre identité saisie, votre déclaration et l'horodatage réel à la preuve d'émargement.")
@@ -1130,7 +1150,8 @@ def trainer_page(token):
     else:
         if not eligible: st.warning(why)
         name=st.text_input('Nom et prénom de l’intervenant',value=row.get('trainer_name') or '')
-        legacy_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=3,stroke_color='#1F2937',background_color='#FFFFFF',height=190,width=320,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f'legacy_csig_{slot["id"]}')
+        st.info('Signez dans le cadre gris ci-dessous avec la souris, le doigt ou un stylet.')
+        legacy_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=4,stroke_color='#0F172A',background_color='#EEF2F3',height=190,width=520,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f'legacy_csig_{slot["id"]}')
         cert=st.checkbox("Je certifie l'exactitude des présences et absences indiquées pour ce créneau.")
         if st.button('CONTRESIGNER CE CRÉNEAU',type='primary',disabled=(not eligible or (bool(assigned) and legacy_tid is None))):
             if not name.strip() or not cert: st.error('Nom et certification obligatoires.')
@@ -1630,16 +1651,40 @@ def action_tools_tab(a):
     with st.expander('⚙️ Catalogue central des outils Clarté360'):
         cat=list_tool_catalog(ENGINE,active_only=False)
         if cat:
-            st.dataframe(pd.DataFrame([{'Code':x['tool_code'],'Nom':x['name'],'Catégorie':x['category'],'Version':x.get('tool_version') or '','Actif':'Oui' if x['active'] else 'Non','Prescriptible':'Oui' if x['prescription_allowed'] else 'Non','Lancement':x['launch_type'],'Connecteur':x.get('connector_status') or ''} for x in cat]),use_container_width=True,hide_index=True)
-        st.caption("N'ajoutez une URL réelle que lorsqu'elle est vérifiée. Le mécanisme n'est pas spécifique au PIP.")
+            st.dataframe(pd.DataFrame([{'Code':x['tool_code'],'Nom':x['name'],'Catégorie':x['category'],'Version':x.get('tool_version') or '','Actif':'Oui' if x['active'] else 'Non','Prescriptible':'Oui' if x['prescription_allowed'] else 'Non','Connexion':'Sécurisée Clarté360' if x['launch_type']=='EXTERNAL_SIGNED' else ('Redirection Hub' if x['launch_type']=='HUB_REDIRECT' else 'Interne'),'État':'Connecté' if x.get('connector_status')=='CONNECTED' else ('Lancement prêt' if x.get('connector_status')=='LAUNCH_ONLY' else 'Configuration VPS à terminer')} for x in cat]),use_container_width=True,hide_index=True)
+        st.caption("Les outils Clarté360 connus sont préchargés automatiquement. Sélectionnez un outil existant pour le consulter ou le mettre à jour.")
+        existing_map={'➕ Nouvel outil':None}
+        for x in cat:
+            existing_map[f"{x['name']} — {x['tool_code']}"]=x
+        selected_label=st.selectbox('Outil du catalogue',list(existing_map),key=f'tool_catalog_select_{a["id"]}')
+        selected_tool=existing_map[selected_label]
         with st.form(f'tool_catalog_add_{a["id"]}'):
-            c1,c2=st.columns(2); code=c1.text_input('Code outil'); name=c2.text_input('Nom outil')
-            c1,c2,c3=st.columns(3); category=c1.text_input('Catégorie',value='OUTIL'); version=c2.text_input('Version'); base_url=c3.text_input('URL de base vérifiée')
-            launch=st.selectbox('Type de lancement',['HUB_REDIRECT','EXTERNAL_SIGNED','INTERNAL']); active=st.checkbox('Actif',value=True); presc=st.checkbox('Prescription autorisée',value=True)
-            save_tool=st.form_submit_button('AJOUTER / METTRE À JOUR LE CATALOGUE')
+            pip_selected=bool(selected_tool and selected_tool.get('tool_code')=='PIP_RIASEC_ONET')
+            c1,c2=st.columns(2)
+            code=c1.text_input('Code outil',value=(selected_tool or {}).get('tool_code') or '',disabled=pip_selected)
+            name=c2.text_input('Nom outil',value=(selected_tool or {}).get('name') or '',disabled=pip_selected)
+            c1,c2,c3=st.columns(3)
+            category=c1.text_input('Catégorie',value=(selected_tool or {}).get('category') or 'OUTIL',disabled=pip_selected)
+            version=c2.text_input('Version',value=(selected_tool or {}).get('tool_version') or '',disabled=pip_selected)
+            base_url=c3.text_input('URL de base vérifiée',value=(selected_tool or {}).get('base_url') or ('https://pip-riasec.clarte360.com' if pip_selected else ''),disabled=pip_selected)
+            launch_values=['HUB_REDIRECT','EXTERNAL_SIGNED','INTERNAL']
+            current_launch='EXTERNAL_SIGNED' if pip_selected else ((selected_tool or {}).get('launch_type') or 'HUB_REDIRECT')
+            launch=st.selectbox('Type de connexion',launch_values,index=launch_values.index(current_launch),disabled=pip_selected,help='Connexion sécurisée signée pour le PIP ; redirection simple pour un outil web sans contrat signé ; interne pour un module de Gestion des Actions.')
+            if pip_selected: st.caption('PIP RIASEC / O*NET : connexion sécurisée Clarté360 imposée automatiquement.')
+            active=st.checkbox('Actif',value=bool((selected_tool or {}).get('active',1)))
+            presc=st.checkbox('Prescription autorisée',value=bool((selected_tool or {}).get('prescription_allowed',1)))
+            save_tool=st.form_submit_button('ENREGISTRER LE CATALOGUE')
         if save_tool:
             try:
-                upsert_tool_catalog(ENGINE,{'tool_code':code,'name':name,'category':category,'tool_version':version,'base_url':base_url,'launch_type':launch,'active':active,'prescription_allowed':presc,'allowed_publics':['BENEFICIAIRE']},st.session_state.admin_email);st.success('Catalogue mis à jour.');rerun()
+                effective=selected_tool or {}
+                final_code=effective.get('tool_code') or code
+                final_name=effective.get('name') or name
+                final_category=effective.get('category') or category
+                final_version=effective.get('tool_version') or version
+                final_url=effective.get('base_url') or base_url
+                final_launch='EXTERNAL_SIGNED' if final_code=='PIP_RIASEC_ONET' else launch
+                upsert_tool_catalog(ENGINE,{'tool_code':final_code,'name':final_name,'category':final_category,'tool_version':final_version,'base_url':final_url,'launch_type':final_launch,'active':active,'prescription_allowed':presc,'allowed_publics':['BENEFICIAIRE']},st.session_state.admin_email)
+                st.success('Catalogue mis à jour.');rerun()
             except ValueError as ex: st.error(str(ex))
 
 
@@ -1734,7 +1779,8 @@ def teams_tab(a):
 
 def action_trainers_tab(a):
     st.subheader('Intervenants de l’action')
-    st.caption("I2 — plusieurs intervenants peuvent être rattachés à l’action et plusieurs intervenants peuvent être affectés à un même créneau. Le référent reste une notion de coordination.")
+    st.success("Cette action peut comporter plusieurs intervenants. Ajouter un intervenant ne remplace pas les intervenants déjà affectés.")
+    st.caption("Le référent coordonne l’action ; les co-intervenants et remplaçants restent rattachés selon leurs droits.")
     trainers=list_trainers(ENGINE,active_only=True)
     current=list_action_trainers(ENGINE,a['id'],active_only=True)
     if current:
@@ -1766,11 +1812,11 @@ def action_trainers_tab(a):
         opts={f"{t['full_name']} — {t.get('email') or 'sans email'}":t for t in trainers}
         with st.form(f'add_action_trainer_{a["id"]}'):
             c1,c2,c3=st.columns([3,2,1])
-            lab=c1.selectbox('Ajouter / modifier un intervenant',list(opts),key=f'at_add_{a["id"]}')
+            lab=c1.selectbox('Ajouter un intervenant à cette action',list(opts),key=f'at_add_{a["id"]}')
             role=c2.selectbox('Rôle sur l’action',['INTERVENANT','REFERENT'],key=f'at_role_{a["id"]}')
             make_ref=c3.checkbox('Référent',value=role=='REFERENT',key=f'at_ref_{a["id"]}')
             reason=st.text_input('Motif / commentaire éventuel',key=f'at_reason_{a["id"]}')
-            submit=st.form_submit_button('Ajouter / mettre à jour',type='primary')
+            submit=st.form_submit_button('Ajouter / mettre à jour cet intervenant',type='primary')
         if submit:
             tr=opts[lab]; ref=make_ref or role=='REFERENT'
             ok,msg=assign_action_trainer(ENGINE,a['id'],tr['id'],st.session_state.admin_email,role='REFERENT' if ref else role,is_referent=ref,reason=reason or None)
@@ -1950,7 +1996,16 @@ def participants_tab(a):
         if linked:
             acc=one(ENGINE,'SELECT * FROM beneficiary_portal_accounts WHERE beneficiary_id=:b',{'b':linked['id']})
             st.success(f"Rattaché à {linked['public_id']} — {linked['first_name']} {linked['last_name']}")
+            ps=beneficiary_portal_status(ENGINE,linked['id'])
             st.caption(f"Email de connexion : {(acc or {}).get('email') or linked.get('current_email') or 'non configuré'}")
+            if ps['state']=='ACTIVE':
+                st.success('Espace bénéficiaire activé.' + (f" Dernière connexion : {ps['last_login_at'].replace('T',' ')[:16]}" if ps.get('last_login_at') else ''))
+            elif ps['state']=='INVITE':
+                st.warning('Invitation envoyée, mais le bénéficiaire n’a pas encore activé son espace.')
+            elif ps['state']=='DESACTIVE':
+                st.error('Espace bénéficiaire désactivé.')
+            else:
+                st.info(ps['label'])
             c1,c2=st.columns(2)
             if c1.button('Envoyer / renouveler l’invitation espace',key=f'ben_inv_{pid_sel}',disabled=not bool(pp.get('email'))):
                 try:

@@ -357,3 +357,14 @@
 - Contrôles appliqués aux frontières métier : actions, participants, bénéficiaires, intervenants, CRM, organismes, agences, contacts client, Microsoft/Teams et imports.
 - Messages métier pour les erreurs de saisie sur les principaux écrans ; pas de traceback attendu pour une erreur de format utilisateur.
 - 263 tests réussis ; release_check OK.
+
+
+## 3.0.0-I9-H2 — Correctifs recette réelle
+- Correction du portail bénéficiaire : requête qualité alignée sur le schéma réel (suppression de la référence inexistante `quality_campaigns.updated_at`).
+- Correction de l'affichage Streamlit qui exposait un objet `DeltaGenerator` dans l'espace intervenant.
+- Zone de signature/contresignature rendue visuellement identifiable (cadre gris, consigne explicite, souris/doigt/stylet).
+- Statut d'activation de l'espace bénéficiaire visible en administration et dans l'espace intervenant, avec dernière connexion.
+- UX multi-intervenants clarifiée sans suppression des capacités multi-affectations existantes.
+- Catalogue outils : sélection d'un outil existant et préremplissage ; PIP protégé en connexion signée ; vocabulaire métier pour l'état du connecteur.
+- Mise à jour du catalogue sans effacer silencieusement le contrat/connecteur technique existant.
+- Version affichée corrigée en 3.0.0-I9-H2.

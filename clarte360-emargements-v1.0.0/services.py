@@ -1782,6 +1782,22 @@ def create_beneficiary_from_participant(engine,participant_id,actor='system'):
 def beneficiary_for_participant(engine,participant_id):
     return one(engine,"""SELECT b.* FROM participants p JOIN beneficiaries b ON b.id=p.beneficiary_id WHERE p.id=:p""",{'p':participant_id})
 
+def beneficiary_portal_status(engine, beneficiary_id):
+    """Return a beneficiary-safe activation status for admin/trainer dashboards."""
+    acc=one(engine,"SELECT beneficiary_id,email,active,invited_at,email_verified_at,last_login_at,password_hash,pending_email FROM beneficiary_portal_accounts WHERE beneficiary_id=:b",{'b':beneficiary_id})
+    if not acc:
+        return {'state':'ABSENT','label':'Aucun espace personnel','activated':False,'email':None,'last_login_at':None,'invited_at':None}
+    activated=bool(acc.get('active') and acc.get('email_verified_at') and acc.get('password_hash'))
+    if not acc.get('active'):
+        state='DESACTIVE'; label='Espace désactivé'
+    elif activated:
+        state='ACTIVE'; label='Espace activé'
+    elif acc.get('invited_at'):
+        state='INVITE'; label='Invitation envoyée — activation en attente'
+    else:
+        state='A_ACTIVER'; label='Espace créé — activation en attente'
+    return {'state':state,'label':label,'activated':activated,'email':acc.get('email'),'pending_email':acc.get('pending_email'),'last_login_at':acc.get('last_login_at'),'invited_at':acc.get('invited_at'),'email_verified_at':acc.get('email_verified_at')}
+
 def beneficiary_participations(engine,beneficiary_id):
     return q(engine,"""SELECT p.id participant_id,p.email participant_email,p.active participant_active,a.*
         FROM participants p JOIN actions a ON a.id=p.action_id WHERE p.beneficiary_id=:b ORDER BY COALESCE(a.start_date,a.created_at) DESC""",{'b':beneficiary_id})
@@ -2503,10 +2519,12 @@ def upsert_tool_catalog(engine, data, actor='admin'):
         'c':code,'n':name,'cat':(data.get('category') or 'OUTIL').strip().upper(),'url':(data.get('base_url') or '').strip() or None,
         'v':(data.get('tool_version') or '').strip() or None,'a':1 if data.get('active',True) else 0,
         'pub':json.dumps(data.get('allowed_publics') or ['BENEFICIAIRE'],ensure_ascii=False),
-        'comp':json.dumps(data.get('compatible_prestations') or [],ensure_ascii=False),'pa':1 if data.get('prescription_allowed',True) else 0,
-        'lt':launch,'iv':int(data.get('access_validity_hours') or 168),'rgpd':json.dumps(data.get('rgpd_rules') or {},ensure_ascii=False),
-        'cc':(data.get('connector_code') or '').strip() or None,'cs':(data.get('connector_status') or 'NOT_CONFIGURED').strip().upper(),
-        'meta':json.dumps(data.get('metadata') or {},ensure_ascii=False),'now':now
+        'comp':json.dumps(data.get('compatible_prestations') if 'compatible_prestations' in data else _json_load((existing or {}).get('compatible_prestations_json'),[]),ensure_ascii=False),'pa':1 if data.get('prescription_allowed',True) else 0,
+        'lt':launch,'iv':int(data.get('access_validity_hours') or (existing or {}).get('access_validity_hours') or 168),
+        'rgpd':json.dumps(data.get('rgpd_rules') if 'rgpd_rules' in data else _json_load((existing or {}).get('rgpd_rules_json'),{}),ensure_ascii=False),
+        'cc':((data.get('connector_code') if 'connector_code' in data else (existing or {}).get('connector_code')) or '').strip() or None,
+        'cs':((data.get('connector_status') if 'connector_status' in data else (existing or {}).get('connector_status')) or 'NOT_CONFIGURED').strip().upper(),
+        'meta':json.dumps(data.get('metadata') if 'metadata' in data else _json_load((existing or {}).get('metadata_json'),{}),ensure_ascii=False),'now':now
     }
     execute(engine,"""INSERT INTO tool_catalog(tool_code,name,category,base_url,tool_version,active,allowed_publics_json,compatible_prestations_json,
       prescription_allowed,launch_type,access_validity_hours,rgpd_rules_json,connector_code,connector_status,metadata_json,created_at,updated_at)
