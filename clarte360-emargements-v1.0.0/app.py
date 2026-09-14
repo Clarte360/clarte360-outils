@@ -709,12 +709,12 @@ def render_trainer_action(action, trainer):
         if not trainer_can_prescribe_tools(ENGINE,tid,aid):
             st.info("La prescription d'outils Clarté360 n'est pas activée pour vous sur cette action.")
         else:
-            st.success("Vous êtes autorisé à prescrire des outils Clarté360 aux bénéficiaires rattachés à cette action.")
+            st.success("Vous êtes autorisé à prescrire les outils du catalogue global Clarté360 aux bénéficiaires rattachés à cette action.")
             linked=q(ENGINE,"""SELECT p.id participant_id,b.id beneficiary_id,b.public_id,b.first_name,b.last_name
               FROM participants p JOIN beneficiaries b ON b.id=p.beneficiary_id
               WHERE p.action_id=:a AND p.active=1 AND b.active=1 ORDER BY b.last_name,b.first_name""",{'a':aid})
             tools=list_tool_catalog(ENGINE,active_only=True,prescription_only=True,prestation_type=a.get('prestation_type') or a.get('nature'))
-            if not linked: st.warning('Aucun participant de cette action n’est rattaché à une identité bénéficiaire permanente.')
+            if not linked: st.warning('Les outils sont disponibles, mais aucun participant de cette action n’est encore rattaché à une identité bénéficiaire permanente. L’administrateur doit effectuer ce rattachement avant toute prescription.')
             elif not tools: st.warning('Aucun outil prescriptible compatible avec cette prestation.')
             else:
                 bmap={f"{x['last_name']} {x['first_name']} — {x['public_id']}":x for x in linked}
@@ -1637,7 +1637,33 @@ def action_tools_tab(a):
                 st.success(f"Prescription créée : {pr['prescription_id']}"); rerun()
             except ValueError as ex: st.error(str(ex))
     elif not linked:
-        st.info('Rattachez au moins un participant à une identité bénéficiaire permanente pour pouvoir prescrire un outil.')
+        st.warning('Aucun bénéficiaire permanent n’est encore rattaché à cette action. Les outils du catalogue sont bien disponibles globalement, mais une prescription doit toujours viser une identité bénéficiaire permanente.')
+        unlinked=q(ENGINE,"SELECT * FROM participants WHERE action_id=:a AND active=1 AND beneficiary_id IS NULL ORDER BY last_name,first_name",{'a':a['id']})
+        if unlinked:
+            st.markdown('#### Rattacher le bénéficiaire pour prescrire')
+            umap={f"{x['last_name']} {x['first_name']}":x for x in unlinked}
+            ulab=st.selectbox('Participant à rattacher',list(umap),key=f'tool_ben_link_{a["id"]}')
+            up=umap[ulab]
+            if not up.get('birth_date'):
+                st.info('Ajoutez sa date de naissance dans l’onglet Participants avant de créer son identité permanente.')
+            elif not up.get('email'):
+                st.info('Ajoutez son adresse email dans l’onglet Participants avant de créer son espace personnel.')
+            else:
+                candidates=find_beneficiary_candidates(ENGINE,up['last_name'],up['first_name'],up['birth_date'])
+                if candidates:
+                    cmap={f"{x['last_name']} {x['first_name']} — {x['birth_date']} — {x['public_id']}":x for x in candidates}
+                    cl=st.selectbox('Identité permanente existante possible',list(cmap),key=f'tool_ben_candidate_{up["id"]}')
+                    if st.button('RATTACHER CETTE IDENTITÉ',key=f'tool_ben_link_existing_{up["id"]}'):
+                        link_participant_to_beneficiary(ENGINE,up['id'],cmap[cl]['id'],st.session_state.admin_email);st.success('Identité permanente rattachée. Les outils sont maintenant prescriptibles pour ce bénéficiaire.');rerun()
+                    st.caption('Si cette correspondance n’est pas la bonne, utilisez l’onglet Participants pour créer une nouvelle identité après vérification.')
+                else:
+                    if st.button('CRÉER L’IDENTITÉ PERMANENTE + ENVOYER L’INVITATION',key=f'tool_ben_create_{up["id"]}',type='primary'):
+                        try:
+                            bid=create_beneficiary_from_participant(ENGINE,up['id'],st.session_state.admin_email);tok=create_beneficiary_portal_invitation(ENGINE,bid,up.get('email'),st.session_state.admin_email);bb=one(ENGINE,'SELECT * FROM beneficiaries WHERE id=:b',{'b':bid});okb,msgb=send_beneficiary_invitation_email(bb,tok)
+                            if okb: st.success('Identité permanente créée et invitation envoyée. Les outils sont maintenant prescriptibles pour ce bénéficiaire.')
+                            else: st.warning('Identité permanente créée. '+msgb)
+                            rerun()
+                        except Exception as ex: _ui_incident('operation_interface',ex)
     else:
         st.info('Aucun outil actif et compatible n’est disponible pour cette prestation.')
     rows=list_tool_prescriptions(ENGINE,action_id=a['id'])
