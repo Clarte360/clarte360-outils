@@ -15,3 +15,19 @@ Logique métier non modifiée : valeurs, points d'appui, cotations, boussole, va
 
 - Harmonisation graphique du rapport PDF avec la charte Clarté360 : logo officiel centré, titre centré, en-tête institutionnel aligné sur Moteurs Professionnels.
 - Aucune modification de la logique métier, des écrans Streamlit, du JSON, des sessions, du RGPD ou du timeout.
+
+## 1.8.3 — Validation saisies / VPS / Hub ready
+- validation métier centralisée et import JSON durci ;
+- préparation URL/service VPS ;
+- contrat Hub I9-H1 Administrateur/Intervenant → bénéficiaire ;
+- tests automatisés ajoutés ;
+- aucune modification des règles métier de la Boussole.
+
+
+## 1.8.4 — Garde-fou anti-perte de travail
+- garde-fou navigateur homogénéisé sur F5, fermeture d’onglet et navigation externe ;
+- détection immédiate des nouvelles saisies côté navigateur ;
+- empreinte métier du travail pour distinguer un JSON à jour d’un JSON devenu ancien ;
+- téléchargement JSON = nouvel état sauvegardé ; toute modification ultérieure réactive la protection ;
+- import JSON = nouveau point de reprise propre ;
+- aucune modification de la logique métier, des cotations, de la roue ou des Valeurs énergies.

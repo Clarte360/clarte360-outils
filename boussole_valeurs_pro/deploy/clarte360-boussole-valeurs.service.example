@@ -1,0 +1,13 @@
+[Unit]
+Description=Clarte360 Boussole des valeurs
+After=network.target
+
+[Service]
+User=clarte360
+WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-boussole-valeurs
+ExecStart=/opt/clarte360/clarte360-outils/clarte360-boussole-valeurs/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8503
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

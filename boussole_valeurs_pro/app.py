@@ -1,10 +1,12 @@
 import csv
 import io
 import json
+import hashlib
 import math
 import secrets
 import uuid
 import smtplib
+from validation import ValidationError, clean_text, name as validate_name, email as validate_email, phone as validate_phone, decode_json_bytes, validate_state
 import string
 from copy import deepcopy
 from datetime import date, datetime, timedelta
@@ -25,7 +27,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "1.8.2-socle-clarte360"
+APP_VERSION = "1.8.4-validation-saisies-vps-hub-ready-garde-fou"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
@@ -33,7 +35,7 @@ BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
 DOMAINES = ["Travail / expérience professionnelle", "Engagements personnels / vie hors travail"]
 FINAL_EMAIL_TO = "contact@clarte360.com"
-ENERGY_ACCESS_CODE = "CLAENER360"
+ENERGY_ACCESS_CODE = "CLAENER360"  # legacy fallback; VPS: move to Streamlit secrets before deployment
 BENEFICIARY_TIMEOUT_MINUTES = 15
 CLARTE360_LEGAL = {
     "raison_sociale": "Clarté360",
@@ -331,6 +333,7 @@ def timeout_screen():
     record_save_event(data, "timeout_inactivite")
     data["updated_at"] = now_iso()
     base = export_basename(data)
+    validate_state(data)
     json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     header()
     st.error("Votre session est fermée après 15 minutes sans activité.")
@@ -484,6 +487,8 @@ def welcome_screen() -> bool:
         return import_json_screen()
     if choice == "new":
         st.session_state.data = empty_state()
+        st.session_state.saved_work_fingerprint = current_work_fingerprint(st.session_state.data)
+        st.session_state.json_downloaded = True
         st.session_state.welcome_done = True
         st.session_state.new_session_requested = True
         st.rerun()
@@ -511,11 +516,13 @@ def import_json_screen() -> bool:
     uploaded = st.file_uploader("Importer mon fichier JSON", type=["json"], key="welcome_json_upload_standard")
     if uploaded is not None:
         try:
-            loaded = json.loads(uploaded.getvalue().decode("utf-8"))
+            loaded = decode_json_bytes(uploaded.getvalue())
             if not isinstance(loaded, dict):
                 raise ValueError("Format JSON invalide")
             st.session_state.data = loaded
             record_import_event(st.session_state.data)
+            st.session_state.saved_work_fingerprint = current_work_fingerprint(st.session_state.data)
+            st.session_state.json_downloaded = True
             access = st.session_state.data.setdefault("access", {})
             if access.get("code_generated") or access.get("code_sent") or access.get("code_verified"):
                 st.session_state.code_verified = True
@@ -730,10 +737,17 @@ def access_gate() -> bool:
             consent = st.checkbox("J'ai lu les informations RGPD ci-dessus et je consens à l'utilisation de ces données dans le cadre exclusif de mon accompagnement. Je comprends qu'aucune donnée n'est conservée sur un serveur Clarté360 et que le fichier JSON reste sous mon contrôle.")
             submit = st.form_submit_button("Recevoir / générer mon code d'accès", type="primary")
         if submit:
-            if not prenom.strip() or not nom.strip() or not email.strip():
-                st.error("Merci de renseigner le prénom, le nom et l'adresse email.")
-            elif "@" not in email or "." not in email:
-                st.error("Merci de renseigner une adresse email valide.")
+            try:
+                prenom = validate_name(prenom, "Prénom")
+                nom = validate_name(nom, "Nom")
+                email = validate_email(email)
+                consultant = clean_text(consultant, "Consultant", 100)
+                access_input_valid = True
+            except ValidationError as exc:
+                access_input_valid = False
+                st.error(str(exc))
+            if not access_input_valid:
+                pass
             elif not consent:
                 st.error("Merci de confirmer votre consentement pour poursuivre.")
             else:
@@ -1283,9 +1297,56 @@ def legal_information_block():
     legal_mentions_block()
 
 
-def mark_json_downloaded():
-    """Marque le JSON comme téléchargé afin de ne plus déclencher l'alerte navigateur."""
+def _meaningful_work_payload(data: dict) -> dict:
+    """Sous-ensemble métier qui doit être protégé par le garde-fou.
+
+    Les traces techniques (sessions, timestamps, sauvegardes) sont volontairement
+    exclues afin qu'un auto-rerun ou un simple changement de page ne fasse pas
+    croire à une modification métier.
+    """
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "beneficiaire": deepcopy(data.get("beneficiaire", {})),
+        "rgpd": deepcopy(data.get("rgpd", {})),
+        "valeurs": deepcopy(data.get("valeurs", [])),
+        "valeurs_energies": deepcopy(data.get("valeurs_energies", {})),
+    }
+
+
+def current_work_fingerprint(data: dict | None = None) -> str:
+    data = data if isinstance(data, dict) else st.session_state.get("data", {})
+    payload = _meaningful_work_payload(data)
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def mark_current_work_saved():
+    """Mémorise l'état métier exact correspondant au dernier JSON sauvegardé/importé."""
+    if isinstance(st.session_state.get("data"), dict):
+        st.session_state.saved_work_fingerprint = current_work_fingerprint(st.session_state.data)
     st.session_state.json_downloaded = True
+
+
+def ensure_saved_work_baseline():
+    """Initialise un point de référence sans considérer le travail comme modifié."""
+    if "saved_work_fingerprint" not in st.session_state and isinstance(st.session_state.get("data"), dict):
+        st.session_state.saved_work_fingerprint = current_work_fingerprint(st.session_state.data)
+
+
+def work_has_unsaved_changes() -> bool:
+    data = st.session_state.get("data")
+    if not isinstance(data, dict):
+        return False
+    baseline = st.session_state.get("saved_work_fingerprint")
+    if not baseline:
+        return True
+    return current_work_fingerprint(data) != baseline
+
+
+def mark_json_downloaded():
+    """Le JSON téléchargé devient le nouveau point de sauvegarde de référence."""
+    mark_current_work_saved()
 
 
 def install_beforeunload_warning():
@@ -1295,18 +1356,34 @@ def install_beforeunload_warning():
     les navigateurs affichent leur propre dialogue standard, par exemple
     "Quitter le site ? Vos modifications risquent de ne pas être enregistrées.".
     """
-    if isinstance(st.session_state.get("data"), dict) and not st.session_state.get("json_downloaded"):
+    if isinstance(st.session_state.get("data"), dict):
+        ensure_saved_work_baseline()
+        dirty = work_has_unsaved_changes()
         components.html(
-            """
+            f"""
             <script>
-            window.parent.onbeforeunload = function (e) {
-                const message = "Avant de quitter, utilisez le bouton Clarté360 : Quitter et télécharger mon JSON.";
-                e.preventDefault();
-                e.returnValue = message;
-                return message;
-            };
+            (function() {{
+                let dirty = {str(True).lower() if False else 'DIRTY_PLACEHOLDER'};
+                const parentDoc = window.parent.document;
+                const markDirty = () => {{ dirty = true; }};
+                parentDoc.addEventListener('input', markDirty, true);
+                parentDoc.addEventListener('change', markDirty, true);
+                parentDoc.addEventListener('click', function(ev) {{
+                    const el = ev.target && ev.target.closest ? ev.target.closest('button,[role="button"]') : null;
+                    if (el && !el.textContent.includes('Télécharger le JSON préparé')) {{
+                        markDirty();
+                    }}
+                }}, true);
+                window.parent.onbeforeunload = function (e) {{
+                    if (!dirty) return undefined;
+                    const message = "Avant de quitter, téléchargez votre JSON Clarté360 afin de conserver vos dernières modifications.";
+                    e.preventDefault();
+                    e.returnValue = message;
+                    return message;
+                }};
+            }})();
             </script>
-            """,
+            """.replace('DIRTY_PLACEHOLDER', str(dirty).lower()),
             height=0,
         )
 
@@ -1319,10 +1396,10 @@ def prepare_sidebar_json(close_session: bool = False, reason: str = "sauvegarde_
     else:
         record_save_event(data, reason)
     base = export_basename(data)
+    validate_state(data)
     st.session_state.exit_json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     st.session_state.exit_json_filename = f"{base}.json"
     st.session_state.exit_json_ready = True
-    st.session_state.json_downloaded = False
 
 
 def sidebar():
@@ -1400,7 +1477,8 @@ def sidebar():
             for key in [
                 "data", "code_verified", "welcome_done", "welcome_choice", "code_sent",
                 "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page",
-                "exit_json_ready", "exit_json_bytes", "exit_json_filename"
+                "exit_json_ready", "exit_json_bytes", "exit_json_filename",
+                "saved_work_fingerprint", "json_downloaded"
             ]:
                 st.session_state.pop(key, None)
             st.rerun()
@@ -1582,6 +1660,7 @@ def page_roue():
     plt.close(fig)
     data = st.session_state.data
     base = export_basename(data)
+    validate_state(data)
     json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     rows = build_rows(data)
     csv_buf = io.StringIO()
@@ -1594,7 +1673,7 @@ def page_roue():
     st.info("Vous pouvez télécharger ici le rapport complet de la roue principale, le JSON modifiable et les fichiers utiles. Le travail sur les Valeurs énergies reste optionnel et produit ses propres sorties uniquement s'il est activé.")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.download_button("Télécharger le JSON modifiable", json_bytes, file_name=f"{base}.json", mime="application/json")
+        st.download_button("Télécharger le JSON modifiable", json_bytes, file_name=f"{base}.json", mime="application/json", on_click=mark_json_downloaded)
     with c2:
         st.download_button("Télécharger le rapport Boussole des valeurs professionnelles", data=create_pdf_bytes(data, include_values=True, include_energy=False), file_name=f"{base}_boussole_valeurs_professionnelles.pdf", mime="application/pdf")
     with c3:
@@ -1728,6 +1807,7 @@ def page_export():
     st.markdown("## 6. Export / Rapports")
     data = st.session_state.data
     base = export_basename(data)
+    validate_state(data)
     json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     rows = build_rows(data)
     csv_buf = io.StringIO()
@@ -1741,7 +1821,7 @@ def page_export():
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.download_button("JSON modifiable complet", json_bytes, file_name=f"{base}.json", mime="application/json")
+        st.download_button("JSON modifiable complet", json_bytes, file_name=f"{base}.json", mime="application/json", on_click=mark_json_downloaded)
     with c2:
         st.download_button("CSV boussole des valeurs professionnelles", csv_buf.getvalue().encode("utf-8-sig"), file_name=f"{base}.csv", mime="text/csv")
     with c3:

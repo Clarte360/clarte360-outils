@@ -28,3 +28,10 @@ streamlit run app.py
 ```
 
 Configurer les secrets SMTP dans `.streamlit/secrets.toml` ou variables d'environnement.
+
+## V1.8.3 — Validation / VPS / Hub ready
+Cette version prépare la Boussole au VPS Clarté360 et au lancement signé depuis Gestion des Actions I9-H1, sans modifier ses règles métier. URL cible prévue : `https://boussole-valeurs.clarte360.com`. Voir `docs/`.
+
+
+## Garde-fou anti-perte de travail — v1.8.4
+Le bénéficiaire est averti s’il tente d’actualiser, fermer ou quitter l’application avec des modifications non sauvegardées. Le téléchargement du JSON correspondant à l’état courant lève l’alerte ; toute modification ultérieure la réactive automatiquement. Les traces techniques et changements de page seuls ne rendent pas le travail artificiellement « non sauvegardé ».
