@@ -1,0 +1,12 @@
+{
+  "tool_id": "contractualisation",
+  "app_name": "Clarté360 – Contractualisation",
+  "app_version": "1.2.2-VALIDATION-SAISIES-VPS-HUB-READY",
+  "production_url": "https://contractualisation.clarte360.com",
+  "deployment_status": "deployed",
+  "audience": ["admin"],
+  "beneficiary_access": false,
+  "hub_compatible": true,
+  "hub_source": "GESTION_ACTIONS_I9",
+  "launch_modes": ["standalone_admin", "hub_admin"]
+}

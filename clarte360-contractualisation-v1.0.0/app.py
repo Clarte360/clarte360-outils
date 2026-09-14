@@ -17,8 +17,9 @@ from session_export import (
     workbook_headers,
 )
 from contracts import build_bc_particulier_pdf, MODEL_VERSION
+from validation import (ValidationError, validate_aps_document, validate_filename, clean_no_clar, clean_name, clean_email, clean_phone, clean_postal, clean_text, validate_birth_date, validate_period, validate_times, clean_amount, clean_int, validate_financements, excel_safe_text)
 
-APP_VERSION = '1.2.0-VPS-IMPORT-MACRO'
+APP_VERSION = '1.2.2-VALIDATION-SAISIES-VPS-HUB-READY'
 APP_NAME = 'Clarté360 – Contractualisation'
 BASE = Path(__file__).resolve().parent
 LOGO = BASE / 'assets' / 'site_icon.png'
@@ -72,10 +73,14 @@ def gate():
 
 
 def parse_aps(file):
-    d = json.load(file)
-    if d.get('meta', {}).get('document_type') != 'APS':
-        raise ValueError('Le JSON fourni ne semble pas être une APS Clarté360.')
-    return d
+    raw = file.getvalue() if hasattr(file, 'getvalue') else file.read()
+    if len(raw) > 2_000_000:
+        raise ValidationError('Le fichier APS JSON dépasse la taille maximale autorisée de 2 Mo.')
+    try:
+        d = json.loads(raw.decode('utf-8-sig') if isinstance(raw, (bytes, bytearray)) else raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValidationError('Le fichier APS JSON est malformé ou utilise un encodage non pris en charge.') from exc
+    return validate_aps_document(d)
 
 
 def calc_finance_rows(no_clar, rows):
@@ -237,7 +242,13 @@ if uploaded_db is None:
     st.stop()
 
 db_filename = uploaded_db.name or 'GESTION_OF_CLARTE360.xlsm'
+try:
+    validate_filename(db_filename, ('.xlsm',))
+except ValidationError as e:
+    st.error(str(e)); st.stop()
 db_bytes = uploaded_db.getvalue()
+if len(db_bytes) > 25_000_000:
+    st.error('La base XLSM dépasse la taille maximale autorisée de 25 Mo.'); st.stop()
 info = inspect_workbook(db_bytes)
 if not info['has_vba']:
     st.error('Le classeur chargé ne contient pas le projet VBA attendu.')
@@ -310,6 +321,10 @@ else:
     no_clar = st.text_input('N° action Clarté360 (ex. CLA0002)', key=f'no_{form_seq}').strip().upper()
     if not no_clar:
         st.stop()
+    try:
+        no_clar = clean_no_clar(no_clar)
+    except ValidationError as e:
+        st.error(str(e)); st.stop()
     session_rec = find_session_record(no_clar)
     if session_rec:
         existing_action = dict(session_rec.get('conv_values') or {})
@@ -511,16 +526,55 @@ modalites_paiement = st.text_area(
 )
 
 st.subheader('6. Contrôles et ajout à la session')
+validation_errors = []
+validated = {}
+try:
+    validated['prenom'] = clean_name(prenom, field='Prénom bénéficiaire')
+    validated['nom'] = clean_name(nom, field='Nom bénéficiaire')
+    validated['email'] = clean_email(email)
+    validated['telephone'] = clean_phone(telephone)
+    validated['birth'] = validate_birth_date(birth)
+    validated['cp'] = clean_postal(cp)
+    validated['ville'] = clean_text(ville, field='Ville', required=True, max_len=120)
+    validated['adresse'] = clean_text(adresse, field='Adresse', required=True, max_len=300)
+    validated['modalite'] = clean_text(modalite, field='Lieu / modalité', required=True, max_len=300)
+    validated['consultant'] = clean_text(consultant, field='Accompagnateur', required=True, max_len=160)
+    validated['consultant_email'] = clean_email(consultant_email, field='E-mail accompagnateur')
+    validated['consultant_tel'] = clean_phone(consultant_tel, field='Téléphone accompagnateur', required=False)
+    validated['duree'] = clean_amount(duree, field='Durée', minimum=0.5, maximum=2000)
+    validated['nb_temps'] = clean_int(nb_temps, field='Nombre de temps / séances', minimum=1, maximum=1000)
+    validated['date_debut'], validated['date_fin'], validated['contract_date'] = validate_period(date_debut, date_fin, contract_date)
+    validate_times(horaire_debut, horaire_fin)
+    validated['calendrier'] = clean_text(calendrier, field='Calendrier', required=True, max_len=5000)
+    validated['demande'] = clean_text(demande, field='Demande / besoin', required=False, max_len=5000)
+    validated['objectifs'] = clean_text(objectifs, field='Objectifs', required=False, max_len=5000)
+    validated['criteres'] = clean_text(criteres, field='Critères de réussite', required=False, max_len=3000)
+    validated['modalites_paiement'] = clean_text(modalites_paiement, field='Modalités de paiement', required=False, max_len=3000)
+    validated['total_ht'] = clean_amount(total_ht, field='Montant total HT', minimum=0.01, maximum=1000000)
+    validated['taux_tva'] = clean_amount(taux_tva, field='TVA', minimum=0, maximum=100)
+    validated['total_ttc'] = round(validated['total_ht'] * (1 + validated['taux_tva']/100), 2)
+    validated['fin_rows'] = validate_financements(fin_rows, validated['total_ttc'])
+except ValidationError as e:
+    validation_errors.append(str(e))
+if validation_errors:
+    for err in validation_errors:
+        st.error(err)
 if prestation == 'Bilan de compétences' and contract_type == 'Particulier – bipartite' and date_debut and date_debut < contract_date:
     st.markdown('<div class="clarte-warning"><b>Attention conformité :</b> la date de début de l’action est antérieure à la date du contrat. Vérifiez la chronologie du dossier ; l’application ne rétrodate jamais un contrat.</div>', unsafe_allow_html=True)
 
-can_generate = bool(total_ttc and total_ttc > 0 and duree and nb_temps and date_debut and date_fin and calendrier.strip() and prenom and nom and email and abs(diff) < 0.01)
+can_generate = bool(not validation_errors and total_ttc and total_ttc > 0 and duree and nb_temps and date_debut and date_fin and calendrier.strip() and prenom and nom and email and abs(diff) < 0.01)
 if not can_generate:
     st.info('Complétez les champs obligatoires et équilibrez les financements pour préparer le contrat.')
 
 if can_generate and st.button('Ajouter ce contrat à la session et générer le PDF', type='primary', use_container_width=True, key=f'gen_{form_seq}'):
-    ht = round(float(total_ht), 2)
-    frows = calc_finance_rows(no_clar, fin_rows)
+    ht = validated['total_ht']
+    total_ttc = validated['total_ttc']
+    prenom = validated['prenom']; nom = validated['nom']; email = validated['email']; telephone = validated['telephone']
+    birth = validated['birth']; cp = validated['cp']; ville = validated['ville']; adresse = validated['adresse']
+    modalite = validated['modalite']; consultant = validated['consultant']; consultant_email = validated['consultant_email']; consultant_tel = validated['consultant_tel']
+    duree = validated['duree']; nb_temps = validated['nb_temps']; date_debut = validated['date_debut']; date_fin = validated['date_fin']; contract_date = validated['contract_date']
+    calendrier = validated['calendrier']; demande = validated['demande']; objectifs = validated['objectifs']; criteres = validated['criteres']; modalites_paiement = validated['modalites_paiement']
+    frows = calc_finance_rows(no_clar, validated['fin_rows'])
     facturer_a = ' / '.join(
         f"{str(x.get('NOM_FINANCEUR') or x.get('TYPE_FINANCEUR') or '').strip()} – {euro(x.get('MONTANT_TTC') or 0)} TTC"
         for x in frows

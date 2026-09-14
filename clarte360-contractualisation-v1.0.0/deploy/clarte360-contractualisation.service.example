@@ -1,0 +1,15 @@
+[Unit]
+Description=Clarte360 Contractualisation
+After=network.target
+
+[Service]
+Type=simple
+User=clarte360
+WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-contractualisation-v1.0.0
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/clarte360/clarte360-outils/clarte360-contractualisation-v1.0.0/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8502 --server.headless true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

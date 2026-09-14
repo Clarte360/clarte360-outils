@@ -19,3 +19,11 @@ Workflow :
 7. injecter ensuite localement ce fichier dans la vraie base via la macro Clarté360 dédiée.
 
 Le moteur PDF actuellement activé est : **Bilan de compétences – particulier bipartite**. Les autres familles de contrats seront ajoutées progressivement dans la même application.
+
+## Version 1.2.1 — VALIDATION-SAISIES-VPS-HUB-READY
+
+Cette version ajoute une validation métier centralisée des données administratives et contractuelles, des tests automatisés et la préparation au lancement sécurisé depuis Gestion des Actions I9-H1.
+
+**Contractualisation reste exclusivement une application de gestion.** Elle n'est pas une application bénéficiaire : aucun bénéficiaire ne doit être invité à l'ouvrir. Le futur contexte Hub peut seulement pré-positionner un dossier bénéficiaire pour un administrateur autorisé.
+
+URL de production déclarée : `https://contractualisation.clarte360.com`.
