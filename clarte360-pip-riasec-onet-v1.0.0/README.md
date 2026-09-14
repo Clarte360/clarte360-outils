@@ -1,7 +1,7 @@
 # Clarté360 — PIP RIASEC + O*NET Interest Profiler
 
-**Version : 1.0.2-l1-vps**  
-**Incrément : L1-D — LIVRABLE 1 FINAL**  
+**Version : 1.0.8-l1-vps-hub-ready**  
+**Incrément : L1-D-VH1 — VALIDATION-SAISIES-VPS-HUB-READY**  
 **Framework : Clarté360 V4.0 + FRAMEWORK VPS CLARTÉ360 V1.0**
 
 ## Objet
@@ -28,7 +28,7 @@ La passation O*NET réelle/API, la restitution/rapport professionnel final, l'ex
 python -m pip install -r requirements.txt
 streamlit run app.py
 ```
-Le mode public est le point d'entrée par défaut. Pour le smoke-test technique du futur mode accompagné : `?mode=accompagnement&beneficiary_id=B1&action_id=A1&prescription_id=P1`.
+Le mode public est le point d'entrée par défaut. Le mode accompagné n’accepte jamais d’identifiants de dossier en clair : il utilise exclusivement `?mode=accompagnement&launch=<JETON_SIGNE>` produit par Gestion des Actions.
 
 ## Tests
 ```bash
@@ -60,3 +60,12 @@ Le mode `ACCOMPAGNEMENT` n'accepte plus d'identifiants libres dans l'URL. Il exi
 
 ### RC4 — accès public et étude
 Le mode PUBLIC impose désormais une identification complète et une vérification e-mail par code avant la passation. Les coordonnées sont stockées séparément des données de recherche. Si le participant consent à l'étude, un enregistrement pseudonymisé PIP/O*NET est créé sous `data/public/study/`. Le mode ACCOMPAGNEMENT reste exclusivement accessible par jeton signé issu de Gestion des actions ; son interface de prescription sera réalisée côté Gestion des actions I9.
+
+### RC5 / 1.0.7
+Le mode public propose une identité minimale obligatoire (prénom, nom, téléphone, e-mail), des informations professionnelles et centres d'intérêt facultatifs, et des consentements séparés. Le logo et la reprise JSON sont permanents dans la barre latérale.
+
+O*NET 60 est désormais une intégration active du service officiel O*NET Web Services API v2. Les 60 questions sont récupérées en anglais depuis `/mnm/interestprofiler/questions` et le scoring depuis `/mnm/interestprofiler/results`. La clé reste exclusivement dans `[ONET] ONET_API_KEY` du coffre VPS. Le choix O*NET peut intervenir avant le PIP ou après la restitution PIP ; cette chronologie est conservée pour l'étude.
+
+
+## Identité applicative et Hub
+L’identité versionnée et non sensible est dans `config/app_identity.json`. URL de production : `https://pip-riasec.clarte360.com`. Contrat Hub : `docs/HUB_CONTRACT_PIP_I9_H1.md`.

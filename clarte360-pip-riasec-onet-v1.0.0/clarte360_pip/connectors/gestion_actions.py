@@ -4,7 +4,6 @@ import base64
 import hashlib
 import hmac
 import json
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,8 +11,12 @@ from typing import Any, Mapping
 
 from clarte360_pip.domain import LaunchContext, RunMode
 from clarte360_pip.framework.config import PERSISTENT_DATA_DIR
+from clarte360_pip.framework.validation import (
+    ValidationError, validate_epoch_window, validate_safe_id, validate_string_list,
+)
 
-_SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
+TOOL_ID = "pip-riasec-onet"
+ALLOWED_SCOPES = {"PIP_RUN", "PIP_RESUME", "PIP_STATUS", "PIP_RESULT_READ"}
 
 
 class LaunchTokenError(ValueError):
@@ -32,58 +35,62 @@ def _canonical_json(payload: Mapping[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _safe_id(value: str | None, field: str) -> str:
-    if not value or not _SAFE_ID.fullmatch(str(value)):
-        raise LaunchTokenError(f"Identifiant de lancement invalide : {field}.")
-    return str(value)
-
-
 def verify_launch_token(token: str, signing_key: str, now_epoch: int | None = None) -> LaunchContext:
     """Verify a compact HMAC-SHA256 token produced by Gestion des actions.
 
-    Format: base64url(canonical-json-payload).base64url(hmac_sha256(payload_part)).
-    The token is intentionally simple, deterministic and dependency-free so the future
-    Gestion des actions connector can implement the same contract.
+    Backward compatible with the existing PIP connector contract (`rights`, `exp`) and
+    ready for the I9-H1 common vocabulary (`scopes`, `tool_id`, `hub_source`).
+    No dossier identifier is ever accepted outside the signed payload.
     """
-    if not token or "." not in token:
+    if not token or "." not in token or len(token) > 8192:
         raise LaunchTokenError("Jeton de lancement manquant ou invalide.")
     if not signing_key or len(signing_key.strip()) < 24:
         raise LaunchTokenError("Clé de validation du connecteur non configurée.")
 
-    payload_part, signature_part = token.split(".", 1)
-    expected = hmac.new(signing_key.encode("utf-8"), payload_part.encode("ascii"), hashlib.sha256).digest()
-    supplied = _b64url_decode(signature_part)
+    try:
+        payload_part, signature_part = token.split(".", 1)
+        if not payload_part or not signature_part:
+            raise LaunchTokenError("Jeton de lancement incomplet.")
+        expected = hmac.new(signing_key.encode("utf-8"), payload_part.encode("ascii"), hashlib.sha256).digest()
+        supplied = _b64url_decode(signature_part)
+    except (UnicodeError, ValueError) as exc:
+        raise LaunchTokenError("Jeton de lancement illisible.") from exc
     if not hmac.compare_digest(expected, supplied):
         raise LaunchTokenError("Signature du jeton de lancement invalide.")
 
     try:
-        payload = json.loads(_b64url_decode(payload_part).decode("utf-8"))
+        decoded = _b64url_decode(payload_part)
+        if len(decoded) > 16_384:
+            raise LaunchTokenError("Contenu du jeton de lancement trop volumineux.")
+        payload = json.loads(decoded.decode("utf-8"))
+    except LaunchTokenError:
+        raise
     except Exception as exc:
         raise LaunchTokenError("Contenu du jeton de lancement invalide.") from exc
     if not isinstance(payload, dict):
         raise LaunchTokenError("Contenu du jeton de lancement invalide.")
 
-    now_epoch = int(datetime.now(timezone.utc).timestamp()) if now_epoch is None else int(now_epoch)
     try:
-        exp = int(payload["exp"])
-        iat = int(payload.get("iat", now_epoch))
-    except Exception as exc:
-        raise LaunchTokenError("Dates du jeton de lancement invalides.") from exc
-    if exp < now_epoch:
-        raise LaunchTokenError("Ce lien de lancement a expiré.")
-    if iat > now_epoch + 300:
-        raise LaunchTokenError("Date de création du jeton incohérente.")
-    if exp - iat > 7 * 24 * 3600:
-        raise LaunchTokenError("Durée de validité du jeton excessive.")
+        iat, exp = validate_epoch_window(payload.get("iat"), payload.get("exp"), now_epoch=now_epoch)
+        beneficiary_id = validate_safe_id(payload.get("beneficiary_id"), "beneficiary_id")
+        action_id = validate_safe_id(payload.get("action_id"), "action_id")
+        prescription_id = validate_safe_id(payload.get("prescription_id"), "prescription_id")
+        participant_id = validate_safe_id(payload.get("participant_id"), "participant_id", required=False)
 
-    beneficiary_id = _safe_id(payload.get("beneficiary_id"), "beneficiary_id")
-    action_id = _safe_id(payload.get("action_id"), "action_id")
-    prescription_id = _safe_id(payload.get("prescription_id"), "prescription_id")
-    participant = payload.get("participant_id")
-    participant_id = _safe_id(participant, "participant_id") if participant else None
-    rights_raw = payload.get("rights", [])
-    if not isinstance(rights_raw, list) or any(not isinstance(v, str) for v in rights_raw):
-        raise LaunchTokenError("Droits du jeton invalides.")
+        # I9-H1 uses a common scopes vocabulary; the legacy PIP field `rights` remains accepted.
+        rights_raw = payload.get("scopes", payload.get("rights", []))
+        rights = validate_string_list(rights_raw, "Droits/scopes", allowed=ALLOWED_SCOPES, max_items=10)
+        if "PIP_RUN" not in rights:
+            raise ValidationError("Le jeton ne contient pas le droit PIP_RUN.")
+
+        tool_id = payload.get("tool_id")
+        if tool_id is not None and str(tool_id) != TOOL_ID:
+            raise ValidationError("Ce lien de lancement est destiné à un autre outil.")
+        hub_source = payload.get("hub_source")
+        if hub_source is not None and str(hub_source) not in {"GESTION_ACTIONS_I9", "GESTION_ACTIONS_I9_H1"}:
+            raise ValidationError("Source Hub du jeton non reconnue.")
+    except ValidationError as exc:
+        raise LaunchTokenError(str(exc)) from exc
 
     ctx = LaunchContext(
         mode=RunMode.ACCOMPANIMENT,
@@ -91,8 +98,15 @@ def verify_launch_token(token: str, signing_key: str, now_epoch: int | None = No
         action_id=action_id,
         participant_id=participant_id,
         prescription_id=prescription_id,
-        rights=tuple(rights_raw),
-        raw={"token_version": payload.get("v", 1), "iat": iat, "exp": exp},
+        rights=rights,
+        raw={
+            "token_version": payload.get("v", 1),
+            "iat": iat,
+            "exp": exp,
+            "tool_id": str(tool_id or TOOL_ID),
+            "hub_source": str(hub_source or "GESTION_ACTIONS_I9"),
+            "return_mode": str(payload.get("return_mode") or "OUTBOX"),
+        },
     )
     ctx.validate()
     return ctx
@@ -127,9 +141,16 @@ class GestionActionsPort:
 
         No PII is required: only technical Clarté360 identifiers and minimal state.
         """
-        allowed = {"CONSULTE", "EN_COURS", "TERMINE"}
+        allowed = {"CONSULTE", "EN_COURS", "TERMINE", "ERREUR"}
         if event_type not in allowed:
             raise ValueError("Type d'événement PIP non autorisé.")
+        if not isinstance(payload, dict) or len(payload) > 50:
+            raise ValueError("Payload connecteur invalide.")
+        for field in ("beneficiary_id", "action_id", "prescription_id"):
+            if payload.get(field) is not None:
+                validate_safe_id(payload.get(field), field)
+        if payload.get("participant_id") is not None:
+            validate_safe_id(payload.get("participant_id"), "participant_id", required=False)
         outbox = PERSISTENT_DATA_DIR / "connector_outbox"
         outbox.mkdir(parents=True, exist_ok=True)
         path = outbox / "gestion_actions_events.jsonl"

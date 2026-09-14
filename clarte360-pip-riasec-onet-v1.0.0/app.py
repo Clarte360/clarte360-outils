@@ -7,6 +7,7 @@ from clarte360_pip.framework.config import APP_SHORT_NAME, LOGO_PATH
 from clarte360_pip.framework.session import initialize_session, touch_activity
 from clarte360_pip.framework.persistence import restore_snapshot
 from clarte360_pip.framework.server_store import load_latest_accompanied_snapshot
+from clarte360_pip.framework.unsaved_guard import public_has_unsaved_work, render_browser_unsaved_guard
 from clarte360_pip.domain import RunMode
 from clarte360_pip.framework.timeout import enforce_timeout
 from clarte360_pip.ui.entry import resolve_launch_context
@@ -41,3 +42,4 @@ enforce_timeout()
 touch_activity("render")
 render_sidebar(launch.mode.value)
 render_page(launch)
+render_browser_unsaved_guard(launch.mode is RunMode.PUBLIC and public_has_unsaved_work(st.session_state))

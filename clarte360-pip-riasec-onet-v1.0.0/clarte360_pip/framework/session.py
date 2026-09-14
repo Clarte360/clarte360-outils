@@ -29,7 +29,10 @@ def initialize_session(launch: LaunchContext) -> None:
         "public_access_verified": False,
         "public_identity": {},
         "public_marketing_opt_in": False,
+        "public_interests": [],
+        "public_other_interest": "",
         "study_consent": False,
+        "onet_selected_timing": None,
         "last_activity_at": now_iso(),
     }
     for key, value in defaults.items():

@@ -7,10 +7,15 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-pip-riasec-onet-v1.0.0
 Environment=PYTHONPATH=.
-Environment=CLARTE360_PIP_DATA_DIR=/opt/clarte360/clarte360-outils/clarte360-pip-riasec-onet-v1.0.0/data
-ExecStart=/opt/clarte360/clarte360-outils/clarte360-pip-riasec-onet-v1.0.0/.venv/bin/streamlit run app.py --server.address 127.0.0.1
+# Port propose : verifier le port REEL du service PIP actuellement en production avant tout changement.
+Environment=CLARTE360_PIP_PORT=8502
+# Emplacement externe conseille pour une nouvelle installation. Pour une production existante,
+# migrer uniquement apres sauvegarde/copie controlee des donnees actuelles.
+Environment=CLARTE360_PIP_DATA_DIR=/opt/clarte360/data/pip-riasec-onet
+ExecStart=/opt/clarte360/clarte360-outils/clarte360-pip-riasec-onet-v1.0.0/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port ${CLARTE360_PIP_PORT}
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

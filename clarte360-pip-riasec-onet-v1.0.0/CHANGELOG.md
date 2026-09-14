@@ -66,3 +66,33 @@
 - Consentement étude PIP/O*NET séparé ; stockage de recherche pseudonymisé distinct des coordonnées.
 - Préparation maintenue de l'accès bénéficiaire par prescription signée Gestion des actions (I9 à venir).
 - Aucune modification des 120 formulations, exemples concrets, scoring ou verrou anti-influence O*NET.
+
+## 1.0.7-l1-vps — RC5
+- Branding Clarté360 permanent dans la barre latérale : logo compact + www.clarte360.com ; suppression du grand logo répété dans les écrans métier.
+- Reprise JSON publique déplacée dans la barre latérale pour rester immédiatement visible.
+- Accès public : seuls prénom, nom, téléphone et e-mail sont obligatoires ; fonction et entreprise deviennent facultatives.
+- Ajout de centres d’intérêt facultatifs : bilan de compétences, coaching professionnel, formation individuelle sur mesure, solutions collectives entreprise, autre.
+- Consentement marketing maintenu séparé et facultatif ; texte RGPD enrichi pour identité, intérêts, étude et O*NET.
+- O*NET Interest Profiler 60 réellement intégré via O*NET Web Services API v2 (`X-API-Key`) : questions officielles anglaises, réponses 1–5, scoring officiel API.
+- O*NET peut être choisi avant le PIP (verrou anti-influence conservé) ou après consultation du résultat PIP ; le timing `PRE_PIP` / `POST_PIP_RESULTS` est enregistré pour les études.
+- Résultats PIP et O*NET restent séparés ; affichage côte à côte descriptif sans fusion ni prescription automatique.
+
+## 1.0.8-l1-vps-hub-ready — VALIDATION-SAISIES-VPS-HUB-READY
+- Ajout d’une couche centralisée de validation métier des entrées publiques, IDs, scores, URL, codes et fichiers JSON.
+- Validation renforcée des noms, e-mails, téléphones et textes courts sans survalidation des noms internationaux légitimes.
+- Import/reprise JSON limité à 2 Mo et contrôlé (schéma, types, bornes, IDs, parcours).
+- Connecteur Gestion des Actions conservé et étendu de façon rétrocompatible aux champs communs I9-H1 `tool_id`, `hub_source`, `scopes` et `return_mode`.
+- Validation des scopes et de la cible outil avant création du contexte accompagné.
+- Outbox renforcée et événement `ERREUR` réservé.
+- Ajout de `config/app_identity.json` avec URL Clarté360 et identité technique versionnée, sans secret.
+- Documentation VPS/Hub et matrice de validation ajoutées.
+- Aucune modification du questionnaire, de la banque PIP, du scoring RIASEC/Holland ni du fonctionnement O*NET.
+
+
+## 1.0.9-l1-vps-hub-ready-guard — GARDE-FOU SORTIE / RAFRAÎCHISSEMENT
+- Ajout d’un garde-fou navigateur `beforeunload` pour le parcours PUBLIC lorsqu’un travail a commencé et n’a pas été sauvegardé en JSON.
+- Le garde-fou est levé après téléchargement du JSON correspondant à l’état courant puis se réactive automatiquement dès qu’une nouvelle réponse modifie le travail.
+- Le mode ACCOMPAGNEMENT n’est pas soumis à ce garde-fou : sa progression reste sauvegardée automatiquement côté serveur.
+- Ajout d’une sauvegarde JSON pendant la séquence O*NET publique et prise en compte immédiate de la réponse O*NET courante.
+- Une reprise depuis un JSON conforme est considérée comme un état sauvegardé.
+- Aucun changement du questionnaire PIP, du scoring RIASEC/Holland, des 120 items ou de l’algorithme O*NET.

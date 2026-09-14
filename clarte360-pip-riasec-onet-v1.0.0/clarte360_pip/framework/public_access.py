@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,27 +9,45 @@ from typing import Any
 
 from .config import PERSISTENT_DATA_DIR, SmtpSettings
 from .smtp import send_email
+from .validation import (
+    ValidationError, validate_access_code, validate_email, validate_free_text,
+    validate_optional_short_text, validate_person_name, validate_phone, validate_safe_id,
+    validate_string_list,
+)
 
 PUBLIC_DIR = PERSISTENT_DATA_DIR / "public"
 LEADS_DIR = PUBLIC_DIR / "leads"
 STUDY_DIR = PUBLIC_DIR / "study"
-_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-
-
 def normalize_email(value: str) -> str:
-    return value.strip().lower()
+    return str(value or "").strip().lower()
+
+
+def validated_public_identity(data: dict[str, Any]) -> dict[str, str]:
+    return {
+        "first_name": validate_person_name(data.get("first_name"), "Prénom"),
+        "last_name": validate_person_name(data.get("last_name"), "Nom"),
+        "job_title": validate_optional_short_text(data.get("job_title"), "Fonction / titre"),
+        "company": validate_optional_short_text(data.get("company"), "Entreprise / organisation"),
+        "phone": validate_phone(data.get("phone")),
+        "email": validate_email(data.get("email")),
+    }
 
 
 def validate_public_identity(data: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    required = {
-        "first_name": "Prénom", "last_name": "Nom", "job_title": "Fonction / titre",
-        "company": "Entreprise / organisation", "phone": "Téléphone", "email": "E-mail",
-    }
-    for key, label in required.items():
-        if not str(data.get(key, "")).strip(): errors.append(f"{label} est obligatoire.")
-    if data.get("email") and not _EMAIL_RE.match(normalize_email(str(data["email"]))):
-        errors.append("Adresse e-mail invalide.")
+    checks = (
+        lambda: validate_person_name(data.get("first_name"), "Prénom"),
+        lambda: validate_person_name(data.get("last_name"), "Nom"),
+        lambda: validate_phone(data.get("phone")),
+        lambda: validate_email(data.get("email")),
+        lambda: validate_optional_short_text(data.get("job_title"), "Fonction / titre"),
+        lambda: validate_optional_short_text(data.get("company"), "Entreprise / organisation"),
+    )
+    for check in checks:
+        try:
+            check()
+        except ValidationError as exc:
+            errors.append(str(exc))
     return errors
 
 
@@ -41,11 +58,17 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def save_public_lead(participant_id: str, identity: dict[str, Any], marketing_opt_in: bool, verified: bool) -> Path:
+def save_public_lead(participant_id: str, identity: dict[str, Any], marketing_opt_in: bool, verified: bool, interests: list[str] | None = None, other_interest: str = "") -> Path:
+    participant_id = validate_safe_id(participant_id, "participant_id") or ""
+    identity = validated_public_identity(identity)
+    interests = list(validate_string_list(interests or [], "Centres d’intérêt", max_items=10))
+    other_interest = validate_free_text(other_interest, "Autre intérêt", max_len=500)
     payload = {
         "participant_id": participant_id,
-        "identity": {**identity, "email": normalize_email(str(identity.get("email", "")))},
+        "identity": identity,
         "marketing_opt_in": bool(marketing_opt_in),
+        "interests": interests,
+        "other_interest": other_interest,
         "email_verified": bool(verified),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -63,6 +86,9 @@ def code_digest(code: str) -> str:
 
 
 def issue_public_code(identity: dict[str, Any], smtp: SmtpSettings, ttl_minutes: int = 15) -> tuple[bool, str, dict[str, Any]]:
+    identity = validated_public_identity(identity)
+    if not 5 <= int(ttl_minutes) <= 60:
+        raise ValidationError("Durée de validité du code incohérente.")
     code = generate_access_code()
     expires = datetime.now() + timedelta(minutes=ttl_minutes)
     state = {"digest": code_digest(code), "expires_at": expires.isoformat(timespec="seconds"), "attempts": 0}
@@ -78,6 +104,10 @@ def issue_public_code(identity: dict[str, Any], smtp: SmtpSettings, ttl_minutes:
 
 def verify_public_code(code: str, state: dict[str, Any]) -> bool:
     if not state or int(state.get("attempts", 0)) >= 6: return False
+    try:
+        code = validate_access_code(code)
+    except ValidationError:
+        return False
     try:
         if datetime.now() > datetime.fromisoformat(str(state["expires_at"])): return False
     except Exception:
@@ -98,6 +128,7 @@ def save_public_study_record(session_state: dict[str, Any]) -> Path:
         "study_id": pseudonym_for(participant_id),
         "passation_id": session_state.get("passation_id"),
         "journey": session_state.get("journey", "PIP_SEUL"),
+        "onet_selected_timing": session_state.get("onet_selected_timing"),
         "pip_bank_version": pip_state.get("bank_version"),
         "pip_answers": pip_state.get("answers", {}),
         "pip_scoring": session_state.get("pip_scoring", {}),
