@@ -6,9 +6,48 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from db import q, one, execute, audit, new_token, utcnow_iso
 from security import hash_password, verify_password, seal_short_secret, open_short_secret
+from input_validation import (
+    validate_action_payload, validate_participant_payload, validate_trainer_payload,
+    validate_organization_payload, validate_agency_payload, validate_crm_payload,
+    validate_email, validate_birth_date, validate_slot, validate_json_text,
+    validate_short_text, validate_free_text, validate_positive_number, validate_code, InputValidationError
+)
 
 ROOT=Path(__file__).resolve().parent
 SIG_DIR=ROOT/'data'/'signatures'; SIG_DIR.mkdir(parents=True,exist_ok=True)
+
+DELIVERY_MODE_LABELS={
+    'PRESENTIEL':'Présentiel',
+    'DISTANCIEL_VISIO':'Distanciel-visioconférence',
+    'HYBRIDE':'Hybride',
+    'ELEARNING':'E-learning',
+    'BLENDED':'Blended learning',
+}
+
+def allowed_delivery_modes(prestation_type):
+    p=(prestation_type or 'FORMATION').upper().replace(' ','_')
+    if p in ('BILAN_DE_COMPETENCES','BILAN_COMPETENCES','COACHING'):
+        return ['PRESENTIEL','DISTANCIEL_VISIO','HYBRIDE']
+    if p=='FORMATION':
+        return ['PRESENTIEL','DISTANCIEL_VISIO','HYBRIDE','ELEARNING','BLENDED']
+    return ['PRESENTIEL','DISTANCIEL_VISIO','HYBRIDE']
+
+def normalize_delivery_mode(value,prestation_type='FORMATION'):
+    raw=str(value or '').strip()
+    aliases={
+        'PRESENTIEL':'PRESENTIEL','PRÉSENTIEL':'PRESENTIEL',
+        'DISTANCIEL':'DISTANCIEL_VISIO','DISTANCIEL-VISIOCONFÉRENCE':'DISTANCIEL_VISIO','DISTANCIEL-VISIOCONFERENCE':'DISTANCIEL_VISIO','VISIO':'DISTANCIEL_VISIO','VISIOCONFERENCE':'DISTANCIEL_VISIO','VISIOCONFÉRENCE':'DISTANCIEL_VISIO',
+        'HYBRIDE':'HYBRIDE','E-LEARNING':'ELEARNING','ELEARNING':'ELEARNING','BLENDED LEARNING':'BLENDED','BLENDED':'BLENDED'
+    }
+    code=aliases.get(raw.upper(),raw.upper().replace('-','_').replace(' ','_')) if raw else None
+    allowed=allowed_delivery_modes(prestation_type)
+    if code not in allowed:
+        if value is None or not raw: return allowed[0]
+        raise ValueError('Modalité incompatible avec ce type de prestation.')
+    return code
+
+def delivery_mode_label(code):
+    return DELIVERY_MODE_LABELS.get(code,code or 'Non renseignée')
 
 def parse_dt(date_s,time_s,tz_name='Europe/Paris'):
     return datetime.fromisoformat(f"{date_s}T{time_s}").replace(tzinfo=ZoneInfo(tz_name))
@@ -18,6 +57,15 @@ def slot_duration_hours(slot):
     b=datetime.fromisoformat(f"2000-01-01T{slot['end_time']}")
     if b<=a: b+=timedelta(days=1)
     return round((b-a).total_seconds()/3600,2)
+
+
+def validate_slot_offsets(send_offset_min, close_offset_min):
+    send=int(send_offset_min); close=int(close_offset_min)
+    if send < -1440 or send > 1440:
+        raise ValueError('Le décalage personnalisé doit être compris entre -1440 et 1440 minutes.')
+    if close < 0 or close > 10080:
+        raise ValueError("La durée d'émargement après fin doit être comprise entre 0 et 10080 minutes.")
+    return send,close
 
 
 def slot_start_end(slot, tz_name='Europe/Paris'):
@@ -41,18 +89,24 @@ def email_event_due_utc(slot,event_type,tz_name='Europe/Paris'):
     return due.astimezone(ZoneInfo('UTC'))
 
 def create_action(engine, d, actor):
-    now=utcnow_iso()
-    aid=execute(engine,"""INSERT INTO actions(action_no,title,subtitle,nature,mode,client_name,client_type,group_code,planned_hours,expected_participants,status,admin_email,trainer_name,trainer_email,location,notes,source,created_at,updated_at)
-    VALUES(:action_no,:title,:subtitle,:nature,:mode,:client_name,:client_type,:group_code,:planned_hours,:expected_participants,'BROUILLON',:admin_email,:trainer_name,:trainer_email,:location,:notes,:source,:created_at,:updated_at)""",{**d,"created_at":now,"updated_at":now})
+    now=utcnow_iso(); d=validate_action_payload(d)
+    prestation=d.get('prestation_type') or d.get('nature') or 'FORMATION'
+    d['delivery_mode']=normalize_delivery_mode(d.get('delivery_mode'),prestation)
+    aid=execute(engine,"""INSERT INTO actions(action_no,title,subtitle,nature,mode,delivery_mode,client_name,client_type,group_code,planned_hours,expected_participants,status,admin_email,trainer_name,trainer_email,location,notes,source,created_at,updated_at)
+    VALUES(:action_no,:title,:subtitle,:nature,:mode,:delivery_mode,:client_name,:client_type,:group_code,:planned_hours,:expected_participants,'BROUILLON',:admin_email,:trainer_name,:trainer_email,:location,:notes,:source,:created_at,:updated_at)""",{**d,"created_at":now,"updated_at":now})
     audit(engine,'ACTION_CREATED',aid,actor,'action',aid,d); return aid
 
 def update_action(engine, aid, d, actor):
-    keys=['title','subtitle','nature','mode','client_name','client_type','group_code','planned_hours','expected_participants','admin_email','trainer_name','trainer_email','location','notes','status']
+    d=dict(d); current=one(engine,'SELECT prestation_type,nature,delivery_mode FROM actions WHERE id=:a',{'a':aid}) or {}
+    prestation=d.get('prestation_type') or current.get('prestation_type') or d.get('nature') or current.get('nature') or 'FORMATION'
+    d['delivery_mode']=normalize_delivery_mode(d.get('delivery_mode',current.get('delivery_mode')),prestation)
+    keys=['title','subtitle','nature','mode','delivery_mode','client_name','client_type','group_code','planned_hours','expected_participants','admin_email','trainer_name','trainer_email','location','notes','status']
     sets=','.join(f"{k}=:{k}" for k in keys)
     p={k:d.get(k) for k in keys};p.update({'id':aid,'u':utcnow_iso()})
     execute(engine,f"UPDATE actions SET {sets},updated_at=:u WHERE id=:id",p);audit(engine,'ACTION_UPDATED',aid,actor,'action',aid,d)
 
 def add_participant(engine, aid, d, actor):
+    d = validate_participant_payload(d)
     pin = d.pop('pin', None) or f"{__import__('secrets').randbelow(10000):04d}"
     try: pin_cipher=seal_short_secret(pin)
     except Exception: pin_cipher=None
@@ -60,7 +114,22 @@ def add_participant(engine, aid, d, actor):
     VALUES(:aid,:individual_action_no,:last_name,:birth_name,:first_name,:birth_date,:email,:employee_id,:company_name,:phone,:pin_hash,:pin_recovery_cipher,:created_at)""",{
      'aid':aid, **{k:d.get(k) for k in ['individual_action_no','last_name','birth_name','first_name','birth_date','email','employee_id','company_name','phone']},
      'pin_hash':hash_password(pin),'pin_recovery_cipher':pin_cipher,'created_at':utcnow_iso()})
-    audit(engine,'PARTICIPANT_ADDED',aid,actor,'participant',pid,{'last_name':d.get('last_name'),'first_name':d.get('first_name')})
+    audit(engine,'PARTICIPANT_ADDED',aid,actor,'participant',pid,{'last_name':d.get('last_name'),'first_name':d.get('first_name'),'birth_date_source':d.get('_birth_date_source')})
+    # I9-B: exact permanent identity may be linked automatically only on the three exact identity fields.
+    if d.get('birth_date'):
+        try:
+            exact=[x for x in find_beneficiary_candidates(engine,d.get('last_name'),d.get('first_name'),d.get('birth_date')) if x.get('exact_match')]
+            if len(exact)==1:
+                link_participant_to_beneficiary(engine,pid,exact[0]['id'],actor)
+                audit(engine,'BENEFICIARY_AUTO_MATCH_EXACT',aid,actor,'participant',pid,{'beneficiary_id':exact[0]['id']})
+            elif len(exact)>1:
+                audit(engine,'BENEFICIARY_MATCH_AMBIGUOUS',aid,actor,'participant',pid,{'candidate_ids':[x['id'] for x in exact]})
+        except Exception:
+            pass
+    # A participant added after activation receives a dedicated planning communication automatically.
+    a=one(engine,'SELECT status FROM actions WHERE id=:a',{'a':aid}) or {}
+    if str(a.get('status') or '').upper() in ('ACTIVE','A_CLOTURER') and (d.get('email') or '').strip():
+        queue_communication(engine,aid,'PLANNING_CONFIRMATION',(d.get('email') or '').strip(),participant_id=pid,trigger_mode='AUTO',idempotency_key=f'planning:new-participant:{aid}:{pid}')
     return pid,pin
 
 def delete_participant(engine,pid,actor):
@@ -69,6 +138,8 @@ def delete_participant(engine,pid,actor):
     execute(engine,'DELETE FROM participants WHERE id=:id',{'id':pid});audit(engine,'PARTICIPANT_DELETED',p['action_id'],actor,'participant',pid,p)
 
 def add_slot(engine, aid, date_s,start_s,end_s,actor,send=-10,r1=20,r2=120,close=1440):
+    date_s,start_s,end_s=validate_slot(date_s,start_s,end_s)
+    send,close=validate_slot_offsets(send,close)
     now=utcnow_iso(); public=new_token(18)
     sid=execute(engine,"""INSERT INTO slots(action_id,slot_date,start_time,end_time,original_start_time,original_end_time,send_offset_min,reminder1_offset_min,reminder2_offset_min,close_offset_min,public_token,created_at,updated_at)
       VALUES(:a,:d,:s,:e,:s,:e,:send,:r1,:r2,:close,:t,:c,:c)""",{'a':aid,'d':date_s,'s':start_s,'e':end_s,'send':send,'r1':r1,'r2':r2,'close':close,'t':public,'c':now})
@@ -100,6 +171,7 @@ def add_slot(engine, aid, date_s,start_s,end_s,actor,send=-10,r1=20,r2=120,close
     audit(engine,'SLOT_ADDED',aid,actor,'slot',sid,{'date':date_s,'start':start_s,'end':end_s});return sid
 
 def update_slot(engine,sid,d,actor):
+    d=dict(d); d['send_offset_min'],d['close_offset_min']=validate_slot_offsets(d.get('send_offset_min',-10),d.get('close_offset_min',1440))
     old=one(engine,'SELECT * FROM slots WHERE id=:id',{'id':sid});
     if not old:return
     execute(engine,"""UPDATE slots SET slot_date=:slot_date,start_time=:start_time,end_time=:end_time,send_offset_min=:send_offset_min,reminder1_offset_min=:reminder1_offset_min,reminder2_offset_min=:reminder2_offset_min,close_offset_min=:close_offset_min,updated_at=:u WHERE id=:id""",{**d,'u':utcnow_iso(),'id':sid})
@@ -303,18 +375,33 @@ def slot_countersignature_eligibility(engine, sid, trainer_id=None, tz_name=None
     current=now or datetime.now(ZoneInfo(tz_name))
     if current.tzinfo is None: current=current.replace(tzinfo=ZoneInfo(tz_name))
     _,end=slot_start_end(slot,tz_name)
-    if current < end:
-        return False,f"Contresignature impossible avant la fin réelle du créneau ({end.strftime('%d/%m/%Y %H:%M')}).",{'end':end.isoformat()}
     if (slot.get('status') or 'PREVU') in ('ANNULE','REPORTE'):
         return False,'Ce créneau annulé ou reporté ne peut pas être contresigné comme occurrence réalisée.',{}
     states=_slot_participant_states(engine,sid)
     pending=[x for x in states if x['status']=='EN_ATTENTE']
     if pending:
-        return False,'Situation non finalisée pour : '+', '.join(x['name'] for x in pending)+'.',{'pending':pending}
+        # I9-B: before the scheduled end, countersignature opens immediately only when every participant status is final.
+        # At/after the end the request is sent even if statuses remain pending, but the trainer must resolve them before signing.
+        return False,'Situation non finalisée pour : '+', '.join(x['name'] for x in pending)+'.',{'pending':pending,'end':end.isoformat(),'slot_ended':current>=end}
     assigned=list_slot_trainers(engine,sid)
     if trainer_id is not None and assigned and int(trainer_id) not in {int(x['trainer_id']) for x in assigned}:
         return False,"Cet intervenant n'est pas affecté à ce créneau.",{}
     return True,'',{'participants':states,'assigned_trainers':assigned,'end':end.isoformat()}
+
+
+def trainer_countersign_tasks(engine,trainer_id,now=None):
+    rows=q(engine,"""SELECT s.* FROM slots s JOIN actions a ON a.id=s.action_id JOIN slot_trainers st ON st.slot_id=s.id
+      WHERE st.trainer_id=:t AND st.active=1 AND st.assignment_status='ACTIVE' AND a.status IN ('ACTIVE','A_CLOTURER')
+      AND COALESCE(s.status,'PREVU') NOT IN ('ANNULE','REPORTE') ORDER BY s.slot_date,s.start_time""",{'t':trainer_id})
+    out=[]
+    for sl in rows:
+        if one(engine,'SELECT id FROM trainer_countersignatures_v3 WHERE slot_id=:s AND trainer_id=:t',{'s':sl['id'],'t':trainer_id}):continue
+        tz=organization_runtime_config(engine,sl['action_id'])['timezone']; current=now or datetime.now(ZoneInfo(tz))
+        if current.tzinfo is None:current=current.replace(tzinfo=ZoneInfo(tz))
+        _,end=slot_start_end(sl,tz); states=_slot_participant_states(engine,sl['id']); pending=[x for x in states if x['status']=='EN_ATTENTE']
+        if not pending or current>=end:
+            x=dict(sl);x['pending_count']=len(pending);x['ready_to_sign']=not pending;out.append(x)
+    return out
 
 
 def list_slot_countersignatures(engine,sid):
@@ -370,6 +457,8 @@ def countersign_slot(engine,sid,name,email,actor,declaration,trainer_id=None,sig
 def update_participant(engine,pid,d,actor):
     p=one(engine,'SELECT * FROM participants WHERE id=:p',{'p':pid})
     if not p: return False,'Participant introuvable.'
+    merged={**p,**d}; merged=validate_participant_payload(merged)
+    d={**d, **{k:merged.get(k) for k in ['individual_action_no','last_name','birth_name','first_name','birth_date','email','employee_id','company_name','phone']}}
     keys=['individual_action_no','last_name','birth_name','first_name','birth_date','email','employee_id','company_name','phone','active']
     vals={k:d.get(k,p.get(k)) for k in keys}; vals['p']=pid
     execute(engine,'UPDATE participants SET '+','.join(f'{k}=:{k}' for k in keys)+' WHERE id=:p',vals)
@@ -528,7 +617,8 @@ def list_trainers(engine,active_only=False):
     return q(engine,'SELECT * FROM trainers'+(" WHERE active=1" if active_only else '')+' ORDER BY full_name')
 
 def add_trainer(engine,name,email,phone,actor):
-    now=utcnow_iso(); tid=execute(engine,'INSERT INTO trainers(full_name,email,phone,created_at,updated_at) VALUES(:n,:e,:p,:c,:c)',{'n':name.strip(),'e':email.strip().lower() or None,'p':phone.strip() or None,'c':now})
+    name,email,phone=validate_trainer_payload(name,email,phone)
+    now=utcnow_iso(); tid=execute(engine,'INSERT INTO trainers(full_name,email,phone,created_at,updated_at) VALUES(:n,:e,:p,:c,:c)',{'n':name,'e':email,'p':phone,'c':now})
     audit(engine,'TRAINER_CREATED',None,actor,'trainer',tid,{'name':name,'email':email}); return tid
 
 def create_trainer_invitation(engine,tid,actor,valid_hours=72):
@@ -584,7 +674,7 @@ def trainer_actions(engine,trainer_id):
 
 def list_action_trainers(engine, action_id, active_only=True):
     wh=" AND at.active=1" if active_only else ""
-    return q(engine,f"""SELECT at.*,t.full_name,t.email,t.phone,t.active trainer_active
+    return q(engine,f"""SELECT at.*,t.full_name,t.email,t.phone,t.microsoft_email,t.entra_user_id,t.entra_status,t.entra_last_verified_at,t.active trainer_active
       FROM action_trainers at JOIN trainers t ON t.id=at.trainer_id
       WHERE at.action_id=:a{wh}
       ORDER BY at.is_referent DESC, CASE at.role WHEN 'REFERENT' THEN 0 WHEN 'INTERVENANT' THEN 1 ELSE 2 END, t.full_name""",{'a':action_id})
@@ -592,7 +682,7 @@ def list_action_trainers(engine, action_id, active_only=True):
 
 def list_slot_trainers(engine, slot_id, active_only=True):
     wh=" AND st.active=1 AND st.assignment_status='ACTIVE'" if active_only else ""
-    return q(engine,f"""SELECT st.*,t.full_name,t.email,t.phone,t.active trainer_active
+    return q(engine,f"""SELECT st.*,t.full_name,t.email,t.phone,t.microsoft_email,t.entra_user_id,t.entra_status,t.entra_last_verified_at,t.active trainer_active
       FROM slot_trainers st JOIN trainers t ON t.id=st.trainer_id
       WHERE st.slot_id=:s{wh}
       ORDER BY CASE st.role WHEN 'PRINCIPAL' THEN 0 WHEN 'CO_INTERVENANT' THEN 1 WHEN 'REMPLACANT' THEN 2 ELSE 3 END, t.full_name""",{'s':slot_id})
@@ -1044,6 +1134,7 @@ def ensure_default_organization(engine, name='Clarté360'):
       VALUES(:n,:n,'Europe/Paris','contact@clarte360.com',:c,:c)""",{'n':name,'c':now})
 
 def upsert_organization(engine, org_id, data, actor):
+    data=validate_organization_payload(data)
     now=utcnow_iso(); fields=['name','legal_name','address','postal_code','city','country','siret','rcs','naf','vat_id','nda','website','general_email','phone','timezone','privacy_contact','privacy_notice','logo_path','favicon_path','primary_color','secondary_color','email_from_name','email_from_address','retention_months']
     if org_id:
         sets=','.join(f'{k}=:{k}' for k in fields); execute(engine,f'UPDATE organizations SET {sets},updated_at=:updated_at WHERE id=:id',{**{k:data.get(k) for k in fields},'updated_at':now,'id':org_id}); oid=org_id
@@ -1052,6 +1143,7 @@ def upsert_organization(engine, org_id, data, actor):
     audit(engine,'ORGANIZATION_SAVED',actor=actor,entity_type='organization',entity_id=oid,details={'name':data.get('name')}); return oid
 
 def add_agency(engine, organization_id, data, actor):
+    data=validate_agency_payload(data)
     now=utcnow_iso(); aid=execute(engine,"""INSERT INTO agencies(organization_id,name,address,postal_code,city,country,siret,nda,email,phone,created_at,updated_at)
       VALUES(:o,:n,:a,:p,:c,:co,:s,:nda,:e,:ph,:x,:x)""",{'o':organization_id,'n':data['name'],'a':data.get('address'),'p':data.get('postal_code'),'c':data.get('city'),'co':data.get('country'),'s':data.get('siret'),'nda':data.get('nda'),'e':data.get('email'),'ph':data.get('phone'),'x':now})
     audit(engine,'AGENCY_CREATED',actor=actor,entity_type='agency',entity_id=aid,details={'name':data['name']}); return aid
@@ -1150,14 +1242,14 @@ def save_import_profile(engine, profile_id, organization_id, data, actor):
     now=utcnow_iso()
     fields=['code','name','source_type','action_key','action_sheet','participant_sheet','mapping_json','config_json','active']
     vals={
-        'code':(data.get('code') or '').strip().upper(),
-        'name':(data.get('name') or '').strip(),
-        'source_type':(data.get('source_type') or 'EXCEL').strip().upper(),
-        'action_key':(data.get('action_key') or '').strip(),
-        'action_sheet':(data.get('action_sheet') or 'CONV ADM').strip(),
-        'participant_sheet':(data.get('participant_sheet') or 'STAGIAIRE').strip(),
-        'mapping_json':data.get('mapping_json') if isinstance(data.get('mapping_json'),str) else json.dumps(data.get('mapping_json') or {},ensure_ascii=False),
-        'config_json':data.get('config_json') if isinstance(data.get('config_json'),str) else json.dumps(data.get('config_json') or {},ensure_ascii=False),
+        'code':validate_code(data.get('code'),'Code profil',required=True,max_len=80).upper(),
+        'name':validate_short_text(data.get('name'),'Nom du profil',required=True,max_len=160),
+        'source_type':validate_code(data.get('source_type') or 'EXCEL','Type de source',required=True,max_len=30).upper(),
+        'action_key':validate_short_text(data.get('action_key'),"Colonne clé de l'action",required=True,max_len=160),
+        'action_sheet':validate_short_text(data.get('action_sheet') or 'CONV ADM','Onglet action',required=True,max_len=100),
+        'participant_sheet':validate_short_text(data.get('participant_sheet') or 'STAGIAIRE','Onglet participants',required=True,max_len=100),
+        'mapping_json':validate_json_text(data.get('mapping_json') if isinstance(data.get('mapping_json'),str) else json.dumps(data.get('mapping_json') or {},ensure_ascii=False),'Mapping JSON'),
+        'config_json':validate_json_text(data.get('config_json') if isinstance(data.get('config_json'),str) else json.dumps(data.get('config_json') or {},ensure_ascii=False),'Configuration JSON'),
         'active':int(bool(data.get('active',True))),
     }
     if not vals['code'] or not vals['name'] or not vals['action_key']:
@@ -1196,6 +1288,7 @@ def ensure_default_import_profile(engine, organization_id, action_key='NO_CLAR',
 def update_agency(engine, agency_id, data, actor):
     old=one(engine,'SELECT * FROM agencies WHERE id=:i',{'i':agency_id})
     if not old: raise ValueError('Agence introuvable')
+    data=validate_agency_payload({**old,**data})
     fields=['name','address','postal_code','city','country','siret','nda','email','phone','active']
     vals={k:data.get(k,old.get(k)) for k in fields}; vals.update({'id':agency_id,'u':utcnow_iso()})
     execute(engine,'UPDATE agencies SET '+','.join(f'{k}=:{k}' for k in fields)+',updated_at=:u WHERE id=:id',vals)
@@ -1587,6 +1680,52 @@ def update_improvement_action(engine, improvement_id, status, actor='system'):
     x=one(engine,'SELECT * FROM improvement_actions WHERE id=:i',{'i':improvement_id}); done=utcnow_iso() if status=='TERMINEE' else None
     execute(engine,'UPDATE improvement_actions SET status=:s,completed_at=:d WHERE id=:i',{'s':status,'d':done,'i':improvement_id});audit(engine,'IMPROVEMENT_ACTION_UPDATED',x.get('action_id') if x else None,actor,'improvement_action',improvement_id,{'status':status})
 
+# --- I9-B: journal universel des communications + contresignature automatique ---
+def queue_communication(engine, action_id, communication_type, recipient_email, *, participant_id=None, trainer_id=None, slot_id=None, trigger_mode='AUTO', due_at=None, metadata=None, idempotency_key=None):
+    now=utcnow_iso(); due=due_at or now
+    if idempotency_key:
+        existing=one(engine,'SELECT id FROM communication_events WHERE idempotency_key=:k',{'k':idempotency_key})
+        if existing:return existing['id']
+    return execute(engine,"""INSERT INTO communication_events(action_id,participant_id,trainer_id,slot_id,communication_type,recipient_email,trigger_mode,status,due_at,metadata_json,idempotency_key,created_at,updated_at)
+      VALUES(:a,:p,:t,:s,:ct,:e,:tm,'A_ENVOYER',:d,:m,:k,:n,:n)""",{'a':action_id,'p':participant_id,'t':trainer_id,'s':slot_id,'ct':communication_type,'e':recipient_email or None,'tm':trigger_mode,'d':due,'m':json.dumps(metadata or {},ensure_ascii=False,default=str),'k':idempotency_key,'n':now})
+
+def mark_communication(engine,event_id,status,*,sent_at=None,last_error=None):
+    execute(engine,'UPDATE communication_events SET status=:s,sent_at=COALESCE(:at,sent_at),last_error=:er,updated_at=:u WHERE id=:i',{'s':status,'at':sent_at,'er':last_error,'u':utcnow_iso(),'i':event_id})
+
+def communication_journal(engine,action_id):
+    return q(engine,"""SELECT ce.*,p.first_name participant_first_name,p.last_name participant_last_name,t.full_name trainer_name,
+      s.slot_date,s.start_time,s.end_time FROM communication_events ce
+      LEFT JOIN participants p ON p.id=ce.participant_id LEFT JOIN trainers t ON t.id=ce.trainer_id LEFT JOIN slots s ON s.id=ce.slot_id
+      WHERE ce.action_id=:a ORDER BY ce.created_at DESC,ce.id DESC""",{'a':action_id})
+
+def refresh_countersign_communications(engine, *, now=None, tz_name=None):
+    """Queue one trainer request per slot/trainer. Immediate when all participant statuses are final; otherwise at slot end."""
+    current_utc=now or datetime.now(ZoneInfo('UTC'))
+    if current_utc.tzinfo is None: current_utc=current_utc.replace(tzinfo=ZoneInfo('UTC'))
+    created=0
+    slots=q(engine,"""SELECT s.* FROM slots s JOIN actions a ON a.id=s.action_id
+      WHERE a.status IN ('ACTIVE','A_CLOTURER') AND COALESCE(s.status,'PREVU') NOT IN ('ANNULE','REPORTE')""")
+    for sl in slots:
+        local_tz=tz_name or organization_runtime_config(engine,sl['action_id'])['timezone']
+        _,end=slot_start_end(sl,local_tz); states=_slot_participant_states(engine,sl['id']); pending=[x for x in states if x['status']=='EN_ATTENTE']
+        due_now=not pending
+        due=end.astimezone(ZoneInfo('UTC'))
+        if not due_now and current_utc < due:
+            due_iso=due.isoformat()
+        else:
+            due_iso=current_utc.astimezone(ZoneInfo('UTC')).isoformat()
+        signed={int(x['trainer_id']) for x in list_slot_countersignatures(engine,sl['id']) if x.get('trainer_id') is not None}
+        for tr in list_slot_trainers(engine,sl['id']):
+            tid=int(tr['trainer_id'])
+            if tid in signed or not (tr.get('email') or '').strip(): continue
+            key=f'countersign:{sl["id"]}:{tid}'
+            eid=queue_communication(engine,sl['action_id'],'COUNTERSIGN_REQUEST',tr['email'],trainer_id=tid,slot_id=sl['id'],trigger_mode='AUTO',due_at=due_iso,metadata={'reason':'ALL_FINAL' if due_now else 'SLOT_END','pending_count':len(pending)},idempotency_key=key)
+            # Existing not-yet-sent request is accelerated if everybody becomes final before end.
+            if due_now:
+                execute(engine,"UPDATE communication_events SET due_at=:d,updated_at=:u WHERE id=:i AND status='A_ENVOYER'",{'d':due_iso,'u':utcnow_iso(),'i':eid})
+            created+=1
+    return created
+
 # --- V2.2 LOT 2: beneficiaires permanents + portail documentaire ---
 BENEFICIARY_DOC_DIR=ROOT/'data'/'documents'/'blobs'
 BENEFICIARY_DOC_DIR.mkdir(parents=True,exist_ok=True)
@@ -1616,8 +1755,10 @@ def find_beneficiary_candidates(engine,last_name,first_name,birth_date,limit=8):
     return sorted(out,key=lambda x:(not x['exact_match'],-x['match_score']))[:limit]
 
 def create_beneficiary(engine,last_name,first_name,birth_date,email=None,birth_name=None,phone=None,actor='system'):
-    if not (last_name and first_name and birth_date):
-        raise ValueError('Nom, prenom et date de naissance sont obligatoires pour creer un beneficiaire permanent.')
+    d=validate_participant_payload({'last_name':last_name,'first_name':first_name,'birth_date':birth_date,'email':email,'birth_name':birth_name,'phone':phone},require_identity=True)
+    if not d.get('birth_date'):
+        raise ValueError('Nom, prénom et date de naissance sont obligatoires pour créer un bénéficiaire permanent.')
+    last_name,first_name,birth_date,email,birth_name,phone=d['last_name'],d['first_name'],d['birth_date'],d['email'],d['birth_name'],d['phone']
     now=utcnow_iso(); public_id='BEN-'+new_token(9).replace('-','').replace('_','')[:12].upper()
     bid=execute(engine,"""INSERT INTO beneficiaries(public_id,last_name,first_name,birth_date,birth_name,current_email,phone,active,created_at,updated_at)
         VALUES(:u,:l,:f,:b,:bn,:e,:p,1,:c,:c)""",{'u':public_id,'l':str(last_name).strip().upper(),'f':str(first_name).strip().title(),'b':birth_date,'bn':birth_name,'e':(email or '').strip().lower() or None,'p':phone,'c':now})
@@ -1804,7 +1945,7 @@ FINAL_BUNDLE_ROOT = ROOT / 'data' / 'final_bundles'
 FINAL_BUNDLE_ROOT.mkdir(parents=True, exist_ok=True)
 
 def set_action_client_contacts(engine, action_id, admin_email=None, training_email=None, quality_email=None, billing_email=None, other_email=None, actor='system'):
-    vals={'client_admin_email':admin_email,'client_training_email':training_email,'client_quality_email':quality_email,'client_billing_email':billing_email,'client_other_email':other_email}
+    vals={'client_admin_email':validate_email(admin_email,'Contact administratif'),'client_training_email':validate_email(training_email,'Contact formation / accompagnement'),'client_quality_email':validate_email(quality_email,'Contact qualité'),'client_billing_email':validate_email(billing_email,'Contact facturation'),'client_other_email':validate_email(other_email,'Autre contact')}
     execute(engine,"""UPDATE actions SET client_admin_email=:client_admin_email,client_training_email=:client_training_email,client_quality_email=:client_quality_email,
       client_billing_email=:client_billing_email,client_other_email=:client_other_email,updated_at=:u WHERE id=:a""",{**vals,'u':utcnow_iso(),'a':action_id})
     audit(engine,'CLIENT_CONTACTS_UPDATED',action_id,actor,'action',action_id,{k:bool(v) for k,v in vals.items()})
@@ -1906,6 +2047,9 @@ def quality_management_summary(engine, **filters):
     return {**base,'rubric_averages':rubric_avg,'nps_score':nps_score,'weak_points':weak}
 
 def configure_final_transmission(engine, action_id, enabled=False, to_quality=True, to_training=True, other_first_name=None, other_last_name=None, other_email=None, actor='system'):
+    if other_first_name: other_first_name=validate_participant_payload({'last_name':'X','first_name':other_first_name},require_identity=True)['first_name']
+    if other_last_name: other_last_name=validate_participant_payload({'last_name':other_last_name,'first_name':'X'},require_identity=True)['last_name']
+    other_email=validate_email(other_email,'Autre destinataire final')
     execute(engine,"""UPDATE actions SET transmit_final_bundle=:e,send_final_to_quality=:q,send_final_to_training=:t,final_other_first_name=:of,final_other_last_name=:ol,final_other_email=:oe,updated_at=:u WHERE id=:a""",
       {'e':int(bool(enabled)),'q':int(bool(to_quality)),'t':int(bool(to_training)),'of':other_first_name,'ol':other_last_name,'oe':other_email,'u':utcnow_iso(),'a':action_id})
     audit(engine,'FINAL_TRANSMISSION_CONFIGURED',action_id,actor,'action',action_id,{'enabled':bool(enabled),'quality':bool(to_quality),'training':bool(to_training),'other':bool(other_email)})
@@ -2088,14 +2232,16 @@ def refresh_teams_trainer_roles(engine, action_id, actor='system'):
     now=utcnow_iso(); effective=_teams_effective_slots(engine,action_id); wanted=set()
     for sl,_,_ in effective:
         for tr in list_slot_trainers(engine,sl['id'],active_only=True):
-            email=(tr.get('email') or '').strip().lower()
+            email=(tr.get('microsoft_email') or tr.get('email') or '').strip().lower()
             if not email:continue
             key=(int(sl['id']),email);wanted.add(key)
             role='COORGANIZER' if (tr.get('role') or '').upper() in ('PRINCIPAL','REFERENT') else 'PRESENTER'
-            execute(engine,"""INSERT INTO teams_participant_roles(action_id,slot_id,trainer_id,email,display_name,role,guest_status,active,created_at,updated_at)
-              VALUES(:a,:s,:t,:e,:d,:r,'PENDING',1,:n,:n)
+            stored_entra=(tr.get('entra_user_id') or '').strip() or None
+            stored_status=(tr.get('entra_status') or 'UNCHECKED').strip()
+            execute(engine,"""INSERT INTO teams_participant_roles(action_id,slot_id,trainer_id,email,display_name,entra_user_id,role,guest_status,active,created_at,updated_at)
+              VALUES(:a,:s,:t,:e,:d,:u,:r,:gs,1,:n,:n)
               ON CONFLICT(action_id,slot_id,email) DO UPDATE SET trainer_id=excluded.trainer_id,display_name=excluded.display_name,
-              role=excluded.role,active=1,updated_at=excluded.updated_at""",{'a':action_id,'s':sl['id'],'t':tr['trainer_id'],'e':email,'d':tr.get('full_name'),'r':role,'n':now})
+              entra_user_id=COALESCE(excluded.entra_user_id,teams_participant_roles.entra_user_id),role=excluded.role,guest_status=excluded.guest_status,active=1,updated_at=excluded.updated_at""",{'a':action_id,'s':sl['id'],'t':tr['trainer_id'],'e':email,'d':tr.get('full_name'),'u':stored_entra,'r':role,'gs':stored_status,'n':now})
     for row in q(engine,'SELECT id,slot_id,email FROM teams_participant_roles WHERE action_id=:a AND active=1',{'a':action_id}):
         if (int(row['slot_id']) if row.get('slot_id') is not None else None,(row.get('email') or '').lower()) not in wanted:
             execute(engine,'UPDATE teams_participant_roles SET active=0,updated_at=:n WHERE id=:i',{'n':now,'i':row['id']})
@@ -2208,3 +2354,649 @@ def teams_attendance_reconciliation(engine, action_id):
             anomaly=(presence and absent) or (signed and not presence and bool(report)) or (presence and not signed and not absent)
             rows.append({'slot_id':occ['slot_id'],'slot_date':occ['slot_date'],'start_time':occ['start_time'],'participant_id':p['id'],'participant':f"{p.get('first_name') or ''} {p.get('last_name') or ''}".strip(),'teams_present':presence,'teams_seconds':seconds,'signed':signed,'absent':absent,'anomaly':anomaly})
     return rows
+
+
+# --- I9-C: identites Microsoft permanentes et rapprochement explicite ---
+def trainer_microsoft_identity(engine, trainer_id):
+    return one(engine,"SELECT id,full_name,email,microsoft_email,entra_user_id,entra_status,entra_last_verified_at,entra_creation_requested_at,entra_creation_requested_by FROM trainers WHERE id=:i",{'i':trainer_id})
+
+def set_trainer_microsoft_email(engine, trainer_id, microsoft_email, actor='admin'):
+    email=validate_email(microsoft_email,'Adresse Microsoft/Teams',required=False)
+    execute(engine,"UPDATE trainers SET microsoft_email=:e,entra_user_id=NULL,entra_status='UNCHECKED',entra_last_verified_at=NULL,updated_at=:n WHERE id=:i",{'e':email,'n':utcnow_iso(),'i':trainer_id})
+    audit(engine,'TRAINER_MICROSOFT_EMAIL_UPDATED',None,actor,'trainer',trainer_id,{'microsoft_email':email})
+    return trainer_microsoft_identity(engine,trainer_id)
+
+def mark_trainer_entra_identity(engine, trainer_id, user, actor='worker'):
+    user=user or {}; uid=(user.get('id') or '').strip() or None
+    if not uid: raise ValueError('Identité Microsoft sans identifiant Entra.')
+    now=utcnow_iso()
+    execute(engine,"UPDATE trainers SET entra_user_id=:u,entra_status='VERIFIED',entra_last_verified_at=:n,entra_creation_requested_at=NULL,entra_creation_requested_by=NULL,updated_at=:n WHERE id=:i",{'u':uid,'n':now,'i':trainer_id})
+    execute(engine,"UPDATE teams_participant_roles SET entra_user_id=:u,guest_status='VERIFIED',updated_at=:n WHERE trainer_id=:i AND active=1",{'u':uid,'n':now,'i':trainer_id})
+    audit(engine,'TRAINER_ENTRA_VERIFIED',None,actor,'trainer',trainer_id,{'entra_user_id':uid})
+    return trainer_microsoft_identity(engine,trainer_id)
+
+def mark_trainer_entra_not_found(engine, trainer_id, actor='worker'):
+    now=utcnow_iso()
+    execute(engine,"UPDATE trainers SET entra_user_id=NULL,entra_status='NOT_FOUND',entra_last_verified_at=:n,updated_at=:n WHERE id=:i",{'n':now,'i':trainer_id})
+    execute(engine,"UPDATE teams_participant_roles SET entra_user_id=NULL,guest_status='NOT_FOUND',updated_at=:n WHERE trainer_id=:i AND active=1",{'n':now,'i':trainer_id})
+    audit(engine,'TRAINER_ENTRA_NOT_FOUND',None,actor,'trainer',trainer_id,{})
+    return trainer_microsoft_identity(engine,trainer_id)
+
+def request_trainer_microsoft_identity_creation(engine, trainer_id, actor='admin'):
+    t=trainer_microsoft_identity(engine,trainer_id)
+    if not t: raise ValueError('Intervenant introuvable.')
+    email=(t.get('microsoft_email') or t.get('email') or '').strip().lower()
+    if not email: raise ValueError('Aucune adresse Microsoft/Teams disponible.')
+    now=utcnow_iso()
+    execute(engine,"UPDATE trainers SET entra_status='CREATION_REQUESTED',entra_creation_requested_at=:n,entra_creation_requested_by=:by,updated_at=:n WHERE id=:i",{'n':now,'by':actor,'i':trainer_id})
+    audit(engine,'TRAINER_ENTRA_CREATION_REQUESTED',None,actor,'trainer',trainer_id,{'email':email})
+    return True
+
+def teams_next_meeting(engine, action_id, now=None):
+    rows=teams_occurrences(engine,action_id)
+    now=now or datetime.now(ZoneInfo('UTC'))
+    candidates=[]
+    for r in rows:
+        if r.get('status') in ('OUT_OF_SCOPE','DISABLED'): continue
+        try: start=datetime.fromisoformat(str(r.get('scheduled_start_utc')).replace('Z','+00:00'))
+        except Exception: continue
+        if start.tzinfo is None: start=start.replace(tzinfo=ZoneInfo('UTC'))
+        if start>=now: candidates.append((start,r))
+    if not candidates: return None
+    return sorted(candidates,key=lambda x:x[0])[0][1]
+
+def teams_unmatched_attendance(engine, action_id):
+    return q(engine,"""SELECT ar.id attendance_record_id,ar.display_name,ar.email,ar.duration_seconds,rep.occurrence_id,o.slot_id,s.slot_date,s.start_time,s.end_time
+      FROM teams_attendance_records ar JOIN teams_attendance_reports rep ON rep.id=ar.report_row_id
+      LEFT JOIN teams_occurrences o ON o.id=rep.occurrence_id LEFT JOIN slots s ON s.id=o.slot_id
+      JOIN teams_action_rooms room ON room.id=rep.action_room_id
+      WHERE room.action_id=:a AND ar.participant_id IS NULL ORDER BY s.slot_date,s.start_time,ar.display_name,ar.id""",{'a':action_id})
+
+def confirm_teams_attendance_identity(engine, attendance_record_id, participant_id, actor='admin'):
+    rec=one(engine,"""SELECT ar.*,room.action_id FROM teams_attendance_records ar JOIN teams_attendance_reports rep ON rep.id=ar.report_row_id JOIN teams_action_rooms room ON room.id=rep.action_room_id WHERE ar.id=:i""",{'i':attendance_record_id})
+    if not rec: raise ValueError('Présence Teams introuvable.')
+    p=one(engine,'SELECT * FROM participants WHERE id=:p AND action_id=:a',{'p':participant_id,'a':rec['action_id']})
+    if not p: raise ValueError('Participant incompatible avec cette action.')
+    execute(engine,'UPDATE teams_attendance_records SET participant_id=:p WHERE id=:i',{'p':participant_id,'i':attendance_record_id})
+    audit(engine,'TEAMS_ATTENDANCE_IDENTITY_CONFIRMED',rec['action_id'],actor,'teams_attendance_record',attendance_record_id,{'participant_id':participant_id,'teams_email':rec.get('email')})
+    return True
+
+# ---- V3 I9-D: Hub Clarte360 - catalogue & prescriptions -------------------
+
+PRESCRIPTION_STATUSES = ('A_FAIRE','ENVOYE','CONSULTE','EN_COURS','TERMINE','A_REVOIR_EN_SEANCE','REVU_EN_SEANCE','ANNULE')
+
+
+def _json_load(value, default):
+    if value in (None, ''):
+        return default
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
+def seed_tool_catalog(engine, actor='system'):
+    """Seed only tools whose identity/version/URL are explicitly documented.
+
+    I9-D deliberately does not invent URLs for the other Clarte360 applications. They can
+    be added through the generic catalogue once their deployment contract is confirmed.
+    """
+    now=utcnow_iso()
+    defaults=[{
+        'tool_code':'PIP_RIASEC_ONET',
+        'name':'PIP RIASEC / O*NET',
+        'category':'ORIENTATION_PROFESSIONNELLE',
+        'base_url':'https://pip-riasec.clarte360.com',
+        'tool_version':'1.0.7-RC5',
+        'allowed_publics':['BENEFICIAIRE'],
+        'compatible_prestations':['BILAN_DE_COMPETENCES','BILAN_COMPETENCES','COACHING'],
+        'prescription_allowed':1,
+        'launch_type':'EXTERNAL_SIGNED',
+        'access_validity_hours':168,
+        'connector_code':'PIP_RC5',
+        'connector_status':'PENDING_I9_E',
+        'metadata':{'source':'CDC_I9_V2.0','note':'Connecteur signe active en I9-E'}
+    }]
+    for d in defaults:
+        execute(engine,"""INSERT INTO tool_catalog(tool_code,name,category,base_url,tool_version,active,allowed_publics_json,
+          compatible_prestations_json,prescription_allowed,launch_type,access_validity_hours,connector_code,connector_status,metadata_json,created_at,updated_at)
+          VALUES(:tool_code,:name,:category,:base_url,:tool_version,1,:publics,:prestations,:pa,:launch,:hours,:connector,:status,:meta,:n,:n)
+          ON CONFLICT(tool_code) DO UPDATE SET name=excluded.name,category=excluded.category,base_url=excluded.base_url,
+          tool_version=excluded.tool_version,allowed_publics_json=excluded.allowed_publics_json,
+          compatible_prestations_json=excluded.compatible_prestations_json,prescription_allowed=excluded.prescription_allowed,
+          launch_type=excluded.launch_type,access_validity_hours=excluded.access_validity_hours,connector_code=excluded.connector_code,
+          connector_status=CASE WHEN tool_catalog.connector_status='CONNECTED' THEN tool_catalog.connector_status ELSE excluded.connector_status END,
+          metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
+          {'tool_code':d['tool_code'],'name':d['name'],'category':d['category'],'base_url':d['base_url'],'tool_version':d['tool_version'],
+           'publics':json.dumps(d['allowed_publics'],ensure_ascii=False),'prestations':json.dumps(d['compatible_prestations'],ensure_ascii=False),
+           'pa':d['prescription_allowed'],'launch':d['launch_type'],'hours':d['access_validity_hours'],'connector':d['connector_code'],
+           'status':d['connector_status'],'meta':json.dumps(d['metadata'],ensure_ascii=False),'n':now})
+    return len(defaults)
+
+
+def list_tool_catalog(engine, active_only=True, prescription_only=False, prestation_type=None, public='BENEFICIAIRE'):
+    rows=q(engine,"SELECT * FROM tool_catalog ORDER BY category,name,tool_code")
+    out=[]
+    p=(prestation_type or '').upper().replace(' ','_')
+    for row in rows:
+        if active_only and not row.get('active'): continue
+        if prescription_only and not row.get('prescription_allowed'): continue
+        publics=_json_load(row.get('allowed_publics_json'),[])
+        if public and publics and public.upper() not in [str(x).upper() for x in publics]: continue
+        comps=_json_load(row.get('compatible_prestations_json'),[])
+        if p and comps and p not in [str(x).upper() for x in comps]: continue
+        row['allowed_publics']=publics; row['compatible_prestations']=comps
+        out.append(row)
+    return out
+
+
+def upsert_tool_catalog(engine, data, actor='admin'):
+    code=(data.get('tool_code') or '').strip().upper()
+    name=(data.get('name') or '').strip()
+    if not code or not name: raise ValueError('Code outil et nom obligatoires.')
+    launch=(data.get('launch_type') or 'HUB_REDIRECT').strip().upper()
+    if launch not in ('HUB_REDIRECT','EXTERNAL_SIGNED','INTERNAL'):
+        raise ValueError('Type de lancement non reconnu.')
+    now=utcnow_iso()
+    existing=one(engine,'SELECT * FROM tool_catalog WHERE tool_code=:c',{'c':code})
+    payload={
+        'c':code,'n':name,'cat':(data.get('category') or 'OUTIL').strip().upper(),'url':(data.get('base_url') or '').strip() or None,
+        'v':(data.get('tool_version') or '').strip() or None,'a':1 if data.get('active',True) else 0,
+        'pub':json.dumps(data.get('allowed_publics') or ['BENEFICIAIRE'],ensure_ascii=False),
+        'comp':json.dumps(data.get('compatible_prestations') or [],ensure_ascii=False),'pa':1 if data.get('prescription_allowed',True) else 0,
+        'lt':launch,'iv':int(data.get('access_validity_hours') or 168),'rgpd':json.dumps(data.get('rgpd_rules') or {},ensure_ascii=False),
+        'cc':(data.get('connector_code') or '').strip() or None,'cs':(data.get('connector_status') or 'NOT_CONFIGURED').strip().upper(),
+        'meta':json.dumps(data.get('metadata') or {},ensure_ascii=False),'now':now
+    }
+    execute(engine,"""INSERT INTO tool_catalog(tool_code,name,category,base_url,tool_version,active,allowed_publics_json,compatible_prestations_json,
+      prescription_allowed,launch_type,access_validity_hours,rgpd_rules_json,connector_code,connector_status,metadata_json,created_at,updated_at)
+      VALUES(:c,:n,:cat,:url,:v,:a,:pub,:comp,:pa,:lt,:iv,:rgpd,:cc,:cs,:meta,:now,:now)
+      ON CONFLICT(tool_code) DO UPDATE SET name=excluded.name,category=excluded.category,base_url=excluded.base_url,tool_version=excluded.tool_version,
+      active=excluded.active,allowed_publics_json=excluded.allowed_publics_json,compatible_prestations_json=excluded.compatible_prestations_json,
+      prescription_allowed=excluded.prescription_allowed,launch_type=excluded.launch_type,access_validity_hours=excluded.access_validity_hours,
+      rgpd_rules_json=excluded.rgpd_rules_json,connector_code=excluded.connector_code,connector_status=excluded.connector_status,
+      metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",payload)
+    row=one(engine,'SELECT * FROM tool_catalog WHERE tool_code=:c',{'c':code})
+    audit(engine,'TOOL_CATALOG_UPDATED' if existing else 'TOOL_CATALOG_CREATED',actor=actor,entity_type='tool_catalog',entity_id=row['id'],details={'tool_code':code})
+    return row
+
+
+def trainer_can_prescribe_tools(engine, trainer_id, action_id):
+    row=one(engine,"SELECT can_prescribe_tools FROM action_trainers WHERE action_id=:a AND trainer_id=:t AND active=1",{'a':action_id,'t':trainer_id})
+    return bool(row and row.get('can_prescribe_tools'))
+
+
+def set_action_trainer_prescription_permission(engine, action_id, trainer_id, allowed, actor='admin'):
+    row=one(engine,'SELECT * FROM action_trainers WHERE action_id=:a AND trainer_id=:t AND active=1',{'a':action_id,'t':trainer_id})
+    if not row: return False,"L'intervenant n'est pas affecté à cette action."
+    execute(engine,'UPDATE action_trainers SET can_prescribe_tools=:v,updated_at=:u WHERE id=:i',{'v':1 if allowed else 0,'u':utcnow_iso(),'i':row['id']})
+    audit(engine,'TRAINER_TOOL_PRESCRIPTION_PERMISSION_CHANGED',action_id,actor,'trainer',trainer_id,{'allowed':bool(allowed)})
+    return True,''
+
+
+def _prescription_public_id():
+    import secrets
+    return 'PRX-'+secrets.token_hex(8).upper()
+
+
+def create_tool_prescription(engine, tool_code, beneficiary_id, action_id, participant_id=None, *, prescriber_type='ADMIN', prescriber_id=None,
+                             prescriber_role='ADMINISTRATEUR', due_at=None, expires_at=None, metadata=None, actor='system'):
+    tool=one(engine,'SELECT * FROM tool_catalog WHERE tool_code=:c AND active=1 AND prescription_allowed=1',{'c':(tool_code or '').upper()})
+    if not tool: raise ValueError('Outil indisponible ou non prescriptible.')
+    ben=one(engine,'SELECT * FROM beneficiaries WHERE id=:b AND active=1',{'b':beneficiary_id})
+    if not ben: raise ValueError('Bénéficiaire introuvable.')
+    action=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
+    if not action: raise ValueError('Action introuvable.')
+    if participant_id:
+        linked=one(engine,'SELECT id FROM participants WHERE id=:p AND action_id=:a AND beneficiary_id=:b AND active=1',{'p':participant_id,'a':action_id,'b':beneficiary_id})
+        if not linked: raise ValueError("Le participant n'est pas rattaché à ce bénéficiaire dans cette action.")
+    else:
+        linked=one(engine,'SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1 ORDER BY id LIMIT 1',{'a':action_id,'b':beneficiary_id})
+        participant_id=(linked or {}).get('id')
+        if not participant_id: raise ValueError("Ce bénéficiaire n'est pas rattaché à cette action.")
+    # Compatibility is enforced by the generic catalogue contract.
+    comps=_json_load(tool.get('compatible_prestations_json'),[])
+    prestation=(action.get('prestation_type') or action.get('nature') or '').upper().replace(' ','_')
+    if comps and prestation not in [str(x).upper() for x in comps]:
+        raise ValueError('Cet outil n’est pas déclaré compatible avec cette prestation.')
+    now=utcnow_iso()
+    if not expires_at:
+        expires_at=(datetime.now(ZoneInfo('UTC'))+timedelta(hours=int(tool.get('access_validity_hours') or 168))).isoformat()
+    pid=_prescription_public_id()
+    execute(engine,"""INSERT INTO tool_prescriptions(prescription_id,tool_id,tool_code,tool_version,beneficiary_id,action_id,participant_id,
+      prescriber_type,prescriber_id,prescriber_role,created_at,due_at,expires_at,status,result_refs_json,metadata_json,updated_at)
+      VALUES(:pid,:tid,:tc,:tv,:b,:a,:p,:pt,:pi,:pr,:n,:due,:exp,'A_FAIRE','[]',:m,:n)""",
+      {'pid':pid,'tid':tool['id'],'tc':tool['tool_code'],'tv':tool.get('tool_version'),'b':beneficiary_id,'a':action_id,'p':participant_id,
+       'pt':prescriber_type,'pi':str(prescriber_id) if prescriber_id is not None else None,'pr':prescriber_role,'n':now,'due':due_at,'exp':expires_at,
+       'm':json.dumps(metadata or {},ensure_ascii=False)})
+    execute(engine,"""INSERT INTO prescription_events(prescription_id,event_type,new_status,actor,details_json,created_at)
+      VALUES(:p,'CREATED','A_FAIRE',:by,:d,:n)""",{'p':pid,'by':actor,'d':json.dumps({'tool_code':tool['tool_code']},ensure_ascii=False),'n':now})
+    audit(engine,'TOOL_PRESCRIPTION_CREATED',action_id,actor,'tool_prescription',None,{'prescription_id':pid,'tool_code':tool['tool_code'],'beneficiary_id':beneficiary_id})
+    return one(engine,'SELECT * FROM tool_prescriptions WHERE prescription_id=:p',{'p':pid})
+
+
+def list_tool_prescriptions(engine, *, beneficiary_id=None, action_id=None, trainer_id=None, include_cancelled=True):
+    wh=[]; params={}
+    if beneficiary_id is not None: wh.append('tp.beneficiary_id=:b');params['b']=beneficiary_id
+    if action_id is not None: wh.append('tp.action_id=:a');params['a']=action_id
+    if trainer_id is not None:
+        wh.append("EXISTS (SELECT 1 FROM action_trainers at WHERE at.action_id=tp.action_id AND at.trainer_id=:t AND at.active=1)");params['t']=trainer_id
+    if not include_cancelled: wh.append("tp.status<>'ANNULE'")
+    where=('WHERE '+' AND '.join(wh)) if wh else ''
+    return q(engine,f"""SELECT tp.*,tc.name tool_name,tc.category tool_category,tc.base_url,tc.launch_type,tc.connector_status,
+      b.public_id beneficiary_public_id,b.first_name beneficiary_first_name,b.last_name beneficiary_last_name,a.action_no,a.title action_title
+      FROM tool_prescriptions tp JOIN tool_catalog tc ON tc.id=tp.tool_id JOIN beneficiaries b ON b.id=tp.beneficiary_id
+      JOIN actions a ON a.id=tp.action_id {where} ORDER BY tp.created_at DESC,tp.id DESC""",params)
+
+
+def update_tool_prescription_status(engine, prescription_id, new_status, actor='system', details=None, event_id=None):
+    status=(new_status or '').upper()
+    if status not in PRESCRIPTION_STATUSES: raise ValueError('Statut de prescription inconnu.')
+    row=one(engine,'SELECT * FROM tool_prescriptions WHERE prescription_id=:p',{'p':prescription_id})
+    if not row: raise ValueError('Prescription introuvable.')
+    if event_id and one(engine,'SELECT id FROM prescription_events WHERE event_id=:e',{'e':event_id}): return row
+    now=utcnow_iso(); fields={'CONSULTE':'first_viewed_at','EN_COURS':'started_at','TERMINE':'completed_at','REVU_EN_SEANCE':'reviewed_at','ANNULE':'cancelled_at'}
+    extra=''; params={'s':status,'u':now,'p':prescription_id}
+    if status in fields: extra=f",{fields[status]}=COALESCE({fields[status]},:u)"
+    execute(engine,f'UPDATE tool_prescriptions SET status=:s,updated_at=:u{extra} WHERE prescription_id=:p',params)
+    execute(engine,"""INSERT INTO prescription_events(prescription_id,event_type,old_status,new_status,actor,details_json,event_id,created_at)
+      VALUES(:p,'STATUS_CHANGED',:o,:n,:a,:d,:e,:c)""",{'p':prescription_id,'o':row.get('status'),'n':status,'a':actor,
+      'd':json.dumps(details or {},ensure_ascii=False),'e':event_id,'c':now})
+    audit(engine,'TOOL_PRESCRIPTION_STATUS_CHANGED',row.get('action_id'),actor,'tool_prescription',None,{'prescription_id':prescription_id,'old':row.get('status'),'new':status})
+    return one(engine,'SELECT * FROM tool_prescriptions WHERE prescription_id=:p',{'p':prescription_id})
+
+
+def create_prescription_launch_token(engine, prescription_id, actor='beneficiary', valid_minutes=15):
+    import secrets, hashlib
+    row=one(engine,"""SELECT tp.*,tc.active tool_active,tc.prescription_allowed,tc.base_url,tc.launch_type,tc.connector_status
+      FROM tool_prescriptions tp JOIN tool_catalog tc ON tc.id=tp.tool_id WHERE tp.prescription_id=:p""",{'p':prescription_id})
+    if not row or row.get('status')=='ANNULE': raise ValueError('Prescription indisponible.')
+    if not row.get('tool_active') or not row.get('prescription_allowed'): raise ValueError('Outil temporairement indisponible.')
+    now=datetime.now(ZoneInfo('UTC'))
+    if row.get('expires_at') and datetime.fromisoformat(row['expires_at']) < now: raise ValueError('Accès à cet outil expiré.')
+    token=secrets.token_urlsafe(32); digest=hashlib.sha256(token.encode()).hexdigest(); exp=(now+timedelta(minutes=max(1,min(int(valid_minutes),60)))).isoformat()
+    execute(engine,'INSERT INTO prescription_access_tokens(prescription_id,token_hash,created_at,expires_at,created_by) VALUES(:p,:h,:n,:e,:b)',
+      {'p':prescription_id,'h':digest,'n':utcnow_iso(),'e':exp,'b':actor})
+    return token
+
+
+def resolve_prescription_launch_token(engine, token, actor='beneficiary'):
+    import hashlib
+    if not token: return None
+    digest=hashlib.sha256(token.encode()).hexdigest()
+    row=one(engine,"""SELECT pat.id token_id,pat.expires_at token_expires_at,pat.used_at,pat.revoked_at,tp.*,tc.name tool_name,tc.base_url,tc.launch_type,tc.connector_status
+      FROM prescription_access_tokens pat JOIN tool_prescriptions tp ON tp.prescription_id=pat.prescription_id
+      JOIN tool_catalog tc ON tc.id=tp.tool_id WHERE pat.token_hash=:h""",{'h':digest})
+    if not row or row.get('revoked_at') or row.get('used_at'): return None
+    now=datetime.now(ZoneInfo('UTC'))
+    try:
+        if datetime.fromisoformat(row['token_expires_at']) < now: return None
+        if row.get('expires_at') and datetime.fromisoformat(row['expires_at']) < now: return None
+    except Exception: return None
+    execute(engine,'UPDATE prescription_access_tokens SET used_at=:u WHERE id=:i',{'u':utcnow_iso(),'i':row['token_id']})
+    if row.get('status') in ('A_FAIRE','ENVOYE'):
+        update_tool_prescription_status(engine,row['prescription_id'],'CONSULTE',actor,{'via':'hub_launch'})
+        row['status']='CONSULTE'
+    return row
+
+
+def prescription_events(engine, prescription_id):
+    return q(engine,'SELECT * FROM prescription_events WHERE prescription_id=:p ORDER BY created_at,id',{'p':prescription_id})
+
+# ---- V3 I9-E: adaptateur PIP RC5 ------------------------------------------
+def pip_connector_configured(signing_key):
+    return bool(signing_key and len(str(signing_key).strip()) >= 24)
+
+
+def build_pip_prescription_launch(engine, prescription_id, signing_key, valid_seconds=900):
+    """Return a beneficiary-safe PIP URL carrying only the signed launch token."""
+    from pip_connector import build_pip_launch_token, build_pip_launch_url
+    row=one(engine,"""SELECT tp.*,tc.base_url,tc.launch_type,tc.connector_code,tc.connector_status
+      FROM tool_prescriptions tp JOIN tool_catalog tc ON tc.id=tp.tool_id WHERE tp.prescription_id=:p""",{'p':prescription_id})
+    if not row or row.get('tool_code')!='PIP_RIASEC_ONET': raise ValueError('Prescription PIP introuvable.')
+    if row.get('status')=='ANNULE': raise ValueError('Prescription PIP annulée.')
+    now=datetime.now(ZoneInfo('UTC'))
+    if row.get('expires_at'):
+        try:
+            exp=datetime.fromisoformat(row['expires_at'])
+            if exp.tzinfo is None: exp=exp.replace(tzinfo=ZoneInfo('UTC'))
+            if exp < now: raise ValueError('Accès PIP expiré.')
+        except ValueError: raise
+        except Exception: pass
+    tok=build_pip_launch_token(beneficiary_id=row['beneficiary_id'],action_id=row['action_id'],participant_id=row.get('participant_id'),
+      prescription_id=row['prescription_id'],signing_key=signing_key,rights=['PIP_RIASEC','ONET60'],valid_seconds=valid_seconds)
+    return build_pip_launch_url(row.get('base_url'),tok)
+
+
+def _connector_cursor(engine, code):
+    return one(engine,'SELECT * FROM connector_cursors WHERE connector_code=:c',{'c':code})
+
+
+def _save_connector_cursor(engine, code, source_ref, offset, *, last_event_at=None, last_error=None):
+    now=utcnow_iso()
+    execute(engine,"""INSERT INTO connector_cursors(connector_code,source_ref,byte_offset,last_event_at,last_error,updated_at)
+      VALUES(:c,:s,:o,:e,:er,:u) ON CONFLICT(connector_code) DO UPDATE SET source_ref=excluded.source_ref,
+      byte_offset=excluded.byte_offset,last_event_at=COALESCE(excluded.last_event_at,connector_cursors.last_event_at),last_error=excluded.last_error,updated_at=excluded.updated_at""",
+      {'c':code,'s':str(source_ref or ''),'o':int(offset or 0),'e':last_event_at,'er':last_error,'u':now})
+
+
+def consume_pip_outbox(engine, outbox_path, limit=500, actor='worker'):
+    """Consume the PIP RC5 durable JSONL outbox idempotently.
+
+    The PIP remains owner of its snapshots/results. Gestion des Actions only consumes the
+    minimal connector events currently emitted by RC5 (CONSULTE/EN_COURS/TERMINE + refs).
+    """
+    from pip_connector import read_outbox_from_offset, event_identity, PipConnectorError
+    code='PIP_RC5'; cur=_connector_cursor(engine,code) or {}; start=int(cur.get('byte_offset') or 0)
+    try:
+        rows,next_offset=read_outbox_from_offset(outbox_path,start,limit)
+    except Exception as exc:
+        _save_connector_cursor(engine,code,outbox_path,start,last_error=str(exc)[:500])
+        audit(engine,'PIP_OUTBOX_READ_FAILED',actor=actor,entity_type='connector',details={'error':str(exc)[:500]})
+        return {'processed':0,'ignored':0,'errors':1,'offset':start}
+    processed=ignored=errors=0; committed=start; last_event_at=None
+    for after,raw,event in rows:
+        payload=event.get('payload') or {}; event_id=event_identity(raw)
+        try:
+            pr=one(engine,"SELECT * FROM tool_prescriptions WHERE prescription_id=:p AND tool_code='PIP_RIASEC_ONET'",{'p':payload.get('prescription_id')})
+            if not pr:
+                raise ValueError('Prescription PIP inconnue dans le Hub.')
+            # Strong anti-crossing checks: every technical identifier emitted by PIP must
+            # agree with the prescription stored by the Hub.
+            if str(pr.get('beneficiary_id')) != str(payload.get('beneficiary_id')) or str(pr.get('action_id')) != str(payload.get('action_id')):
+                raise ValueError('Identifiants PIP incohérents avec la prescription.')
+            if payload.get('participant_id') is not None and str(pr.get('participant_id')) != str(payload.get('participant_id')):
+                raise ValueError('Participant PIP incohérent avec la prescription.')
+            if one(engine,'SELECT id FROM prescription_events WHERE event_id=:e',{'e':event_id}):
+                ignored+=1; committed=after; continue
+            details={'source':'PIP_RC5','timestamp':event.get('timestamp'),'passation_id':payload.get('passation_id'),'app_version':payload.get('app_version')}
+            update_tool_prescription_status(engine,pr['prescription_id'],event['event_type'],actor,details,event_id=event_id)
+            # Persist only references actually emitted by RC5; no score/result is invented.
+            refs=_json_load(pr.get('result_refs_json'),[])
+            ref={'source':'PIP_RC5','passation_id':payload.get('passation_id'),'app_version':payload.get('app_version')}
+            if ref not in refs and (ref['passation_id'] or ref['app_version']):
+                refs.append(ref)
+                execute(engine,'UPDATE tool_prescriptions SET result_refs_json=:r,updated_at=:u WHERE prescription_id=:p',{'r':json.dumps(refs,ensure_ascii=False),'u':utcnow_iso(),'p':pr['prescription_id']})
+            processed+=1; committed=after; last_event_at=event.get('timestamp') or utcnow_iso()
+        except Exception as exc:
+            # Do not advance past a bad/crossed event: administrator can correct then retry.
+            errors+=1
+            _save_connector_cursor(engine,code,outbox_path,committed,last_event_at=last_event_at,last_error=str(exc)[:500])
+            audit(engine,'PIP_OUTBOX_EVENT_REJECTED',actor=actor,entity_type='connector',details={'event_id':event_id,'error':str(exc)[:500]})
+            return {'processed':processed,'ignored':ignored,'errors':errors,'offset':committed}
+    _save_connector_cursor(engine,code,outbox_path,next_offset,last_event_at=last_event_at,last_error=None)
+    if processed:
+        audit(engine,'PIP_OUTBOX_CONSUMED',actor=actor,entity_type='connector',details={'processed':processed,'ignored':ignored,'offset':next_offset})
+    return {'processed':processed,'ignored':ignored,'errors':errors,'offset':next_offset}
+
+def refresh_pip_connector_runtime_status(engine, signing_key=None, outbox_path=None, actor='system'):
+    """Expose configuration readiness without ever persisting a secret value."""
+    key_ok=pip_connector_configured(signing_key)
+    outbox_ok=bool(str(outbox_path or '').strip())
+    status='CONNECTED' if key_ok and outbox_ok else ('LAUNCH_ONLY' if key_ok else 'NOT_CONFIGURED')
+    row=one(engine,"SELECT id,connector_status FROM tool_catalog WHERE tool_code='PIP_RIASEC_ONET'")
+    if row and row.get('connector_status')!=status:
+        execute(engine,"UPDATE tool_catalog SET connector_status=:s,updated_at=:u WHERE id=:i",{'s':status,'u':utcnow_iso(),'i':row['id']})
+        audit(engine,'PIP_CONNECTOR_STATUS_CHANGED',actor=actor,entity_type='tool_catalog',entity_id=row['id'],details={'status':status})
+    return status
+
+# I9-F — Espace Études PIP/O*NET. Les fichiers sources sont déjà pseudonymisés par le PIP RC5.
+_STUDY_IDENTITY_KEYS={'identity','public_identity','first_name','last_name','name','email','phone','telephone','participant_id','public_participant_id','beneficiary_id'}
+
+def _study_safe(value):
+    if isinstance(value,dict):
+        return {k:_study_safe(v) for k,v in value.items() if str(k).lower() not in _STUDY_IDENTITY_KEYS}
+    if isinstance(value,list): return [_study_safe(v) for v in value]
+    return value
+
+def load_pip_study_records(study_dir):
+    root=Path(study_dir).expanduser()
+    if not root.is_dir(): return []
+    rows=[]
+    for path in sorted(root.glob('*.json')):
+        try:
+            raw=json.loads(path.read_text(encoding='utf-8'))
+            if raw.get('schema')!='clarte360.pip.public-study.v1' or not raw.get('study_id'): continue
+            safe=_study_safe(raw)
+            safe['_source_file']=path.name
+            rows.append(safe)
+        except Exception:
+            continue
+    return rows
+
+def _study_completed(r):
+    ps=r.get('pip_state') or {}
+    if ps.get('completed') is True: return True
+    return bool(r.get('completed_at'))
+
+def study_record_status(r):
+    if _study_completed(r): return 'TERMINE'
+    ps=r.get('pip_state') or {}; answers=ps.get('answers') or {}
+    return 'COMMENCE' if answers else 'ABANDONNE'
+
+def filter_study_records(records, filters=None):
+    f=filters or {}; out=[]
+    for r in records:
+        completed=str(r.get('completed_at') or '')
+        if f.get('date_from') and completed and completed[:10] < str(f['date_from']): continue
+        if f.get('date_to') and completed and completed[:10] > str(f['date_to']): continue
+        if f.get('journey') and r.get('journey')!=f['journey']: continue
+        if f.get('timing') and r.get('onet_selected_timing')!=f['timing']: continue
+        if f.get('bank_version') and r.get('pip_bank_version')!=f['bank_version']: continue
+        if f.get('status') and study_record_status(r)!=f['status']: continue
+        if f.get('consent') is not None and bool(r.get('study_consent')) != bool(f['consent']): continue
+        out.append(r)
+    return out
+
+def study_summary(records):
+    return {
+      'total':len(records),'commencees':sum(study_record_status(r)=='COMMENCE' for r in records),
+      'terminees':sum(study_record_status(r)=='TERMINE' for r in records),'abandons':sum(study_record_status(r)=='ABANDONNE' for r in records),
+      'pip_seul':sum(r.get('journey')=='PIP_SEUL' for r in records),'pip_onet':sum(r.get('journey')=='PIP_PUIS_ONET60' for r in records),
+      'pre_pip':sum(r.get('onet_selected_timing')=='PRE_PIP' for r in records),'post_pip':sum(r.get('onet_selected_timing')=='POST_PIP_RESULTS' for r in records),
+      'consentements':sum(bool(r.get('study_consent')) for r in records),
+    }
+
+def study_item_quality(records):
+    values={}
+    for r in records:
+        if not r.get('study_consent'): continue
+        for item,val in ((r.get('pip_answers') or {}).items()):
+            try: x=float(val)
+            except (TypeError,ValueError): continue
+            if 1 <= x <= 5: values.setdefault(str(item),[]).append(x)
+    result=[]; total=max(1,sum(bool(r.get('study_consent')) for r in records))
+    for item,xs in sorted(values.items()):
+        n=len(xs); mean=sum(xs)/n; var=sum((x-mean)**2 for x in xs)/n
+        dist={str(i):sum(x==i for x in xs) for i in range(1,6)}
+        # Indicateur descriptif uniquement : part des réponses dans la modalité la plus fréquente.
+        consensus=max(dist.values())/n if n else 0
+        result.append({'item_id':item,'n':n,'response_rate':n/total,'mean':mean,'dispersion':var**0.5,'consensus':consensus,**{f'n_{i}':dist[str(i)] for i in range(1,6)}})
+    return result
+
+def study_onet_pairs(records):
+    pairs=[]
+    for r in records:
+        if not r.get('study_consent') or r.get('journey')!='PIP_PUIS_ONET60': continue
+        pip=r.get('pip_scoring') or {}; onet=r.get('onet_state') or {}
+        if not pip or not onet: continue
+        pairs.append({'study_id':r.get('study_id'),'timing':r.get('onet_selected_timing'),'pip_scoring':_study_safe(pip),'onet_state':_study_safe(onet)})
+    return pairs
+
+def _flatten_study_record(r):
+    return {
+      'study_id':r.get('study_id'),'journey':r.get('journey'),'onet_selected_timing':r.get('onet_selected_timing'),
+      'pip_bank_version':r.get('pip_bank_version'),'study_consent':bool(r.get('study_consent')),
+      'status':study_record_status(r),'completed_at':r.get('completed_at'),
+      'pip_answers_json':json.dumps(r.get('pip_answers') or {},ensure_ascii=False,sort_keys=True),
+      'pip_scoring_json':json.dumps(r.get('pip_scoring') or {},ensure_ascii=False,sort_keys=True),
+      'onet_state_json':json.dumps(r.get('onet_state') or {},ensure_ascii=False,sort_keys=True),
+      'feeling_json':json.dumps(r.get('feeling') or {},ensure_ascii=False,sort_keys=True),
+    }
+
+def export_study_csv(engine, records, actor, purpose, filters=None):
+    rows=[_flatten_study_record(_study_safe(r)) for r in records if r.get('study_consent')]
+    buf=io.StringIO(); fields=list(rows[0]) if rows else ['study_id','journey','onet_selected_timing','pip_bank_version','study_consent','status','completed_at','pip_answers_json','pip_scoring_json','onet_state_json','feeling_json']
+    w=csv.DictWriter(buf,fieldnames=fields);w.writeheader();w.writerows(rows)
+    execute(engine,"INSERT INTO study_export_events(actor,purpose,format,filters_json,schema_version,record_count,exported_at) VALUES(:a,:p,'CSV',:f,'clarte360.study-export.v1',:n,:d)",{'a':actor,'p':purpose,'f':json.dumps(filters or {},ensure_ascii=False,default=str),'n':len(rows),'d':utcnow_iso()})
+    audit(engine,'STUDY_EXPORT_CREATED',actor=actor,entity_type='study_export',details={'format':'CSV','record_count':len(rows),'purpose':purpose,'schema':'clarte360.study-export.v1'})
+    return buf.getvalue().encode('utf-8-sig')
+
+def export_study_xlsx(engine, records, actor, purpose, filters=None):
+    import pandas as pd
+    rows=[_flatten_study_record(_study_safe(r)) for r in records if r.get('study_consent')]
+    cols=['study_id','journey','onet_selected_timing','pip_bank_version','study_consent','status','completed_at','pip_answers_json','pip_scoring_json','onet_state_json','feeling_json']
+    buf=io.BytesIO()
+    with pd.ExcelWriter(buf,engine='openpyxl') as writer:
+        pd.DataFrame(rows,columns=cols).to_excel(writer,index=False,sheet_name='ETUDE_PSEUDONYMISEE')
+    execute(engine,"INSERT INTO study_export_events(actor,purpose,format,filters_json,schema_version,record_count,exported_at) VALUES(:a,:p,'XLSX',:f,'clarte360.study-export.v1',:n,:d)",{'a':actor,'p':purpose,'f':json.dumps(filters or {},ensure_ascii=False,default=str),'n':len(rows),'d':utcnow_iso()})
+    audit(engine,'STUDY_EXPORT_CREATED',actor=actor,entity_type='study_export',details={'format':'XLSX','record_count':len(rows),'purpose':purpose,'schema':'clarte360.study-export.v1'})
+    return buf.getvalue()
+
+
+# --- I9-G : CRM léger + contrat d'intégration Contractualisation ---
+CRM_STATUSES={'NOUVEAU','A_CONTACTER','CONTACTE','CONVERTI','SANS_SUITE'}
+CONTRACTUALIZATION_STATUSES={'A_PREPARER','EN_COURS','GENEREE','SIGNEE','ANNULEE'}
+
+def _crm_public_id():
+    return 'CRM-'+new_token(8).upper()
+
+def create_crm_contact(engine, first_name, last_name, email, *, phone=None, job_title=None, company=None, interests=None,
+                       source='MANUEL', source_ref=None, email_verified_at=None, research_consent_at=None,
+                       marketing_consent=False, rgpd_notice_version=None, actor='admin'):
+    vd=validate_crm_payload(first_name,last_name,email,phone,job_title,company)
+    fn,ln,em=vd['first_name'],vd['last_name'],vd['email']; phone=vd['phone']; job_title=vd['job_title']; company=vd['company']
+    now=utcnow_iso(); pid=_crm_public_id()
+    execute(engine,'''INSERT INTO crm_contacts(public_id,source,source_ref,first_name,last_name,email,email_verified_at,phone,job_title,company,
+      interests_json,research_consent_at,marketing_consent,marketing_consent_at,rgpd_notice_version,status,created_at,updated_at)
+      VALUES(:p,:s,:sr,:f,:l,:e,:ev,:ph,:j,:c,:i,:rc,:mc,:mca,:rv,'NOUVEAU',:n,:n)''',
+      {'p':pid,'s':source or 'MANUEL','sr':source_ref,'f':fn,'l':ln,'e':em,'ev':email_verified_at,'ph':phone,'j':job_title,'c':company,
+       'i':json.dumps(interests or [],ensure_ascii=False),'rc':research_consent_at,'mc':1 if marketing_consent else 0,
+       'mca':now if marketing_consent else None,'rv':rgpd_notice_version,'n':now})
+    row=one(engine,'SELECT * FROM crm_contacts WHERE public_id=:p',{'p':pid})
+    audit(engine,actor,'CRM_CONTACT_CREATE','crm_contact',row['id'],{'source':source,'marketing_consent':bool(marketing_consent)})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'CREATE',:a,:d,:n)",
+            {'c':row['id'],'a':actor,'d':json.dumps({'source':source},ensure_ascii=False),'n':now})
+    return row
+
+def list_crm_contacts(engine, status=None):
+    sql='SELECT c.*,b.public_id beneficiary_public_id FROM crm_contacts c LEFT JOIN beneficiaries b ON b.id=c.beneficiary_id'
+    pa={}
+    if status:
+        sql+=' WHERE c.status=:s'; pa['s']=status
+    sql+=' ORDER BY c.updated_at DESC,c.id DESC'
+    return q(engine,sql,pa)
+
+def update_crm_status(engine, contact_id, status, actor='admin'):
+    st=str(status or '').upper()
+    if st not in CRM_STATUSES:
+        raise ValueError('Statut CRM invalide.')
+    old=one(engine,'SELECT * FROM crm_contacts WHERE id=:i',{'i':contact_id})
+    if not old:
+        raise ValueError('Contact introuvable.')
+    now=utcnow_iso()
+    execute(engine,'UPDATE crm_contacts SET status=:s,updated_at=:n WHERE id=:i',{'s':st,'n':now,'i':contact_id})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'STATUS',:a,:d,:n)",
+            {'c':contact_id,'a':actor,'d':json.dumps({'old':old['status'],'new':st},ensure_ascii=False),'n':now})
+    audit(engine,actor,'CRM_STATUS','crm_contact',contact_id,{'old':old['status'],'new':st})
+
+def set_crm_marketing_consent(engine, contact_id, consent, actor='admin', rgpd_notice_version=None):
+    row=one(engine,'SELECT * FROM crm_contacts WHERE id=:i',{'i':contact_id})
+    if not row:
+        raise ValueError('Contact introuvable.')
+    now=utcnow_iso(); yes=bool(consent)
+    execute(engine,'''UPDATE crm_contacts SET marketing_consent=:m,marketing_consent_at=:ca,marketing_revoked_at=:rv,
+      rgpd_notice_version=COALESCE(:ver,rgpd_notice_version),updated_at=:n WHERE id=:i''',
+      {'m':1 if yes else 0,'ca':now if yes else row.get('marketing_consent_at'),'rv':None if yes else now,
+       'ver':rgpd_notice_version,'n':now,'i':contact_id})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'MARKETING_CONSENT',:a,:d,:n)",
+            {'c':contact_id,'a':actor,'d':json.dumps({'consent':yes,'rgpd_notice_version':rgpd_notice_version},ensure_ascii=False),'n':now})
+    audit(engine,actor,'CRM_MARKETING_CONSENT','crm_contact',contact_id,{'consent':yes})
+
+def convert_crm_contact_to_beneficiary(engine, contact_id, birth_date, actor='admin'):
+    c=one(engine,'SELECT * FROM crm_contacts WHERE id=:i',{'i':contact_id})
+    if not c:
+        raise ValueError('Contact introuvable.')
+    if c.get('beneficiary_id'):
+        return one(engine,'SELECT * FROM beneficiaries WHERE id=:i',{'i':c['beneficiary_id']})
+    bd=str(birth_date or '').strip()
+    if not bd:
+        raise ValueError('La date de naissance est requise pour contrôler les doublons avant conversion.')
+    cand=find_beneficiary_candidates(engine,c['last_name'],c['first_name'],bd,limit=10)
+    exact=[x for x in cand if str(x.get('birth_date') or '')==bd]
+    if len(exact)>1:
+        raise ValueError('Plusieurs bénéficiaires correspondent exactement : validation manuelle requise.')
+    if exact:
+        b=exact[0]
+    else:
+        bid=create_beneficiary(engine,c['last_name'],c['first_name'],bd,email=c.get('email'),phone=c.get('phone'),actor=actor)
+        b=one(engine,'SELECT * FROM beneficiaries WHERE id=:i',{'i':bid})
+    now=utcnow_iso()
+    execute(engine,"UPDATE crm_contacts SET beneficiary_id=:b,status='CONVERTI',converted_at=:n,updated_at=:n WHERE id=:i",
+            {'b':b['id'],'n':now,'i':contact_id})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'CONVERT',:a,:d,:n)",
+            {'c':contact_id,'a':actor,'d':json.dumps({'beneficiary_id':b['id'],'beneficiary_public_id':b['public_id']},ensure_ascii=False),'n':now})
+    audit(engine,actor,'CRM_CONVERT','crm_contact',contact_id,{'beneficiary_id':b['id']})
+    return b
+
+def build_contractualization_context(engine, action_id, beneficiary_id, participant_id=None, *, contract_type='A_DEFINIR', aps_ref=None, aps_payload=None):
+    a=one(engine,'SELECT * FROM actions WHERE id=:i',{'i':action_id})
+    b=one(engine,'SELECT * FROM beneficiaries WHERE id=:i',{'i':beneficiary_id})
+    if not a or not b:
+        raise ValueError('Action ou bénéficiaire introuvable.')
+    if participant_id:
+        part=one(engine,'SELECT * FROM participants WHERE id=:i AND action_id=:a',{'i':participant_id,'a':action_id})
+        if not part or part.get('beneficiary_id')!=beneficiary_id:
+            raise ValueError('Participant incohérent avec l’action ou le bénéficiaire.')
+    slots=q(engine,"SELECT slot_date,start_time,end_time,status FROM slots WHERE action_id=:a AND status!='ANNULE' ORDER BY slot_date,start_time",{'a':action_id})
+    identity={'beneficiary_id':b['public_id'],'first_name':b['first_name'],'last_name':b['last_name'],'birth_date':b['birth_date'],
+              'birth_name':b.get('birth_name'),'email':b.get('current_email'),'phone':b.get('phone')}
+    return {'format':'CLARTE360_CONTRACTUALISATION_CONTEXT_V1','generated_at':utcnow_iso(),
+      'action':{'action_id':a['id'],'no_clar':a.get('action_no'),'title':a.get('title'),'prestation_type':a.get('prestation_type') or a.get('nature'),
+                'delivery_mode':a.get('delivery_mode'),'location':a.get('location'),'planned_hours':a.get('planned_hours'),
+                'start_date':a.get('start_date'),'end_date':a.get('end_date')},
+      'beneficiary':identity,'participant_id':participant_id,'contract_type':contract_type,
+      'aps':{'reference':aps_ref,'payload':aps_payload},
+      'calendar':[{'date':x['slot_date'],'start':x['start_time'],'end':x['end_time']} for x in slots]}
+
+def prepare_contractualization_case(engine, action_id, beneficiary_id, participant_id=None, *, contract_type='A_DEFINIR', aps_ref=None, aps_payload=None, actor='admin'):
+    ctx=build_contractualization_context(engine,action_id,beneficiary_id,participant_id,contract_type=contract_type,aps_ref=aps_ref,aps_payload=aps_payload)
+    now=utcnow_iso()
+    execute(engine,'''INSERT INTO contractualization_cases(action_id,beneficiary_id,participant_id,no_clar,prestation_type,contract_type,aps_ref,aps_payload_json,status,context_payload_json,created_at,updated_at)
+      VALUES(:a,:b,:p,:n,:pt,:ct,:ar,:ap,'A_PREPARER',:cx,:now,:now)''',
+      {'a':action_id,'b':beneficiary_id,'p':participant_id,'n':ctx['action']['no_clar'],'pt':ctx['action']['prestation_type'],
+       'ct':contract_type,'ar':aps_ref,'ap':json.dumps(aps_payload,ensure_ascii=False) if aps_payload is not None else None,
+       'cx':json.dumps(ctx,ensure_ascii=False),'now':now})
+    row=one(engine,'SELECT * FROM contractualization_cases ORDER BY id DESC LIMIT 1')
+    execute(engine,"INSERT INTO contractualization_events(case_id,event_type,new_status,actor,details_json,created_at) VALUES(:c,'PREPARE','A_PREPARER',:a,:d,:n)",
+            {'c':row['id'],'a':actor,'d':json.dumps({'format':ctx['format']},ensure_ascii=False),'n':now})
+    audit(engine,actor,'CONTRACTUALIZATION_PREPARE','contractualization_case',row['id'],{'action_id':action_id,'beneficiary_id':beneficiary_id})
+    return row
+
+def list_contractualization_cases(engine, action_id=None, beneficiary_id=None):
+    wh=[]; pa={}
+    sql='SELECT c.*,b.public_id beneficiary_public_id,b.first_name,b.last_name FROM contractualization_cases c JOIN beneficiaries b ON b.id=c.beneficiary_id'
+    if action_id is not None:
+        wh.append('c.action_id=:a'); pa['a']=action_id
+    if beneficiary_id is not None:
+        wh.append('c.beneficiary_id=:b'); pa['b']=beneficiary_id
+    if wh:
+        sql+=' WHERE '+' AND '.join(wh)
+    sql+=' ORDER BY c.updated_at DESC,c.id DESC'
+    return q(engine,sql,pa)
+
+def update_contractualization_case(engine, case_id, status, *, external_ref=None, pdf_ref=None, json_ref=None, financing_refs=None, warnings=None, actor='admin'):
+    st=str(status or '').upper()
+    if st not in CONTRACTUALIZATION_STATUSES:
+        raise ValueError('Statut de contractualisation invalide.')
+    old=one(engine,'SELECT * FROM contractualization_cases WHERE id=:i',{'i':case_id})
+    if not old:
+        raise ValueError('Dossier de contractualisation introuvable.')
+    now=utcnow_iso()
+    execute(engine,'''UPDATE contractualization_cases SET status=:s,external_ref=COALESCE(:e,external_ref),pdf_ref=COALESCE(:p,pdf_ref),json_ref=COALESCE(:j,json_ref),
+      financing_refs_json=COALESCE(:f,financing_refs_json),warnings_json=COALESCE(:w,warnings_json),updated_at=:n WHERE id=:i''',
+      {'s':st,'e':external_ref,'p':pdf_ref,'j':json_ref,'f':json.dumps(financing_refs,ensure_ascii=False) if financing_refs is not None else None,
+       'w':json.dumps(warnings,ensure_ascii=False) if warnings is not None else None,'n':now,'i':case_id})
+    execute(engine,"INSERT INTO contractualization_events(case_id,event_type,old_status,new_status,actor,details_json,created_at) VALUES(:c,'STATUS',:o,:s,:a,:d,:n)",
+            {'c':case_id,'o':old['status'],'s':st,'a':actor,'d':json.dumps({'external_ref':external_ref,'pdf_ref':pdf_ref,'json_ref':json_ref},ensure_ascii=False),'n':now})
+    audit(engine,actor,'CONTRACTUALIZATION_STATUS','contractualization_case',case_id,{'old':old['status'],'new':st})

@@ -31,15 +31,16 @@ def finalized(e,p1,p2,sid):
     set_attendance_status(e,p2,sid,'NON_CONCERNE','non prévu','test')
 
 
-def test_i3_future_slot_is_blocked_server_side_even_with_signature_bytes():
+def test_i9b_future_slot_can_be_countersigned_once_all_participant_states_are_final():
+    # I9-B supersedes the I3 time gate: final participant statuses open countersignature immediately.
     e,aid,t1,p1,p2,sid=seed(slot_date='2026-09-10')
     finalized(e,p1,p2,sid)
     now=datetime(2026,9,5,10,0,tzinfo=ZoneInfo('Europe/Paris'))
     ok,msg,_=slot_countersignature_eligibility(e,sid,t1,now=now)
-    assert not ok and 'avant la fin réelle' in msg
+    assert ok,msg
     ok,msg=countersign_slot(e,sid,'Intervenant Un','one@example.org','trainer','certifie',trainer_id=t1,signature_bytes=b'png',now=now)
-    assert not ok and 'avant la fin réelle' in msg
-    assert not list_slot_countersignatures(e,sid)
+    assert ok,msg
+    assert len(list_slot_countersignatures(e,sid))==1
 
 
 def test_i3_pending_participant_blocks_countersignature():
@@ -90,13 +91,11 @@ def test_i3_countersignature_is_historical_evidence_locking_rewrite_and_report()
     assert report_slot(e,sid,'2026-09-06','10:00','13:00','admin','test') is None
 
 
-def test_i3_overnight_end_time_blocks_until_next_day_end():
+def test_i9b_overnight_slot_is_also_signable_early_when_states_are_final():
     e,aid,t1,p1,p2,sid=seed(no='V3I3-NIGHT',slot_date='2026-09-04',start='23:00',end='01:00')
     finalized(e,p1,p2,sid)
     before=datetime(2026,9,5,0,30,tzinfo=ZoneInfo('Europe/Paris'))
-    after=datetime(2026,9,5,1,1,tzinfo=ZoneInfo('Europe/Paris'))
-    assert not slot_countersignature_eligibility(e,sid,t1,now=before)[0]
-    assert slot_countersignature_eligibility(e,sid,t1,now=after)[0]
+    assert slot_countersignature_eligibility(e,sid,t1,now=before)[0]
 
 
 def test_i3_legacy_countersignature_is_copied_additively_on_init_db():

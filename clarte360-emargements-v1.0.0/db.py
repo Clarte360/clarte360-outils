@@ -215,16 +215,112 @@ V2_SCHEMA = [
  FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE CASCADE, FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE CASCADE)"""
 ]
 
+I9A_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS auth_sessions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, token_hash TEXT NOT NULL UNIQUE, subject_type TEXT NOT NULL, subject_ref TEXT NOT NULL,
+ created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT, ip_hash TEXT, user_agent_hash TEXT
+)"""
+]
+
+I9B_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS communication_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, participant_id INTEGER, trainer_id INTEGER, slot_id INTEGER,
+ communication_type TEXT NOT NULL, recipient_email TEXT, trigger_mode TEXT NOT NULL DEFAULT 'AUTO', status TEXT NOT NULL DEFAULT 'A_ENVOYER',
+ due_at TEXT, sent_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, metadata_json TEXT, idempotency_key TEXT UNIQUE,
+ claimed_at TEXT, claim_token TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE SET NULL,
+ FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE SET NULL, FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE CASCADE
+)"""
+]
+
+I9D_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS tool_catalog (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, tool_code TEXT NOT NULL UNIQUE, name TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'OUTIL',
+ base_url TEXT, tool_version TEXT, active INTEGER NOT NULL DEFAULT 1, allowed_publics_json TEXT, compatible_prestations_json TEXT,
+ prescription_allowed INTEGER NOT NULL DEFAULT 1, launch_type TEXT NOT NULL DEFAULT 'HUB_REDIRECT', input_contract_json TEXT,
+ output_contract_json TEXT, access_validity_hours INTEGER NOT NULL DEFAULT 168, rgpd_rules_json TEXT, connector_code TEXT,
+ connector_status TEXT NOT NULL DEFAULT 'NOT_CONFIGURED', metadata_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS tool_prescriptions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, prescription_id TEXT NOT NULL UNIQUE, tool_id INTEGER NOT NULL, tool_code TEXT NOT NULL, tool_version TEXT,
+ beneficiary_id INTEGER NOT NULL, action_id INTEGER NOT NULL, participant_id INTEGER, prescriber_type TEXT NOT NULL, prescriber_id TEXT, prescriber_role TEXT NOT NULL,
+ created_at TEXT NOT NULL, due_at TEXT, expires_at TEXT, status TEXT NOT NULL DEFAULT 'A_FAIRE', first_viewed_at TEXT, started_at TEXT, completed_at TEXT,
+ reviewed_at TEXT, cancelled_at TEXT, result_refs_json TEXT, metadata_json TEXT, updated_at TEXT NOT NULL,
+ FOREIGN KEY(tool_id) REFERENCES tool_catalog(id), FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE CASCADE,
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE SET NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS prescription_access_tokens (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, prescription_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+ used_at TEXT, revoked_at TEXT, created_by TEXT, FOREIGN KEY(prescription_id) REFERENCES tool_prescriptions(prescription_id) ON DELETE CASCADE
+)""",
+"""CREATE TABLE IF NOT EXISTS prescription_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, prescription_id TEXT NOT NULL, event_type TEXT NOT NULL, old_status TEXT, new_status TEXT, actor TEXT NOT NULL,
+ details_json TEXT, event_id TEXT UNIQUE, created_at TEXT NOT NULL, FOREIGN KEY(prescription_id) REFERENCES tool_prescriptions(prescription_id) ON DELETE CASCADE
+)"""
+]
+
+I9E_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS connector_cursors (
+ connector_code TEXT PRIMARY KEY, source_ref TEXT, byte_offset INTEGER NOT NULL DEFAULT 0, last_event_at TEXT, last_error TEXT, updated_at TEXT NOT NULL
+)"""
+]
+
+I9F_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS study_export_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, purpose TEXT NOT NULL, format TEXT NOT NULL, filters_json TEXT, schema_version TEXT NOT NULL,
+ record_count INTEGER NOT NULL DEFAULT 0, exported_at TEXT NOT NULL
+)"""
+]
+
+I9G_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS crm_contacts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE, source TEXT NOT NULL DEFAULT 'MANUEL', source_ref TEXT,
+ first_name TEXT NOT NULL, last_name TEXT NOT NULL, email TEXT NOT NULL, email_verified_at TEXT, phone TEXT, job_title TEXT, company TEXT,
+ interests_json TEXT, research_consent_at TEXT, marketing_consent INTEGER NOT NULL DEFAULT 0, marketing_consent_at TEXT, marketing_revoked_at TEXT,
+ rgpd_notice_version TEXT, status TEXT NOT NULL DEFAULT 'NOUVEAU', beneficiary_id INTEGER, converted_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE SET NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS crm_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, event_type TEXT NOT NULL, actor TEXT NOT NULL, details_json TEXT, created_at TEXT NOT NULL,
+ FOREIGN KEY(contact_id) REFERENCES crm_contacts(id) ON DELETE CASCADE
+)""",
+"""CREATE TABLE IF NOT EXISTS contractualization_cases (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, beneficiary_id INTEGER NOT NULL, participant_id INTEGER, no_clar TEXT,
+ prestation_type TEXT, contract_type TEXT, aps_ref TEXT, aps_payload_json TEXT, status TEXT NOT NULL DEFAULT 'A_PREPARER', external_ref TEXT,
+ pdf_ref TEXT, json_ref TEXT, financing_refs_json TEXT, warnings_json TEXT, context_payload_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE CASCADE,
+ FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE SET NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS contractualization_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER NOT NULL, event_type TEXT NOT NULL, old_status TEXT, new_status TEXT, actor TEXT NOT NULL,
+ details_json TEXT, created_at TEXT NOT NULL, FOREIGN KEY(case_id) REFERENCES contractualization_cases(id) ON DELETE CASCADE
+)"""
+]
+
+
 def init_db(engine: Engine):
     with engine.begin() as c:
         for sql in SCHEMA:
             c.execute(text(sql))
         for sql in V2_SCHEMA:
             c.execute(text(sql))
+        for sql in I9A_SCHEMA:
+            c.execute(text(sql))
+        for sql in I9B_SCHEMA:
+            c.execute(text(sql))
+        for sql in I9D_SCHEMA:
+            c.execute(text(sql))
+        for sql in I9E_SCHEMA:
+            c.execute(text(sql))
+        for sql in I9F_SCHEMA:
+            c.execute(text(sql))
+        for sql in I9G_SCHEMA:
+            c.execute(text(sql))
         # V1.1 additive migration: never rewrite existing evidence.
         migrations = [
             "ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'ADMIN'",
             "ALTER TABLE actions ADD COLUMN trainer_id INTEGER",
+            "ALTER TABLE actions ADD COLUMN delivery_mode TEXT",
             "ALTER TABLE trainer_access_tokens ADD COLUMN trainer_id INTEGER",
             "ALTER TABLE trainers ADD COLUMN password_hash TEXT",
             "ALTER TABLE trainers ADD COLUMN invite_token TEXT",
@@ -268,6 +364,12 @@ def init_db(engine: Engine):
             "ALTER TABLE participants ADD COLUMN pin_recovery_cipher TEXT",
             "ALTER TABLE trainers ADD COLUMN reset_requested_at TEXT",
             "ALTER TABLE trainers ADD COLUMN can_upload_documents INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE trainers ADD COLUMN microsoft_email TEXT",
+            "ALTER TABLE trainers ADD COLUMN entra_user_id TEXT",
+            "ALTER TABLE trainers ADD COLUMN entra_status TEXT NOT NULL DEFAULT 'UNCHECKED'",
+            "ALTER TABLE trainers ADD COLUMN entra_last_verified_at TEXT",
+            "ALTER TABLE trainers ADD COLUMN entra_creation_requested_at TEXT",
+            "ALTER TABLE trainers ADD COLUMN entra_creation_requested_by TEXT",
             "ALTER TABLE participants ADD COLUMN beneficiary_id INTEGER",
             "ALTER TABLE beneficiary_portal_accounts ADD COLUMN pending_email TEXT",
             "ALTER TABLE actions ADD COLUMN client_admin_email TEXT",
@@ -291,6 +393,7 @@ def init_db(engine: Engine):
             "ALTER TABLE actions ADD COLUMN final_other_email TEXT",
             "ALTER TABLE action_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE slot_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE action_trainers ADD COLUMN can_prescribe_tools INTEGER NOT NULL DEFAULT 0",
         ]
         for sql in migrations:
             try: c.execute(text(sql))
@@ -299,6 +402,8 @@ def init_db(engine: Engine):
         """CREATE TABLE IF NOT EXISTS trainers (
           id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, email TEXT UNIQUE, phone TEXT,
           password_hash TEXT, invite_token TEXT, invite_expires_at TEXT, invited_at TEXT, last_login_at TEXT, reset_requested_at TEXT,
+          microsoft_email TEXT, entra_user_id TEXT, entra_status TEXT NOT NULL DEFAULT 'UNCHECKED', entra_last_verified_at TEXT,
+          entra_creation_requested_at TEXT, entra_creation_requested_by TEXT,
           active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
         """CREATE TABLE IF NOT EXISTS attendance_status (
           id INTEGER PRIMARY KEY AUTOINCREMENT, participant_id INTEGER NOT NULL, slot_id INTEGER NOT NULL,
@@ -353,6 +458,7 @@ def init_db(engine: Engine):
         for sql in [
             "ALTER TABLE action_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE slot_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE action_trainers ADD COLUMN can_prescribe_tools INTEGER NOT NULL DEFAULT 0",
         ]:
             try: c.execute(text(sql))
             except Exception: pass
@@ -520,6 +626,21 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_teams_roles_action_slot ON teams_participant_roles(action_id,slot_id,active)",
             "CREATE INDEX IF NOT EXISTS ix_teams_reports_room ON teams_attendance_reports(action_room_id,retrieved_at)",
             "CREATE INDEX IF NOT EXISTS ix_teams_sync_status ON teams_sync_events(status,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_auth_sessions_subject ON auth_sessions(subject_type,subject_ref,revoked_at)",
+            "CREATE INDEX IF NOT EXISTS ix_auth_sessions_expiry ON auth_sessions(expires_at,revoked_at)",
+            "CREATE INDEX IF NOT EXISTS ix_communication_due_status ON communication_events(status,due_at)",
+            "CREATE INDEX IF NOT EXISTS ix_communication_action ON communication_events(action_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_tool_catalog_active ON tool_catalog(active,prescription_allowed,tool_code)",
+            "CREATE INDEX IF NOT EXISTS ix_tool_prescriptions_beneficiary ON tool_prescriptions(beneficiary_id,status,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_tool_prescriptions_action ON tool_prescriptions(action_id,status,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_prescription_tokens_expiry ON prescription_access_tokens(expires_at,revoked_at)",
+            "CREATE INDEX IF NOT EXISTS ix_prescription_events_prescription ON prescription_events(prescription_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_connector_cursors_updated ON connector_cursors(updated_at)",
+            "CREATE INDEX IF NOT EXISTS ix_study_exports_date ON study_export_events(exported_at,actor)",
+            "CREATE INDEX IF NOT EXISTS ix_crm_contacts_status ON crm_contacts(status,updated_at)",
+            "CREATE INDEX IF NOT EXISTS ix_crm_contacts_email ON crm_contacts(email)",
+            "CREATE INDEX IF NOT EXISTS ix_crm_contacts_beneficiary ON crm_contacts(beneficiary_id)",
+            "CREATE INDEX IF NOT EXISTS ix_contractualization_action ON contractualization_cases(action_id,status,updated_at)",
         ]
         for sql in indexes: c.execute(text(sql))
 

@@ -61,7 +61,7 @@ def _sig_image(path,w=24*mm,h=9*mm):
     try:
         if path and Path(path).exists(): return Image(path,width=w,height=h)
     except: pass
-    return ''
+    return Spacer(1,1)
 
 def collective_pdf(engine,aid):
     action=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':aid}); parts=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':aid}); slots=q(engine,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':aid})

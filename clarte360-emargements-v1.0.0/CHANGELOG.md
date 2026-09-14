@@ -1,3 +1,49 @@
+# V3.0.0-I9-F — Études PIP/O*NET pseudonymisées — 12/09/2026
+
+- base obligatoire conservée : I9-E validée ;
+- espace administratif Études PIP/O*NET alimenté uniquement par les enregistrements de recherche pseudonymisés RC5 ;
+- filtres parcours, PRE/POST, banque, statut et consentement ;
+- synthèse méthodologique et qualité item descriptive ;
+- comparaison PIP/O*NET uniquement chez les doubles passations, sans fusion ni recalcul des scores ;
+- exports CSV/XLSX pseudonymisés réservés aux consentements recherche ;
+- journalisation utilisateur/date/filtres/schéma/finalité/volume de chaque export ;
+- défense en profondeur contre nom, prénom, email, téléphone et identifiants métier dans les exports ;
+- indicateurs de fatigue non disponibles dans RC5 non inventés ;
+- 171 tests automatisés réussis sur 171 ; compilation/imports OK ;
+- aucune modification VPS ; raccordement au dossier persistant PIP différé à la recette finale.
+
+# V3.0.0-I9-E — Connecteur PIP RIASEC / O*NET RC5 — 12/09/2026
+
+- base obligatoire conservée : I9-D validée, aucune reconstruction ;
+- implémentation du contrat de lancement PIP RC5 HMAC-SHA256 strictement compatible avec `GestionActionsPort` ;
+- lancement accompagné via `mode=accompagnement&launch=<jeton>` sans exposer les identifiants métier dans l'URL ;
+- clé `pip_connector.launch_signing_key` lue uniquement depuis les secrets VPS, jamais stockée en base ni incluse dans le ZIP ;
+- ajout d'un consommateur idempotent de l'outbox JSONL PIP RC5 pour `CONSULTE`, `EN_COURS`, `TERMINE` ;
+- vérification forte bénéficiaire / action / participant / prescription avant toute mise à jour du Hub ;
+- curseur de lecture persistant additif (`connector_cursors`) avec reprise après redémarrage et gestion de troncature/rotation ;
+- aucune consommation d'une ligne JSONL partiellement écrite ;
+- arrêt sur événement incohérent sans avancer le curseur, avec audit technique ;
+- conservation des seules références réellement émises par RC5 (`passation_id`, `app_version`) ; aucun score ou résultat inventé ;
+- traitement PIP par le worker indépendant de SMTP afin qu'une panne email ne bloque jamais la synchronisation PIP ;
+- statut runtime du connecteur : `CONNECTED`, `LAUNCH_ONLY` ou `NOT_CONFIGURED`, sans persister le secret ;
+- interface bénéficiaire : message métier en cas d'indisponibilité, sans traceback ni information de connecteur exposée ;
+- 165 tests automatisés réussis sur 165 ;
+- compilation Python complète réussie ;
+- aucune modification VPS ; recette réelle du secret partagé et de l'outbox différée à la candidate finale.
+
+# V3.0.0-I9-A — Socle I9 : sessions persistantes + robustesse — 12/09/2026
+
+- base obligatoire conservée : I8 validée, aucune reconstruction ;
+- migration additive `auth_sessions` et index associés ;
+- session persistante ADMIN / INTERVENANT / BÉNÉFICIAIRE via cookie opaque et jeton hashé serveur ;
+- révocation des sessions à la déconnexion et après changement de mot de passe ;
+- correction définitive du bug ReportLab `wrapOn` sur image de signature absente ;
+- nouveau garde d'interface et journalisation technique `UI_MODULE_ERROR` sans traceback brut côté utilisateur ;
+- routes publiques et pages administrateur protégées par isolation d'erreur ;
+- 132 tests automatisés réussis sur 132 ;
+- compilation Python des modules principaux réussie ;
+- aucune modification VPS ; recette navigateur F5 différée à la candidate finale.
+
 # V3.0.0-I6 — Import générique + multi-organisme — 05/09/2026
 
 - ajout de profils d’import configurables par organisme (`organization_import_profiles`) ;
@@ -249,3 +295,65 @@
 - Nouveau participant ajouté à une action active : planning existant envoyé automatiquement.
 - Relances automatiques d'émargement retirées de l'UI.
 - Portail bénéficiaire enrichi : questionnaires terminés et feuilles d'émargement.
+
+## I9-B — 2026-09-12
+- Modalités métier contrôlées et séparées de l'organisation et du lieu/précision.
+- Normalisation robuste des dates Excel, dont numéros de série.
+- Rattachement automatique strict des bénéficiaires sur identité exacte.
+- Planning automatique pour participant ajouté après activation.
+- Journal générique des communications I9.
+- Contresignature anticipée autorisée dès finalisation complète des statuts participants.
+- Demande automatique de contresignature à la fin du créneau si nécessaire.
+- Compteur intervenant de contresignatures à traiter et lien ciblé action/créneau.
+- Bornes cohérentes pour les offsets calendrier.
+- 139 tests automatisés réussis.
+
+## I9-C — 2026-09-12
+- Interface Teams orientée métier : prochaine réunion réelle, date + horaires, suppression des identifiants techniques dans les portails utilisateur.
+- Synchronisation Teams présentée comme automatique ; synchronisation manuelle déplacée en administration avancée comme outil de secours.
+- Identité Microsoft permanente ajoutée à la fiche intervenant : email Microsoft/Teams, Entra ID, statut et dernière vérification.
+- Recherche obligatoire d'une identité Entra existante avant toute création/invitation.
+- Suppression de la création silencieuse des Guests : une invitation Microsoft externe nécessite désormais une demande administrateur explicite.
+- Rôles Teams avancés alimentés depuis l'identité Microsoft permanente de l'intervenant.
+- Présence Teams maintenue comme preuve complémentaire uniquement.
+- Présences Teams avec email différent/non reconnu laissées non attribuées ; rapprochement manuel explicite, contrôlé et audité.
+- Bénéficiaire et intervenant ne voient plus Graph, Meeting ID, Entra ID ni identifiants techniques de créneaux.
+- 146 tests automatisés réussis + compilation Python des modules principaux.
+
+## I9-D — 2026-09-12
+- Création du catalogue central générique des outils Clarté360 (`tool_catalog`) : code, nom, catégorie, URL, version, activation, publics, prestations compatibles, prescription, type de lancement, durée d’accès, RGPD et état de connecteur.
+- Création du modèle universel de prescription (`tool_prescriptions`) relié à l’outil, au bénéficiaire permanent, à l’action, au participant et au prescripteur.
+- États normalisés : A_FAIRE, ENVOYE, CONSULTE, EN_COURS, TERMINE, A_REVOIR_EN_SEANCE, REVU_EN_SEANCE, ANNULE.
+- Jetons de lancement temporaires stockés uniquement sous forme d’empreinte SHA-256, à usage unique, avec expiration et révocation possibles.
+- Journal additif des événements de prescription avec `event_id` idempotent pour préparer les connecteurs externes.
+- Nouveau droit explicite `can_prescribe_tools` par intervenant et par action ; aucune prescription n’est accordée par simple visibilité de l’action.
+- Nouveau volet « Outils Clarté360 » dans l’administration de l’action et dans l’espace intervenant autorisé.
+- Nouveau volet « Mes outils Clarté360 » dans le portail bénéficiaire avec statut, échéance et lancement sécurisé.
+- PIP RIASEC/O*NET RC5 référencé dans le catalogue avec son URL et sa version réelles, mais son connecteur signé reste explicitement en attente de I9-E : aucun lancement PIP non signé n’est introduit en I9-D.
+- Le catalogue reste générique : un outil non-PIP peut être ajouté et prescrit sans code métier PIP spécifique.
+- 155 tests automatisés réussis + compilation Python des modules principaux.
+
+## I9-G — 2026-09-12
+- Ajout du CRM léger Contacts / Prospects avec consentement marketing indépendant et révocable.
+- Conversion prospect → bénéficiaire avec contrôle anti-doublon.
+- Ajout d'un espace administrateur Contacts / Prospects.
+- Ajout du contrat `CLARTE360_CONTRACTUALISATION_CONTEXT_V1`.
+- Ajout du suivi des dossiers Contractualisation et de leurs références PDF/JSON/financements.
+- Aucun moteur juridique/PDF Contractualisation dupliqué dans Gestion des Actions.
+
+## I9-H — 2026-09-12
+- Consolidation finale de la séquence I9-A → I9-H et préparation de la candidate de recette.
+- Ajout d'un onglet administrateur « Diagnostic I9 » en lecture seule, sans exposition des secrets.
+- Contrôles de disponibilité du socle et contrôles non bloquants Email / Microsoft 365 / PIP.
+- Ajout de `release_check.py` : compilation Python, imports principaux et pytest avant commit/push.
+- Ajout de tests de durcissement contre exposition de traceback et motifs évidents de secrets codés en dur.
+- Documentation de recette finale et maintien strict du processus VPS : aucune modification serveur avant PUSH FAIT.
+- 185 tests automatisés réussis sur 185 ; candidate technique OK.
+
+## V3 I9-H1 — Validation renforcée des saisies — 2026-09-12
+- Ajout d'un validateur transversal `input_validation.py`.
+- Validation Unicode des noms/prénoms : lettres, espaces, apostrophes et tirets uniquement.
+- Validation renforcée e-mails, téléphones, dates, créneaux, numéros d'action, SIRET, NDA, NAF, TVA, URL, fuseaux IANA et JSON.
+- Contrôles appliqués aux frontières métier : actions, participants, bénéficiaires, intervenants, CRM, organismes, agences, contacts client, Microsoft/Teams et imports.
+- Messages métier pour les erreurs de saisie sur les principaux écrans ; pas de traceback attendu pour une erreur de format utilisateur.
+- 263 tests réussis ; release_check OK.

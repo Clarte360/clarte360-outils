@@ -133,6 +133,25 @@ class GraphClient:
         uid = parse.quote(str(user_id_or_upn), safe="")
         return self.request_json("GET", f"/users/{uid}?$select=id,displayName,mail,userPrincipalName,userType")
 
+    def find_user_by_email(self, email):
+        """Search an existing Entra identity before any invitation/creation request.
+
+        Returns one exact mail/UPN match or None. This deliberately prevents blind
+        guest creation and duplicate identities.
+        """
+        e=str(email or '').strip().lower()
+        if not e:
+            return None
+        safe=e.replace("'", "''")
+        filt=parse.quote(f"mail eq '{safe}' or userPrincipalName eq '{safe}'", safe="'()=$ ")
+        data=self.request_json("GET", f"/users?$filter={filt}&$select=id,displayName,mail,userPrincipalName,userType")
+        vals=data.get('value',[]) if isinstance(data,dict) else []
+        exact=[]
+        for u in vals:
+            mails={(u.get('mail') or '').strip().lower(),(u.get('userPrincipalName') or '').strip().lower()}
+            if e in mails: exact.append(u)
+        return exact[0] if len(exact)==1 else None
+
     def invite_guest(self, email, redirect_url, send_invitation_message=True, display_name=None):
         body = {
             "invitedUserEmailAddress": email,

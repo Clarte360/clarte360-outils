@@ -1,5 +1,6 @@
 from __future__ import annotations
-import io, json
+import io, json, re
+from datetime import date, datetime, timedelta
 import pandas as pd
 
 NULLS={"","0","0.0","nan","NaT","None"}
@@ -35,6 +36,38 @@ def clean(v):
     if hasattr(v,'to_pydatetime'): v=v.to_pydatetime()
     if hasattr(v,'isoformat'): return v.isoformat()[:10] if hasattr(v,'year') else str(v)
     s=str(v).strip(); return None if s in NULLS else s
+
+
+def normalize_date_value(v, *, field_name='date'):
+    """Normalize unambiguous Excel/Python/text dates to ISO. Returns (iso, source_repr, converted)."""
+    if v is None or (isinstance(v,float) and pd.isna(v)):
+        return None,None,False
+    original=v
+    if isinstance(v,pd.Timestamp): v=v.to_pydatetime()
+    if isinstance(v,datetime): return v.date().isoformat(),str(original),False
+    if isinstance(v,date): return v.isoformat(),str(original),False
+    if isinstance(v,(int,float)) and not isinstance(v,bool):
+        n=float(v)
+        if n.is_integer() and 1 <= n <= 80000:
+            d=(datetime(1899,12,30)+timedelta(days=int(n))).date()
+            return d.isoformat(),str(original),True
+        raise ValueError(f"{field_name} numérique impossible : {original}")
+    raw=str(v).strip()
+    if not raw or raw in NULLS:return None,raw,False
+    if re.fullmatch(r'\d+(?:\.0+)?',raw):
+        return normalize_date_value(float(raw),field_name=field_name)
+    for fmt in ('%Y-%m-%d','%d/%m/%Y','%d-%m-%Y'):
+        try:return datetime.strptime(raw,fmt).date().isoformat(),raw,(fmt!='%Y-%m-%d')
+        except ValueError:pass
+    raise ValueError(f"{field_name} ambiguë ou invalide : {raw}")
+
+def _raw_value(row,mapping,key):
+    for col in mapping.get(key,[]):
+        if col in row.index:
+            val=row.get(col)
+            if val is not None and not (isinstance(val,float) and pd.isna(val)):
+                return val
+    return None
 
 def _mapping(profile):
     raw=(profile or {}).get('mapping_json')
@@ -93,8 +126,8 @@ def read_action_xlsm(file_bytes, action_no, profile, mode='INTRA'):
       'source':profile.get('name') or profile.get('code') or 'BASE DE GESTION',
       'import_profile_id':profile.get('id'),
       'organization_id':profile.get('organization_id'),
-      'date_start':_value(row,mapping,'date_start'),
-      'date_end':_value(row,mapping,'date_end'),
+      'date_start':normalize_date_value(_raw_value(row,mapping,'date_start'),field_name='Date de début')[0] if _raw_value(row,mapping,'date_start') is not None else None,
+      'date_end':normalize_date_value(_raw_value(row,mapping,'date_end'),field_name='Date de fin')[0] if _raw_value(row,mapping,'date_end') is not None else None,
       'default_start':_value(row,mapping,'default_start'),
       'default_end':_value(row,mapping,'default_end'),
       'mode':mode,
@@ -111,11 +144,13 @@ def read_action_xlsm(file_bytes, action_no, profile, mode='INTRA'):
       for _,r in df.iterrows():
         last=_value(r,mapping,'participant_last_name');first=_value(r,mapping,'participant_first_name')
         if not last or not first:continue
-        birth=_value(r,mapping,'participant_birth_date')
+        raw_birth=_raw_value(r,mapping,'participant_birth_date')
+        birth,birth_source,birth_converted=normalize_date_value(raw_birth,field_name='Date de naissance') if raw_birth is not None else (None,None,False)
         k=(last.upper(),first.upper(),birth)
         if k in seen:continue
         seen.add(k);out.append({
           'last_name':last,'birth_name':_value(r,mapping,'participant_birth_name'),'first_name':first,'birth_date':birth,
+          '_birth_date_source':birth_source if birth_converted else None,
           'email':_value(r,mapping,'participant_email'),'employee_id':_value(r,mapping,'participant_employee_id'),
           'company_name':_value(r,mapping,'participant_company'),'phone':_value(r,mapping,'participant_phone'),'individual_action_no':action_no})
       return out

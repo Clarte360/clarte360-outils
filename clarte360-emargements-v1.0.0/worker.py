@@ -3,7 +3,7 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report
+from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report, refresh_countersign_communications, delivery_mode_label, trainer_microsoft_identity, mark_trainer_entra_identity, mark_trainer_entra_not_found, consume_pip_outbox, refresh_pip_connector_runtime_status
 from mailer import send_mail, resolve_mail_config
 from graph_client import GraphClient, graph_config_from_mapping, graph_config_missing
 
@@ -16,6 +16,54 @@ ROOT=Path(__file__).resolve().parent
 def load_cfg():
     p=ROOT/'.streamlit'/'secrets.toml'
     return tomllib.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+
+
+def _claim_communication(eng,event_id):
+    token=uuid.uuid4().hex; now=datetime.now(timezone.utc).isoformat()
+    with eng.begin() as c:
+        r=c.exec_driver_sql("UPDATE communication_events SET status='EN_FILE',claimed_at=?,claim_token=?,attempts=attempts+1,updated_at=? WHERE id=? AND status='A_ENVOYER'",(now,token,now,event_id))
+        if r.rowcount!=1:return None
+    return token
+
+def _run_communication_events(eng,smtp,base,limit=100):
+    now=datetime.now(timezone.utc).isoformat()
+    events=q(eng,"""SELECT ce.*,a.action_no,a.title,a.location,a.delivery_mode,p.first_name,p.last_name,
+      t.full_name trainer_name,s.slot_date,s.start_time,s.end_time
+      FROM communication_events ce JOIN actions a ON a.id=ce.action_id
+      LEFT JOIN participants p ON p.id=ce.participant_id LEFT JOIN trainers t ON t.id=ce.trainer_id LEFT JOIN slots s ON s.id=ce.slot_id
+      WHERE ce.status='A_ENVOYER' AND (ce.due_at IS NULL OR ce.due_at<=:n) ORDER BY COALESCE(ce.due_at,ce.created_at),ce.id LIMIT :lim""",{'n':now,'lim':limit})
+    sent=0
+    for e in events:
+        recipient=(e.get('recipient_email') or '').strip()
+        if not recipient:
+            execute(eng,"UPDATE communication_events SET status='ECHEC',last_error='Adresse email absente',updated_at=:u WHERE id=:i",{'u':now,'i':e['id']});continue
+        claim=_claim_communication(eng,e['id'])
+        if not claim:continue
+        runtime=organization_runtime_config(eng,e['action_id']);org=runtime['organization'];cfg=dict(smtp)
+        if org.get('email_from_name'):cfg['from_name']=org['email_from_name']
+        if org.get('email_from_address'):cfg['from_email']=org['email_from_address']
+        org_name=org.get('name') or 'Organisme'
+        try:
+            if e['communication_type']=='PLANNING_CONFIRMATION':
+                slots=q(eng,"SELECT slot_date,start_time,end_time FROM slots WHERE action_id=:a AND COALESCE(status,'PREVU') NOT IN ('ANNULE') ORDER BY slot_date,start_time",{'a':e['action_id']})
+                rows=''.join(f"<li>{x['slot_date']} — {x['start_time']}–{x['end_time']}</li>" for x in slots) or '<li>Planning en cours de finalisation</li>'
+                modality=delivery_mode_label(e.get('delivery_mode'))
+                subject=f"{org_name} — Confirmation de votre planning — {e['action_no']}"
+                body=f"<p>Bonjour {e.get('first_name') or ''},</p><p>Votre inscription à <strong>{e['title']}</strong> est enregistrée.</p><p><strong>Modalité :</strong> {modality}<br><strong>Lieu / précision :</strong> {e.get('location') or 'À confirmer'}</p><ul>{rows}</ul>"
+            elif e['communication_type']=='COUNTERSIGN_REQUEST':
+                direct=f"{base.rstrip('/')}?trainer_portal=1&action_id={e['action_id']}&slot_id={e['slot_id']}"
+                subject=f"{org_name} — Contresignature requise — {e['action_no']}"
+                body=f"<p>Bonjour {e.get('trainer_name') or ''},</p><p>Merci de vérifier les présences/absences et de contresigner le créneau du <strong>{e.get('slot_date')} de {e.get('start_time')} à {e.get('end_time')}</strong>.</p><p><a href='{direct}'>OUVRIR LA CONTRESIGNATURE</a></p><p>La page est utilisable sur ordinateur, tablette et smartphone.</p>"
+            else:
+                execute(eng,"UPDATE communication_events SET status='ANNULE',claim_token=NULL,last_error='Type de communication non géré par le worker',updated_at=:u WHERE id=:i AND claim_token=:c",{'u':now,'i':e['id'],'c':claim});continue
+            send_mail(cfg,recipient,subject,body)
+            at=datetime.now(timezone.utc).isoformat()
+            execute(eng,"UPDATE communication_events SET status='ENVOYE',sent_at=:at,claim_token=NULL,claimed_at=NULL,last_error=NULL,updated_at=:at WHERE id=:i AND claim_token=:c",{'at':at,'i':e['id'],'c':claim})
+            audit(eng,'COMMUNICATION_SENT',e['action_id'],'worker','communication_event',e['id'],{'type':e['communication_type'],'recipient':recipient});sent+=1
+        except Exception as ex:
+            execute(eng,"UPDATE communication_events SET status='ECHEC',claim_token=NULL,claimed_at=NULL,last_error=:er,updated_at=:u WHERE id=:i AND claim_token=:c",{'er':str(ex)[:500],'u':datetime.now(timezone.utc).isoformat(),'i':e['id'],'c':claim})
+            audit(eng,'COMMUNICATION_FAILED',e['action_id'],'worker','communication_event',e['id'],{'type':e['communication_type'],'recipient':recipient,'error':str(ex)[:300]})
+    return sent
 
 def _claim_event(eng, event_id):
     token=uuid.uuid4().hex; now=datetime.now(timezone.utc).isoformat()
@@ -180,34 +228,51 @@ def _process_portal_retention(eng,smtp,base,warning_days=30):
 
 
 def _sync_teams_trainer_identities(eng, client, action_id, base_url):
-    """Resolve internal users and invite external trainers when configured.
+    """Resolve existing Entra identities first; never create a Guest silently.
 
-    Advanced presenter/co-organizer roles require an Entra identity. External users are
-    therefore invited as B2B Guests only when the tenant configuration explicitly allows it.
+    A Guest invitation is only emitted after an explicit administrator request stored on
+    the permanent trainer record. Before that invitation the worker searches Entra again,
+    which prevents duplicate Microsoft identities.
     """
     roles=teams_roles(eng,action_id)
-    organizer=(client.cfg.get('organizer_upn') or '').lower()
-    org_domain=organizer.split('@',1)[1] if '@' in organizer else ''
+    seen_trainers=set()
     for role in roles:
-        if role.get('entra_user_id'):
+        tid=role.get('trainer_id')
+        if not tid or tid in seen_trainers:
             continue
-        email=(role.get('email') or '').strip().lower()
+        seen_trainers.add(tid)
+        t=trainer_microsoft_identity(eng,tid) or {}
+        email=(t.get('microsoft_email') or t.get('email') or role.get('email') or '').strip().lower()
         if not email:
             continue
         try:
-            # Internal tenant account: resolve directly. This path needs User.Read.All.
-            if org_domain and email.endswith('@'+org_domain):
-                user=client.get_user(email)
-                execute(eng,"UPDATE teams_participant_roles SET entra_user_id=:u,guest_status='NOT_REQUIRED',updated_at=:n WHERE id=:i",{'u':user.get('id'),'n':datetime.now(timezone.utc).isoformat(),'i':role['id']})
+            # Always search before any creation attempt.
+            user=client.find_user_by_email(email)
+            if user:
+                mark_trainer_entra_identity(eng,tid,user,'worker')
+                continue
+            mark_trainer_entra_not_found(eng,tid,'worker')
+            requested=bool(t.get('entra_creation_requested_at')) or str(t.get('entra_status') or '').upper()=='CREATION_REQUESTED'
+            if not requested:
                 continue
             if not client.cfg.get('guest_invites_enabled'):
-                execute(eng,"UPDATE teams_participant_roles SET guest_status='INVITE_DISABLED',updated_at=:n WHERE id=:i",{'n':datetime.now(timezone.utc).isoformat(),'i':role['id']})
+                execute(eng,"UPDATE trainers SET entra_status='CREATION_BLOCKED' WHERE id=:i",{'i':tid})
+                audit(eng,'TRAINER_ENTRA_CREATION_BLOCKED',action_id,'worker','trainer',tid,{'reason':'guest_invites_disabled'})
                 continue
-            inv=client.invite_guest(email,base_url,True,role.get('display_name'))
-            mark_teams_guest_invitation(eng,role['id'],inv,'worker')
+            # Search once more immediately before the write operation.
+            user=client.find_user_by_email(email)
+            if user:
+                mark_trainer_entra_identity(eng,tid,user,'worker')
+                continue
+            inv=client.invite_guest(email,base_url,True,t.get('full_name') or role.get('display_name'))
+            invited=(inv or {}).get('invitedUser') or {}
+            if invited.get('id'):
+                mark_trainer_entra_identity(eng,tid,invited,'worker')
+                execute(eng,"UPDATE trainers SET entra_status='INVITED' WHERE id=:i",{'i':tid})
+                audit(eng,'TRAINER_ENTRA_GUEST_INVITED',action_id,'worker','trainer',tid,{'email':email})
         except Exception as ex:
-            execute(eng,"UPDATE teams_participant_roles SET guest_status='ERROR',updated_at=:n WHERE id=:i",{'n':datetime.now(timezone.utc).isoformat(),'i':role['id']})
-            audit(eng,'TEAMS_IDENTITY_SYNC_FAILED',action_id,'worker','teams_participant_role',role['id'],{'error':str(ex)[:500]})
+            execute(eng,"UPDATE trainers SET entra_status='ERROR',entra_last_verified_at=:n WHERE id=:i",{'n':datetime.now(timezone.utc).isoformat(),'i':tid})
+            audit(eng,'TEAMS_IDENTITY_SYNC_FAILED',action_id,'worker','trainer',tid,{'error':str(ex)[:500]})
 
 
 def _apply_teams_advanced_roles(eng, client, action_id):
@@ -278,7 +343,16 @@ def run_once():
     _quarantine_stale_client_transmissions(eng)
     generate_due_final_bundles(eng,'worker')
     teams_changed=_process_teams(eng,cfg,base)
-    if not smtp.get('enabled'): return teams_changed
+    pip_cfg=cfg.get('pip_connector') or {}
+    refresh_pip_connector_runtime_status(eng,pip_cfg.get('launch_signing_key'),pip_cfg.get('outbox_path'),'worker')
+    pip_changed=0
+    outbox_path=(pip_cfg.get('outbox_path') or '').strip()
+    if outbox_path:
+        try:
+            pip_changed=consume_pip_outbox(eng,outbox_path,actor='worker').get('processed',0)
+        except Exception as ex:
+            audit(eng,'PIP_CONNECTOR_FAILED',actor='worker',entity_type='connector',details={'error':str(ex)[:500]})
+    if not smtp.get('enabled'): return teams_changed + pip_changed
     _process_portal_retention(eng,smtp,base)
     now=datetime.now(timezone.utc).isoformat()
     # Ne pas filtrer les candidats sur due_at avant le garde-fou métier :
@@ -327,7 +401,8 @@ def run_once():
             execute(eng,"UPDATE email_events SET status='PENDING',claim_token=NULL,claimed_at=NULL,last_error=:er WHERE id=:id AND claim_token=:c",{'er':str(ex)[:500],'id':e['id'],'c':claim})
     sent += _run_quality_events(eng,smtp,base)
     sent += _run_client_transmissions(eng,smtp)
-    return sent + teams_changed
+    sent += _run_communication_events(eng,smtp,base)
+    return sent + teams_changed + pip_changed
 
 if __name__=='__main__':
     print('Clarté360 worker démarré')
