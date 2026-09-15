@@ -1,6 +1,6 @@
 from __future__ import annotations
 import io, os, json, csv, base64, re
-from datetime import date, datetime, time
+from datetime import date, datetime, time as dt_time
 from pathlib import Path
 from urllib.parse import quote
 import pandas as pd
@@ -557,8 +557,8 @@ def render_trainer_action(action, trainer):
                 with st.form(f'tr_plan_edit_form_{es["id"]}'):
                     c1,c2,c3=st.columns(3)
                     nd=c1.date_input('Nouvelle date',value=date.fromisoformat(es['slot_date']))
-                    ns=c2.time_input('Nouveau début',value=time.fromisoformat(es['start_time']))
-                    ne=c3.time_input('Nouvelle fin',value=time.fromisoformat(es['end_time']))
+                    ns=c2.time_input('Nouveau début',value=dt_time.fromisoformat(es['start_time']))
+                    ne=c3.time_input('Nouvelle fin',value=dt_time.fromisoformat(es['end_time']))
                     save_plan=st.form_submit_button('Enregistrer ce déplacement',type='primary')
                 if save_plan:
                     ok,msg=trainer_update_slot(ENGINE,tid,es['id'],nd.isoformat(),ns.strftime('%H:%M'),ne.strftime('%H:%M'),actor,base_url=BASE_URL)
@@ -571,8 +571,8 @@ def render_trainer_action(action, trainer):
                 with st.expander('📅 Reporter ce créneau'):
                     c1,c2,c3=st.columns(3)
                     rd=c1.date_input('Date du report',value=date.fromisoformat(es['slot_date']),key=f'tr_rep_d_{es["id"]}')
-                    rs=c2.time_input('Début du report',value=time.fromisoformat(es['start_time']),key=f'tr_rep_s_{es["id"]}')
-                    re_=c3.time_input('Fin du report',value=time.fromisoformat(es['end_time']),key=f'tr_rep_e_{es["id"]}')
+                    rs=c2.time_input('Début du report',value=dt_time.fromisoformat(es['start_time']),key=f'tr_rep_s_{es["id"]}')
+                    re_=c3.time_input('Fin du report',value=dt_time.fromisoformat(es['end_time']),key=f'tr_rep_e_{es["id"]}')
                     reason=st.text_input('Motif du report',key=f'tr_rep_reason_{es["id"]}')
                     if st.button('Reporter cette séance',key=f'tr_rep_btn_{es["id"]}'):
                         nsid,msg=trainer_report_slot(ENGINE,tid,es['id'],rd.isoformat(),rs.strftime('%H:%M'),re_.strftime('%H:%M'),actor,reason or 'Report intervenant',base_url=BASE_URL)
@@ -586,8 +586,8 @@ def render_trainer_action(action, trainer):
                     with st.form(f'tr_plan_add_{aid}'):
                         c1,c2,c3=st.columns(3)
                         ad=c1.date_input('Date',value=date.today(),key=f'tr_add_d_{aid}')
-                        ast=c2.time_input('Début',value=time(9,0),key=f'tr_add_s_{aid}')
-                        aet=c3.time_input('Fin',value=time(10,30),key=f'tr_add_e_{aid}')
+                        ast=c2.time_input('Début',value=dt_time(9,0),key=f'tr_add_s_{aid}')
+                        aet=c3.time_input('Fin',value=dt_time(10,30),key=f'tr_add_e_{aid}')
                         add_plan=st.form_submit_button('Ajouter cette séance')
                     if add_plan:
                         nsid,msg=trainer_add_slot(ENGINE,tid,aid,ad.isoformat(),ast.strftime('%H:%M'),aet.strftime('%H:%M'),actor,base_url=BASE_URL)
@@ -2197,8 +2197,8 @@ def calendar_tab(a):
 
     st.markdown('### Ajouter une nouvelle séance')
     last_date=date.fromisoformat(slots[-1]['slot_date']) if slots else date.today()
-    last_start=time.fromisoformat(slots[-1]['start_time']) if slots else time(9,0)
-    last_end=time.fromisoformat(slots[-1]['end_time']) if slots else time(10,30)
+    last_start=dt_time.fromisoformat(slots[-1]['start_time']) if slots else dt_time(9,0)
+    last_end=dt_time.fromisoformat(slots[-1]['end_time']) if slots else dt_time(10,30)
     with st.form(f'addslot_{a["id"]}',clear_on_submit=False):
         c1,c2,c3=st.columns(3)
         d=c1.date_input('Date de la nouvelle séance',value=last_date,key=f'd{a["id"]}')
@@ -2244,7 +2244,7 @@ def calendar_tab(a):
         st.warning(f"Vous modifiez réellement {edit_lab}. Pour créer une autre séance, utilisez la zone « Ajouter une nouvelle séance » ci-dessus.")
         current_begin=int(es.get('send_offset_min') or 0)==slot_start_offset_minutes(es['start_time'],es['end_time'])
         with st.form(f'editslot{es["id"]}'):
-            c1,c2,c3=st.columns(3);ed=c1.date_input('Date',value=date.fromisoformat(es['slot_date']));est=c2.time_input('Début',value=time.fromisoformat(es['start_time']));eet=c3.time_input('Fin',value=time.fromisoformat(es['end_time']))
+            c1,c2,c3=st.columns(3);ed=c1.date_input('Date',value=date.fromisoformat(es['slot_date']));est=c2.time_input('Début',value=dt_time.fromisoformat(es['start_time']));eet=c3.time_input('Fin',value=dt_time.fromisoformat(es['end_time']))
             c1,c2=st.columns(2)
             edit_send_mode=c1.selectbox('Envoi initial',['Au début du créneau','Personnalisé'],index=0 if current_begin else 1)
             esend=c2.number_input('Décalage personnalisé (min / fin)',min_value=-1440,max_value=1440,value=int(es['send_offset_min']),step=5,disabled=edit_send_mode!='Personnalisé')
@@ -2265,7 +2265,7 @@ def calendar_tab(a):
     with st.expander('📅 Reporter une séance non encore réalisée',expanded=False):
         rep_choices={f"Séance {i} — {x['slot_date']} {x['start_time']}–{x['end_time']}":x for i,x in enumerate(slots,1)}
         rep_lab=st.selectbox('Séance à reporter',list(rep_choices),key=f'repsel{a["id"]}');rsrc=rep_choices[rep_lab]
-        c1,c2,c3=st.columns(3);rpd=c1.date_input('Nouvelle date',value=date.fromisoformat(rsrc['slot_date']),key=f'rpd{rsrc["id"]}');rps=c2.time_input('Nouveau début',value=time.fromisoformat(rsrc['start_time']),key=f'rps{rsrc["id"]}');rpe=c3.time_input('Nouvelle fin',value=time.fromisoformat(rsrc['end_time']),key=f'rpe{rsrc["id"]}')
+        c1,c2,c3=st.columns(3);rpd=c1.date_input('Nouvelle date',value=date.fromisoformat(rsrc['slot_date']),key=f'rpd{rsrc["id"]}');rps=c2.time_input('Nouveau début',value=dt_time.fromisoformat(rsrc['start_time']),key=f'rps{rsrc["id"]}');rpe=c3.time_input('Nouvelle fin',value=dt_time.fromisoformat(rsrc['end_time']),key=f'rpe{rsrc["id"]}')
         rpr=st.text_input('Motif du report',key=f'rpr{rsrc["id"]}')
         if st.button('REPORTER CETTE SÉANCE',key=f'report{rsrc["id"]}'):
             ns=report_slot(ENGINE,rsrc['id'],rpd.isoformat(),rps.strftime('%H:%M'),rpe.strftime('%H:%M'),st.session_state.admin_email,rpr or 'Report')
@@ -2408,7 +2408,7 @@ def tracking_tab(a):
             else: st.error(msga)
         if c2.button('Remettre EN ATTENTE',key=f'wait{a["id"]}'): set_attendance_status(ENGINE,pp['id'],ss['id'],'EN_ATTENTE',reason,st.session_state.admin_email);rerun()
         st.markdown('### Créer une séance de rattrapage')
-        absent=q(ENGINE,"""SELECT p.* FROM attendance_status x JOIN participants p ON p.id=x.participant_id WHERE x.slot_id=:s AND x.status='ABSENT'""",{'s':ss['id']});opts={f"{p['last_name']} {p['first_name']}":p['id'] for p in absent};sel=st.multiselect('Absents concernés',list(opts),default=list(opts));c1,c2,c3=st.columns(3);rd=c1.date_input('Date du rattrapage',key=f'rd{a["id"]}');rs=c2.time_input('Début rattrapage',value=time(9,0),key=f'rs{a["id"]}');re=c3.time_input('Fin rattrapage',value=time(12,0),key=f're{a["id"]}')
+        absent=q(ENGINE,"""SELECT p.* FROM attendance_status x JOIN participants p ON p.id=x.participant_id WHERE x.slot_id=:s AND x.status='ABSENT'""",{'s':ss['id']});opts={f"{p['last_name']} {p['first_name']}":p['id'] for p in absent};sel=st.multiselect('Absents concernés',list(opts),default=list(opts));c1,c2,c3=st.columns(3);rd=c1.date_input('Date du rattrapage',key=f'rd{a["id"]}');rs=c2.time_input('Début rattrapage',value=dt_time(9,0),key=f'rs{a["id"]}');re=c3.time_input('Fin rattrapage',value=time(12,0),key=f're{a["id"]}')
         if st.button('Créer le créneau de rattrapage',key=f'catch{a["id"]}'):
             if not sel: st.error('Sélectionnez au moins un participant absent.')
             else: ns=create_catchup_slot(ENGINE,ss['id'],rd.isoformat(),rs.strftime('%H:%M'),re.strftime('%H:%M'),[opts[x] for x in sel],st.session_state.admin_email);ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success(f'Rattrapage créé : créneau #{ns}.');rerun()

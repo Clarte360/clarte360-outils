@@ -375,3 +375,9 @@ Voir `INCREMENT_V3_I9_H2_3_TEAMS_PREUVES_UX.md`.
 
 ## 3.0.0-I9-H2.4 — 2026-09-15
 Voir `INCREMENT_V3_I9_H2_4_CONTRESIGNATURE_DOCUMENTS_ERGONOMIE.md`.
+
+## 3.0.0-I9-H2.5 — Correctif calendrier / collision `time`
+- Correction d'un crash global de la fiche action provoqué par la collision entre `datetime.time` et le module standard `time` réexporté par `from services import *`.
+- Le calendrier utilise désormais explicitement `dt_time` pour les champs horaires et `fromisoformat`.
+- Ce correctif rétablit Calendrier et, par effet de bord Streamlit, les onglets suivants qui pouvaient sembler indisponibles (notamment Teams).
+- Ajout d'un test de non-régression dédié.
