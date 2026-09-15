@@ -1,3 +1,14 @@
+## 3.0.0-I9-H2.8 — Consolidation ergonomie / outils / qualité / robustesse
+
+- Isolation de chaque onglet administrateur : une panne locale ne bloque plus les onglets suivants et les incidents sont journalisés avec leur contexte réel.
+- Espace intervenant : aucune action présent/absent/relance n'est proposée si la signature du participant existe déjà ; les relances admin sont également bloquées sur un émargement déjà signé.
+- Outils Clarté360 : liste d'outils autorisés explicitement au niveau de l'action, utilisée par l'intervenant ; doublons de prescription interdits ; suppression logique possible uniquement par le créateur de la prescription.
+- Teams : ajout/modification/suppression d'un créneau recalcule immédiatement les occurrences Teams côté Gestion des Actions, en plus de la file de synchronisation Graph.
+- Qualité : tableau de bord hiérarchisé (global -> thème -> action), détail des questions masqué par défaut, traitement/historique des signalements intervenants et bénéficiaires avec réponse administrative.
+- Portail bénéficiaire : nouvel onglet Signaler / informer avec historique et réponse de l'administration.
+- Calendrier : le champ personnalisé n'affiche plus -10 par défaut lorsqu'il est inactif.
+- Version affichée : 3.0.0-I9-H2.8.
+
 ## 3.0.0-I9-H2.6 — Correctif Teams preuves / helper durée
 
 - Correction du crash `NameError: _duration_hms is not defined` dans l’onglet Teams : import explicite du helper privé depuis `services`.

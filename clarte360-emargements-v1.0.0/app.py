@@ -647,27 +647,31 @@ def render_trainer_action(action, trainer):
             parts2,rows=_trainer_slot_status_rows(aid,sl['id']); st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
             if parts2:
                 pmap={f"{p['last_name']} {p['first_name']}":p for p in parts2}; pp=pmap[st.selectbox('Participant à gérer',list(pmap),key=f'tr_part_{aid}_{sl["id"]}') ]
-                st.markdown('**Participant sans signature : était-il présent ?**')
-                c1,c2=st.columns(2)
-                if c1.button('OUI — PRÉSENT, À RÉGULARISER',key=f'tr_present_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
-                    ok,msg=set_attendance_status(ENGINE,pp['id'],sl['id'],'PRESENT_REGULARISE','Présence attestée par intervenant — signature bénéficiaire à régulariser',actor)
-                    if ok: st.success('Présence attestée. La signature bénéficiaire reste à régulariser.'); rerun()
-                    else: st.error(msg)
-                if c2.button('NON — ABSENT',key=f'tr_abs_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
-                    ok,msg=set_attendance_status(ENGINE,pp['id'],sl['id'],'ABSENT','Déclaré absent par intervenant',actor)
-                    if ok: st.success('Absence enregistrée.'); rerun()
-                    else: st.error(msg)
-                contact=[]
-                if pp.get('phone'): contact.append(f"📞 {pp['phone']}")
-                if pp.get('email'): contact.append(f"✉️ {pp['email']}")
-                if contact: st.caption('Contact : '+' · '.join(contact))
-                if pp.get('phone'): st.link_button('📞 APPELER LE PARTICIPANT',f"tel:{pp['phone']}",use_container_width=True)
-                if st.button('✉️ RELANCER LA SIGNATURE PAR EMAIL',key=f'tr_rem_{aid}_{sl["id"]}_{pp["id"]}',disabled=not bool(pp.get('email')),use_container_width=True):
-                    ensure_tokens_and_events(ENGINE,aid,BASE_URL,TZ); url=token_url(ENGINE,pp['id'],sl['id'],BASE_URL); cfg=mail_cfg(); org=org_identity(aid)
-                    body=f"<p>Bonjour {pp['first_name']},</p><p>Merci de régulariser votre émargement pour le {sl['slot_date']} de {sl['start_time']} à {sl['end_time']}.</p><p><a href='{url}'>SIGNER / RÉGULARISER</a></p>{privacy_notice_html(aid)}"
-                    try:
-                        send_mail(cfg,pp['email'],f"{org.get('name') or 'Organisme'} — émargement — {a['action_no']}",body); audit(ENGINE,'TRAINER_MANUAL_REMINDER',aid,actor,'participant',pp['id'],{'slot_id':sl['id']}); st.success('Relance envoyée.')
-                    except Exception as ex: st.error(f'Envoi impossible : {friendly_mail_error(ex)}')
+                sig_now=one(ENGINE,"SELECT id,signed_at FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':pp['id'],'s':sl['id']})
+                if sig_now:
+                    st.success('Signature déjà enregistrée pour ce participant sur ce créneau. Aucune relance ni changement de présence n’est nécessaire.')
+                else:
+                    st.markdown('**Participant sans signature : était-il présent ?**')
+                    c1,c2=st.columns(2)
+                    if c1.button('OUI — PRÉSENT, À RÉGULARISER',key=f'tr_present_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
+                        ok,msg=set_attendance_status(ENGINE,pp['id'],sl['id'],'PRESENT_REGULARISE','Présence attestée par intervenant — signature bénéficiaire à régulariser',actor)
+                        if ok: st.success('Présence attestée. La signature bénéficiaire reste à régulariser.'); rerun()
+                        else: st.error(msg)
+                    if c2.button('NON — ABSENT',key=f'tr_abs_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
+                        ok,msg=set_attendance_status(ENGINE,pp['id'],sl['id'],'ABSENT','Déclaré absent par intervenant',actor)
+                        if ok: st.success('Absence enregistrée.'); rerun()
+                        else: st.error(msg)
+                    contact=[]
+                    if pp.get('phone'): contact.append(f"📞 {pp['phone']}")
+                    if pp.get('email'): contact.append(f"✉️ {pp['email']}")
+                    if contact: st.caption('Contact : '+' · '.join(contact))
+                    if pp.get('phone'): st.link_button('📞 APPELER LE PARTICIPANT',f"tel:{pp['phone']}",use_container_width=True)
+                    if st.button('✉️ RELANCER LA SIGNATURE PAR EMAIL',key=f'tr_rem_{aid}_{sl["id"]}_{pp["id"]}',disabled=not bool(pp.get('email')),use_container_width=True):
+                        ensure_tokens_and_events(ENGINE,aid,BASE_URL,TZ); url=token_url(ENGINE,pp['id'],sl['id'],BASE_URL); cfg=mail_cfg(); org=org_identity(aid)
+                        body=f"<p>Bonjour {pp['first_name']},</p><p>Merci de régulariser votre émargement pour le {sl['slot_date']} de {sl['start_time']} à {sl['end_time']}.</p><p><a href='{url}'>SIGNER / RÉGULARISER</a></p>{privacy_notice_html(aid)}"
+                        try:
+                            send_mail(cfg,pp['email'],f"{org.get('name') or 'Organisme'} — émargement — {a['action_no']}",body); audit(ENGINE,'TRAINER_MANUAL_REMINDER',aid,actor,'participant',pp['id'],{'slot_id':sl['id']}); st.success('Relance envoyée.')
+                        except Exception as ex: st.error(f'Envoi impossible : {friendly_mail_error(ex)}')
             st.markdown('#### Contresignature du créneau')
             existing=list_slot_countersignatures(ENGINE,sl['id'])
             for cs in existing:
@@ -736,9 +740,9 @@ def render_trainer_action(action, trainer):
             linked=q(ENGINE,"""SELECT p.id participant_id,b.id beneficiary_id,b.public_id,b.first_name,b.last_name
               FROM participants p JOIN beneficiaries b ON b.id=p.beneficiary_id
               WHERE p.action_id=:a AND p.active=1 AND b.active=1 ORDER BY b.last_name,b.first_name""",{'a':aid})
-            tools=list_tool_catalog(ENGINE,active_only=True,prescription_only=True,prestation_type=a.get('prestation_type') or a.get('nature'))
+            tools=action_allowed_tools(ENGINE,aid)
             if not linked: st.warning('Les outils sont disponibles, mais aucun participant de cette action n’est encore rattaché à une identité bénéficiaire permanente. L’administrateur doit effectuer ce rattachement avant toute prescription.')
-            elif not tools: st.warning('Aucun outil prescriptible compatible avec cette prestation.')
+            elif not tools: st.warning("Aucun outil n'a été autorisé par l'administrateur pour cette action.")
             else:
                 bmap={f"{x['last_name']} {x['first_name']} — {x['public_id']}":x for x in linked}
                 tmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in tools}
@@ -751,9 +755,17 @@ def render_trainer_action(action, trainer):
                         pr=create_tool_prescription(ENGINE,tx['tool_code'],bx['beneficiary_id'],aid,bx['participant_id'],prescriber_type='TRAINER',prescriber_id=tid,prescriber_role='INTERVENANT',due_at=due.isoformat() if due else None,actor=actor)
                         st.success(f"Prescription créée : {pr['prescription_id']}"); rerun()
                     except ValueError as ex: st.error(str(ex))
-            hist=list_tool_prescriptions(ENGINE,action_id=aid,trainer_id=tid)
+            hist=[x for x in list_tool_prescriptions(ENGINE,action_id=aid,trainer_id=tid) if x.get('status')!='ANNULE']
             if hist:
-                st.dataframe(pd.DataFrame([{'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or '','Statut':x['status'].replace('_',' ')} for x in hist]),use_container_width=True,hide_index=True)
+                st.dataframe(pd.DataFrame([{'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Moi' if (x.get('prescriber_type')=='TRAINER' and str(x.get('prescriber_id'))==str(tid)) else 'Autre utilisateur','Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or '','Statut':x['status'].replace('_',' ')} for x in hist]),use_container_width=True,hide_index=True)
+                hmap={f"{x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']} — {x['prescription_id']}":x for x in hist}
+                hh=hmap[st.selectbox('Prescription existante',list(hmap),key=f'tr_tool_existing_{aid}')]
+                owns=(hh.get('prescriber_type')=='TRAINER' and str(hh.get('prescriber_id'))==str(tid))
+                if st.button('SUPPRIMER MA PRESCRIPTION',key=f'tr_tool_cancel_{hh["id"]}',disabled=not owns):
+                    ok,msg=cancel_tool_prescription_owned(ENGINE,hh['prescription_id'],'TRAINER',tid,actor)
+                    if ok: st.success('Prescription supprimée de votre liste active et conservée dans la piste d’audit.');rerun()
+                    else: st.warning(msg)
+                if not owns: st.caption('Cette prescription a été créée par un autre utilisateur : vous ne pouvez pas la supprimer.')
 
     with tab_quality:
         camp=one(ENGINE,"""SELECT qc.*,qt.title questionnaire_title FROM quality_campaigns qc JOIN questionnaire_templates qt ON qt.id=qc.template_id
@@ -788,7 +800,7 @@ def render_trainer_action(action, trainer):
         history=trainer_reports(ENGINE,aid,tid)
         if history:
             st.markdown('#### Mes transmissions récentes')
-            st.dataframe(pd.DataFrame([{'Date':x['created_at'][:16].replace('T',' '),'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status']} for x in history]),use_container_width=True,hide_index=True)
+            st.dataframe(pd.DataFrame([{'Date':x['created_at'][:16].replace('T',' '),'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status'].replace('_',' '),'Réponse administration':x.get('admin_response') or ''} for x in history]),use_container_width=True,hide_index=True)
 
 def trainer_portal_page():
     _restore_trainer_session()
@@ -930,7 +942,7 @@ def beneficiary_portal_page():
     completed=q(ENGINE,"""SELECT qc.*,a.action_no,a.title action_title,qt.title FROM quality_campaigns qc JOIN actions a ON a.id=qc.action_id JOIN questionnaire_templates qt ON qt.id=qc.template_id
       WHERE qc.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) AND qc.status='COMPLETED' ORDER BY COALESCE(qc.completed_at,qc.created_at) DESC""",{'b':bid})
     prescriptions=list_tool_prescriptions(ENGINE,beneficiary_id=bid,include_cancelled=False)
-    tabs=st.tabs(['🏠 Accueil','🎓 Mes formations / accompagnements','📅 Mon planning','💻 Mes réunions Teams','🧭 Mes outils Clarté360','📄 Mes documents administratifs','📚 Documents de cours','✅ Mes questionnaires / actions','✍️ Mes émargements','🗂️ Mes archives / téléchargements'])
+    tabs=st.tabs(['🏠 Accueil','🎓 Mes formations / accompagnements','📅 Mon planning','💻 Mes réunions Teams','🧭 Mes outils Clarté360','📄 Mes documents administratifs','📚 Documents de cours','✅ Mes questionnaires / actions','✍️ Mes émargements','📣 Signaler / informer','🗂️ Mes archives / téléchargements'])
     with tabs[0]:
         st.metric('Parcours enregistrés',len(acts));st.metric('Documents disponibles',len(docs));st.metric('Actions à réaliser',len(pending))
         if acts: st.dataframe(pd.DataFrame([{'Action':a['action_no'],'Intitulé':a['title'],'Prestation':a.get('prestation_type') or a.get('nature'),'Début':a.get('start_date') or '','Fin':a.get('end_date') or '','Statut':normalize_action_status(a.get('status'))} for a in acts]),use_container_width=True,hide_index=True)
@@ -1044,6 +1056,32 @@ def beneficiary_portal_page():
             st.divider()
 
     with tabs[9]:
+        st.caption("Vous pouvez transmettre une observation, une difficulté, un incident, un problème logistique ou une demande de contact à l'administration. Votre historique reste visible après traitement.")
+        if acts:
+            amap={f"{aa['action_no']} — {aa['title']}":aa for aa in acts}
+            with st.form('beneficiary_report_form',clear_on_submit=True):
+                al=st.selectbox('Action concernée',list(amap),key='benef_report_action'); aa=amap[al]
+                rt=st.selectbox('Nature',['Observation','Difficulté','Incident','Problème logistique','Besoin de contact','Autre'],key='benef_report_type')
+                subject=st.text_input('Objet *',key='benef_report_subject'); desc=st.text_area('Description *',height=150,key='benef_report_desc')
+                qrel=st.checkbox('Ce signalement doit également alimenter le suivi qualité',value=rt in ('Difficulté','Incident','Problème logistique'),key='benef_report_quality')
+                up=st.file_uploader('Joindre éventuellement un document (10 Mo max)',type=['pdf','docx','xlsx','png','jpg','jpeg','txt','json'],key='benef_report_file')
+                submit=st.form_submit_button('TRANSMETTRE À L’ADMINISTRATION',type='primary')
+            if submit:
+                if not subject.strip() or not desc.strip(): st.error('Objet et description sont obligatoires.')
+                elif up is not None and up.size>10*1024*1024: st.error('Le fichier dépasse 10 Mo.')
+                else:
+                    ap=an=None
+                    if up is not None:
+                        safe=re.sub(r'[^A-Za-z0-9._-]+','_',up.name)[:120]; an=up.name; ap=str(TRAINER_REPORT_DIR/f"benef_{aa['id']}_{bid}_{int(datetime.now().timestamp())}_{safe}"); Path(ap).write_bytes(up.getvalue())
+                    rid=create_beneficiary_report(ENGINE,aa['id'],bid,rt,subject.strip(),desc.strip(),qrel,ap,an)
+                    if rid: st.success("Votre signalement a été transmis à l'administration et journalisé."); rerun()
+                    else: st.error('Transmission impossible pour cette action.')
+        hist=beneficiary_reports(ENGINE,beneficiary_id=bid)
+        if hist:
+            st.markdown('#### Mes signalements')
+            st.dataframe(pd.DataFrame([{'Date':x['created_at'][:16].replace('T',' '),'Action':x['action_no'],'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status'].replace('_',' '),'Réponse administration':x.get('admin_response') or ''} for x in hist]),use_container_width=True,hide_index=True)
+        else: st.info('Aucun signalement transmis.')
+    with tabs[10]:
         st.caption('Vous pouvez télécharger à tout moment une copie des documents actuellement mis à disposition dans votre portail.')
         z=beneficiary_portal_zip(ENGINE,bid)
         st.download_button('TÉLÉCHARGER MON ESPACE EN ZIP',z,file_name=f"{b['public_id']}_ESPACE_CLARTE360.zip",mime='application/zip',type='primary')
@@ -1615,18 +1653,14 @@ def action_detail(aid):
         else: st.info(flash[2])
     c1,c2,c3,c4=st.columns(4);c1.metric('Participants',pr['participants']);c2.metric('Créneaux',pr['slots']);c3.metric('Signatures',f"{pr['signed']}/{pr['expected']}");c4.metric('Avancement',f"{pr['percent']} %")
     tabs=st.tabs(['Paramètres action','Participants','Intervenants','Calendrier','Teams','Outils Clarté360','Contractualisation','Envois & relances','Suivi','Qualité','Documents','Journal'])
-    with tabs[0]: action_settings_tab(a)
-    with tabs[1]: participants_tab(a)
-    with tabs[2]: action_trainers_tab(a)
-    with tabs[3]: calendar_tab(a)
-    with tabs[4]: teams_tab(a)
-    with tabs[5]: action_tools_tab(a)
-    with tabs[6]: contractualization_tab(a)
-    with tabs[7]: dispatch_tab(a)
-    with tabs[8]: tracking_tab(a)
-    with tabs[9]: quality_tab(a)
-    with tabs[10]: documents_tab(a)
-    with tabs[11]: audit_tab(a)
+    tab_specs=[
+        ('action_parametres', action_settings_tab),('action_participants', participants_tab),('action_intervenants', action_trainers_tab),
+        ('action_calendrier', calendar_tab),('action_teams', teams_tab),('action_outils', action_tools_tab),
+        ('action_contractualisation', contractualization_tab),('action_envois', dispatch_tab),('action_suivi', tracking_tab),
+        ('action_qualite', quality_tab),('action_documents', documents_tab),('action_journal', audit_tab)]
+    for tab,(ctx,fn) in zip(tabs,tab_specs):
+        with tab:
+            _run_ui_module(ctx,lambda fn=fn: fn(a),action_id=a['id'])
 
 def action_settings_tab(a):
     st.subheader('Paramètres de l’action')
@@ -1685,8 +1719,21 @@ def action_tools_tab(a):
     st.caption("Le catalogue est générique : Gestion des Actions orchestre les accès sans recopier les moteurs métier des outils.")
     linked=q(ENGINE,"""SELECT p.id participant_id,b.id beneficiary_id,b.public_id,b.first_name,b.last_name
       FROM participants p JOIN beneficiaries b ON b.id=p.beneficiary_id WHERE p.action_id=:a AND p.active=1 AND b.active=1 ORDER BY b.last_name,b.first_name""",{'a':a['id']})
-    tools=list_tool_catalog(ENGINE,active_only=True,prescription_only=True,prestation_type=a.get('prestation_type') or a.get('nature'))
-    c1,c2,c3=st.columns(3);c1.metric('Bénéficiaires rattachés',len(linked));c2.metric('Outils compatibles',len(tools));c3.metric('Prescriptions',len(list_tool_prescriptions(ENGINE,action_id=a['id'])))
+    compatible_tools=list_tool_catalog(ENGINE,active_only=True,prescription_only=True,prestation_type=a.get('prestation_type') or a.get('nature'))
+    allowed_tools=action_allowed_tools(ENGINE,a['id'])
+    with st.expander('Outils autorisés sur cette action',expanded=not bool(allowed_tools)):
+        st.caption("L'administrateur choisit ici les outils que les intervenants autorisés pourront prescrire dans cette action. Le catalogue global reste inchangé.")
+        cmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in compatible_tools}
+        current_codes={x['tool_code'] for x in allowed_tools}
+        defaults=[label for label,x in cmap.items() if x['tool_code'] in current_codes]
+        selected=st.multiselect('Outils disponibles pour cette action',list(cmap),default=defaults,key=f'action_tools_allow_{a["id"]}')
+        if st.button('ENREGISTRER LES OUTILS DE L’ACTION',key=f'action_tools_allow_save_{a["id"]}',type='primary'):
+            wanted={cmap[x]['tool_code'] for x in selected}
+            for tx in compatible_tools:
+                set_action_tool_allowed(ENGINE,a['id'],tx['tool_code'],tx['tool_code'] in wanted,st.session_state.admin_email)
+            st.success('Liste des outils autorisés enregistrée.'); rerun()
+    tools=action_allowed_tools(ENGINE,a['id'])
+    c1,c2,c3=st.columns(3);c1.metric('Bénéficiaires rattachés',len(linked));c2.metric('Outils autorisés',len(tools));c3.metric('Prescriptions',len([x for x in list_tool_prescriptions(ENGINE,action_id=a['id']) if x.get('status')!='ANNULE']))
     if linked and tools:
         bmap={f"{x['last_name']} {x['first_name']} — {x['public_id']}":x for x in linked}; tmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in tools}
         with st.form(f'admin_tool_prescribe_{a["id"]}'):
@@ -1727,15 +1774,21 @@ def action_tools_tab(a):
                             rerun()
                         except Exception as ex: _ui_incident('operation_interface',ex)
     else:
-        st.info('Aucun outil actif et compatible n’est disponible pour cette prestation.')
+        st.info('Aucun outil n’est actuellement autorisé sur cette action. Sélectionnez au moins un outil dans « Outils autorisés sur cette action ».')
     rows=list_tool_prescriptions(ENGINE,action_id=a['id'])
     if rows:
         st.markdown('#### Prescriptions de cette action')
-        st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Statut':x['status'].replace('_',' '),'Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or ''} for x in rows]),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Administrateur' if x.get('prescriber_type')=='ADMIN' else 'Intervenant','Statut':x['status'].replace('_',' '),'Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or ''} for x in rows if x.get('status')!='ANNULE']),use_container_width=True,hide_index=True)
         rmap={f"{x['prescription_id']} — {x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']}":x for x in rows}; rl=st.selectbox('Prescription à gérer',list(rmap),key=f'presc_manage_{a["id"]}'); rr=rmap[rl]
         statuses=['A_FAIRE','ENVOYE','CONSULTE','EN_COURS','TERMINE','A_REVOIR_EN_SEANCE','REVU_EN_SEANCE','ANNULE']; ns=st.selectbox('Statut',statuses,index=statuses.index(rr['status']) if rr['status'] in statuses else 0,key=f'presc_status_{rr["id"]}')
         if st.button('Enregistrer le statut',key=f'presc_status_save_{rr["id"]}'):
             update_tool_prescription_status(ENGINE,rr['prescription_id'],ns,st.session_state.admin_email,{'source':'admin_ui'});st.success('Statut mis à jour.');rerun()
+        owns=(rr.get('prescriber_type')=='ADMIN' and str(rr.get('prescriber_id') or '')==str(st.session_state.admin_email))
+        if st.button('SUPPRIMER MA PRESCRIPTION',key=f'presc_cancel_{rr["id"]}',disabled=(not owns or rr.get('status')=='ANNULE')):
+            ok,msg=cancel_tool_prescription_owned(ENGINE,rr['prescription_id'],'ADMIN',st.session_state.admin_email,st.session_state.admin_email)
+            if ok: st.success('Prescription supprimée de la liste active et conservée dans la piste d’audit.');rerun()
+            else: st.warning(msg)
+        if not owns and rr.get('status')!='ANNULE': st.caption('Suppression indisponible : cette prescription a été créée par un autre utilisateur.')
     with st.expander('⚙️ Catalogue central des outils Clarté360'):
         cat=list_tool_catalog(ENGINE,active_only=False)
         if cat:
@@ -2241,7 +2294,7 @@ def calendar_tab(a):
         ett=c3.time_input('Fin',value=last_end,key=f'e{a["id"]}')
         c1,c2,c3=st.columns(3)
         send_mode=c1.selectbox('Envoi du lien d’émargement',['Au début du créneau','10 min avant la fin','À la fin du créneau','Personnalisé'],key=f'sendmode{a["id"]}')
-        custom=c2.number_input('Décalage personnalisé (min / fin)',min_value=-1440,max_value=1440,value=-10,step=5,key=f'customsend{a["id"]}',disabled=send_mode!='Personnalisé')
+        custom=c2.number_input('Décalage personnalisé (min / fin)',min_value=-1440,max_value=1440,value=0,step=5,key=f'customsend{a["id"]}',disabled=send_mode!='Personnalisé')
         close=c3.number_input('Émargement possible après la fin pendant (min)',min_value=0,max_value=10080,value=1440,step=60,key=f'add_close_offset_{a["id"]}')
         st.caption('Les relances d’émargement sont manuelles. Aucun rappel automatique n’est programmé.')
         add=st.form_submit_button('➕ AJOUTER CETTE NOUVELLE SÉANCE',type='primary')
@@ -2363,7 +2416,9 @@ def dispatch_tab(a):
         if email_parts:
             pc={f"{p['last_name']} {p['first_name']} — {p['email']}":p for p in email_parts};pl=st.selectbox('Participant à relancer',list(pc),key=f'mailp{a["id"]}');pp=pc[pl]
             sc={f"{x['slot_date']} {x['start_time']}–{x['end_time']}":x for x in slots};sl=st.selectbox('Créneau à relancer',list(sc),key=f'mails{a["id"]}');ss=sc[sl]
-            if st.button('Envoyer maintenant le lien personnel'):
+            already_signed=one(ENGINE,"SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':pp['id'],'s':ss['id']})
+            if already_signed: st.success('Ce participant a déjà signé ce créneau : aucune relance d’émargement n’est nécessaire.')
+            if st.button('Envoyer maintenant le lien personnel',disabled=bool(already_signed)):
                 ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);url=token_url(ENGINE,pp['id'],ss['id'],BASE_URL)
                 cfg=mail_cfg();subject=f"Clarté360 — émargement — {a['action_no']}";body=f"<p>Bonjour {pp['first_name']},</p><p>Merci d'émarger votre présence pour <strong>{a['title']}</strong>, le {ss['slot_date']} de {ss['start_time']} à {ss['end_time']}.</p><p><a href='{url}' style='background:#008080;color:white;padding:12px 18px;text-decoration:none;border-radius:8px'>SIGNER MA PRÉSENCE</a></p><p>Ce lien personnel ne nécessite pas le code QR à 4 chiffres.</p>{privacy_notice_html(a['id'])}"
                 try:
@@ -2528,6 +2583,14 @@ def quality_tab(a):
     if issues:
         st.markdown('### Difficultés / aléas / réclamations détectés')
         st.dataframe(pd.DataFrame(issues),use_container_width=True,hide_index=True)
+    tr_reports=q(ENGINE,"""SELECT r.*,t.full_name source_name FROM trainer_reports r JOIN trainers t ON t.id=r.trainer_id WHERE r.action_id=:a ORDER BY r.created_at DESC""",{'a':a['id']})
+    br_reports=beneficiary_reports(ENGINE,action_id=a['id'])
+    if tr_reports or br_reports:
+        st.markdown('### Signalements liés à cette action')
+        rr=[]
+        for x in tr_reports: rr.append({'Date':x['created_at'][:16].replace('T',' '),'Source':'Intervenant','Personne':x.get('source_name') or '','Objet':x['subject'],'Statut':x['status'],'Réponse administration':x.get('admin_response') or ''})
+        for x in br_reports: rr.append({'Date':x['created_at'][:16].replace('T',' '),'Source':'Bénéficiaire','Personne':f"{x.get('beneficiary_first_name') or ''} {x.get('beneficiary_last_name') or ''}".strip(),'Objet':x['subject'],'Statut':x['status'],'Réponse administration':x.get('admin_response') or ''})
+        st.dataframe(pd.DataFrame(rr),use_container_width=True,hide_index=True)
 
 def documents_tab(a):
     st.subheader('Documents et archivage')
@@ -2662,29 +2725,82 @@ def reminders_screen():
     footer()
 
 def quality_management_screen():
-    header('Clarté360 — Qualité','Pilotage métier des évaluations, difficultés et améliorations')
+    header('Clarté360 — Qualité','Pilotage métier des évaluations, signalements, difficultés et améliorations')
     orgs=list_organizations(ENGINE,active_only=True); om={'Tous':None,**{o['name']:o['id'] for o in orgs}}
-    c1,c2=st.columns(2); ol=c1.selectbox('Organisme',list(om),key='qm_org'); pt=c2.selectbox('Prestation',['Tous','FORMATION','BILAN_COMPETENCES','VAE','COACHING','MENTORAT','AUTRE'],key='qm_pt')
+    c1,c2,c3=st.columns(3)
+    ol=c1.selectbox('Organisme',list(om),key='qm_org')
+    pt=c2.selectbox('Prestation',['Tous','FORMATION','BILAN_COMPETENCES','VAE','COACHING','MENTORAT','AUTRE'],key='qm_pt')
+    aq=q(ENGINE,'SELECT id,action_no,title,organization_id,prestation_type FROM actions ORDER BY action_no')
+    if om[ol]: aq=[x for x in aq if x.get('organization_id')==om[ol]]
+    if pt!='Tous': aq=[x for x in aq if (x.get('prestation_type') or '').upper()==pt]
+    amap={'Toutes les actions':None,**{f"{x['action_no']} — {x['title']}":x['id'] for x in aq}}
+    al=c3.selectbox('Action',list(amap),key='qm_action')
+    action_id=amap[al]
     filters={'organization_id':om[ol],'prestation_type':None if pt=='Tous' else pt}
     qd=quality_management_summary(ENGINE,**filters)
     c1,c2,c3,c4=st.columns(4)
-    for c,n,l in [(c1,qd['campaigns'],'Questionnaires prévus'),(c2,f"{qd['response_rate']}%",'Taux de réponse'),(c3,qd['issues_open'],'Difficultés ouvertes'),(c4,qd['improvements_open'],'Améliorations ouvertes')]: c.markdown(f"<div class='c360-kpi'><div class='n'>{n}</div><div class='l'>{l}</div></div>",unsafe_allow_html=True)
-    if qd.get('rubric_averages'):
-        st.subheader('Scores moyens par rubrique')
-        st.dataframe(pd.DataFrame([{'Rubrique':k,'Moyenne':v} for k,v in sorted(qd['rubric_averages'].items())]),use_container_width=True,hide_index=True)
-    if qd.get('weak_points'):
-        st.subheader('Points faibles à surveiller')
-        st.dataframe(pd.DataFrame(qd['weak_points']),use_container_width=True,hide_index=True)
-    stats=quality_question_stats(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt)
-    if stats:
-        st.subheader('Détail des questions')
-        st.dataframe(pd.DataFrame(stats)[['Rubrique','Question','Réponses','Moyenne']],use_container_width=True,hide_index=True)
-    issues=list_quality_issues(ENGINE)
+    for c,n,l in [(c1,qd['campaigns'],'Questionnaires prévus'),(c2,f"{qd['response_rate']}%",'Taux de réponse'),(c3,qd['issues_open'],'Difficultés ouvertes'),(c4,qd['improvements_open'],'Améliorations ouvertes')]:
+        c.markdown(f"<div class='c360-kpi'><div class='n'>{n}</div><div class='l'>{l}</div></div>",unsafe_allow_html=True)
+
+    st.markdown('### Lecture synthétique par thème')
+    stats=quality_question_stats(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt,action_id=action_id)
+    rubrics={}
+    for r in stats:
+        rubrics.setdefault(r['Rubrique'],[]).append(r)
+    if not rubrics:
+        st.info('Aucune réponse exploitable avec ces filtres.')
+    else:
+        summary=[]
+        for rub,items in rubrics.items():
+            vals=[x['Moyenne'] for x in items if x.get('Moyenne') is not None]
+            summary.append({'Thème':rub,'Questions':len(items),'Réponses':sum(int(x.get('Réponses') or 0) for x in items),'Moyenne':round(sum(vals)/len(vals),2) if vals else None})
+        st.dataframe(pd.DataFrame(summary),use_container_width=True,hide_index=True)
+        rub=st.selectbox('Explorer un thème',list(rubrics),key='qm_rubric')
+        with st.expander(f'Détail du thème — {rub}',expanded=False):
+            st.dataframe(pd.DataFrame(rubrics[rub])[['Question','Réponses','Moyenne']],use_container_width=True,hide_index=True)
+
+    if action_id:
+        st.markdown('### Détail de l’action sélectionnée')
+        camps=list_quality_campaigns(ENGINE,action_id)
+        if camps:
+            st.dataframe(pd.DataFrame([{'Type':x['campaign_kind'],'Questionnaire':x['questionnaire_title'],'Statut':x['status'],'Échéance':x.get('due_at') or ''} for x in camps]),use_container_width=True,hide_index=True)
+        else: st.info('Aucune campagne qualité sur cette action.')
+
+    st.markdown('### Signalements à traiter et historique')
+    trainer_rows=q(ENGINE,"""SELECT r.*,a.action_no,a.title action_title,t.full_name source_name FROM trainer_reports r
+      JOIN actions a ON a.id=r.action_id JOIN trainers t ON t.id=r.trainer_id ORDER BY r.created_at DESC""")
+    benef_rows=beneficiary_reports(ENGINE)
+    combined=[]
+    for r in trainer_rows:
+        combined.append({'kind':'TRAINER','id':r['id'],'action_id':r['action_id'],'Action':r['action_no'],'Source':'Intervenant','Personne':r.get('source_name') or '','Nature':r['report_type'],'Objet':r['subject'],'Description':r['description'],'Statut':r['status'],'Réponse':r.get('admin_response') or '','Date':r['created_at']})
+    for r in benef_rows:
+        combined.append({'kind':'BENEFICIARY','id':r['id'],'action_id':r['action_id'],'Action':r['action_no'],'Source':'Bénéficiaire','Personne':f"{r.get('beneficiary_first_name') or ''} {r.get('beneficiary_last_name') or ''}".strip(),'Nature':r['report_type'],'Objet':r['subject'],'Description':r['description'],'Statut':r['status'],'Réponse':r.get('admin_response') or '','Date':r['created_at']})
     if om[ol]:
+        allowed={x['id'] for x in q(ENGINE,'SELECT id FROM actions WHERE organization_id=:o',{'o':om[ol]})}; combined=[x for x in combined if x['action_id'] in allowed]
+    if pt!='Tous':
+        allowed={x['id'] for x in q(ENGINE,'SELECT id FROM actions WHERE prestation_type=:p',{'p':pt})}; combined=[x for x in combined if x['action_id'] in allowed]
+    if action_id: combined=[x for x in combined if x['action_id']==action_id]
+    status_filter=st.selectbox('Afficher les signalements',['Tous','NOUVEAU','EN_COURS','TRAITE','CLOTURE'],key='qm_report_status')
+    if status_filter!='Tous': combined=[x for x in combined if x['Statut']==status_filter]
+    if not combined:
+        st.info('Aucun signalement avec ces filtres.')
+    else:
+        st.dataframe(pd.DataFrame([{'Date':x['Date'][:16].replace('T',' '),'Action':x['Action'],'Source':x['Source'],'Personne':x['Personne'],'Nature':x['Nature'],'Objet':x['Objet'],'Statut':x['Statut']} for x in combined]),use_container_width=True,hide_index=True)
+        rmap={f"{x['Action']} — {x['Source']} — {x['Objet']} — #{x['id']}":x for x in combined}; rl=st.selectbox('Fiche à traiter',list(rmap),key='qm_report_select'); rr=rmap[rl]
+        st.write(rr['Description'])
+        c1,c2=st.columns([1,2]); ns=c1.selectbox('Statut',['NOUVEAU','EN_COURS','TRAITE','CLOTURE'],index=['NOUVEAU','EN_COURS','TRAITE','CLOTURE'].index(rr['Statut']) if rr['Statut'] in ['NOUVEAU','EN_COURS','TRAITE','CLOTURE'] else 0,key=f"qm_rep_status_{rr['kind']}_{rr['id']}")
+        response=c2.text_area('Réponse / traitement de l’administration',value=rr.get('Réponse') or '',key=f"qm_rep_resp_{rr['kind']}_{rr['id']}")
+        if st.button('ENREGISTRER LE TRAITEMENT',key=f"qm_rep_save_{rr['kind']}_{rr['id']}",type='primary'):
+            ok,msg=update_user_report(ENGINE,rr['kind'],rr['id'],ns,response,st.session_state.admin_email)
+            if ok: st.success('Fiche mise à jour. Elle reste conservée dans l’historique.');rerun()
+            else: st.warning(msg)
+
+    issues=list_quality_issues(ENGINE,action_id) if action_id else list_quality_issues(ENGINE)
+    if om[ol] and not action_id:
         aids={x['id'] for x in q(ENGINE,'SELECT id FROM actions WHERE organization_id=:o',{'o':om[ol]})};issues=[x for x in issues if x.get('action_id') in aids]
     if issues:
-        st.subheader('Difficultés / réclamations ouvertes ou historisées')
-        st.dataframe(pd.DataFrame(issues),use_container_width=True,hide_index=True)
+        with st.expander('Difficultés / réclamations et actions d’amélioration',expanded=False):
+            st.dataframe(pd.DataFrame(issues),use_container_width=True,hide_index=True)
     footer()
 
 def studies_screen():

@@ -249,6 +249,11 @@ I9D_SCHEMA = [
  FOREIGN KEY(tool_id) REFERENCES tool_catalog(id), FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE CASCADE,
  FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE SET NULL
 )""",
+"""CREATE TABLE IF NOT EXISTS action_tool_permissions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, tool_id INTEGER NOT NULL, tool_code TEXT NOT NULL, allowed INTEGER NOT NULL DEFAULT 1,
+ created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(action_id,tool_id), FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(tool_id) REFERENCES tool_catalog(id) ON DELETE CASCADE
+)""",
 """CREATE TABLE IF NOT EXISTS prescription_access_tokens (
  id INTEGER PRIMARY KEY AUTOINCREMENT, prescription_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
  used_at TEXT, revoked_at TEXT, created_by TEXT, FOREIGN KEY(prescription_id) REFERENCES tool_prescriptions(prescription_id) ON DELETE CASCADE
@@ -256,6 +261,15 @@ I9D_SCHEMA = [
 """CREATE TABLE IF NOT EXISTS prescription_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, prescription_id TEXT NOT NULL, event_type TEXT NOT NULL, old_status TEXT, new_status TEXT, actor TEXT NOT NULL,
  details_json TEXT, event_id TEXT UNIQUE, created_at TEXT NOT NULL, FOREIGN KEY(prescription_id) REFERENCES tool_prescriptions(prescription_id) ON DELETE CASCADE
+)"""
+]
+
+I9H28_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS beneficiary_reports (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, action_id INTEGER NOT NULL, beneficiary_id INTEGER NOT NULL, report_type TEXT NOT NULL, subject TEXT NOT NULL,
+ description TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'NOUVEAU', quality_relevant INTEGER NOT NULL DEFAULT 1, attachment_path TEXT, attachment_name TEXT,
+ admin_response TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE CASCADE
 )"""
 ]
 
@@ -309,6 +323,8 @@ def init_db(engine: Engine):
         for sql in I9B_SCHEMA:
             c.execute(text(sql))
         for sql in I9D_SCHEMA:
+            c.execute(text(sql))
+        for sql in I9H28_SCHEMA:
             c.execute(text(sql))
         for sql in I9E_SCHEMA:
             c.execute(text(sql))
@@ -606,6 +622,11 @@ def init_db(engine: Engine):
             "ALTER TABLE client_transmissions ADD COLUMN claimed_at TEXT",
             "ALTER TABLE client_transmissions ADD COLUMN claim_token TEXT",
             "ALTER TABLE client_transmissions ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE trainer_reports ADD COLUMN admin_response TEXT",
+            "ALTER TABLE trainer_reports ADD COLUMN closed_at TEXT",
+            "ALTER TABLE quality_issues ADD COLUMN source_role TEXT",
+            "ALTER TABLE quality_issues ADD COLUMN source_ref TEXT",
+            "ALTER TABLE quality_issues ADD COLUMN updated_at TEXT",
         ]
         for sql in post_migrations:
             try: c.execute(text(sql))
@@ -641,6 +662,8 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_tool_catalog_active ON tool_catalog(active,prescription_allowed,tool_code)",
             "CREATE INDEX IF NOT EXISTS ix_tool_prescriptions_beneficiary ON tool_prescriptions(beneficiary_id,status,created_at)",
             "CREATE INDEX IF NOT EXISTS ix_tool_prescriptions_action ON tool_prescriptions(action_id,status,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_action_tool_permissions_action ON action_tool_permissions(action_id,allowed,tool_id)",
+            "CREATE INDEX IF NOT EXISTS ix_beneficiary_reports_action ON beneficiary_reports(action_id,status,created_at)",
             "CREATE INDEX IF NOT EXISTS ix_prescription_tokens_expiry ON prescription_access_tokens(expires_at,revoked_at)",
             "CREATE INDEX IF NOT EXISTS ix_prescription_events_prescription ON prescription_events(prescription_id,created_at)",
             "CREATE INDEX IF NOT EXISTS ix_connector_cursors_updated ON connector_cursors(updated_at)",

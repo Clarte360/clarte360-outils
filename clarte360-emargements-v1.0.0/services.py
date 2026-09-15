@@ -187,6 +187,7 @@ def add_slot(engine, aid, date_s,start_s,end_s,actor,send=-10,r1=20,r2=120,close
             if not mod.get('effective_from') and start>=datetime.now(ZoneInfo(tz_name)):
                 execute(engine,"UPDATE action_modules SET effective_from=:f,updated_at=:u WHERE action_id=:a AND module_code='TEAMS'",{'f':start.isoformat(),'u':utcnow_iso(),'a':aid})
             queue_teams_sync(engine,aid,sid,'SLOT_ADDED',actor,{'slot_id':sid})
+            refresh_teams_occurrences(engine,aid,actor)
         except Exception:
             pass
     audit(engine,'SLOT_ADDED',aid,actor,'slot',sid,{'date':date_s,'start':start_s,'end':end_s});return sid
@@ -198,6 +199,12 @@ def update_slot(engine,sid,d,actor):
     d['slot_date'],d['start_time'],d['end_time']=validate_slot(d.get('slot_date'),d.get('start_time'),d.get('end_time'))
     validate_no_action_slot_overlap(engine,old['action_id'],d['slot_date'],d['start_time'],d['end_time'],exclude_slot_id=sid)
     execute(engine,"""UPDATE slots SET slot_date=:slot_date,start_time=:start_time,end_time=:end_time,send_offset_min=:send_offset_min,reminder1_offset_min=:reminder1_offset_min,reminder2_offset_min=:reminder2_offset_min,close_offset_min=:close_offset_min,updated_at=:u WHERE id=:id""",{**d,'u':utcnow_iso(),'id':sid})
+    if action_module_enabled(engine,old['action_id'],'TEAMS'):
+        try:
+            queue_teams_sync(engine,old['action_id'],sid,'SLOT_UPDATED',actor,{'slot_id':sid})
+            refresh_teams_occurrences(engine,old['action_id'],actor)
+        except Exception:
+            pass
     audit(engine,'SLOT_UPDATED',old['action_id'],actor,'slot',sid,{'before':old,'after':d})
 
 def delete_slot(engine,sid,actor):
@@ -206,7 +213,14 @@ def delete_slot(engine,sid,actor):
     signed=one(engine,'SELECT COUNT(*) n FROM signatures WHERE slot_id=:id',{'id':sid})['n']
     countersigned=one(engine,'SELECT COUNT(*) n FROM trainer_countersignatures_v3 WHERE slot_id=:id',{'id':sid})['n']
     if signed or countersigned:return False,"Impossible : ce créneau contient déjà des preuves de signature."
-    execute(engine,'DELETE FROM slots WHERE id=:id',{'id':sid});audit(engine,'SLOT_DELETED',old['action_id'],actor,'slot',sid,old);return True,''
+    execute(engine,'DELETE FROM slots WHERE id=:id',{'id':sid})
+    if action_module_enabled(engine,old['action_id'],'TEAMS'):
+        try:
+            queue_teams_sync(engine,old['action_id'],sid,'SLOT_DELETED',actor,{'slot_id':sid})
+            refresh_teams_occurrences(engine,old['action_id'],actor)
+        except Exception:
+            pass
+    audit(engine,'SLOT_DELETED',old['action_id'],actor,'slot',sid,old);return True,''
 
 def ensure_tokens_and_events(engine, aid, base_url,tz_name='Europe/Paris'):
     participants=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1',{'a':aid})
@@ -1130,12 +1144,44 @@ def create_trainer_report(engine,action_id,trainer_id,report_type,subject,descri
     now=utcnow_iso(); rid=execute(engine,"""INSERT INTO trainer_reports(action_id,trainer_id,report_type,subject,description,status,quality_relevant,attachment_path,attachment_name,created_at,updated_at)
       VALUES(:a,:t,:rt,:s,:d,'NOUVEAU',:q,:ap,:an,:c,:c)""",{'a':action_id,'t':trainer_id,'rt':report_type,'s':subject,'d':description,'q':1 if quality_relevant else 0,'ap':attachment_path,'an':attachment_name,'c':now})
     if quality_relevant:
-        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at) VALUES(:a,:i,:t,:d,'OUVERTE','Administration',:c)""",{'a':action_id,'i':'SIGNALEMENT_INTERVENANT','t':subject,'d':description,'c':now})
+        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at) VALUES(:a,:i,:t,:d,'OUVERTE','Administration',:c,'INTERVENANT',:r,:c)""",{'a':action_id,'i':'SIGNALEMENT_INTERVENANT','t':subject,'d':description,'c':now,'r':str(rid)})
     audit(engine,'TRAINER_REPORT_CREATED',action_id,f'trainer:{trainer_id}','trainer_report',rid,{'report_type':report_type,'quality_relevant':bool(quality_relevant),'attachment_name':attachment_name})
     return rid
 
 def trainer_reports(engine,action_id,trainer_id):
     return q(engine,'SELECT * FROM trainer_reports WHERE action_id=:a AND trainer_id=:t ORDER BY created_at DESC',{'a':action_id,'t':trainer_id})
+
+def create_beneficiary_report(engine,action_id,beneficiary_id,report_type,subject,description,quality_relevant=True,attachment_path=None,attachment_name=None):
+    linked=one(engine,'SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1',{'a':action_id,'b':beneficiary_id})
+    if not linked: return None
+    now=utcnow_iso(); rid=execute(engine,"""INSERT INTO beneficiary_reports(action_id,beneficiary_id,report_type,subject,description,status,quality_relevant,attachment_path,attachment_name,created_at,updated_at)
+      VALUES(:a,:b,:rt,:s,:d,'NOUVEAU',:q,:ap,:an,:c,:c)""",{'a':action_id,'b':beneficiary_id,'rt':report_type,'s':subject,'d':description,'q':1 if quality_relevant else 0,'ap':attachment_path,'an':attachment_name,'c':now})
+    if quality_relevant:
+        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at)
+          VALUES(:a,'SIGNALEMENT_BENEFICIAIRE',:t,:d,'OUVERTE','Administration',:c,'BENEFICIAIRE',:r,:c)""",{'a':action_id,'t':subject,'d':description,'c':now,'r':str(rid)})
+    audit(engine,'BENEFICIARY_REPORT_CREATED',action_id,f'beneficiary:{beneficiary_id}','beneficiary_report',rid,{'report_type':report_type,'quality_relevant':bool(quality_relevant)})
+    return rid
+
+
+def beneficiary_reports(engine, action_id=None, beneficiary_id=None):
+    wh=[];p={}
+    if action_id is not None: wh.append('br.action_id=:a');p['a']=action_id
+    if beneficiary_id is not None: wh.append('br.beneficiary_id=:b');p['b']=beneficiary_id
+    where=('WHERE '+' AND '.join(wh)) if wh else ''
+    return q(engine,f"""SELECT br.*,b.first_name beneficiary_first_name,b.last_name beneficiary_last_name,a.action_no,a.title action_title
+      FROM beneficiary_reports br JOIN beneficiaries b ON b.id=br.beneficiary_id JOIN actions a ON a.id=br.action_id {where} ORDER BY br.created_at DESC""",p)
+
+
+def update_user_report(engine, report_kind, report_id, status, admin_response, actor='admin'):
+    table='trainer_reports' if report_kind=='TRAINER' else 'beneficiary_reports'
+    row=one(engine,f'SELECT * FROM {table} WHERE id=:i',{'i':report_id})
+    if not row:return False,'Signalement introuvable.'
+    st=(status or 'NOUVEAU').upper(); allowed={'NOUVEAU','EN_COURS','TRAITE','CLOTURE'}
+    if st not in allowed:return False,'Statut invalide.'
+    now=utcnow_iso(); closed=now if st=='CLOTURE' else None
+    execute(engine,f'UPDATE {table} SET status=:s,admin_response=:r,updated_at=:u,closed_at=:c WHERE id=:i',{'s':st,'r':admin_response or None,'u':now,'c':closed,'i':report_id})
+    audit(engine,'USER_REPORT_UPDATED',row.get('action_id'),actor,report_kind.lower()+'_report',report_id,{'status':st})
+    return True,''
 
 def purge_slot(engine,sid,actor):
     sl=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
@@ -1645,11 +1691,12 @@ def quality_dashboard(engine, organization_id=None, agency_id=None, prestation_t
     improvements=one(engine,f"SELECT COUNT(*) n FROM improvement_actions WHERE action_id IN ({marks}) AND status<>'TERMINEE'",pp)['n']
     return {'actions':len(actions),'campaigns':len(camps),'completed':completed,'response_rate':round(100*completed/len(camps),1) if camps else 0,'issues_open':issues,'improvements_open':improvements,'scores':scores,'nps':nps}
 
-def quality_question_stats(engine, organization_id=None, agency_id=None, prestation_type=None):
+def quality_question_stats(engine, organization_id=None, agency_id=None, prestation_type=None, action_id=None):
     wh=[];p={}
     if organization_id: wh.append('a.organization_id=:o');p['o']=organization_id
     if agency_id: wh.append('a.agency_id=:g');p['g']=agency_id
     if prestation_type: wh.append('a.prestation_type=:pt');p['pt']=prestation_type
+    if action_id: wh.append('a.id=:aid');p['aid']=action_id
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
     rows=q(engine,"""SELECT qq.question_code,qq.rubric_code,qq.question_text,r.response_type,r.answer_json FROM quality_responses r JOIN questionnaire_questions qq ON qq.id=r.question_id JOIN quality_campaigns c ON c.id=r.campaign_id JOIN actions a ON a.id=c.action_id"""+where,p)
     rubric_labels={'R01':'Information et objectifs','R02':'Organisation','R03':'Moyens et environnement','R04':'Supports et ressources','R05':'Intervenant / animation','R06':'Adaptation et accompagnement','R07':'Accessibilité','R08':'Atteinte des objectifs','R09':'Utilité / transfert','R10':'Satisfaction globale','R11':'Recommandation','R12':'Difficultés / réclamations','I06':'Difficultés / aléas'}
@@ -2679,6 +2726,29 @@ def set_action_trainer_prescription_permission(engine, action_id, trainer_id, al
     return True,''
 
 
+def action_allowed_tools(engine, action_id, *, active_only=True):
+    clause="AND tc.active=1 AND tc.prescription_allowed=1" if active_only else ''
+    return q(engine,f"""SELECT tc.*,ap.allowed action_allowed,ap.created_by allowed_by FROM action_tool_permissions ap
+      JOIN tool_catalog tc ON tc.id=ap.tool_id WHERE ap.action_id=:a AND ap.allowed=1 {clause} ORDER BY tc.name""",{'a':action_id})
+
+
+def set_action_tool_allowed(engine, action_id, tool_code, allowed, actor='admin'):
+    tool=one(engine,'SELECT * FROM tool_catalog WHERE tool_code=:c',{'c':(tool_code or '').upper()})
+    if not tool: return False,'Outil introuvable.'
+    now=utcnow_iso()
+    execute(engine,"""INSERT INTO action_tool_permissions(action_id,tool_id,tool_code,allowed,created_by,created_at,updated_at)
+      VALUES(:a,:t,:c,:v,:by,:n,:n) ON CONFLICT(action_id,tool_id) DO UPDATE SET allowed=excluded.allowed,updated_at=excluded.updated_at""",
+      {'a':action_id,'t':tool['id'],'c':tool['tool_code'],'v':1 if allowed else 0,'by':actor,'n':now})
+    audit(engine,'ACTION_TOOL_PERMISSION_CHANGED',action_id,actor,'tool_catalog',tool['id'],{'tool_code':tool['tool_code'],'allowed':bool(allowed)})
+    return True,''
+
+
+def action_tool_is_allowed(engine, action_id, tool_code):
+    row=one(engine,"""SELECT 1 ok FROM action_tool_permissions ap JOIN tool_catalog tc ON tc.id=ap.tool_id
+      WHERE ap.action_id=:a AND ap.allowed=1 AND tc.tool_code=:c""",{'a':action_id,'c':(tool_code or '').upper()})
+    return bool(row)
+
+
 def _prescription_public_id():
     import secrets
     return 'PRX-'+secrets.token_hex(8).upper()
@@ -2692,6 +2762,13 @@ def create_tool_prescription(engine, tool_code, beneficiary_id, action_id, parti
     if not ben: raise ValueError('Bénéficiaire introuvable.')
     action=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
     if not action: raise ValueError('Action introuvable.')
+    configured=one(engine,'SELECT COUNT(*) n FROM action_tool_permissions WHERE action_id=:a',{'a':action_id})
+    if configured and int(configured.get('n') or 0)>0 and not action_tool_is_allowed(engine,action_id,tool.get('tool_code')):
+        raise ValueError("Cet outil n'est pas autorisé pour cette action. L'administrateur doit d'abord l'activer dans l'onglet Outils Clarté360.")
+    duplicate=one(engine,"""SELECT prescription_id,status FROM tool_prescriptions WHERE action_id=:a AND beneficiary_id=:b AND tool_code=:c AND status<>'ANNULE' ORDER BY id DESC LIMIT 1""",
+      {'a':action_id,'b':beneficiary_id,'c':tool.get('tool_code')})
+    if duplicate:
+        raise ValueError(f"Cet outil est déjà prescrit à ce bénéficiaire pour cette action ({duplicate['status'].replace('_',' ')}).")
     if participant_id:
         linked=one(engine,'SELECT id FROM participants WHERE id=:p AND action_id=:a AND beneficiary_id=:b AND active=1',{'p':participant_id,'a':action_id,'b':beneficiary_id})
         if not linked: raise ValueError("Le participant n'est pas rattaché à ce bénéficiaire dans cette action.")
@@ -2749,6 +2826,17 @@ def update_tool_prescription_status(engine, prescription_id, new_status, actor='
       'd':json.dumps(details or {},ensure_ascii=False),'e':event_id,'c':now})
     audit(engine,'TOOL_PRESCRIPTION_STATUS_CHANGED',row.get('action_id'),actor,'tool_prescription',None,{'prescription_id':prescription_id,'old':row.get('status'),'new':status})
     return one(engine,'SELECT * FROM tool_prescriptions WHERE prescription_id=:p',{'p':prescription_id})
+
+
+def cancel_tool_prescription_owned(engine, prescription_id, requester_type, requester_id, actor='system'):
+    row=one(engine,'SELECT * FROM tool_prescriptions WHERE prescription_id=:p',{'p':prescription_id})
+    if not row: return False,'Prescription introuvable.'
+    if row.get('status')=='ANNULE': return True,''
+    if str(row.get('prescriber_type') or '').upper()!=str(requester_type or '').upper() or str(row.get('prescriber_id') or '')!=str(requester_id or ''):
+        return False,"Vous pouvez supprimer uniquement une prescription que vous avez vous-même créée."
+    update_tool_prescription_status(engine,prescription_id,'ANNULE',actor,{'reason':'suppression_par_createur'})
+    audit(engine,'TOOL_PRESCRIPTION_CANCELLED_BY_CREATOR',row.get('action_id'),actor,'tool_prescription',prescription_id,{})
+    return True,''
 
 
 def create_prescription_launch_token(engine, prescription_id, actor='beneficiary', valid_minutes=15):

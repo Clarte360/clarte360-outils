@@ -15,7 +15,7 @@ def test_trainer_task_message_does_not_render_deltagenerator_expression():
 
 def test_h2_version():
     from branding import APP_VERSION
-    assert APP_VERSION=='3.0.0-I9-H2.6'
+    assert APP_VERSION=='3.0.0-I9-H2.8'
 
 def test_beneficiary_portal_status_lifecycle(tmp_path):
     e=make_engine(f"sqlite:///{tmp_path/'x.db'}"); init_db(e)
