@@ -3,7 +3,7 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report, refresh_countersign_communications, delivery_mode_label, trainer_microsoft_identity, mark_trainer_entra_identity, mark_trainer_entra_not_found, consume_pip_outbox, refresh_pip_connector_runtime_status
+from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report, refresh_countersign_communications, refresh_teams_reminder_communications, delivery_mode_label, trainer_microsoft_identity, mark_trainer_entra_identity, mark_trainer_entra_not_found, consume_pip_outbox, refresh_pip_connector_runtime_status
 from mailer import send_mail, resolve_mail_config
 from graph_client import GraphClient, graph_config_from_mapping, graph_config_missing
 
@@ -27,7 +27,7 @@ def _claim_communication(eng,event_id):
 
 def _run_communication_events(eng,smtp,base,limit=100):
     now=datetime.now(timezone.utc).isoformat()
-    events=q(eng,"""SELECT ce.*,a.action_no,a.title,a.location,a.delivery_mode,p.first_name,p.last_name,
+    events=q(eng,"""SELECT ce.*,a.action_no,a.title,a.location,a.delivery_mode,p.first_name,p.last_name,p.beneficiary_id,
       t.full_name trainer_name,s.slot_date,s.start_time,s.end_time
       FROM communication_events ce JOIN actions a ON a.id=ce.action_id
       LEFT JOIN participants p ON p.id=ce.participant_id LEFT JOIN trainers t ON t.id=ce.trainer_id LEFT JOIN slots s ON s.id=ce.slot_id
@@ -54,6 +54,22 @@ def _run_communication_events(eng,smtp,base,limit=100):
                 direct=f"{base.rstrip('/')}?trainer_portal=1&action_id={e['action_id']}&slot_id={e['slot_id']}"
                 subject=f"{org_name} — Contresignature requise — {e['action_no']}"
                 body=f"<p>Bonjour {e.get('trainer_name') or ''},</p><p>Merci de vérifier les présences/absences et de contresigner le créneau du <strong>{e.get('slot_date')} de {e.get('start_time')} à {e.get('end_time')}</strong>.</p><p><a href='{direct}'>OUVRIR LA CONTRESIGNATURE</a></p><p>La page est utilisable sur ordinateur, tablette et smartphone.</p>"
+            elif e['communication_type'] in ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15'):
+                room=teams_room(eng,e['action_id']) or {}
+                join=(room.get('join_web_url') or '').strip()
+                if not join:
+                    raise RuntimeError('Lien Teams non encore disponible')
+                label='dans 2 heures' if e['communication_type']=='TEAMS_REMINDER_H2' else 'dans 15 minutes'
+                if e.get('trainer_id'):
+                    portal=f"{base.rstrip('/')}?trainer_portal=1&action_id={e['action_id']}&slot_id={e['slot_id']}"
+                    subject=f"{org_name} — Teams {label} — {e['action_no']}"
+                    body=f"<p>Bonjour {e.get('trainer_name') or ''},</p><p>Votre séance <strong>{e['title']}</strong> commence {label}, le {e.get('slot_date')} à {e.get('start_time')}.</p><p><a href='{join}'>REJOINDRE TEAMS</a> &nbsp; <a href='{portal}'>MON ESPACE INTERVENANT</a></p><p>Vous intervenez comme animateur/coanimateur affecté à ce créneau.</p>"
+                else:
+                    portal=f"{base.rstrip('/')}?beneficiary_portal=1"
+                    acc=one(eng,'SELECT active,password_hash FROM beneficiary_portal_accounts WHERE beneficiary_id=:b',{'b':e.get('beneficiary_id')}) if e.get('beneficiary_id') else None
+                    activation='' if (acc and acc.get('active') and acc.get('password_hash')) else '<p><strong>Votre espace bénéficiaire n’est pas encore activé :</strong> pensez à l’activer pour retrouver vos documents, outils et démarches. Le bouton Teams reste utilisable directement.</p>'
+                    subject=f"{org_name} — Teams {label} — {e['action_no']}"
+                    body=f"<p>Bonjour {e.get('first_name') or ''},</p><p>Votre séance <strong>{e['title']}</strong> commence {label}, le {e.get('slot_date')} à {e.get('start_time')}.</p><p><a href='{join}'>REJOINDRE TEAMS</a> &nbsp; <a href='{portal}'>MON ESPACE BÉNÉFICIAIRE</a></p>{activation}"
             else:
                 execute(eng,"UPDATE communication_events SET status='ANNULE',claim_token=NULL,last_error='Type de communication non géré par le worker',updated_at=:u WHERE id=:i AND claim_token=:c",{'u':now,'i':e['id'],'c':claim});continue
             send_mail(cfg,recipient,subject,body)
@@ -355,6 +371,7 @@ def run_once():
     # I9-H2.4: keep countersignature requests alive until the trainer signs.
     # Refresh before SMTP processing so end-of-slot requests are actually queued.
     refresh_countersign_communications(eng)
+    refresh_teams_reminder_communications(eng)
     if not smtp.get('enabled'): return teams_changed + pip_changed
     _process_portal_retention(eng,smtp,base)
     now=datetime.now(timezone.utc).isoformat()

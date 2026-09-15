@@ -725,11 +725,12 @@ def render_trainer_action(action, trainer):
         else: st.info('Aucun document mis à disposition pour cette action.')
         if trainer.get('can_upload_documents'):
             st.markdown('#### Déposer un document pour tous les bénéficiaires de cette action')
-            updoc=st.file_uploader('Document',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'tr_course_doc_{aid}')
-            if st.button('Déposer dans Documents de cours',key=f'tr_course_doc_btn_{aid}',disabled=updoc is None):
+            updoc=st.file_uploader('Document(s)',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],accept_multiple_files=True,key=f'tr_course_doc_{aid}')
+            if st.button('Déposer dans Documents de cours',key=f'tr_course_doc_btn_{aid}',disabled=not updoc):
                 try:
-                    rid,h,dedup=store_document(ENGINE,updoc.getvalue(),updoc.name,'COURS',actor,action_id=aid,audience='ACTION_BENEFICIARIES')
-                    st.success('Document déposé. '+('Le contenu existait déjà : aucune seconde copie physique n’a été créée.' if dedup else 'Nouveau fichier physique enregistré.'));rerun()
+                    for f in updoc:
+                        store_document(ENGINE,f.getvalue(),f.name,'COURS',actor,action_id=aid,audience='ACTION_BENEFICIARIES',origin='INTERVENANT')
+                    st.success(f'{len(updoc)} document(s) déposé(s).');rerun()
                 except Exception as ex: _ui_incident('operation_interface',ex)
         else: st.caption("Le dépôt de documents n'est pas autorisé pour votre compte. L'administrateur peut activer ce droit.")
     with tab_tools:
@@ -983,7 +984,7 @@ def beneficiary_portal_page():
                 hist=[]
                 for ev in evs:
                     occ=ev['occurrence']; rep=ev.get('report')
-                    hist.append({'Séance':f"{occ.get('slot_date')} — {occ.get('start_time')}–{occ.get('end_time')}",'Réunion Microsoft':'Constatée' if rep else 'Rapport en attente','Ma présence Teams':_duration_hms(ev.get('seconds')) if ev.get('seconds') else ('Non observée' if rep else '—')})
+                    hist.append({'Séance':f"{occ.get('slot_date')} — {occ.get('start_time')}–{occ.get('end_time')}",'Réunion Microsoft':'Constatée' if rep else 'Rapport en attente','Ma présence Teams':_duration_hms(ev.get('seconds')) if ev.get('seconds') else ('Rapprochement non établi' if rep else '—')})
                 if hist: st.dataframe(pd.DataFrame(hist),use_container_width=True,hide_index=True)
     with tabs[4]:
         if not prescriptions:
@@ -1040,7 +1041,7 @@ def beneficiary_portal_page():
                 sig=one(ENGINE,"SELECT * FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':pp['id'],'s':sl['id']})
                 cs_ok,_=required_slot_countersignatures_complete(ENGINE,sl['id'])
                 te=next((x for x in teams_participant_evidence(ENGINE,aa['id'],pp['id']) if int(x['occurrence']['slot_id'])==int(sl['id'])),None)
-                rows.append({'Séance':f"{sl['slot_date']} — {sl['start_time']}–{sl['end_time']}",'Mon émargement':'Signé' if sig else 'Non signé','Contresignature':'Validée' if cs_ok else 'En attente','Présence Teams':_duration_hms(te.get('seconds')) if te and te.get('seconds') else ('Non observée' if te and te.get('report') else 'Rapport en attente')})
+                rows.append({'Séance':f"{sl['slot_date']} — {sl['start_time']}–{sl['end_time']}",'Mon émargement':'Signé' if sig else 'Non signé','Contresignature':'Validée' if cs_ok else 'En attente','Présence Teams':_duration_hms(te.get('seconds')) if te and te.get('seconds') else ('Rapprochement non établi' if te and te.get('report') else 'Rapport en attente')})
             if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
             try:
                 epdf=individual_pdf(ENGINE,pp['id'])
@@ -1729,9 +1730,8 @@ def action_tools_tab(a):
         selected=st.multiselect('Outils disponibles pour cette action',list(cmap),default=defaults,key=f'action_tools_allow_{a["id"]}')
         if st.button('ENREGISTRER LES OUTILS DE L’ACTION',key=f'action_tools_allow_save_{a["id"]}',type='primary'):
             wanted={cmap[x]['tool_code'] for x in selected}
-            for tx in compatible_tools:
-                set_action_tool_allowed(ENGINE,a['id'],tx['tool_code'],tx['tool_code'] in wanted,st.session_state.admin_email)
-            st.success('Liste des outils autorisés enregistrée.'); rerun()
+            set_action_tools_allowed(ENGINE,a['id'],wanted,st.session_state.admin_email)
+            st.success('Liste des outils autorisés enregistrée en base.'); rerun()
     tools=action_allowed_tools(ENGINE,a['id'])
     c1,c2,c3=st.columns(3);c1.metric('Bénéficiaires rattachés',len(linked));c2.metric('Outils autorisés',len(tools));c3.metric('Prescriptions',len([x for x in list_tool_prescriptions(ENGINE,action_id=a['id']) if x.get('status')!='ANNULE']))
     if linked and tools:
@@ -1788,7 +1788,12 @@ def action_tools_tab(a):
             ok,msg=cancel_tool_prescription_owned(ENGINE,rr['prescription_id'],'ADMIN',st.session_state.admin_email,st.session_state.admin_email)
             if ok: st.success('Prescription supprimée de la liste active et conservée dans la piste d’audit.');rerun()
             else: st.warning(msg)
-        if not owns and rr.get('status')!='ANNULE': st.caption('Suppression indisponible : cette prescription a été créée par un autre utilisateur.')
+        if not owns and rr.get('status')!='ANNULE':
+            st.caption('Prescription créée par un autre utilisateur. Une annulation ADMIN constitue une décision de supervision et sera auditée.')
+            if st.button('ANNULER EN SUPERVISION ADMIN',key=f'presc_supervise_cancel_{rr["id"]}'):
+                ok,msg=cancel_tool_prescription_admin(ENGINE,rr['prescription_id'],st.session_state.admin_email,st.session_state.admin_email)
+                if ok: st.success('Prescription annulée par supervision ADMIN et historisée.');rerun()
+                else: st.warning(msg)
     with st.expander('⚙️ Catalogue central des outils Clarté360'):
         cat=list_tool_catalog(ENGINE,active_only=False)
         if cat:
@@ -1951,7 +1956,7 @@ def teams_tab(a):
     if recon:
         st.markdown('#### Rapprochement présence Teams / émargement')
         st.caption('La présence Teams complète la preuve d’émargement. Une absence de rapport Microsoft n’est jamais affichée comme une absence du participant.')
-        st.dataframe(pd.DataFrame([{'Séance':f"{x['slot_date']} — {x['start_time']}",'Participant':x['participant'],'Présence Teams':'Oui' if x['teams_present'] else ('Non observée' if any(ev.get('report') and ev.get('slot_id')==x['slot_id'] for ev in evidence) else 'Rapport en attente'),'Durée Teams':_duration_hms(x['teams_seconds']) if x['teams_present'] else '—','Émargé':'Oui' if x['signed'] else 'Non','Absent déclaré':'Oui' if x['absent'] else 'Non','À vérifier':'Oui' if x['anomaly'] else ''} for x in recon]),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame([{'Séance':f"{x['slot_date']} — {x['start_time']}",'Participant':x['participant'],'Présence Teams':'Oui' if x['teams_present'] else ('Rapprochement non établi' if any(ev.get('report') and ev.get('slot_id')==x['slot_id'] for ev in evidence) else 'Rapport en attente'),'Durée Teams':_duration_hms(x['teams_seconds']) if x['teams_present'] else '—','Émargé':'Oui' if x['signed'] else 'Non','Absent déclaré':'Oui' if x['absent'] else 'Non','À vérifier':'Oui' if x['anomaly'] else ''} for x in recon]),use_container_width=True,hide_index=True)
 
     unmatched=teams_unmatched_attendance(ENGINE,a['id'])
     if unmatched:
@@ -2638,19 +2643,28 @@ def documents_tab(a):
     with st.expander('Déposer un document par n° d’action',expanded=False):
         st.caption(f"Action sélectionnée : {a['action_no']}. Le document de cours sera visible par tous les bénéficiaires de cette action disposant d’un espace personnel.")
         category=st.selectbox('Catégorie',['COURS','ADMINISTRATIF'],format_func=lambda x:'Documents de cours' if x=='COURS' else 'Document administratif',key=f'doccat_{a["id"]}')
-        updoc=st.file_uploader('Fichier (25 Mo maximum)',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'action_doc_{a["id"]}')
-        if st.button('DÉPOSER LE DOCUMENT',type='primary',key=f'action_doc_btn_{a["id"]}',disabled=updoc is None):
+        updoc=st.file_uploader('Fichier(s) (25 Mo maximum par fichier)',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],accept_multiple_files=True,key=f'action_doc_{a["id"]}')
+        if st.button('DÉPOSER LE(S) DOCUMENT(S)',type='primary',key=f'action_doc_btn_{a["id"]}',disabled=not updoc):
             try:
-                rid,h,dedup=store_document(ENGINE,updoc.getvalue(),updoc.name,category,st.session_state.admin_email,action_id=a['id'],audience='ACTION_BENEFICIARIES')
-                st.success('Document enregistré. '+('Déduplication SHA-256 : le fichier physique existait déjà.' if dedup else 'Nouveau contenu physique enregistré.'));rerun()
+                for f in updoc:
+                    store_document(ENGINE,f.getvalue(),f.name,category,st.session_state.admin_email,action_id=a['id'],audience='ACTION_BENEFICIARIES',origin='ADMIN')
+                st.success(f'{len(updoc)} document(s) enregistré(s).');rerun()
             except Exception as ex: _ui_incident('operation_interface',ex)
     refs=list_action_documents(ENGINE,a['id'])
     if refs:
-        st.dataframe(pd.DataFrame([{'Nom':d['display_name'],'Catégorie':d['category'],'Taille (Ko)':round(d['size_bytes']/1024,1),'SHA-256':d['sha256'][:16]+'…','Déposé par':d.get('uploaded_by') or ''} for d in refs]),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame([{'Nom':d['display_name'],'Catégorie':d['category'],'Origine':d.get('origin') or d.get('uploaded_by') or '',
+                                   'Date':(d.get('created_at') or '')[:16].replace('T',' '),'Taille (Ko)':round(d['size_bytes']/1024,1),
+                                   'SHA-256':d['sha256'][:16]+'…','Déposé par':d.get('uploaded_by') or '',
+                                   'Protégé':'Oui' if d.get('regulatory') or d.get('immutable_reason') else 'Non'} for d in refs]),use_container_width=True,hide_index=True)
         rmap={f"#{d['id']} — {d['display_name']}":d for d in refs};rl=st.selectbox('Document à gérer',list(rmap),key=f'docref_{a["id"]}');rr=rmap[rl];path=Path(rr['storage_path'])
         cdl,cdel=st.columns(2)
         if path.is_file(): cdl.download_button('Télécharger',path.read_bytes(),file_name=rr['display_name'],key=f'adm_doc_dl_{rr["id"]}',use_container_width=True)
-        if cdel.button('Retirer de cette action',key=f'adm_doc_del_{rr["id"]}',use_container_width=True): delete_document_reference(ENGINE,rr['id'],st.session_state.admin_email);st.success('Référence retirée. Le fichier physique n’est supprimé que s’il n’est plus utilisé ailleurs.');rerun()
+        if cdel.button('Retirer de cette action',key=f'adm_doc_del_{rr["id"]}',use_container_width=True,
+                       disabled=bool(rr.get('regulatory') or rr.get('immutable_reason'))):
+            if delete_document_reference(ENGINE,rr['id'],st.session_state.admin_email):
+                st.success('Référence retirée. Le fichier physique n’est supprimé que s’il n’est plus utilisé ailleurs.');rerun()
+            else:
+                st.warning('Ce document est protégé et ne peut pas être supprimé par une opération métier standard.')
     else: st.info('Aucun document de bibliothèque pour cette action.')
 
     try:

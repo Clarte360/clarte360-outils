@@ -1,3 +1,17 @@
+## 3.0.0-I9-J1-AB-RC1 — Jalon 1 A+B
+
+- Sélection des outils par action persistée atomiquement et relue depuis la DB.
+- Contrôle serveur du droit intervenant `can_prescribe_tools`.
+- Annulation de prescription par supervision ADMIN avec audit.
+- Métadonnées documentaires additives : origine, preuve réglementaire, motif de protection.
+- Dépôts multiples ADMIN / INTERVENANT.
+- Suppression standard bloquée pour les preuves protégées.
+- Rappels Teams H-2 / H-15 pour bénéficiaires et intervenants/coanimateurs affectés au créneau.
+- Recalcul des rappels non envoyés après déplacement ; neutralisation des créneaux annulés/reportés/remplacés.
+- Emails Teams avec lien réunion + espace personnel et rappel d'activation bénéficiaire si nécessaire.
+- Terminologie Graph prudente : `Rapprochement non établi` au lieu d'une formulation assimilable à une absence.
+- Tests : 296 passed ; release_check : CANDIDATE TECHNIQUE OK.
+
 ## 3.0.0-I9-H2.8 — Consolidation ergonomie / outils / qualité / robustesse
 
 - Isolation de chaque onglet administrateur : une panne locale ne bloque plus les onglets suivants et les incidents sont journalisés avec leur contexte réel.

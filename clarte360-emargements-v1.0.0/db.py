@@ -627,6 +627,10 @@ def init_db(engine: Engine):
             "ALTER TABLE quality_issues ADD COLUMN source_role TEXT",
             "ALTER TABLE quality_issues ADD COLUMN source_ref TEXT",
             "ALTER TABLE quality_issues ADD COLUMN updated_at TEXT",
+            # I9 Jalon 1 A: metadata documentaire additive, sans toucher aux preuves existantes.
+            "ALTER TABLE document_references ADD COLUMN origin TEXT",
+            "ALTER TABLE document_references ADD COLUMN regulatory INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE document_references ADD COLUMN immutable_reason TEXT",
         ]
         for sql in post_migrations:
             try: c.execute(text(sql))

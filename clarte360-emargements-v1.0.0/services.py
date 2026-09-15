@@ -1765,6 +1765,68 @@ def queue_communication(engine, action_id, communication_type, recipient_email, 
 def mark_communication(engine,event_id,status,*,sent_at=None,last_error=None):
     execute(engine,'UPDATE communication_events SET status=:s,sent_at=COALESCE(:at,sent_at),last_error=:er,updated_at=:u WHERE id=:i',{'s':status,'at':sent_at,'er':last_error,'u':utcnow_iso(),'i':event_id})
 
+
+def refresh_teams_reminder_communications(engine, *, now=None):
+    """Create/recalculate Teams H-2 and H-15 reminders from the live assignments."""
+    now_utc=now or datetime.now(ZoneInfo('UTC'))
+    if now_utc.tzinfo is None:
+        now_utc=now_utc.replace(tzinfo=ZoneInfo('UTC'))
+
+    # Neutralise reminders that must never be sent anymore.
+    execute(engine,"""UPDATE communication_events SET status='ANNULE',
+      last_error='Rappel Teams neutralisé : module/créneau non éligible',updated_at=:u
+      WHERE communication_type IN ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15')
+        AND status IN ('A_ENVOYER','ECHEC')
+        AND (slot_id IN (SELECT id FROM slots WHERE status IN ('ANNULE','REPORTE','REMPLACE'))
+             OR action_id NOT IN (SELECT action_id FROM action_modules WHERE module_code='TEAMS' AND enabled=1))""",
+      {'u':utcnow_iso()})
+
+    touched=0
+    actions=q(engine,"""SELECT a.id FROM actions a JOIN action_modules m ON m.action_id=a.id
+      WHERE m.module_code='TEAMS' AND m.enabled=1 AND a.status NOT IN ('ANNULEE','ARCHIVEE') ORDER BY a.id""")
+    for ar in actions:
+        aid=ar['id']; tz_name=organization_runtime_config(engine,aid)['timezone']
+        slots=q(engine,"""SELECT * FROM slots WHERE action_id=:a
+          AND COALESCE(status,'PREVU') NOT IN ('ANNULE','REPORTE','REMPLACE') ORDER BY slot_date,start_time,id""",{'a':aid})
+        for sl in slots:
+            start,_=slot_start_end(sl,tz_name); start_utc=start.astimezone(ZoneInfo('UTC'))
+            if start_utc<=now_utc:
+                execute(engine,"""UPDATE communication_events SET status='ANNULE',
+                  last_error='Rappel Teams devenu hors délai',updated_at=:u
+                  WHERE slot_id=:s AND communication_type IN ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15')
+                    AND status IN ('A_ENVOYER','ECHEC')""",{'u':utcnow_iso(),'s':sl['id']})
+                continue
+
+            recipients=[]
+            for p in q(engine,"""SELECT id,email,first_name,last_name,beneficiary_id FROM participants
+              WHERE action_id=:a AND active=1 AND email IS NOT NULL AND TRIM(email)<>''""",{'a':aid}):
+                recipients.append(('P',p['id'],None,p['email'],p))
+            for tr in list_slot_trainers(engine,sl['id']):
+                email=(tr.get('email') or '').strip()
+                if email:
+                    recipients.append(('T',None,tr['trainer_id'],email,tr))
+
+            for label,minutes in (('H2',120),('H15',15)):
+                due=(start_utc-timedelta(minutes=minutes)).isoformat()
+                ctype='TEAMS_REMINDER_'+label
+                for kind,pid,tid,email,rec in recipients:
+                    key=f'teams:{label.lower()}:{sl["id"]}:{kind}:{pid or tid}'
+                    meta={'recipient_kind':'BENEFICIARY' if kind=='P' else 'TRAINER',
+                          'slot_date':sl['slot_date'],'start_time':sl['start_time'],'end_time':sl['end_time'],
+                          'trainer_role':rec.get('role') if kind=='T' else None}
+                    existing=one(engine,'SELECT * FROM communication_events WHERE idempotency_key=:k',{'k':key})
+                    if existing:
+                        if existing.get('status') not in ('ENVOYE','ANNULE'):
+                            execute(engine,"""UPDATE communication_events SET due_at=:d,recipient_email=:e,
+                              metadata_json=:m,status='A_ENVOYER',last_error=NULL,updated_at=:u WHERE id=:i""",
+                              {'d':due,'e':email,'m':json.dumps(meta,ensure_ascii=False),'u':utcnow_iso(),'i':existing['id']})
+                            touched+=1
+                    else:
+                        queue_communication(engine,aid,ctype,email,participant_id=pid,trainer_id=tid,slot_id=sl['id'],
+                                            due_at=due,metadata=meta,idempotency_key=key)
+                        touched+=1
+    return touched
+
 def communication_journal(engine,action_id):
     return q(engine,"""SELECT ce.*,p.first_name participant_first_name,p.last_name participant_last_name,t.full_name trainer_name,
       s.slot_date,s.start_time,s.end_time FROM communication_events ce
@@ -1984,7 +2046,7 @@ def set_beneficiary_portal_active(engine,beneficiary_id,active,actor='system'):
     execute(engine,'UPDATE beneficiary_portal_accounts SET active=:a,updated_at=:u WHERE beneficiary_id=:b',{'a':1 if active else 0,'u':utcnow_iso(),'b':beneficiary_id})
     audit(engine,'BENEFICIARY_PORTAL_STATUS_CHANGED',actor=actor,entity_type='beneficiary',entity_id=beneficiary_id,details={'active':bool(active)})
 
-def store_document(engine,data:bytes,display_name,category,actor='system',action_id=None,beneficiary_id=None,participant_id=None,audience='ACTION_BENEFICIARIES',visible_to_beneficiary=True,max_file_mb=DEFAULT_MAX_FILE_MB,allowed_extensions=None):
+def store_document(engine,data:bytes,display_name,category,actor='system',action_id=None,beneficiary_id=None,participant_id=None,audience='ACTION_BENEFICIARIES',visible_to_beneficiary=True,max_file_mb=DEFAULT_MAX_FILE_MB,allowed_extensions=None,origin=None,regulatory=False,immutable_reason=None):
     import hashlib, mimetypes
     if not data: raise ValueError('Fichier vide.')
     if len(data)>int(max_file_mb)*1024*1024: raise ValueError(f'Fichier trop volumineux (maximum {max_file_mb} Mo).')
@@ -1998,8 +2060,8 @@ def store_document(engine,data:bytes,display_name,category,actor='system',action
         path=BENEFICIARY_DOC_DIR/digest
         if not path.exists(): path.write_bytes(data)
         sfid=execute(engine,"""INSERT INTO stored_files(sha256,storage_path,size_bytes,mime_type,extension,created_at,last_verified_at) VALUES(:h,:p,:s,:m,:e,:c,:c)""",{'h':digest,'p':str(path),'s':len(data),'m':mimetypes.guess_type(display_name)[0] or 'application/octet-stream','e':ext,'c':utcnow_iso()})
-    rid=execute(engine,"""INSERT INTO document_references(stored_file_id,action_id,beneficiary_id,participant_id,category,display_name,audience,visible_to_beneficiary,uploaded_by,created_at)
-        VALUES(:f,:a,:b,:p,:c,:n,:au,:v,:u,:d)""",{'f':sfid,'a':action_id,'b':beneficiary_id,'p':participant_id,'c':category,'n':display_name,'au':audience,'v':1 if visible_to_beneficiary else 0,'u':actor,'d':utcnow_iso()})
+    rid=execute(engine,"""INSERT INTO document_references(stored_file_id,action_id,beneficiary_id,participant_id,category,display_name,audience,visible_to_beneficiary,uploaded_by,created_at,origin,regulatory,immutable_reason)
+        VALUES(:f,:a,:b,:p,:c,:n,:au,:v,:u,:d,:o,:r,:ir)""",{'f':sfid,'a':action_id,'b':beneficiary_id,'p':participant_id,'c':category,'n':display_name,'au':audience,'v':1 if visible_to_beneficiary else 0,'u':actor,'d':utcnow_iso(),'o':origin or str(actor or 'system'),'r':1 if regulatory else 0,'ir':immutable_reason})
     audit(engine,'DOCUMENT_REFERENCE_CREATED',action_id,actor,'document_reference',rid,{'sha256':digest,'deduplicated':bool(row),'display_name':display_name,'beneficiary_id':beneficiary_id})
     return rid,digest,bool(row)
 
@@ -2020,6 +2082,10 @@ def list_beneficiary_documents(engine,beneficiary_id):
 def delete_document_reference(engine,reference_id,actor='system'):
     r=one(engine,'SELECT * FROM document_references WHERE id=:i AND deleted_at IS NULL',{'i':reference_id})
     if not r: return False
+    if r.get('regulatory') or r.get('immutable_reason'):
+        audit(engine,'DOCUMENT_DELETE_BLOCKED',r.get('action_id'),actor,'document_reference',reference_id,
+              {'reason':r.get('immutable_reason') or 'REGULATORY_EVIDENCE'})
+        return False
     execute(engine,'UPDATE document_references SET deleted_at=:d WHERE id=:i',{'d':utcnow_iso(),'i':reference_id})
     remaining=one(engine,'SELECT COUNT(*) n FROM document_references WHERE stored_file_id=:f AND deleted_at IS NULL',{'f':r['stored_file_id']})['n']
     if not remaining:
@@ -2743,6 +2809,25 @@ def set_action_tool_allowed(engine, action_id, tool_code, allowed, actor='admin'
     return True,''
 
 
+def set_action_tools_allowed(engine, action_id, tool_codes, actor='admin'):
+    """Persist the complete ADMIN selection atomically and return the DB truth."""
+    wanted={str(x or '').strip().upper() for x in (tool_codes or []) if str(x or '').strip()}
+    tools=q(engine,"SELECT id,tool_code FROM tool_catalog WHERE active=1 AND prescription_allowed=1 ORDER BY id")
+    known={x['tool_code'] for x in tools}
+    unknown=sorted(wanted-known)
+    if unknown:
+        raise ValueError('Outil(s) inconnu(s) : '+', '.join(unknown))
+    now=utcnow_iso()
+    with engine.begin() as c:
+        for tool in tools:
+            c.execute(text("""INSERT INTO action_tool_permissions(action_id,tool_id,tool_code,allowed,created_by,created_at,updated_at)
+              VALUES(:a,:t,:c,:v,:by,:n,:n)
+              ON CONFLICT(action_id,tool_id) DO UPDATE SET allowed=excluded.allowed,updated_at=excluded.updated_at"""),
+              {'a':action_id,'t':tool['id'],'c':tool['tool_code'],'v':1 if tool['tool_code'] in wanted else 0,'by':actor,'n':now})
+    audit(engine,'ACTION_TOOL_PERMISSIONS_REPLACED',action_id,actor,'action',action_id,{'allowed_tool_codes':sorted(wanted)})
+    return action_allowed_tools(engine,action_id)
+
+
 def action_tool_is_allowed(engine, action_id, tool_code):
     row=one(engine,"""SELECT 1 ok FROM action_tool_permissions ap JOIN tool_catalog tc ON tc.id=ap.tool_id
       WHERE ap.action_id=:a AND ap.allowed=1 AND tc.tool_code=:c""",{'a':action_id,'c':(tool_code or '').upper()})
@@ -2769,6 +2854,13 @@ def create_tool_prescription(engine, tool_code, beneficiary_id, action_id, parti
       {'a':action_id,'b':beneficiary_id,'c':tool.get('tool_code')})
     if duplicate:
         raise ValueError(f"Cet outil est déjà prescrit à ce bénéficiaire pour cette action ({duplicate['status'].replace('_',' ')}).")
+    if str(prescriber_type or '').upper()=='TRAINER':
+        try:
+            trainer_id=int(prescriber_id)
+        except Exception:
+            raise ValueError("Identité intervenant invalide pour cette prescription.")
+        if not trainer_can_prescribe_tools(engine,trainer_id,action_id):
+            raise ValueError("Vous n'êtes pas autorisé à prescrire des outils Clarté360 sur cette action.")
     if participant_id:
         linked=one(engine,'SELECT id FROM participants WHERE id=:p AND action_id=:a AND beneficiary_id=:b AND active=1',{'p':participant_id,'a':action_id,'b':beneficiary_id})
         if not linked: raise ValueError("Le participant n'est pas rattaché à ce bénéficiaire dans cette action.")
@@ -2836,6 +2928,19 @@ def cancel_tool_prescription_owned(engine, prescription_id, requester_type, requ
         return False,"Vous pouvez supprimer uniquement une prescription que vous avez vous-même créée."
     update_tool_prescription_status(engine,prescription_id,'ANNULE',actor,{'reason':'suppression_par_createur'})
     audit(engine,'TOOL_PRESCRIPTION_CANCELLED_BY_CREATOR',row.get('action_id'),actor,'tool_prescription',prescription_id,{})
+    return True,''
+
+
+def cancel_tool_prescription_admin(engine, prescription_id, admin_id, actor='admin'):
+    """Explicit ADMIN supervision override; creator ownership remains the default rule."""
+    row=one(engine,'SELECT * FROM tool_prescriptions WHERE prescription_id=:p',{'p':prescription_id})
+    if not row: return False,'Prescription introuvable.'
+    if row.get('status')=='ANNULE': return True,''
+    update_tool_prescription_status(engine,prescription_id,'ANNULE',actor,
+                                    {'reason':'supervision_admin','admin_id':str(admin_id or actor)})
+    audit(engine,'TOOL_PRESCRIPTION_ADMIN_CANCELLED',row.get('action_id'),actor,'tool_prescription',prescription_id,
+          {'original_prescriber_type':row.get('prescriber_type'),'original_prescriber_id':row.get('prescriber_id'),
+           'admin_id':str(admin_id or actor)})
     return True,''
 
 
