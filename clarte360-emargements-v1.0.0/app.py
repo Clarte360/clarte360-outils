@@ -17,6 +17,7 @@ from persistent_session import create_session, resolve_session, revoke_session, 
 from ui_guard import log_ui_exception, safe_call, user_message
 from production_readiness import runtime_readiness
 from services import *
+from services import _duration_hms
 from input_validation import validate_action_no, validate_short_text, validate_date_range, validate_participant_payload, validate_email, validate_full_name, InputValidationError
 from excel_import import read_action_xlsm, list_action_numbers_for_profile, read_clarte360_xlsm, read_adca_xlsm, list_action_numbers
 from pdf_utils import collective_pdf, individual_pdf, certificate_pdf, quality_response_pdf, teams_evidence_pdf
@@ -1842,14 +1843,34 @@ def teams_tab(a):
             if not rep:
                 st.info(f"{label} — rapport Microsoft non encore récupéré. Ce statut ne signifie pas absence.")
                 continue
+            tz_name=organization_runtime_config(ENGINE,a['id']).get('timezone') or TZ or 'Europe/Paris'
+            ms=rep.get('meeting_start_utc'); me=rep.get('meeting_end_utc')
+            try:
+                ms_local=local_dt(ms,tz_name) if ms else None
+                me_local=local_dt(me,tz_name) if me else None
+                meeting_seconds=int((me_local-ms_local).total_seconds()) if ms_local and me_local else 0
+                actual_start=ms_local.strftime('%d/%m/%Y %H:%M:%S') if ms_local else '—'
+                actual_end=me_local.strftime('%d/%m/%Y %H:%M:%S') if me_local else '—'
+            except Exception:
+                meeting_seconds=0; actual_start=ms or '—'; actual_end=me or '—'
             st.success(f"{label} — réunion Microsoft constatée · {len(conns)} connexion(s).")
+            m1,m2,m3,m4=st.columns(4)
+            m1.metric('Début réel',actual_start)
+            m2.metric('Fin réelle',actual_end)
+            m3.metric('Durée réunion',_duration_hms(meeting_seconds))
+            m4.metric('Connexions',len(conns))
             rows=[]
             for r in conns:
                 match=(f"{r.get('participant_first_name','')} {r.get('participant_last_name','')}".strip() if r.get('participant_id') else 'Non rapproché')
                 if not r.get('participant_id'):
                     sug=suggest_teams_participant_match(ENGINE,a['id'],r.get('display_name'))
                     if sug: match=f"Suggestion : {sug.get('first_name','')} {sug.get('last_name','')} — à confirmer"
-                rows.append({'Identité / pseudo Teams':r.get('display_name') or '—','Email Microsoft':r.get('email') or '—','Rôle':r.get('role') or '—','Entrée UTC':r.get('join_time_utc') or '—','Sortie UTC':r.get('leave_time_utc') or '—','Durée exacte':_duration_hms(r.get('duration_seconds')),'Rapprochement Clarté360':match})
+                try:
+                    j=local_dt(r.get('join_time_utc'),tz_name).strftime('%d/%m/%Y %H:%M:%S') if r.get('join_time_utc') else '—'
+                    l=local_dt(r.get('leave_time_utc'),tz_name).strftime('%d/%m/%Y %H:%M:%S') if r.get('leave_time_utc') else '—'
+                except Exception:
+                    j=r.get('join_time_utc') or '—'; l=r.get('leave_time_utc') or '—'
+                rows.append({'Identité / pseudo Teams':r.get('display_name') or '—','Email Microsoft':r.get('email') or '—','Rôle':r.get('role') or '—','Entrée':j,'Sortie':l,'Durée exacte':_duration_hms(r.get('duration_seconds')),'Rapprochement Clarté360':match})
             st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
             cpdf1,cpdf2=st.columns(2)
             cpdf1.download_button('🖨️ Preuve de cette réunion',teams_evidence_pdf(ENGINE,a['id'],rep['id'],technical=True),file_name=f"{a['action_no']}_{ev.get('slot_date') or 'reunion'}_preuve_Teams_technique.pdf",mime='application/pdf',key=f'adm_team_pdf_{rep["id"]}')

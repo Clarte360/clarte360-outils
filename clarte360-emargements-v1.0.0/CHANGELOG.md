@@ -1,3 +1,12 @@
+## 3.0.0-I9-H2.6 — Correctif Teams preuves / helper durée
+
+- Correction du crash `NameError: _duration_hms is not defined` dans l’onglet Teams : import explicite du helper privé depuis `services`.
+- Affichage administrateur enrichi des réunions réellement constatées : début réel, fin réelle, durée exacte et nombre de connexions.
+- Conversion des heures d’entrée/sortie Teams dans le fuseau de l’organisation au lieu d’afficher uniquement l’UTC brut.
+- Conservation du détail par identité/pseudo, email Microsoft, rôle, durée exacte et rapprochement Clarté360.
+- Les références techniques Graph restent réservées à l’administration.
+- Aucun changement de schéma ni de données persistantes.
+
 # V3.0.0-I9-F — Études PIP/O*NET pseudonymisées — 12/09/2026
 
 - base obligatoire conservée : I9-E validée ;
