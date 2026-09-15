@@ -1725,30 +1725,53 @@ def communication_journal(engine,action_id):
       WHERE ce.action_id=:a ORDER BY ce.created_at DESC,ce.id DESC""",{'a':action_id})
 
 def refresh_countersign_communications(engine, *, now=None, tz_name=None):
-    """Queue one trainer request per slot/trainer. Immediate when all participant statuses are final; otherwise at slot end."""
+    """Queue one trainer request only when the countersign workflow is actionable.
+
+    Rules:
+    - before slot end: queue immediately only when every participant status is already final;
+    - at/after slot end: queue the request even if some participants still need to be qualified;
+    - future slots with pending participants must not appear as outstanding countersignatures;
+    - stale future requests created by older builds are cancelled, never sent early.
+    """
     current_utc=now or datetime.now(ZoneInfo('UTC'))
-    if current_utc.tzinfo is None: current_utc=current_utc.replace(tzinfo=ZoneInfo('UTC'))
+    if current_utc.tzinfo is None:
+        current_utc=current_utc.replace(tzinfo=ZoneInfo('UTC'))
     created=0
     slots=q(engine,"""SELECT s.* FROM slots s JOIN actions a ON a.id=s.action_id
       WHERE a.status IN ('ACTIVE','A_CLOTURER') AND COALESCE(s.status,'PREVU') NOT IN ('ANNULE','REPORTE')""")
     for sl in slots:
         local_tz=tz_name or organization_runtime_config(engine,sl['action_id'])['timezone']
-        _,end=slot_start_end(sl,local_tz); states=_slot_participant_states(engine,sl['id']); pending=[x for x in states if x['status']=='EN_ATTENTE']
-        due_now=not pending
-        due=end.astimezone(ZoneInfo('UTC'))
-        if not due_now and current_utc < due:
-            due_iso=due.isoformat()
-        else:
-            due_iso=current_utc.astimezone(ZoneInfo('UTC')).isoformat()
+        _,end=slot_start_end(sl,local_tz)
+        states=_slot_participant_states(engine,sl['id'])
+        pending=[x for x in states if x['status']=='EN_ATTENTE']
+        all_final=bool(states) and not pending
+        slot_ended=current_utc >= end.astimezone(ZoneInfo('UTC'))
+        actionable=all_final or slot_ended
+
+        # Clean up requests incorrectly pre-created by older releases for future slots.
+        if not actionable:
+            execute(engine,"""UPDATE communication_events SET status='ANNULE',last_error='Annulé automatiquement : créneau futur non encore à contresigner',updated_at=:u
+              WHERE slot_id=:s AND communication_type='COUNTERSIGN_REQUEST' AND status IN ('A_ENVOYER','EN_FILE')""",
+              {'u':utcnow_iso(),'s':sl['id']})
+            continue
+
+        due_iso=current_utc.astimezone(ZoneInfo('UTC')).isoformat()
         signed={int(x['trainer_id']) for x in list_slot_countersignatures(engine,sl['id']) if x.get('trainer_id') is not None}
         for tr in list_slot_trainers(engine,sl['id']):
             tid=int(tr['trainer_id'])
-            if tid in signed or not (tr.get('email') or '').strip(): continue
+            if tid in signed or not (tr.get('email') or '').strip():
+                continue
             key=f'countersign:{sl["id"]}:{tid}'
-            eid=queue_communication(engine,sl['action_id'],'COUNTERSIGN_REQUEST',tr['email'],trainer_id=tid,slot_id=sl['id'],trigger_mode='AUTO',due_at=due_iso,metadata={'reason':'ALL_FINAL' if due_now else 'SLOT_END','pending_count':len(pending)},idempotency_key=key)
-            # Existing not-yet-sent request is accelerated if everybody becomes final before end.
-            if due_now:
-                execute(engine,"UPDATE communication_events SET due_at=:d,updated_at=:u WHERE id=:i AND status='A_ENVOYER'",{'d':due_iso,'u':utcnow_iso(),'i':eid})
+            existing=one(engine,'SELECT * FROM communication_events WHERE idempotency_key=:k ORDER BY id DESC LIMIT 1',{'k':key})
+            if existing and existing.get('status')=='ENVOYE':
+                continue
+            if existing and existing.get('status') in ('ANNULE','ECHEC'):
+                execute(engine,"""UPDATE communication_events SET status='A_ENVOYER',due_at=:d,last_error=NULL,updated_at=:u,metadata_json=:m
+                  WHERE id=:i""",{'d':due_iso,'u':utcnow_iso(),'m':json.dumps({'reason':'ALL_FINAL' if all_final and not slot_ended else 'SLOT_END','pending_count':len(pending)},ensure_ascii=False),'i':existing['id']})
+                created+=1
+                continue
+            eid=queue_communication(engine,sl['action_id'],'COUNTERSIGN_REQUEST',tr['email'],trainer_id=tid,slot_id=sl['id'],trigger_mode='AUTO',due_at=due_iso,metadata={'reason':'ALL_FINAL' if all_final and not slot_ended else 'SLOT_END','pending_count':len(pending)},idempotency_key=key)
+            execute(engine,"UPDATE communication_events SET due_at=:d,updated_at=:u WHERE id=:i AND status='A_ENVOYER'",{'d':due_iso,'u':utcnow_iso(),'i':eid})
             created+=1
     return created
 

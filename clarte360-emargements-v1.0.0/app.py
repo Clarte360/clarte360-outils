@@ -1841,7 +1841,21 @@ def teams_tab(a):
             rep=ev.get('report'); conns=ev.get('connections') or []
             label=f"{ev.get('slot_date')} — {ev.get('start_time')}–{ev.get('end_time')}"
             if not rep:
-                st.info(f"{label} — rapport Microsoft non encore récupéré. Ce statut ne signifie pas absence.")
+                # Future sessions are simply planned; do not suggest a missing report before the meeting has happened.
+                try:
+                    slot_row=one(ENGINE,'SELECT * FROM slots WHERE id=:s',{'s':ev.get('slot_id')}) if ev.get('slot_id') else None
+                    tz_name=organization_runtime_config(ENGINE,a['id']).get('timezone') or TZ or 'Europe/Paris'
+                    current_local=datetime.now(ZoneInfo(tz_name))
+                    if slot_row:
+                        _, slot_end = slot_start_end(slot_row,tz_name)
+                    else:
+                        slot_end = None
+                except Exception:
+                    slot_end = None; current_local = None
+                if slot_end is not None and current_local is not None and current_local < slot_end:
+                    st.info(f"{label} — réunion planifiée. Le rapport Microsoft sera recherché automatiquement après la séance.")
+                else:
+                    st.info(f"{label} — rapport Microsoft en attente de récupération. Ce statut ne signifie pas absence.")
                 continue
             tz_name=organization_runtime_config(ENGINE,a['id']).get('timezone') or TZ or 'Europe/Paris'
             ms=rep.get('meeting_start_utc'); me=rep.get('meeting_end_utc')
@@ -2377,6 +2391,15 @@ def dispatch_tab(a):
     refresh_countersign_communications(ENGINE)
     pending_cs=[]
     for slx in slots:
+        # A countersignature is not "awaited" before the slot has ended, unless every participant
+        # already has a final status (e.g. all signatures collected early).
+        tz_name=organization_runtime_config(ENGINE,a['id']).get('timezone') or TZ or 'Europe/Paris'
+        current_local=datetime.now(ZoneInfo(tz_name))
+        _, slot_end=slot_start_end(slx,tz_name)
+        states=_slot_participant_states(ENGINE,slx['id'])
+        all_final=bool(states) and not any(x.get('status')=='EN_ATTENTE' for x in states)
+        if current_local < slot_end and not all_final:
+            continue
         signed_ids={int(x['trainer_id']) for x in list_slot_countersignatures(ENGINE,slx['id']) if x.get('trainer_id') is not None}
         for tr in list_slot_trainers(ENGINE,slx['id']):
             if int(tr['trainer_id']) not in signed_ids:
@@ -2429,7 +2452,7 @@ def tracking_tab(a):
             else: st.error(msga)
         if c2.button('Remettre EN ATTENTE',key=f'wait{a["id"]}'): set_attendance_status(ENGINE,pp['id'],ss['id'],'EN_ATTENTE',reason,st.session_state.admin_email);rerun()
         st.markdown('### Créer une séance de rattrapage')
-        absent=q(ENGINE,"""SELECT p.* FROM attendance_status x JOIN participants p ON p.id=x.participant_id WHERE x.slot_id=:s AND x.status='ABSENT'""",{'s':ss['id']});opts={f"{p['last_name']} {p['first_name']}":p['id'] for p in absent};sel=st.multiselect('Absents concernés',list(opts),default=list(opts));c1,c2,c3=st.columns(3);rd=c1.date_input('Date du rattrapage',key=f'rd{a["id"]}');rs=c2.time_input('Début rattrapage',value=dt_time(9,0),key=f'rs{a["id"]}');re=c3.time_input('Fin rattrapage',value=time(12,0),key=f're{a["id"]}')
+        absent=q(ENGINE,"""SELECT p.* FROM attendance_status x JOIN participants p ON p.id=x.participant_id WHERE x.slot_id=:s AND x.status='ABSENT'""",{'s':ss['id']});opts={f"{p['last_name']} {p['first_name']}":p['id'] for p in absent};sel=st.multiselect('Absents concernés',list(opts),default=list(opts));c1,c2,c3=st.columns(3);rd=c1.date_input('Date du rattrapage',key=f'rd{a["id"]}');rs=c2.time_input('Début rattrapage',value=dt_time(9,0),key=f'rs{a["id"]}');re=c3.time_input('Fin rattrapage',value=dt_time(12,0),key=f're{a["id"]}')
         if st.button('Créer le créneau de rattrapage',key=f'catch{a["id"]}'):
             if not sel: st.error('Sélectionnez au moins un participant absent.')
             else: ns=create_catchup_slot(ENGINE,ss['id'],rd.isoformat(),rs.strftime('%H:%M'),re.strftime('%H:%M'),[opts[x] for x in sel],st.session_state.admin_email);ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success(f'Rattrapage créé : créneau #{ns}.');rerun()

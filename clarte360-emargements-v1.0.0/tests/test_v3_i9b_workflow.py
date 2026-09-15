@@ -65,13 +65,13 @@ def test_i9b_countersign_request_immediate_if_all_final_otherwise_at_end():
     execute(e,"UPDATE actions SET status='ACTIVE' WHERE id=:a",{'a':aid})
     now=datetime(2026,9,12,10,0,tzinfo=ZoneInfo('UTC'))
     refresh_countersign_communications(e,now=now)
-    ev=one(e,"SELECT * FROM communication_events WHERE communication_type='COUNTERSIGN_REQUEST' AND slot_id=:s",{'s':sid})
-    assert ev and ev['due_at'].startswith('2026-09-20T')
+    ev=one(e,"SELECT * FROM communication_events WHERE communication_type='COUNTERSIGN_REQUEST' AND slot_id=:s AND status<>'ANNULE'",{'s':sid})
+    assert ev is None  # future session: no premature countersign request
     set_attendance_status(e,p,sid,'ABSENT','test','test')
     assert slot_countersignature_eligibility(e,sid,t,now=datetime(2026,9,12,12,0,tzinfo=ZoneInfo('Europe/Paris')))[0]
     refresh_countersign_communications(e,now=now)
-    ev2=one(e,"SELECT * FROM communication_events WHERE id=:i",{'i':ev['id']})
-    assert ev2['due_at'].startswith('2026-09-12T10:00:00')
+    ev2=one(e,"SELECT * FROM communication_events WHERE communication_type='COUNTERSIGN_REQUEST' AND slot_id=:s AND status='A_ENVOYER'",{'s':sid})
+    assert ev2 and ev2['due_at'].startswith('2026-09-12T10:00:00')
 
 
 def test_i9b_slot_offset_bounds_accept_minus_10_and_reject_absurd_values():

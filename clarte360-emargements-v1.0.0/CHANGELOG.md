@@ -390,3 +390,9 @@ Voir `INCREMENT_V3_I9_H2_4_CONTRESIGNATURE_DOCUMENTS_ERGONOMIE.md`.
 - Le calendrier utilise désormais explicitement `dt_time` pour les champs horaires et `fromisoformat`.
 - Ce correctif rétablit Calendrier et, par effet de bord Streamlit, les onglets suivants qui pouvaient sembler indisponibles (notamment Teams).
 - Ajout d'un test de non-régression dédié.
+
+## 3.0.0-I9-H2.7 — Consolidation recette réelle
+- Corrige le crash `time(12,0)` du module Suivi qui bloquait Qualité/Documents/Journal et polluait visuellement les autres onglets.
+- Corrige le workflow de contresignature : aucune demande future prématurée ; activation seulement quand le créneau est actionnable.
+- Annule automatiquement les anciennes demandes futures créées par les builds précédents.
+- Clarifie l'UX Teams pour les séances futures versus les rapports réellement en attente.
