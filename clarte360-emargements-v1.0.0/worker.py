@@ -319,7 +319,7 @@ def _process_teams(eng, cfg, base_url):
         return 0
     client=GraphClient(gcfg); changed=0
     actions=q(eng,"""SELECT DISTINCT a.id FROM actions a JOIN action_modules m ON m.action_id=a.id
-      WHERE m.module_code='TEAMS' AND m.enabled=1 AND a.status IN ('PLANIFIEE','ACTIVE','A_CLOTURER') ORDER BY a.id""")
+      WHERE m.module_code='TEAMS' AND m.enabled=1 AND a.status IN ('PLANIFIEE','ACTIVE','A_CLOTURER','CLOTUREE') ORDER BY a.id""")
     for a in actions:
         aid=a['id']
         try:
@@ -352,6 +352,9 @@ def run_once():
             pip_changed=consume_pip_outbox(eng,outbox_path,actor='worker').get('processed',0)
         except Exception as ex:
             audit(eng,'PIP_CONNECTOR_FAILED',actor='worker',entity_type='connector',details={'error':str(ex)[:500]})
+    # I9-H2.4: keep countersignature requests alive until the trainer signs.
+    # Refresh before SMTP processing so end-of-slot requests are actually queued.
+    refresh_countersign_communications(eng)
     if not smtp.get('enabled'): return teams_changed + pip_changed
     _process_portal_retention(eng,smtp,base)
     now=datetime.now(timezone.utc).isoformat()

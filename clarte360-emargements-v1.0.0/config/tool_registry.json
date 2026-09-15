@@ -1,0 +1,284 @@
+{
+  "schema_version": "1.0",
+  "updated_at": "2026-09-15",
+  "tools": [
+    {
+      "tool_code": "PIP_RIASEC_ONET",
+      "name": "PIP RIASEC / O*NET",
+      "category": "ORIENTATION_PROFESSIONNELLE",
+      "base_url": "https://pip-riasec.clarte360.com",
+      "tool_version": "1.0.7-RC5",
+      "active": true,
+      "prescription_allowed": true,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "PIP_RC5",
+      "connector_status": "PENDING_I9_E",
+      "metadata": {
+        "source": "REGISTRE_I9",
+        "connector": "pip_specialized"
+      }
+    },
+    {
+      "tool_code": "BOUSSOLE_VALEURS",
+      "name": "Boussole des valeurs professionnelles",
+      "category": "VALEURS",
+      "base_url": "https://boussole-valeurs.clarte360.com",
+      "tool_version": "1.8.5-vps-mail-hub",
+      "active": true,
+      "prescription_allowed": true,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "LAUNCH_ONLY",
+      "metadata": {
+        "source": "REGISTRE_I9",
+        "deployment_status": "production",
+        "hub_profile": {
+          "tool_id": "boussole-valeurs",
+          "signature_mode": "payload_b64_hmac",
+          "query_param": "hub_token",
+          "time_model": "iat_exp",
+          "role_field": "role",
+          "hub_source": "GESTION_ACTIONS_I9",
+          "scopes": [
+            "BOUSSOLE_RUN",
+            "BOUSSOLE_STATUS"
+          ]
+        }
+      }
+    },
+    {
+      "tool_code": "MOTEURS_PROFESSIONNELS",
+      "name": "Moteurs professionnels",
+      "category": "MOTEURS",
+      "base_url": "https://moteurs-professionnels.clarte360.com",
+      "tool_version": "1.8.2",
+      "active": false,
+      "prescription_allowed": false,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "deployment_status": "planned"
+      }
+    },
+    {
+      "tool_code": "PREFERENCES_PROFESSIONNELLES",
+      "name": "Préférences professionnelles",
+      "category": "ORIENTATION_PROFESSIONNELLE",
+      "base_url": "https://preferences-professionnelles.clarte360.com",
+      "tool_version": "1.9.6",
+      "active": false,
+      "prescription_allowed": false,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "deployment_status": "planned"
+      }
+    },
+    {
+      "tool_code": "ROUE_VALEURS",
+      "name": "Roue des valeurs",
+      "category": "VALEURS",
+      "base_url": "https://roue-valeurs.clarte360.com",
+      "tool_version": "2.8.1",
+      "active": false,
+      "prescription_allowed": false,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "deployment_status": "planned"
+      }
+    },
+    {
+      "tool_code": "ROUE_DOMAINES_VIE",
+      "name": "Roue des domaines de vie",
+      "category": "EQUILIBRE_DE_VIE",
+      "base_url": "https://roue-domaines-vie.clarte360.com",
+      "tool_version": "1.4.3",
+      "active": false,
+      "prescription_allowed": false,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "deployment_status": "planned"
+      }
+    },
+    {
+      "tool_code": "LIGNE_DE_VIE",
+      "name": "Ligne de vie",
+      "category": "PARCOURS",
+      "base_url": "https://ligne-de-vie.clarte360.com",
+      "tool_version": "3.4.3",
+      "active": false,
+      "prescription_allowed": false,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "deployment_status": "planned"
+      }
+    },
+    {
+      "tool_code": "BOUCLE_AUTOVALIDANTE",
+      "name": "Boucle autovalidante",
+      "category": "CROYANCES",
+      "base_url": "https://boucle-autovalidante.clarte360.com",
+      "tool_version": "2.0.7",
+      "active": false,
+      "prescription_allowed": false,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "deployment_status": "planned"
+      }
+    },
+    {
+      "tool_code": "TABLEAU_LIMITES",
+      "name": "Tableau des limites",
+      "category": "LIMITES",
+      "base_url": "https://tableau-limites.clarte360.com",
+      "tool_version": "1.0.2",
+      "active": false,
+      "prescription_allowed": false,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "deployment_status": "planned"
+      }
+    },
+    {
+      "tool_code": "RECHERCHE_VALEURS",
+      "name": "Recherche des valeurs",
+      "category": "VALEURS",
+      "base_url": "https://recherche-valeurs.clarte360.com",
+      "tool_version": "2.2.2",
+      "active": false,
+      "prescription_allowed": false,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "deployment_status": "planned"
+      }
+    },
+    {
+      "tool_code": "COMPETENCES_PROJETS",
+      "name": "Compétences / Projets",
+      "category": "COMPETENCES",
+      "base_url": "https://competences-projets.clarte360.com",
+      "tool_version": "1.3.3",
+      "active": false,
+      "prescription_allowed": false,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [
+        "BILAN_DE_COMPETENCES",
+        "BILAN_COMPETENCES",
+        "COACHING"
+      ],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "HUB_GENERIC",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "deployment_status": "planned"
+      }
+    }
+  ]
+}

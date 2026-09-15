@@ -542,6 +542,14 @@ def init_db(engine: Engine):
         ]
         for sql in v3_i7_schema: c.execute(text(sql))
 
+        # I9 H2.3: cryptographic fingerprints of Microsoft Graph evidence.
+        for sql in [
+            "ALTER TABLE teams_attendance_reports ADD COLUMN raw_sha256 TEXT",
+            "ALTER TABLE teams_attendance_records ADD COLUMN raw_sha256 TEXT"
+        ]:
+            try: c.execute(text(sql))
+            except Exception: pass
+
         # Copy legacy evidence once, without modifying the original record. When possible,
         # attach it to the V3 trainer assignment by email/name; otherwise keep trainer_id NULL.
         c.execute(text("""INSERT OR IGNORE INTO trainer_countersignatures_v3(

@@ -41,7 +41,7 @@ def test_catchup_resolves_absence_when_both_slots_countersigned(tmp_path):
     from db import execute, utcnow_iso
     from services import create_catchup_slot
     e,aid,p1,p2,sid=seed(tmp_path);set_attendance_status(e,p1,sid,'ABSENT','malade','trainer');set_attendance_status(e,p2,sid,'NON_CONCERNE','hors créneau','trainer');countersign_slot(e,sid,'Formateur','f@b.fr','trainer','certifie')
-    ns=create_catchup_slot(e,sid,'2026-09-02','09:00','12:00',[p1],'admin')
+    ns=create_catchup_slot(e,sid,'2026-09-02','13:00','16:00',[p1],'admin')
     execute(e,"INSERT INTO signatures(participant_id,slot_id,signed_at,signature_path,signature_sha256,signer_name,method,status) VALUES(:p,:s,:at,'','x','P','EMAIL','VALIDE')",{'p':p1,'s':ns,'at':utcnow_iso()})
     countersign_slot(e,ns,'Formateur','f@b.fr','trainer','certifie')
     ok,issues=can_issue_certificate(e,p1); assert ok,issues

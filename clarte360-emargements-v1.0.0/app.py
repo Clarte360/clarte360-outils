@@ -19,10 +19,11 @@ from production_readiness import runtime_readiness
 from services import *
 from input_validation import validate_action_no, validate_short_text, validate_date_range, validate_participant_payload, validate_email, validate_full_name, InputValidationError
 from excel_import import read_action_xlsm, list_action_numbers_for_profile, read_clarte360_xlsm, read_adca_xlsm, list_action_numbers
-from pdf_utils import collective_pdf, individual_pdf, certificate_pdf, quality_response_pdf
+from pdf_utils import collective_pdf, individual_pdf, certificate_pdf, quality_response_pdf, teams_evidence_pdf
 from mailer import send_mail, resolve_mail_config, validate_mail_config
 from source_store import source_info, set_external_path, save_uploaded_source, refresh_from_external, read_snapshot, copy_source_metadata
 from graph_client import GraphClient, graph_config_from_mapping, graph_config_missing
+from signature_guard import signature_trace_is_valid, signature_trace_metrics
 
 st.set_page_config(page_title=APP_NAME,page_icon=str(ICON_PATH),layout='wide',initial_sidebar_state='expanded')
 st.markdown(CSS,unsafe_allow_html=True)
@@ -490,7 +491,7 @@ def _trainer_slot_status_rows(action_id,slot_id):
     rows=[]
     for p in parts:
         at=ats.get(p['id']); sig=sigs.get(p['id']); status='SIGNÉ' if sig else (at['status'] if at else 'EN ATTENTE')
-        rows.append({'Participant':f"{p['last_name']} {p['first_name']}",'Statut':status,'Email':p.get('email') or ''})
+        rows.append({'Participant':f"{p['last_name']} {p['first_name']}",'Statut':status,'Téléphone':p.get('phone') or '','Email':p.get('email') or ''})
     return parts,rows
 
 def render_trainer_action(action, trainer):
@@ -617,6 +618,19 @@ def render_trainer_action(action, trainer):
                     sl=slots_by_id.get(r.get('slot_id')) or {}
                     rows.append({'Séance':f"{sl.get('slot_date','—')} — {sl.get('start_time','—')}–{sl.get('end_time','—')}", 'Rôle Teams':'Coorganisateur' if str(r.get('role')).upper()=='COORGANIZER' else 'Présentateur'})
                 st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+            evidence=teams_occurrence_evidence(ENGINE,aid)
+            st.markdown('#### Réunions réellement constatées')
+            has_report=False
+            for ev in evidence:
+                rep=ev.get('report'); conns=ev.get('connections') or []
+                if not rep:
+                    st.caption(f"{ev.get('slot_date')} — {ev.get('start_time')}–{ev.get('end_time')} : rapport Microsoft non encore récupéré.")
+                    continue
+                has_report=True
+                st.success(f"{ev.get('slot_date')} — {ev.get('start_time')}–{ev.get('end_time')} : réunion Teams constatée · {len(conns)} connexion(s).")
+                st.dataframe(pd.DataFrame([{'Identité / pseudo Teams':r.get('display_name') or '—','Email':r.get('email') or '—','Entrée':(r.get('join_time_utc') or '')[11:19] or '—','Sortie':(r.get('leave_time_utc') or '')[11:19] or '—','Durée':_duration_hms(r.get('duration_seconds')),'Rapprochement':(f"{r.get('participant_first_name','')} {r.get('participant_last_name','')}".strip() if r.get('participant_id') else 'Non rapproché')} for r in conns]),use_container_width=True,hide_index=True)
+            if has_report:
+                st.download_button('🖨️ Imprimer les preuves Teams de cette action',teams_evidence_pdf(ENGINE,aid,technical=False),file_name=f"{a['action_no']}_preuves_Teams.pdf",mime='application/pdf',key=f'tr_teams_pdf_{aid}')
     with tab_em:
         if not slots:
             st.info('Aucun créneau à gérer.')
@@ -632,14 +646,22 @@ def render_trainer_action(action, trainer):
             parts2,rows=_trainer_slot_status_rows(aid,sl['id']); st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
             if parts2:
                 pmap={f"{p['last_name']} {p['first_name']}":p for p in parts2}; pp=pmap[st.selectbox('Participant à gérer',list(pmap),key=f'tr_part_{aid}_{sl["id"]}') ]
-                c1,c2,c3=st.columns(3)
-                if c1.button('Marquer ABSENT',key=f'tr_abs_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
-                    ok,msg=set_attendance_status(ENGINE,pp['id'],sl['id'],'ABSENT','Déclaré par intervenant',actor)
+                st.markdown('**Participant sans signature : était-il présent ?**')
+                c1,c2=st.columns(2)
+                if c1.button('OUI — PRÉSENT, À RÉGULARISER',key=f'tr_present_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
+                    ok,msg=set_attendance_status(ENGINE,pp['id'],sl['id'],'PRESENT_REGULARISE','Présence attestée par intervenant — signature bénéficiaire à régulariser',actor)
+                    if ok: st.success('Présence attestée. La signature bénéficiaire reste à régulariser.'); rerun()
+                    else: st.error(msg)
+                if c2.button('NON — ABSENT',key=f'tr_abs_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
+                    ok,msg=set_attendance_status(ENGINE,pp['id'],sl['id'],'ABSENT','Déclaré absent par intervenant',actor)
                     if ok: st.success('Absence enregistrée.'); rerun()
                     else: st.error(msg)
-                if c2.button('Remettre EN ATTENTE',key=f'tr_wait_{aid}_{sl["id"]}_{pp["id"]}',use_container_width=True):
-                    set_attendance_status(ENGINE,pp['id'],sl['id'],'EN_ATTENTE','Correction intervenant',actor); rerun()
-                if c3.button('Relancer par email',key=f'tr_rem_{aid}_{sl["id"]}_{pp["id"]}',disabled=not bool(pp.get('email')),use_container_width=True):
+                contact=[]
+                if pp.get('phone'): contact.append(f"📞 {pp['phone']}")
+                if pp.get('email'): contact.append(f"✉️ {pp['email']}")
+                if contact: st.caption('Contact : '+' · '.join(contact))
+                if pp.get('phone'): st.link_button('📞 APPELER LE PARTICIPANT',f"tel:{pp['phone']}",use_container_width=True)
+                if st.button('✉️ RELANCER LA SIGNATURE PAR EMAIL',key=f'tr_rem_{aid}_{sl["id"]}_{pp["id"]}',disabled=not bool(pp.get('email')),use_container_width=True):
                     ensure_tokens_and_events(ENGINE,aid,BASE_URL,TZ); url=token_url(ENGINE,pp['id'],sl['id'],BASE_URL); cfg=mail_cfg(); org=org_identity(aid)
                     body=f"<p>Bonjour {pp['first_name']},</p><p>Merci de régulariser votre émargement pour le {sl['slot_date']} de {sl['start_time']} à {sl['end_time']}.</p><p><a href='{url}'>SIGNER / RÉGULARISER</a></p>{privacy_notice_html(aid)}"
                     try:
@@ -661,7 +683,7 @@ def render_trainer_action(action, trainer):
                 cert=st.checkbox("Je certifie l'exactitude des présences et absences indiquées pour ce créneau.",key=f'tr_cert_{aid}_{sl["id"]}')
                 if st.button('CONTRESIGNER CE CRÉNEAU',type='primary',key=f'tr_sign_{aid}_{sl["id"]}',disabled=not eligible):
                     if not cert: st.error('La certification est obligatoire.')
-                    elif tr_canvas.image_data is None or (tr_canvas.image_data[:,:,:3] < 250).sum() < 100: st.error('Merci d’apposer votre signature dans le cadre.')
+                    elif not signature_trace_is_valid(tr_canvas.image_data): st.error('La signature semble vide ou trop courte. Merci d’apposer une signature manuscrite complète dans le cadre.')
                     else:
                         img=PILImage.fromarray(tr_canvas.image_data.astype('uint8'),'RGBA').convert('RGB');buf=io.BytesIO();img.save(buf,format='PNG')
                         ip,ua=request_technical_context()
@@ -698,7 +720,7 @@ def render_trainer_action(action, trainer):
         else: st.info('Aucun document mis à disposition pour cette action.')
         if trainer.get('can_upload_documents'):
             st.markdown('#### Déposer un document pour tous les bénéficiaires de cette action')
-            updoc=st.file_uploader('Document',type=['pdf','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'tr_course_doc_{aid}')
+            updoc=st.file_uploader('Document',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'tr_course_doc_{aid}')
             if st.button('Déposer dans Documents de cours',key=f'tr_course_doc_btn_{aid}',disabled=updoc is None):
                 try:
                     rid,h,dedup=store_document(ENGINE,updoc.getvalue(),updoc.name,'COURS',actor,action_id=aid,audience='ACTION_BENEFICIARIES')
@@ -907,7 +929,7 @@ def beneficiary_portal_page():
     completed=q(ENGINE,"""SELECT qc.*,a.action_no,a.title action_title,qt.title FROM quality_campaigns qc JOIN actions a ON a.id=qc.action_id JOIN questionnaire_templates qt ON qt.id=qc.template_id
       WHERE qc.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) AND qc.status='COMPLETED' ORDER BY COALESCE(qc.completed_at,qc.created_at) DESC""",{'b':bid})
     prescriptions=list_tool_prescriptions(ENGINE,beneficiary_id=bid,include_cancelled=False)
-    tabs=st.tabs(['🏠 Accueil','🎓 Mes formations / accompagnements','📅 Mon planning','💻 Mes réunions Teams','🧭 Mes outils Clarté360','📄 Mes documents administratifs','📚 Documents de cours','✅ Mes questionnaires / actions','🗂️ Mes archives / téléchargements'])
+    tabs=st.tabs(['🏠 Accueil','🎓 Mes formations / accompagnements','📅 Mon planning','💻 Mes réunions Teams','🧭 Mes outils Clarté360','📄 Mes documents administratifs','📚 Documents de cours','✅ Mes questionnaires / actions','✍️ Mes émargements','🗂️ Mes archives / téléchargements'])
     with tabs[0]:
         st.metric('Parcours enregistrés',len(acts));st.metric('Documents disponibles',len(docs));st.metric('Actions à réaliser',len(pending))
         if acts: st.dataframe(pd.DataFrame([{'Action':a['action_no'],'Intitulé':a['title'],'Prestation':a.get('prestation_type') or a.get('nature'),'Début':a.get('start_date') or '','Fin':a.get('end_date') or '','Statut':normalize_action_status(a.get('status'))} for a in acts]),use_container_width=True,hide_index=True)
@@ -935,14 +957,21 @@ def beneficiary_portal_page():
         meetings=[]
         for aa in acts:
             room=teams_room(ENGINE,aa['id']) if action_module_enabled(ENGINE,aa['id'],'TEAMS') else None
-            if room and room.get('join_web_url'):
-                meetings.append((aa,room))
+            if room and room.get('join_web_url'): meetings.append((aa,room))
         if not meetings: st.info('Aucune réunion Teams active pour vos actions.')
         for aa,room in meetings:
             st.markdown(f"**{aa['action_no']} — {aa['title']}**")
             st.link_button('REJOINDRE LA RÉUNION TEAMS',room['join_web_url'])
             nxt=teams_next_meeting(ENGINE,aa['id'])
             if nxt: st.caption(f"Prochaine séance : {nxt.get('slot_date')} — {nxt.get('start_time')}–{nxt.get('end_time')}")
+            pp=one(ENGINE,'SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1',{'a':aa['id'],'b':bid})
+            if pp:
+                evs=teams_participant_evidence(ENGINE,aa['id'],pp['id'])
+                hist=[]
+                for ev in evs:
+                    occ=ev['occurrence']; rep=ev.get('report')
+                    hist.append({'Séance':f"{occ.get('slot_date')} — {occ.get('start_time')}–{occ.get('end_time')}",'Réunion Microsoft':'Constatée' if rep else 'Rapport en attente','Ma présence Teams':_duration_hms(ev.get('seconds')) if ev.get('seconds') else ('Non observée' if rep else '—')})
+                if hist: st.dataframe(pd.DataFrame(hist),use_container_width=True,hide_index=True)
     with tabs[4]:
         if not prescriptions:
             st.info('Aucun outil Clarté360 ne vous est actuellement prescrit.')
@@ -959,7 +988,22 @@ def beneficiary_portal_page():
                     except ValueError as ex: st.warning(str(ex))
                 st.divider()
     with tabs[5]: _show_docs([d for d in docs if d['category']!='COURS'],'Aucun document administratif disponible.')
-    with tabs[6]: _show_docs([d for d in docs if d['category']=='COURS'],'Aucun document de cours disponible.')
+    with tabs[6]:
+        _show_docs([d for d in docs if d['category']=='COURS'],'Aucun document de cours disponible.')
+        st.markdown('#### Déposer mes documents / résultats d’applications')
+        st.caption('Vous pouvez déposer plusieurs fichiers PDF ou JSON issus des outils Clarté360. Ils restent rattachés à votre espace et à l’action choisie.')
+        if acts:
+            amap={f"{aa['action_no']} — {aa['title']}":aa for aa in acts}; al=st.selectbox('Action concernée',list(amap),key='benef_upload_action'); aa=amap[al]
+            uploads=st.file_uploader('Mes fichiers',type=['pdf','json'],accept_multiple_files=True,key='benef_app_results')
+            if st.button('DÉPOSER DANS MON ESPACE',type='primary',disabled=not bool(uploads),key='benef_upload_btn'):
+                pp=one(ENGINE,'SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1',{'a':aa['id'],'b':bid})
+                done=0
+                for up in uploads or []:
+                    try:
+                        store_document(ENGINE,up.getvalue(),up.name,'BENEFICIAIRE',f'beneficiary:{bid}',action_id=aa['id'],beneficiary_id=bid,participant_id=(pp or {}).get('id'),audience='BENEFICIARY_ONLY',visible_to_beneficiary=True,allowed_extensions={'.pdf','.json'})
+                        done+=1
+                    except Exception as ex: st.error(f"{up.name} : {ex}")
+                if done: st.success(f'{done} fichier(s) déposé(s) dans votre espace.'); rerun()
     with tabs[7]:
         if not pending: st.success('Aucune action à réaliser actuellement.')
         for x in pending: st.link_button(f"{x['action_no']} — {x['title']}",quality_token_url(x['token'],BASE_URL))
@@ -972,16 +1016,33 @@ def beneficiary_portal_page():
                 except Exception as ex:
                     ref=log_ui_exception(ENGINE,'beneficiary_quality_pdf',ex,action_id=x.get('action_id'),actor='beneficiary',entity_type='quality_campaign',entity_id=x['id'])
                     st.caption(f"{x['action_no']} — questionnaire terminé. PDF momentanément indisponible (référence {ref}).")
-        st.markdown('#### Mes feuilles d’émargement')
+    with tabs[8]:
+        st.caption('Vous pouvez consulter vos propres preuves de présence. Le certificat définitif n’est disponible qu’après clôture administrative de l’action ; cette clôture ne supprime pas les évaluations à froid programmées.')
         for aa in acts:
             pp=one(ENGINE,'SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1',{'a':aa['id'],'b':bid})
-            if pp:
-                try:
-                    epdf=individual_pdf(ENGINE,pp['id'])
-                    st.download_button(f"✍️ {aa['action_no']} — feuille d’émargement",epdf,file_name=f"{aa['action_no']}_emargement.pdf",mime='application/pdf',key=f"benef_epdf_{pp['id']}")
-                except Exception:
-                    pass
-    with tabs[8]:
+            if not pp: continue
+            st.markdown(f"**{aa['action_no']} — {aa['title']}**")
+            rows=[]
+            for sl in q(ENGINE,'SELECT * FROM slots WHERE action_id=:a ORDER BY slot_date,start_time',{'a':aa['id']}):
+                sig=one(ENGINE,"SELECT * FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':pp['id'],'s':sl['id']})
+                cs_ok,_=required_slot_countersignatures_complete(ENGINE,sl['id'])
+                te=next((x for x in teams_participant_evidence(ENGINE,aa['id'],pp['id']) if int(x['occurrence']['slot_id'])==int(sl['id'])),None)
+                rows.append({'Séance':f"{sl['slot_date']} — {sl['start_time']}–{sl['end_time']}",'Mon émargement':'Signé' if sig else 'Non signé','Contresignature':'Validée' if cs_ok else 'En attente','Présence Teams':_duration_hms(te.get('seconds')) if te and te.get('seconds') else ('Non observée' if te and te.get('report') else 'Rapport en attente')})
+            if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+            try:
+                epdf=individual_pdf(ENGINE,pp['id'])
+                st.download_button(f"✍️ Consulter ma feuille d’émargement — {aa['action_no']}",epdf,file_name=f"{aa['action_no']}_emargement.pdf",mime='application/pdf',key=f"benef_epdf2_{pp['id']}")
+            except Exception: pass
+            ok_cert,issues=can_issue_certificate(ENGINE,pp['id'],require_closed=True)
+            if normalize_action_status(aa.get('status'))=='CLOTUREE' and ok_cert:
+                st.download_button(f"🎓 Certificat de réalisation définitif — {aa['action_no']}",certificate_pdf(ENGINE,pp['id']),file_name=f"{aa['action_no']}_certificat_realisation.pdf",mime='application/pdf',key=f"benef_cert_{pp['id']}")
+            elif normalize_action_status(aa.get('status'))!='CLOTUREE':
+                st.info('Certificat final : disponible uniquement lorsque l’administration aura clôturé cette action.')
+            else:
+                st.warning('Certificat final momentanément indisponible : '+ ' ; '.join(issues[:3]))
+            st.divider()
+
+    with tabs[9]:
         st.caption('Vous pouvez télécharger à tout moment une copie des documents actuellement mis à disposition dans votre portail.')
         z=beneficiary_portal_zip(ENGINE,bid)
         st.download_button('TÉLÉCHARGER MON ESPACE EN ZIP',z,file_name=f"{b['public_id']}_ESPACE_CLARTE360.zip",mime='application/zip',type='primary')
@@ -1000,8 +1061,8 @@ def header(title=APP_NAME,sub='Gestion sécurisée des présences, signatures et
     img=base64.b64encode(LOGO_PATH.read_bytes()).decode() if LOGO_PATH.exists() else ''
     st.markdown(f"<div class='c360-header'><img src='data:image/png;base64,{img}'><div><div class='c360-title'>{title}</div><div class='c360-subtitle'>{sub} — Version {APP_VERSION}</div></div></div>",unsafe_allow_html=True)
 def rerun(): st.rerun()
-def get_ip(): return None
-def get_ua(): return None
+def get_ip(): return request_technical_context()[0]
+def get_ua(): return request_technical_context()[1]
 
 def setup_or_login():
     count=one(ENGINE,'SELECT COUNT(*) n FROM admins')['n']
@@ -1092,7 +1153,7 @@ def render_sign_form(row,method):
     if st.button('VALIDER MON ÉMARGEMENT',type='primary',use_container_width=True):
         if not consent: st.error('Veuillez confirmer les informations.');return
         if sig_mode=='Signature manuscrite':
-            if canvas.image_data is None or (canvas.image_data[:,:,:3] < 250).sum() < 100: st.error('Merci d’apposer votre signature dans le cadre.');return
+            if not signature_trace_is_valid(canvas.image_data): st.error('La signature semble vide ou trop courte. Merci d’apposer une signature manuscrite complète dans le cadre.');return
             img=PILImage.fromarray(canvas.image_data.astype('uint8'),'RGBA').convert('RGB');buf=io.BytesIO();img.save(buf,format='PNG');b=buf.getvalue();digest=sha256_bytes(b)
             path=SIG_DIR/f"sig_{row['action_id']}_{row['id']}_{row['slot_id']}_{digest[:12]}.png";path.write_bytes(b); sig_method='MANUSCRITE'; signer=f"{row['first_name']} {row['last_name']}"
         else:
@@ -1122,7 +1183,7 @@ def trainer_page(token):
     rows=[]
     for p in parts:
         at=am.get(p['id']); x=sm.get(p['id']); status='SIGNÉ' if x else (at['status'] if at else 'EN ATTENTE')
-        rows.append({'Participant':f"{p['last_name']} {p['first_name']}",'Statut':status,'Email':p.get('email') or ''})
+        rows.append({'Participant':f"{p['last_name']} {p['first_name']}",'Statut':status,'Téléphone':p.get('phone') or '','Email':p.get('email') or ''})
     st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
     pc={f"{p['last_name']} {p['first_name']}":p for p in parts}; pl=st.selectbox('Participant à gérer',list(pc));pp=pc[pl]
     c1,c2=st.columns(2)
@@ -1155,7 +1216,7 @@ def trainer_page(token):
         cert=st.checkbox("Je certifie l'exactitude des présences et absences indiquées pour ce créneau.")
         if st.button('CONTRESIGNER CE CRÉNEAU',type='primary',disabled=(not eligible or (bool(assigned) and legacy_tid is None))):
             if not name.strip() or not cert: st.error('Nom et certification obligatoires.')
-            elif legacy_canvas.image_data is None or (legacy_canvas.image_data[:,:,:3] < 250).sum() < 100: st.error('Merci d’apposer votre signature dans le cadre.')
+            elif not signature_trace_is_valid(legacy_canvas.image_data): st.error('La signature semble vide ou trop courte. Merci d’apposer une signature manuscrite complète dans le cadre.')
             else:
                 img=PILImage.fromarray(legacy_canvas.image_data.astype('uint8'),'RGBA').convert('RGB');buf=io.BytesIO();img.save(buf,format='PNG')
                 ip,ua=request_technical_context()
@@ -1512,8 +1573,8 @@ def dashboard():
     if stats: st.dataframe(pd.DataFrame(stats),use_container_width=True,hide_index=True)
     st.subheader('Dépôt documentaire rapide')
     st.caption('Indiquez simplement le numéro d’action : le document sera disponible pour les bénéficiaires rattachés à cette action.')
-    c1,c2=st.columns([1,2]); quick_no=c1.text_input('N° action',key='quick_doc_action').strip().upper(); quick_file=c2.file_uploader('Document',type=['pdf','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key='quick_doc_file')
-    quick_cat=st.selectbox('Catégorie',['COURS','ADMINISTRATIF'],format_func=lambda x:'Documents de cours' if x=='COURS' else 'Document administratif',key='quick_doc_cat')
+    c1,c2=st.columns([1,2]); quick_no=c1.text_input('N° action',key='quick_doc_action').strip().upper(); quick_file=c2.file_uploader('Document',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key='quick_doc_file')
+    quick_cat=st.selectbox('Catégorie',['COURS','ADMINISTRATIF'],format_func=lambda x:'Documents de cours' if x=='COURS' else 'Documents administratifs',key='quick_doc_cat')
     if st.button('DÉPOSER PAR N° ACTION',key='quick_doc_btn',disabled=not bool(quick_no and quick_file)):
         aa=one(ENGINE,'SELECT * FROM actions WHERE action_no=:n',{'n':quick_no})
         if not aa: st.error('Action introuvable.')
@@ -1771,19 +1832,49 @@ def teams_tab(a):
                         queue_teams_sync(ENGINE,a['id'],None,'IDENTITY_CREATION_REQUESTED',st.session_state.admin_email)
                         st.success('Demande enregistrée. Une recherche d’identité existante sera effectuée avant toute création.'); rerun()
 
+    evidence=teams_occurrence_evidence(ENGINE,a['id'])
+    if evidence:
+        st.markdown('#### Réunions Teams réellement constatées')
+        st.caption('Microsoft Graph est la source externe. Les données récupérées sont conservées sur le VPS avec leurs références techniques et leur empreinte SHA-256.')
+        for ev in evidence:
+            rep=ev.get('report'); conns=ev.get('connections') or []
+            label=f"{ev.get('slot_date')} — {ev.get('start_time')}–{ev.get('end_time')}"
+            if not rep:
+                st.info(f"{label} — rapport Microsoft non encore récupéré. Ce statut ne signifie pas absence.")
+                continue
+            st.success(f"{label} — réunion Microsoft constatée · {len(conns)} connexion(s).")
+            rows=[]
+            for r in conns:
+                match=(f"{r.get('participant_first_name','')} {r.get('participant_last_name','')}".strip() if r.get('participant_id') else 'Non rapproché')
+                if not r.get('participant_id'):
+                    sug=suggest_teams_participant_match(ENGINE,a['id'],r.get('display_name'))
+                    if sug: match=f"Suggestion : {sug.get('first_name','')} {sug.get('last_name','')} — à confirmer"
+                rows.append({'Identité / pseudo Teams':r.get('display_name') or '—','Email Microsoft':r.get('email') or '—','Rôle':r.get('role') or '—','Entrée UTC':r.get('join_time_utc') or '—','Sortie UTC':r.get('leave_time_utc') or '—','Durée exacte':_duration_hms(r.get('duration_seconds')),'Rapprochement Clarté360':match})
+            st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+            cpdf1,cpdf2=st.columns(2)
+            cpdf1.download_button('🖨️ Preuve de cette réunion',teams_evidence_pdf(ENGINE,a['id'],rep['id'],technical=True),file_name=f"{a['action_no']}_{ev.get('slot_date') or 'reunion'}_preuve_Teams_technique.pdf",mime='application/pdf',key=f'adm_team_pdf_{rep["id"]}')
+            with cpdf2:
+                with st.expander('Références techniques'):
+                    st.code(f"OnlineMeeting ID: {rep.get('online_meeting_id') or '—'}\nAttendanceReport ID: {rep.get('report_id') or '—'}\nSHA-256 Graph: {rep.get('raw_sha256') or 'rapport historique sans empreinte'}\nRécupéré: {rep.get('retrieved_at') or '—'}")
+        if any(ev.get('report') for ev in evidence):
+            st.download_button('🖨️ Rapport technique Teams — TOUTE L’ACTION',teams_evidence_pdf(ENGINE,a['id'],technical=True),file_name=f"{a['action_no']}_rapport_Teams_complet.pdf",mime='application/pdf',type='primary',key=f'adm_team_all_{a["id"]}')
+
     recon=teams_attendance_reconciliation(ENGINE,a['id'])
     if recon:
-        st.markdown('#### Présence Teams / émargement')
-        st.caption('La présence Teams est une preuve complémentaire ; elle ne remplace jamais automatiquement l’émargement réglementaire.')
-        st.dataframe(pd.DataFrame([{'Séance':f"{x['slot_date']} — {x['start_time']}",'Participant':x['participant'],'Présent Teams':'Oui' if x['teams_present'] else 'Non','Durée Teams (min)':round(x['teams_seconds']/60,1),'Émargé':'Oui' if x['signed'] else 'Non','Absent':'Oui' if x['absent'] else 'Non','À vérifier':'Oui' if x['anomaly'] else ''} for x in recon]),use_container_width=True,hide_index=True)
+        st.markdown('#### Rapprochement présence Teams / émargement')
+        st.caption('La présence Teams complète la preuve d’émargement. Une absence de rapport Microsoft n’est jamais affichée comme une absence du participant.')
+        st.dataframe(pd.DataFrame([{'Séance':f"{x['slot_date']} — {x['start_time']}",'Participant':x['participant'],'Présence Teams':'Oui' if x['teams_present'] else ('Non observée' if any(ev.get('report') and ev.get('slot_id')==x['slot_id'] for ev in evidence) else 'Rapport en attente'),'Durée Teams':_duration_hms(x['teams_seconds']) if x['teams_present'] else '—','Émargé':'Oui' if x['signed'] else 'Non','Absent déclaré':'Oui' if x['absent'] else 'Non','À vérifier':'Oui' if x['anomaly'] else ''} for x in recon]),use_container_width=True,hide_index=True)
 
     unmatched=teams_unmatched_attendance(ENGINE,a['id'])
     if unmatched:
-        st.warning(f"{len(unmatched)} présence(s) Teams ne correspondent pas automatiquement à un participant. Aucune attribution automatique n’a été faite.")
+        st.warning(f"{len(unmatched)} connexion(s) Teams ne correspondent pas automatiquement à un participant. Elles restent visibles comme preuve de réunion et ne sont jamais attribuées sans confirmation.")
         participants=q(ENGINE,'SELECT id,first_name,last_name,email FROM participants WHERE action_id=:a AND active=1 ORDER BY last_name,first_name',{'a':a['id']})
         pmap={f"{p.get('first_name','')} {p.get('last_name','')} — {p.get('email') or 'sans email'}":p['id'] for p in participants}
         for u in unmatched:
-            with st.expander(f"{u.get('slot_date') or 'Séance'} — {u.get('display_name') or 'Participant Teams'} — {u.get('email') or 'email inconnu'}"):
+            suggestion=suggest_teams_participant_match(ENGINE,a['id'],u.get('display_name'))
+            title=f"{u.get('slot_date') or 'Réunion non rapprochée'} — {u.get('display_name') or 'Participant Teams'} — {_duration_hms(u.get('duration_seconds'))}"
+            with st.expander(title):
+                if suggestion: st.info(f"Suggestion uniquement : {suggestion.get('first_name')} {suggestion.get('last_name')}. Une confirmation humaine reste obligatoire.")
                 choice=st.selectbox('Rattacher à', ['— Ne pas rattacher —']+list(pmap), key=f"teams_match_{u['attendance_record_id']}")
                 if choice!='— Ne pas rattacher —' and st.button('Confirmer ce rapprochement',key=f"teams_match_ok_{u['attendance_record_id']}"):
                     confirm_teams_attendance_identity(ENGINE,u['attendance_record_id'],pmap[choice],st.session_state.admin_email); st.success('Rapprochement confirmé et tracé.'); rerun()
@@ -2261,6 +2352,28 @@ def dispatch_tab(a):
     else:
         st.caption('Aucune communication I9 enregistrée pour cette action.')
 
+    st.markdown('### Contresignatures intervenants')
+    refresh_countersign_communications(ENGINE)
+    pending_cs=[]
+    for slx in slots:
+        signed_ids={int(x['trainer_id']) for x in list_slot_countersignatures(ENGINE,slx['id']) if x.get('trainer_id') is not None}
+        for tr in list_slot_trainers(ENGINE,slx['id']):
+            if int(tr['trainer_id']) not in signed_ids:
+                pending_cs.append((slx,tr))
+    if not pending_cs:
+        st.success('Toutes les contresignatures requises sont enregistrées.')
+    else:
+        st.warning(f"{len(pending_cs)} contresignature(s) intervenant encore attendue(s).")
+        for slx,tr in pending_cs:
+            c1,c2=st.columns([3,1]); c1.write(f"{slx['slot_date']} {slx['start_time']}–{slx['end_time']} — {tr.get('full_name') or 'Intervenant'} — {tr.get('email') or 'email absent'}")
+            if c2.button('RELANCER',key=f"admin_cs_rem_{slx['id']}_{tr['trainer_id']}",disabled=not bool(tr.get('email')),use_container_width=True):
+                try:
+                    direct=f"{BASE_URL.rstrip('/')}?trainer_portal=1&action_id={a['id']}&slot_id={slx['id']}"
+                    org=org_identity(a['id']); cfg=mail_cfg(); body=f"<p>Bonjour {tr.get('full_name') or ''},</p><p>Votre contresignature est toujours attendue pour le créneau du <strong>{slx['slot_date']} de {slx['start_time']} à {slx['end_time']}</strong>.</p><p><a href='{direct}'>FINALISER ET CONTRESIGNER</a></p><p>Le lien reste utilisable tant que votre contresignature n'est pas enregistrée.</p>"
+                    send_mail(cfg,tr['email'],f"{org.get('name') or 'Organisme'} — rappel de contresignature — {a['action_no']}",body)
+                    audit(ENGINE,'ADMIN_COUNTERSIGN_REMINDER',a['id'],st.session_state.admin_email,'slot',slx['id'],{'trainer_id':tr['trainer_id'],'email':tr['email']}); st.success('Rappel envoyé.')
+                except Exception as ex: _ui_incident('envoi_email',ex,subject='Le rappel de contresignature')
+
     st.markdown('### Accès restreint intervenant')
     turl=trainer_url(ENGINE,a['id'],BASE_URL);st.code(turl);st.caption('Ce lien donne accès uniquement au suivi opérationnel de cette action : QR, absences, relances et contresignature.')
     st.markdown('### QR code d’un créneau')
@@ -2418,7 +2531,7 @@ def documents_tab(a):
     with st.expander('Déposer un document par n° d’action',expanded=False):
         st.caption(f"Action sélectionnée : {a['action_no']}. Le document de cours sera visible par tous les bénéficiaires de cette action disposant d’un espace personnel.")
         category=st.selectbox('Catégorie',['COURS','ADMINISTRATIF'],format_func=lambda x:'Documents de cours' if x=='COURS' else 'Document administratif',key=f'doccat_{a["id"]}')
-        updoc=st.file_uploader('Fichier (25 Mo maximum)',type=['pdf','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'action_doc_{a["id"]}')
+        updoc=st.file_uploader('Fichier (25 Mo maximum)',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'action_doc_{a["id"]}')
         if st.button('DÉPOSER LE DOCUMENT',type='primary',key=f'action_doc_btn_{a["id"]}',disabled=updoc is None):
             try:
                 rid,h,dedup=store_document(ENGINE,updoc.getvalue(),updoc.name,category,st.session_state.admin_email,action_id=a['id'],audience='ACTION_BENEFICIARIES')
@@ -2874,14 +2987,20 @@ def tool_launch_page(token):
     if ctx.get('launch_type')=='HUB_REDIRECT' and ctx.get('base_url'):
         st.info("L'accès a été validé par le Hub Clarté360. Vous pouvez maintenant ouvrir l'outil.")
         st.link_button("OUVRIR L'OUTIL",ctx['base_url'],type='primary')
-    elif ctx.get('launch_type')=='EXTERNAL_SIGNED' and ctx.get('tool_code')=='PIP_RIASEC_ONET':
-        key=secret('pip_connector','launch_signing_key','')
+    elif ctx.get('launch_type')=='EXTERNAL_SIGNED':
         try:
-            url=build_pip_prescription_launch(ENGINE,ctx['prescription_id'],key,valid_seconds=900)
-            st.info("Votre accès sécurisé au PIP Clarté360 est prêt. Aucune donnée technique n'est affichée.")
-            st.link_button("OUVRIR LE PIP RIASEC / O*NET",url,type='primary')
+            if ctx.get('tool_code')=='PIP_RIASEC_ONET':
+                key=secret('pip_connector','launch_signing_key','')
+                url=build_pip_prescription_launch(ENGINE,ctx['prescription_id'],key,valid_seconds=900)
+                label="OUVRIR LE PIP RIASEC / O*NET"
+            else:
+                key=secret('hub','hmac_secret','')
+                url=build_generic_tool_launch(ENGINE,ctx['prescription_id'],key,valid_seconds=900)
+                label=f"OUVRIR {ctx.get('tool_name') or 'L’OUTIL'}"
+            st.info("Votre accès sécurisé Clarté360 est prêt. Aucun secret ni identifiant technique n'est affiché.")
+            st.link_button(label,url,type='primary')
         except Exception:
-            st.warning("Le PIP est temporairement indisponible. Votre prescription reste enregistrée ; réessayez plus tard ou contactez Clarté360.")
+            st.warning("Cet outil est temporairement indisponible. Votre prescription reste enregistrée ; réessayez plus tard ou contactez Clarté360.")
     elif ctx.get('base_url'):
         st.link_button("OUVRIR L'OUTIL",ctx['base_url'],type='primary')
     else:

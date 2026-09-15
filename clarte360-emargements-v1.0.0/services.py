@@ -1,8 +1,9 @@
 from __future__ import annotations
-import json, io, csv, zipfile
+import json, io, csv, zipfile, base64, hashlib, hmac, time
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit, parse_qsl
 from sqlalchemy import text
 from db import q, one, execute, audit, new_token, utcnow_iso
 from security import hash_password, verify_password, seal_short_secret, open_short_secret
@@ -137,8 +138,28 @@ def delete_participant(engine,pid,actor):
     if not p:return
     execute(engine,'DELETE FROM participants WHERE id=:id',{'id':pid});audit(engine,'PARTICIPANT_DELETED',p['action_id'],actor,'participant',pid,p)
 
+
+
+def _hhmm_minutes(value):
+    h,m=[int(x) for x in str(value).split(':')[:2]]
+    return h*60+m
+
+def validate_no_action_slot_overlap(engine, action_id, date_s, start_s, end_s, exclude_slot_id=None):
+    """Hard business invariant: one action cannot have overlapping active slots."""
+    start=_hhmm_minutes(start_s); end=_hhmm_minutes(end_s)
+    rows=q(engine,"""SELECT id,start_time,end_time FROM slots WHERE action_id=:a AND slot_date=:d
+      AND status NOT IN ('ANNULE','REPORTE','REMPLACE')""",{'a':action_id,'d':date_s})
+    for r in rows:
+        if exclude_slot_id is not None and int(r['id'])==int(exclude_slot_id):
+            continue
+        rs=_hhmm_minutes(r['start_time']); re=_hhmm_minutes(r['end_time'])
+        if start < re and end > rs:
+            raise InputValidationError(f"Impossible : ce créneau chevauche déjà la séance {r['start_time']}–{r['end_time']} de cette action.")
+    return True
+
 def add_slot(engine, aid, date_s,start_s,end_s,actor,send=-10,r1=20,r2=120,close=1440):
     date_s,start_s,end_s=validate_slot(date_s,start_s,end_s)
+    validate_no_action_slot_overlap(engine,aid,date_s,start_s,end_s)
     send,close=validate_slot_offsets(send,close)
     now=utcnow_iso(); public=new_token(18)
     sid=execute(engine,"""INSERT INTO slots(action_id,slot_date,start_time,end_time,original_start_time,original_end_time,send_offset_min,reminder1_offset_min,reminder2_offset_min,close_offset_min,public_token,created_at,updated_at)
@@ -174,6 +195,8 @@ def update_slot(engine,sid,d,actor):
     d=dict(d); d['send_offset_min'],d['close_offset_min']=validate_slot_offsets(d.get('send_offset_min',-10),d.get('close_offset_min',1440))
     old=one(engine,'SELECT * FROM slots WHERE id=:id',{'id':sid});
     if not old:return
+    d['slot_date'],d['start_time'],d['end_time']=validate_slot(d.get('slot_date'),d.get('start_time'),d.get('end_time'))
+    validate_no_action_slot_overlap(engine,old['action_id'],d['slot_date'],d['start_time'],d['end_time'],exclude_slot_id=sid)
     execute(engine,"""UPDATE slots SET slot_date=:slot_date,start_time=:start_time,end_time=:end_time,send_offset_min=:send_offset_min,reminder1_offset_min=:reminder1_offset_min,reminder2_offset_min=:reminder2_offset_min,close_offset_min=:close_offset_min,updated_at=:u WHERE id=:id""",{**d,'u':utcnow_iso(),'id':sid})
     audit(engine,'SLOT_UPDATED',old['action_id'],actor,'slot',sid,{'before':old,'after':d})
 
@@ -339,7 +362,10 @@ def create_catchup_slot(engine, original_sid, date_s,start_s,end_s, participant_
 def safe_update_slot(engine,sid,d,actor):
     evidence=one(engine,"SELECT (SELECT COUNT(*) FROM signatures WHERE slot_id=:s)+(SELECT COUNT(*) FROM attendance_status WHERE slot_id=:s AND status IN ('ABSENT','PRESENT_REGULARISE'))+(SELECT COUNT(*) FROM trainer_countersignatures_v3 WHERE slot_id=:s) n",{'s':sid})['n']
     if evidence: return False,"Ce créneau contient déjà une preuve (signature/absence). Il ne peut plus être réécrit : utilisez Report / Rattrapage."
-    update_slot(engine,sid,d,actor); return True,''
+    try:
+        update_slot(engine,sid,d,actor); return True,''
+    except InputValidationError as ex:
+        return False,str(ex)
 
 def trainer_token(engine,aid):
     t=one(engine,'SELECT token FROM trainer_access_tokens WHERE action_id=:a AND active=1 ORDER BY id DESC',{'a':aid})
@@ -1729,7 +1755,7 @@ def refresh_countersign_communications(engine, *, now=None, tz_name=None):
 # --- V2.2 LOT 2: beneficiaires permanents + portail documentaire ---
 BENEFICIARY_DOC_DIR=ROOT/'data'/'documents'/'blobs'
 BENEFICIARY_DOC_DIR.mkdir(parents=True,exist_ok=True)
-DEFAULT_ALLOWED_EXTENSIONS={'.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx','.txt','.csv','.jpg','.jpeg','.png','.webp','.zip'}
+DEFAULT_ALLOWED_EXTENSIONS={'.pdf','.json','.doc','.docx','.xls','.xlsx','.ppt','.pptx','.txt','.csv','.jpg','.jpeg','.png','.webp','.zip'}
 DEFAULT_MAX_FILE_MB=25
 
 def _norm_identity(value):
@@ -2268,9 +2294,14 @@ def create_or_sync_teams_room(engine, action_id, graph_client, actor='worker'):
     if not action_module_enabled(engine,action_id,'TEAMS'):
         return None
     slots=_teams_effective_slots(engine,action_id)
-    if not slots:raise ValueError("Aucun créneau Teams futur dans la période d'effet.")
     a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
     room=teams_room(engine,action_id)
+    # After the final session there may be no future slot, but the stable room must
+    # remain usable to retrieve late Microsoft attendance reports.
+    if not slots:
+        if room and room.get('online_meeting_id'):
+            return room
+        raise ValueError("Aucun créneau Teams futur dans la période d'effet.")
     first_start=slots[0][1].astimezone(ZoneInfo('UTC')).isoformat()
     last_end=slots[-1][2].astimezone(ZoneInfo('UTC')).isoformat()
     subject=f"{a.get('action_no') or ''} — {a.get('title') or 'Action'}".strip(' —')
@@ -2313,18 +2344,28 @@ def _report_window(report):
     return start,end
 
 
-def match_attendance_report_occurrence(engine, action_id, report):
+def match_attendance_report_occurrence(engine, action_id, report, tolerance_minutes=30):
+    """Match a Microsoft attendance report only inside the slot -30/+30 min window.
+
+    Stable Teams links can generate many reports over time. A report outside the
+    expanded slot window is deliberately left unmatched for administrator review.
+    """
     start_s,end_s=_report_window(report)
     if not start_s:return None
     start=datetime.fromisoformat(start_s.replace('Z','+00:00'))
+    end=datetime.fromisoformat((end_s or start_s).replace('Z','+00:00'))
+    tol=timedelta(minutes=int(tolerance_minutes))
     candidates=q(engine,"SELECT * FROM teams_occurrences WHERE action_id=:a AND status NOT IN ('OUT_OF_SCOPE','DISABLED')",{'a':action_id})
-    best=None;delta=None
+    scored=[]
     for c in candidates:
         cs=datetime.fromisoformat(c['scheduled_start_utc'].replace('Z','+00:00'))
-        d=abs((cs-start).total_seconds())
-        if delta is None or d<delta:best=c;delta=d
-    # Refuse arbitrary mapping beyond 12 hours; leave the report unassociated for review.
-    return best if best and delta<=12*3600 else None
+        ce=datetime.fromisoformat(c['scheduled_end_utc'].replace('Z','+00:00'))
+        if end < cs-tol or start > ce+tol:
+            continue
+        overlap=max(0.0,(min(end,ce)-max(start,cs)).total_seconds())
+        start_delta=abs((cs-start).total_seconds())
+        scored.append((-overlap,start_delta,int(c['id']),c))
+    return sorted(scored,key=lambda x:(x[0],x[1],x[2]))[0][3] if scored else None
 
 
 def store_teams_attendance_report(engine, action_id, room_id, report, records, actor='worker'):
@@ -2333,8 +2374,10 @@ def store_teams_attendance_report(engine, action_id, room_id, report, records, a
     if one(engine,'SELECT id FROM teams_attendance_reports WHERE report_id=:r',{'r':rid}):return False
     occ=match_attendance_report_occurrence(engine,action_id,report)
     start,end=_report_window(report);now=utcnow_iso()
-    row_id=execute(engine,"""INSERT INTO teams_attendance_reports(action_room_id,occurrence_id,report_id,meeting_start_utc,meeting_end_utc,total_participants,raw_json,retrieved_at)
-      VALUES(:room,:o,:r,:s,:e,:n,:raw,:d)""",{'room':room_id,'o':occ.get('id') if occ else None,'r':rid,'s':start,'e':end,'n':len(records or []),'raw':json.dumps(report,ensure_ascii=False,default=str),'d':now})
+    report_raw=json.dumps({'report':report,'attendanceRecords':records or []},ensure_ascii=False,sort_keys=True,separators=(',',':'),default=str)
+    report_hash=hashlib.sha256(report_raw.encode('utf-8')).hexdigest()
+    row_id=execute(engine,"""INSERT INTO teams_attendance_reports(action_room_id,occurrence_id,report_id,meeting_start_utc,meeting_end_utc,total_participants,raw_json,raw_sha256,retrieved_at)
+      VALUES(:room,:o,:r,:s,:e,:n,:raw,:h,:d)""",{'room':room_id,'o':occ.get('id') if occ else None,'r':rid,'s':start,'e':end,'n':len(records or []),'raw':report_raw,'h':report_hash,'d':now})
     for rec in records or []:
         identity=rec.get('identity') or {};email=(rec.get('emailAddress') or '').strip() or None;display=rec.get('identity',{}).get('displayName') or rec.get('displayName')
         participant=None
@@ -2343,11 +2386,13 @@ def store_teams_attendance_report(engine, action_id, room_id, report, records, a
         intervals=rec.get('attendanceIntervals') or []
         if intervals:
             for iv in intervals:
-                execute(engine,"""INSERT INTO teams_attendance_records(report_row_id,participant_id,display_name,email,join_time_utc,leave_time_utc,duration_seconds,role,identity_json,raw_json,created_at)
-                  VALUES(:r,:p,:d,:e,:j,:l,:du,:ro,:i,:raw,:n)""",{'r':row_id,'p':participant.get('id') if participant else None,'d':display,'e':email,'j':iv.get('joinDateTime'),'l':iv.get('leaveDateTime'),'du':iv.get('durationInSeconds'),'ro':rec.get('role'),'i':json.dumps(identity,ensure_ascii=False),'raw':json.dumps(rec,ensure_ascii=False,default=str),'n':now})
+                rec_raw=json.dumps(rec,ensure_ascii=False,sort_keys=True,separators=(',',':'),default=str); rec_hash=hashlib.sha256(rec_raw.encode('utf-8')).hexdigest()
+                execute(engine,"""INSERT INTO teams_attendance_records(report_row_id,participant_id,display_name,email,join_time_utc,leave_time_utc,duration_seconds,role,identity_json,raw_json,raw_sha256,created_at)
+                  VALUES(:r,:p,:d,:e,:j,:l,:du,:ro,:i,:raw,:h,:n)""",{'r':row_id,'p':participant.get('id') if participant else None,'d':display,'e':email,'j':iv.get('joinDateTime'),'l':iv.get('leaveDateTime'),'du':iv.get('durationInSeconds'),'ro':rec.get('role'),'i':json.dumps(identity,ensure_ascii=False),'raw':rec_raw,'h':rec_hash,'n':now})
         else:
-            execute(engine,"""INSERT INTO teams_attendance_records(report_row_id,participant_id,display_name,email,duration_seconds,role,identity_json,raw_json,created_at)
-              VALUES(:r,:p,:d,:e,:du,:ro,:i,:raw,:n)""",{'r':row_id,'p':participant.get('id') if participant else None,'d':display,'e':email,'du':rec.get('totalAttendanceInSeconds'),'ro':rec.get('role'),'i':json.dumps(identity,ensure_ascii=False),'raw':json.dumps(rec,ensure_ascii=False,default=str),'n':now})
+            rec_raw=json.dumps(rec,ensure_ascii=False,sort_keys=True,separators=(',',':'),default=str); rec_hash=hashlib.sha256(rec_raw.encode('utf-8')).hexdigest()
+            execute(engine,"""INSERT INTO teams_attendance_records(report_row_id,participant_id,display_name,email,duration_seconds,role,identity_json,raw_json,raw_sha256,created_at)
+              VALUES(:r,:p,:d,:e,:du,:ro,:i,:raw,:h,:n)""",{'r':row_id,'p':participant.get('id') if participant else None,'d':display,'e':email,'du':rec.get('totalAttendanceInSeconds'),'ro':rec.get('role'),'i':json.dumps(identity,ensure_ascii=False),'raw':rec_raw,'h':rec_hash,'n':now})
     if occ:
         execute(engine,"UPDATE teams_occurrences SET attendance_report_id=:r,attendance_synced_at=:n,status='REPORT_RETRIEVED',last_error=NULL,updated_at=:n WHERE id=:o",{'r':rid,'n':now,'o':occ['id']})
     audit(engine,'TEAMS_ATTENDANCE_IMPORTED',action_id,actor,'teams_attendance_report',row_id,{'report_id':rid,'occurrence_id':occ.get('id') if occ else None,'records':len(records or [])})
@@ -2371,6 +2416,54 @@ def teams_attendance_reconciliation(engine, action_id):
             rows.append({'slot_id':occ['slot_id'],'slot_date':occ['slot_date'],'start_time':occ['start_time'],'participant_id':p['id'],'participant':f"{p.get('first_name') or ''} {p.get('last_name') or ''}".strip(),'teams_present':presence,'teams_seconds':seconds,'signed':signed,'absent':absent,'anomaly':anomaly})
     return rows
 
+
+
+
+def _duration_hms(seconds):
+    seconds=max(0,int(seconds or 0)); h,rem=divmod(seconds,3600); m,s=divmod(rem,60)
+    return f"{h:d} h {m:02d} min {s:02d} s" if h else f"{m:d} min {s:02d} s"
+
+def teams_reports_for_action(engine, action_id):
+    return q(engine,"""SELECT rep.*,room.online_meeting_id,room.organizer_upn,o.slot_id,s.slot_date,s.start_time,s.end_time
+      FROM teams_attendance_reports rep JOIN teams_action_rooms room ON room.id=rep.action_room_id
+      LEFT JOIN teams_occurrences o ON o.id=rep.occurrence_id LEFT JOIN slots s ON s.id=o.slot_id
+      WHERE room.action_id=:a ORDER BY COALESCE(rep.meeting_start_utc,rep.retrieved_at),rep.id""",{'a':action_id})
+
+def teams_report_connections(engine, report_row_id):
+    return q(engine,"""SELECT ar.*,p.first_name participant_first_name,p.last_name participant_last_name,p.email participant_email
+      FROM teams_attendance_records ar LEFT JOIN participants p ON p.id=ar.participant_id
+      WHERE ar.report_row_id=:r ORDER BY COALESCE(ar.join_time_utc,''),ar.id""",{'r':report_row_id})
+
+def teams_occurrence_evidence(engine, action_id):
+    out=[]
+    for occ in teams_occurrences(engine,action_id):
+        rep=one(engine,'SELECT * FROM teams_attendance_reports WHERE occurrence_id=:o ORDER BY id DESC LIMIT 1',{'o':occ['id']})
+        row=dict(occ); row['report']=rep; row['connections']=teams_report_connections(engine,rep['id']) if rep else []
+        out.append(row)
+    return out
+
+def teams_participant_evidence(engine, action_id, participant_id):
+    rows=[]
+    for occ in teams_occurrences(engine,action_id):
+        rep=one(engine,'SELECT * FROM teams_attendance_reports WHERE occurrence_id=:o ORDER BY id DESC LIMIT 1',{'o':occ['id']})
+        recs=q(engine,'SELECT * FROM teams_attendance_records WHERE report_row_id=:r AND participant_id=:p ORDER BY id',{'r':rep['id'],'p':participant_id}) if rep else []
+        rows.append({'occurrence':occ,'report':rep,'records':recs,'seconds':sum(int(x.get('duration_seconds') or 0) for x in recs)})
+    return rows
+
+def suggest_teams_participant_match(engine, action_id, display_name):
+    """Suggest by normalized name only; never persists or auto-confirms."""
+    import unicodedata,re as _re
+    def norm(v):
+        x=unicodedata.normalize('NFKD',str(v or '')).encode('ascii','ignore').decode().lower()
+        return ' '.join(_re.findall(r'[a-z0-9]+',x))
+    target=norm(display_name)
+    if not target:return None
+    parts=q(engine,'SELECT id,first_name,last_name,email FROM participants WHERE action_id=:a AND active=1',{'a':action_id})
+    exact=[]
+    for p in parts:
+        vals={norm(f"{p.get('first_name','')} {p.get('last_name','')}"),norm(f"{p.get('last_name','')} {p.get('first_name','')}")}
+        if target in vals: exact.append(p)
+    return exact[0] if len(exact)==1 else None
 
 # --- I9-C: identites Microsoft permanentes et rapprochement explicite ---
 def trainer_microsoft_identity(engine, trainer_id):
@@ -2451,42 +2544,53 @@ def _json_load(value, default):
         return default
 
 
-def seed_tool_catalog(engine, actor='system'):
-    """Seed only tools whose identity/version/URL are explicitly documented.
+def _tool_registry_path():
+    return ROOT/'config'/'tool_registry.json'
 
-    I9-D deliberately does not invent URLs for the other Clarte360 applications. They can
-    be added through the generic catalogue once their deployment contract is confirmed.
+
+def load_tool_registry():
+    """Load the deployment-aware Clarte360 tool registry.
+
+    The registry is data, not executable code. Adding a future Hub-ready application no
+    longer requires changing the I9 core: its audited deployment contract is added here.
     """
-    now=utcnow_iso()
-    defaults=[{
-        'tool_code':'PIP_RIASEC_ONET',
-        'name':'PIP RIASEC / O*NET',
-        'category':'ORIENTATION_PROFESSIONNELLE',
-        'base_url':'https://pip-riasec.clarte360.com',
-        'tool_version':'1.0.7-RC5',
-        'allowed_publics':['BENEFICIAIRE'],
-        'compatible_prestations':['BILAN_DE_COMPETENCES','BILAN_COMPETENCES','COACHING'],
-        'prescription_allowed':1,
-        'launch_type':'EXTERNAL_SIGNED',
-        'access_validity_hours':168,
-        'connector_code':'PIP_RC5',
-        'connector_status':'PENDING_I9_E',
-        'metadata':{'source':'CDC_I9_V2.0','note':'Connecteur signe active en I9-E'}
-    }]
+    path=_tool_registry_path()
+    if not path.is_file():
+        return []
+    try:
+        data=json.loads(path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        raise ValueError('Registre des outils Clarté360 invalide.') from exc
+    rows=data.get('tools',[]) if isinstance(data,dict) else []
+    if not isinstance(rows,list):
+        raise ValueError('Registre des outils Clarté360 invalide.')
+    return [x for x in rows if isinstance(x,dict) and x.get('tool_code') and x.get('name')]
+
+
+def seed_tool_catalog(engine, actor='system'):
+    """Synchronise le catalogue avec le registre versionné Clarté360.
+
+    Les outils non encore déployés peuvent être pré-enregistrés inactifs. Le registre ne
+    contient aucun secret. URL, identité Hub et état de déploiement sont explicites.
+    """
+    now=utcnow_iso(); defaults=load_tool_registry()
     for d in defaults:
+        active=1 if d.get('active',False) else 0
+        pa=1 if d.get('prescription_allowed',False) else 0
         execute(engine,"""INSERT INTO tool_catalog(tool_code,name,category,base_url,tool_version,active,allowed_publics_json,
           compatible_prestations_json,prescription_allowed,launch_type,access_validity_hours,connector_code,connector_status,metadata_json,created_at,updated_at)
-          VALUES(:tool_code,:name,:category,:base_url,:tool_version,1,:publics,:prestations,:pa,:launch,:hours,:connector,:status,:meta,:n,:n)
+          VALUES(:tool_code,:name,:category,:base_url,:tool_version,:active,:publics,:prestations,:pa,:launch,:hours,:connector,:status,:meta,:n,:n)
           ON CONFLICT(tool_code) DO UPDATE SET name=excluded.name,category=excluded.category,base_url=excluded.base_url,
-          tool_version=excluded.tool_version,allowed_publics_json=excluded.allowed_publics_json,
+          tool_version=excluded.tool_version,active=excluded.active,allowed_publics_json=excluded.allowed_publics_json,
           compatible_prestations_json=excluded.compatible_prestations_json,prescription_allowed=excluded.prescription_allowed,
           launch_type=excluded.launch_type,access_validity_hours=excluded.access_validity_hours,connector_code=excluded.connector_code,
           connector_status=CASE WHEN tool_catalog.connector_status='CONNECTED' THEN tool_catalog.connector_status ELSE excluded.connector_status END,
           metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
-          {'tool_code':d['tool_code'],'name':d['name'],'category':d['category'],'base_url':d['base_url'],'tool_version':d['tool_version'],
-           'publics':json.dumps(d['allowed_publics'],ensure_ascii=False),'prestations':json.dumps(d['compatible_prestations'],ensure_ascii=False),
-           'pa':d['prescription_allowed'],'launch':d['launch_type'],'hours':d['access_validity_hours'],'connector':d['connector_code'],
-           'status':d['connector_status'],'meta':json.dumps(d['metadata'],ensure_ascii=False),'n':now})
+          {'tool_code':str(d['tool_code']).strip().upper(),'name':d['name'],'category':d.get('category','OUTIL'),'base_url':d.get('base_url'),
+           'tool_version':d.get('tool_version'),'active':active,'publics':json.dumps(d.get('allowed_publics') or ['BENEFICIAIRE'],ensure_ascii=False),
+           'prestations':json.dumps(d.get('compatible_prestations') or [],ensure_ascii=False),'pa':pa,'launch':d.get('launch_type','HUB_REDIRECT'),
+           'hours':int(d.get('access_validity_hours') or 168),'connector':d.get('connector_code'),'status':d.get('connector_status','NOT_CONFIGURED'),
+           'meta':json.dumps(d.get('metadata') or {},ensure_ascii=False),'n':now})
     return len(defaults)
 
 
@@ -2660,6 +2764,72 @@ def resolve_prescription_launch_token(engine, token, actor='beneficiary'):
 
 def prescription_events(engine, prescription_id):
     return q(engine,'SELECT * FROM prescription_events WHERE prescription_id=:p ORDER BY created_at,id',{'p':prescription_id})
+
+# ---- I9-H2.2: lancement Hub générique piloté par registre -----------------
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode('ascii').rstrip('=')
+
+
+def _hub_role(row):
+    raw=str(row.get('prescriber_role') or row.get('prescriber_type') or '').upper()
+    return 'admin' if 'ADMIN' in raw else 'intervenant'
+
+
+def _append_query_param(base_url, key, value):
+    parts=urlsplit(str(base_url or ''))
+    if parts.scheme not in ('http','https') or not parts.netloc:
+        raise ValueError('URL de lancement de l’outil invalide.')
+    query=dict(parse_qsl(parts.query,keep_blank_values=True)); query[str(key)]=str(value)
+    return urlunsplit((parts.scheme,parts.netloc,parts.path,urlencode(query),parts.fragment))
+
+
+def build_generic_tool_launch(engine, prescription_id, signing_key, valid_seconds=900):
+    """Build a signed launch URL from tool_catalog.metadata_json.
+
+    Supported profiles intentionally cover both contracts already prepared by Clarté360:
+    - payload_b64_hmac: HMAC over the base64url payload string (Boussole family);
+    - raw_json_hmac: HMAC over raw canonical JSON (older VPS-HUB-READY family).
+    New tools are added through config/tool_registry.json, not by changing this function.
+    """
+    if not signing_key or len(str(signing_key).strip()) < 24:
+        raise ValueError('Secret Hub Clarté360 non configuré.')
+    row=one(engine,"""SELECT tp.*,tc.base_url,tc.launch_type,tc.metadata_json,tc.active tool_active,tc.prescription_allowed
+      FROM tool_prescriptions tp JOIN tool_catalog tc ON tc.id=tp.tool_id WHERE tp.prescription_id=:p""",{'p':prescription_id})
+    if not row or row.get('status')=='ANNULE': raise ValueError('Prescription indisponible.')
+    if not row.get('tool_active') or not row.get('prescription_allowed'): raise ValueError('Outil temporairement indisponible.')
+    meta=_json_load(row.get('metadata_json'),{}); profile=(meta or {}).get('hub_profile') or {}
+    if not profile: raise ValueError('Contrat Hub de cet outil non configuré.')
+    tool_id=profile.get('tool_id'); scopes=profile.get('scopes') or []
+    if not tool_id or not isinstance(scopes,list): raise ValueError('Contrat Hub incomplet.')
+    now=int(time.time()); ttl=max(60,min(int(valid_seconds or 900),7*86400))
+    payload={
+        'tool_id':tool_id,'hub_source':profile.get('hub_source','GESTION_ACTIONS_I9'),
+        'beneficiary_id':str(row['beneficiary_id']),'action_id':str(row['action_id']),
+        'participant_id':str(row.get('participant_id') or ''),'prescription_id':str(row['prescription_id']),
+        'scopes':scopes,
+    }
+    role_field=profile.get('role_field','role'); payload[role_field]=_hub_role(row)
+    time_model=profile.get('time_model','iat_exp')
+    if time_model=='expires_at':
+        payload['expires_at']=now+ttl
+    else:
+        payload['iat']=now; payload['exp']=now+ttl
+    if profile.get('return_mode'):
+        payload['return_mode']=profile['return_mode']
+    # Prefill is optional and contains no secret; apps may ignore it.
+    ben=one(engine,'SELECT first_name,last_name,current_email email FROM beneficiaries WHERE id=:b',{'b':row['beneficiary_id']}) or {}
+    payload['beneficiary']={'prenom':ben.get('first_name') or '', 'nom':ben.get('last_name') or '', 'email':ben.get('email') or ''}
+    raw=json.dumps(payload,ensure_ascii=False,separators=(',',':')).encode('utf-8')
+    mode=profile.get('signature_mode','payload_b64_hmac')
+    if mode=='payload_b64_hmac':
+        p=_b64url(raw); sig=hmac.new(str(signing_key).encode(),p.encode(),hashlib.sha256).digest(); token=p+'.'+_b64url(sig)
+    elif mode=='raw_json_hmac':
+        p=_b64url(raw); sig=hmac.new(str(signing_key).encode(),raw,hashlib.sha256).digest(); token=p+'.'+_b64url(sig)
+    else:
+        raise ValueError('Mode de signature Hub non supporté.')
+    return _append_query_param(row.get('base_url'),profile.get('query_param','hub_token'),token)
+
 
 # ---- V3 I9-E: adaptateur PIP RC5 ------------------------------------------
 def pip_connector_configured(signing_key):

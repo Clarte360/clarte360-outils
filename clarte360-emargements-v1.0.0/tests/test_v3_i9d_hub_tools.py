@@ -113,3 +113,38 @@ def test_i9d_rejects_prescription_when_tool_not_compatible_with_action():
     upsert_tool_catalog(e,{'tool_code':'COACH_ONLY','name':'Coach only','base_url':'https://example.org','launch_type':'HUB_REDIRECT','compatible_prestations':['COACHING']},'admin')
     with pytest.raises(ValueError):
         create_tool_prescription(e,'COACH_ONLY',bid,aid,pid,actor='admin')
+
+
+def test_i9h22_registry_seeds_deployed_boussole_and_plans_future_tools_disabled():
+    e=eng()
+    b=one(e,"SELECT * FROM tool_catalog WHERE tool_code='BOUSSOLE_VALEURS'")
+    assert b and b['active']==1 and b['prescription_allowed']==1
+    assert b['base_url']=='https://boussole-valeurs.clarte360.com'
+    planned=one(e,"SELECT * FROM tool_catalog WHERE tool_code='MOTEURS_PROFESSIONNELS'")
+    assert planned and planned['active']==0 and planned['prescription_allowed']==0
+
+
+def test_i9h22_generic_signed_launch_matches_boussole_contract():
+    import base64, hashlib, hmac, json
+    from urllib.parse import urlsplit, parse_qs
+    from services import build_generic_tool_launch
+    e=eng(); aid,pid,bid=seed_action(e)
+    pr=create_tool_prescription(e,'BOUSSOLE_VALEURS',bid,aid,pid,prescriber_type='ADMIN',prescriber_role='ADMINISTRATEUR',actor='admin')
+    secret='0123456789abcdef0123456789abcdef'
+    url=build_generic_tool_launch(e,pr['prescription_id'],secret,900)
+    qs=parse_qs(urlsplit(url).query); token=qs['hub_token'][0]; p,s=token.split('.',1)
+    pad=lambda x:x+'='*((4-len(x)%4)%4)
+    raw=base64.urlsafe_b64decode(pad(p)); sig=base64.urlsafe_b64decode(pad(s))
+    assert hmac.compare_digest(sig,hmac.new(secret.encode(),p.encode(),hashlib.sha256).digest())
+    payload=json.loads(raw)
+    assert payload['tool_id']=='boussole-valeurs' and payload['role']=='admin'
+    assert 'BOUSSOLE_RUN' in payload['scopes'] and payload['prescription_id']==pr['prescription_id']
+    assert payload['beneficiary']['email']=='anne@example.org'
+
+
+def test_i9h22_generic_signed_launch_requires_hub_secret():
+    from services import build_generic_tool_launch
+    e=eng(); aid,pid,bid=seed_action(e)
+    pr=create_tool_prescription(e,'BOUSSOLE_VALEURS',bid,aid,pid,actor='admin')
+    with pytest.raises(ValueError):
+        build_generic_tool_launch(e,pr['prescription_id'],'short',900)

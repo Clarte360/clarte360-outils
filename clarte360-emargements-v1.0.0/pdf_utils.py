@@ -177,3 +177,43 @@ def quality_response_pdf(engine,campaign_id):
     if notice: story.append(Spacer(1,5*mm));story.append(Paragraph(f"Données personnelles : {notice}",ss['C360Small']))
     doc.build(story)
     return buf.getvalue()
+
+
+def teams_evidence_pdf(engine, action_id, report_row_id=None, technical=False):
+    """Printable Microsoft Teams complementary evidence.
+
+    technical=True includes Microsoft/Graph identifiers and hashes for administrators.
+    """
+    from services import teams_reports_for_action, teams_report_connections, _duration_hms, organization_runtime_config
+    action=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id})
+    if not action: raise ValueError('Action introuvable')
+    reports=teams_reports_for_action(engine,action_id)
+    if report_row_id is not None: reports=[r for r in reports if int(r['id'])==int(report_row_id)]
+    runtime=organization_runtime_config(engine,action_id); org=runtime['organization']; tz=ZoneInfo(runtime['timezone'])
+    buf=io.BytesIO();doc=SimpleDocTemplate(buf,pagesize=A4,leftMargin=14*mm,rightMargin=14*mm,topMargin=12*mm,bottomMargin=18*mm);ss=_styles();story=[]
+    _header(story,action,ss,org)
+    story.append(Paragraph('PREUVE COMPLÉMENTAIRE DE RÉUNION MICROSOFT TEAMS',ss['C360Title']))
+    story.append(Paragraph('Ce document restitue les données de présence remontées par Microsoft Graph. Il complète l’émargement Clarté360 et ne le remplace pas.',ss['C360Small']))
+    if not reports: story.append(Paragraph('Aucun rapport Microsoft Teams récupéré pour cette action.',ss['C360Body']))
+    for idx,rep in enumerate(reports):
+        if idx: story.append(PageBreak())
+        ms=rep.get('meeting_start_utc'); me=rep.get('meeting_end_utc')
+        def loc(v):
+            if not v:return '—'
+            d=datetime.fromisoformat(str(v).replace('Z','+00:00')); return d.astimezone(tz).strftime('%d/%m/%Y %H:%M:%S')
+        duration=0
+        try: duration=int((datetime.fromisoformat(str(me).replace('Z','+00:00'))-datetime.fromisoformat(str(ms).replace('Z','+00:00'))).total_seconds())
+        except Exception: pass
+        story.append(Paragraph(f"<b>Séance prévue :</b> {rep.get('slot_date') or 'non rapprochée'} {rep.get('start_time') or ''}–{rep.get('end_time') or ''}",ss['C360Body']))
+        story.append(Paragraph(f"<b>Réunion Microsoft constatée :</b> {loc(ms)} → {loc(me)} · Durée : {_duration_hms(duration)} · Connexions : {rep.get('total_participants') or 0}",ss['C360Body']))
+        rows=[['Identité / pseudonyme Teams','Email Microsoft','Rôle','Entrée','Sortie','Durée','Rapprochement Clarté360']]
+        for r in teams_report_connections(engine,rep['id']):
+            match=(f"{r.get('participant_first_name') or ''} {r.get('participant_last_name') or ''}".strip() if r.get('participant_id') else 'Non rapproché')
+            rows.append([r.get('display_name') or '—',r.get('email') or '—',r.get('role') or '—',loc(r.get('join_time_utc')),loc(r.get('leave_time_utc')),_duration_hms(r.get('duration_seconds')),match])
+        tbl=Table(rows,colWidths=[31*mm,34*mm,19*mm,25*mm,25*mm,21*mm,34*mm],repeatRows=1)
+        tbl.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),TEAL),('TEXTCOLOR',(0,0),(-1,0),colors.white),('FONTSIZE',(0,0),(-1,-1),6.4),('GRID',(0,0),(-1,-1),.3,colors.HexColor('#B8CCCC')),('VALIGN',(0,0),(-1,-1),'MIDDLE')]))
+        story.append(Spacer(1,3*mm));story.append(tbl)
+        if technical:
+            story.append(Spacer(1,4*mm))
+            story.append(Paragraph(f"<b>Références techniques Microsoft :</b><br/>Organisateur : {rep.get('organizer_upn') or '—'}<br/>OnlineMeeting ID : {rep.get('online_meeting_id') or '—'}<br/>AttendanceReport ID : {rep.get('report_id') or '—'}<br/>Récupéré sur le serveur : {rep.get('retrieved_at') or '—'}<br/>SHA-256 source Graph : {rep.get('raw_sha256') or 'non calculé (rapport historique)'}",ss['C360Small']))
+    doc.build(story,onFirstPage=_footer_for(org),onLaterPages=_footer_for(org));return buf.getvalue()

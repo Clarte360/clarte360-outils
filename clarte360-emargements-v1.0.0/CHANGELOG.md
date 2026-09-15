@@ -368,3 +368,10 @@
 - Catalogue outils : sélection d'un outil existant et préremplissage ; PIP protégé en connexion signée ; vocabulaire métier pour l'état du connecteur.
 - Mise à jour du catalogue sans effacer silencieusement le contrat/connecteur technique existant.
 - Version affichée corrigée en 3.0.0-I9-H2.
+
+
+## 3.0.0-I9-H2.3 — 2026-09-15
+Voir `INCREMENT_V3_I9_H2_3_TEAMS_PREUVES_UX.md`.
+
+## 3.0.0-I9-H2.4 — 2026-09-15
+Voir `INCREMENT_V3_I9_H2_4_CONTRESIGNATURE_DOCUMENTS_ERGONOMIE.md`.
