@@ -1,9 +1,9 @@
 {
   "tool_id": "boussole-valeurs",
   "app_name": "Clarté360 - Boussole des valeurs professionnelles",
-  "app_version": "1.8.4-validation-saisies-vps-hub-ready-garde-fou",
+  "app_version": "1.8.5-vps-mail-hub-registry",
   "target_url": "https://boussole-valeurs.clarte360.com",
-  "deployment_status": "planned",
+  "deployment_status": "production",
   "audience": [
     "beneficiaire"
   ],
@@ -13,5 +13,7 @@
   ],
   "hub_compatible": true,
   "hub_source": "GESTION_ACTIONS_I9",
-  "service_name": "clarte360-boussole-valeurs.service"
+  "service_name": "clarte360-boussole-valeurs.service",
+  "internal_port": 8505,
+  "vps_folder": "boussole_valeurs_pro"
 }

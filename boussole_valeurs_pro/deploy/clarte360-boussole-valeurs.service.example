@@ -3,9 +3,10 @@ Description=Clarte360 Boussole des valeurs
 After=network.target
 
 [Service]
-User=clarte360
-WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-boussole-valeurs
-ExecStart=/opt/clarte360/clarte360-outils/clarte360-boussole-valeurs/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8503
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/clarte360/clarte360-outils/boussole_valeurs_pro
+ExecStart=/opt/clarte360/clarte360-outils/boussole_valeurs_pro/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8505 --server.headless true
 Restart=on-failure
 RestartSec=5
 

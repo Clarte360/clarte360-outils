@@ -31,3 +31,14 @@ Logique métier non modifiée : valeurs, points d'appui, cotations, boussole, va
 - téléchargement JSON = nouvel état sauvegardé ; toute modification ultérieure réactive la protection ;
 - import JSON = nouveau point de reprise propre ;
 - aucune modification de la logique métier, des cotations, de la roue ou des Valeurs énergies.
+
+
+## 1.8.5 - VPS MAIL / HUB REGISTRY
+- configuration e-mail VPS : priorité au secret `[MAIL]`, compatibilité maintenue avec `[email]` Streamlit Cloud et anciens formats ;
+- suppression totale de l'affichage du code d'accès en mode test lorsque l'envoi e-mail échoue ;
+- messages utilisateur alignés sur la configuration MAIL du serveur VPS ;
+- branchement réel du contrat Hub I9 dans `app.py` (`hub_token`/`token`, HMAC, suppression du jeton de l'URL) ;
+- une prescription Hub valide dispense du code e-mail mais conserve le consentement RGPD bénéficiaire ;
+- identité bénéficiaire préremplie depuis le contexte Hub signé lorsqu'elle est fournie ;
+- service VPS d'exemple aligné sur FRAMEWORK VPS V1.1 : dossier stable `boussole_valeurs_pro`, utilisateur `ubuntu`, port 8505 explicite ;
+- identité applicative passée en production sur `https://boussole-valeurs.clarte360.com`.

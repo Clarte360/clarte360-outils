@@ -7,6 +7,7 @@ import secrets
 import uuid
 import smtplib
 from validation import ValidationError, clean_text, name as validate_name, email as validate_email, phone as validate_phone, decode_json_bytes, validate_state
+from hub_contract import verify_launch_token
 import string
 from copy import deepcopy
 from datetime import date, datetime, timedelta
@@ -27,7 +28,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "1.8.4-validation-saisies-vps-hub-ready-garde-fou"
+APP_VERSION = "1.8.5-vps-mail-hub-registry"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
@@ -345,22 +346,71 @@ def timeout_screen():
     st.download_button("Télécharger mon JSON de sauvegarde", json_bytes, file_name=f"{base}_timeout_inactivite.json", mime="application/json", type="primary")
     st.caption("Le navigateur peut exiger un clic pour autoriser le téléchargement du fichier.")
 
-def get_email_config() -> dict | None:
-    """Lit la configuration SMTP Streamlit Secrets au format déjà utilisé par Clarté360."""
+def _secret_section(*names):
     try:
-        cfg = st.secrets.get("email", {})
-        required = ["smtp_server", "smtp_port", "smtp_user", "smtp_password", "from_email", "to_email"]
-        if all(k in cfg and str(cfg[k]).strip() for k in required):
-            return {k: str(cfg[k]).strip() for k in required}
+        root = dict(st.secrets)
     except Exception:
-        pass
-    return None
+        return {}
+    for name in names:
+        section = root.get(name)
+        if section:
+            try:
+                return dict(section)
+            except Exception:
+                return section
+    return {}
+
+
+def _pick_ci(mapping, *names, default=None):
+    low = {str(k).lower(): v for k, v in dict(mapping or {}).items()}
+    for name in names:
+        value = low.get(str(name).lower())
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def get_email_config() -> dict | None:
+    """Configuration mail VPS/Cloud. Priorité au secret Clarté360 [MAIL].
+
+    Compatibilité conservée avec l'ancien format Streamlit Cloud [email] et [smtp].
+    Aucun secret n'est stocké dans le code.
+    """
+    cfg = _secret_section("MAIL", "mail", "email", "EMAIL", "smtp", "SMTP")
+    if not cfg:
+        return None
+    server = _pick_ci(cfg, "SMTP_SERVER", "smtp_server", "host", "server", "smtp_host")
+    port = _pick_ci(cfg, "SMTP_PORT", "smtp_port", "port", default=465)
+    user = _pick_ci(cfg, "USER", "username", "smtp_user", "smtp_username", "login")
+    password = _pick_ci(cfg, "PASSWORD", "smtp_password", "pass")
+    from_email = _pick_ci(cfg, "SENDER_EMAIL", "from_email", "from_address", "sender", "email", default=user)
+    to_email = _pick_ci(cfg, "TO_EMAIL", "to_email", default=FINAL_EMAIL_TO)
+    use_tls = _pick_ci(cfg, "USE_TLS", "use_tls", "starttls", "tls", default=False)
+    use_ssl = _pick_ci(cfg, "USE_SSL", "use_ssl", "ssl", default=None)
+    if not server or not from_email or (user and not password):
+        return None
+    try:
+        port_i = int(port)
+    except Exception:
+        return None
+    if use_ssl is None:
+        use_ssl = (port_i == 465 and str(use_tls).lower() not in {"1","true","yes","on"})
+    return {
+        "smtp_server": str(server).strip(),
+        "smtp_port": port_i,
+        "smtp_user": str(user or "").strip(),
+        "smtp_password": str(password or ""),
+        "from_email": str(from_email).strip(),
+        "to_email": str(to_email or FINAL_EMAIL_TO).strip(),
+        "use_tls": str(use_tls).lower() in {"1","true","yes","on"},
+        "use_ssl": str(use_ssl).lower() in {"1","true","yes","on"},
+    }
 
 
 def send_email(to_email: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> tuple[bool, str]:
     cfg = get_email_config()
     if not cfg:
-        return False, "SMTP non configuré. Aucun email n'a été envoyé."
+        return False, "Configuration MAIL du serveur indisponible. Aucun e-mail n'a été envoyé."
     try:
         msg = EmailMessage()
         msg["From"] = cfg["from_email"]
@@ -371,16 +421,19 @@ def send_email(to_email: str, subject: str, body: str, attachment: bytes | None 
             msg.add_attachment(attachment, maintype="application", subtype="json", filename=attachment_name)
         port = int(cfg["smtp_port"])
         server = cfg["smtp_server"]
-        user = cfg["smtp_user"]
-        password = cfg["smtp_password"]
-        if port == 465:
+        user = cfg.get("smtp_user", "")
+        password = cfg.get("smtp_password", "")
+        if cfg.get("use_ssl") or (port == 465 and not cfg.get("use_tls")):
             with smtplib.SMTP_SSL(server, port, timeout=20) as smtp:
-                smtp.login(user, password)
+                if user:
+                    smtp.login(user, password)
                 smtp.send_message(msg)
         else:
             with smtplib.SMTP(server, port, timeout=20) as smtp:
-                smtp.starttls()
-                smtp.login(user, password)
+                if cfg.get("use_tls") or port != 465:
+                    smtp.starttls()
+                if user:
+                    smtp.login(user, password)
                 smtp.send_message(msg)
         return True, "Email envoyé."
     except Exception as exc:
@@ -397,7 +450,7 @@ def generate_access_code(length: int = 6) -> str:
 def send_access_code_email(beneficiaire: dict, access_code: str) -> tuple[bool, str]:
     cfg = get_email_config()
     if not cfg:
-        return False, "SMTP non configuré : impossible d'envoyer le code d'accès. Configurez les Secrets Streamlit."
+        return False, "Configuration MAIL du serveur indisponible : impossible d'envoyer le code d'accès."
     prenom = beneficiaire.get("prenom", "")
     nom = beneficiaire.get("nom", "")
     email = beneficiaire.get("email", "")
@@ -462,6 +515,78 @@ def ensure_access_state():
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+
+def _hub_secret() -> str:
+    cfg = _secret_section("hub", "HUB")
+    return str(_pick_ci(cfg, "hmac_secret", "HMAC_SECRET", "launch_signing_key", default="") or "").strip()
+
+
+def handle_hub_launch() -> None:
+    """Valide une prescription I9 sans exposer le jeton au reste de l'application."""
+    if st.session_state.get("hub_context") or st.session_state.get("hub_launch_error"):
+        return
+    try:
+        token = st.query_params.get("hub_token") or st.query_params.get("token")
+    except Exception:
+        token = None
+    if isinstance(token, list):
+        token = token[0] if token else None
+    if not token:
+        return
+    secret = _hub_secret()
+    if not secret:
+        st.session_state.hub_launch_error = "Connexion Gestion des Actions indisponible : secret Hub non configuré."
+        return
+    try:
+        context = verify_launch_token(str(token), secret)
+    except Exception:
+        st.session_state.hub_launch_error = "Lien Gestion des Actions invalide ou expiré."
+        return
+    st.session_state.hub_context = context
+    st.session_state.welcome_done = True
+    st.session_state.welcome_choice = None
+    st.session_state.new_session_requested = True
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+
+
+def _open_hub_session_after_rgpd() -> None:
+    context = st.session_state.get("hub_context") or {}
+    data = empty_state()
+    ben = context.get("beneficiary") if isinstance(context.get("beneficiary"), dict) else {}
+    data["beneficiaire"].update({
+        "prenom": str(ben.get("prenom") or "").strip(),
+        "nom": str(ben.get("nom") or "").strip(),
+        "email": str(ben.get("email") or "").strip(),
+        "consultant": "Clarté360",
+        "date_realisation": date.today().isoformat(),
+    })
+    data["rgpd"].update({
+        "consent_given": True,
+        "consent_at": now_iso(),
+        "consent_text_version": RGPD_TEXT_VERSION,
+        "no_server_storage_acknowledged": True,
+        "json_owner_acknowledged": True,
+        "consultant_use_only_acknowledged": True,
+    })
+    data["access"].update({
+        "code_verified": True,
+        "verified_at": now_iso(),
+        "code_generated": False,
+        "code_sent": False,
+        "timeout_minutes": BENEFICIARY_TIMEOUT_MINUTES,
+    })
+    # Le contexte Hub reste en session serveur. On ne met pas le jeton signé dans le JSON métier.
+    st.session_state.code_verified = True
+    st.session_state.code_sent = False
+    st.session_state.active_session_id = str(uuid.uuid4())
+    st.session_state.session_open_reason = "prescription_hub_i9"
+    ensure_runtime_tracking(data)
+    st.session_state.data = data
 
 
 
@@ -712,8 +837,24 @@ def contact_page():
 
 
 def access_gate() -> bool:
-    """Retourne True lorsque le code est validé."""
+    """Retourne True lorsque l'accès autonome ou la prescription Hub est validé."""
     ensure_access_state()
+    if st.session_state.get("hub_launch_error"):
+        header()
+        st.error(st.session_state.get("hub_launch_error"))
+        return False
+    if st.session_state.get("hub_context"):
+        if st.session_state.get("code_verified"):
+            return True
+        header()
+        st.markdown("## Accès sécurisé depuis Gestion des Actions")
+        st.success("Cette Boussole vous a été prescrite depuis votre espace Clarté360. Aucun code reçu par e-mail n'est nécessaire.")
+        rgpd_information_block()
+        consent = st.checkbox("J'ai lu les informations RGPD ci-dessus et je consens à l'utilisation de ces données dans le cadre exclusif de mon accompagnement.", key="hub_rgpd_consent")
+        if st.button("COMMENCER LA BOUSSOLE", type="primary", disabled=not consent):
+            _open_hub_session_after_rgpd()
+            st.rerun()
+        return False
     if not welcome_screen():
         return False
     if st.session_state.get("code_verified"):
@@ -765,10 +906,9 @@ def access_gate() -> bool:
                     st.success("Un code d'accès vient d'être envoyé à l'adresse email indiquée.")
                     st.rerun()
                 else:
-                    st.error("Le code n'a pas pu être envoyé. Vérifiez la configuration SMTP dans Streamlit Secrets.")
+                    st.error("Le code n'a pas pu être envoyé. La configuration MAIL du serveur doit être vérifiée.")
                     st.caption(msg)
-                    st.info(f"Mode test : code généré = {code}")
-                    st.session_state.code_sent = True
+                    st.session_state.code_sent = False
     else:
         b = st.session_state.get("pending_beneficiaire") or {}
         st.success(f"Code généré pour : {b.get('prenom','')} {b.get('nom','')} - {b.get('email','')}")
@@ -827,8 +967,8 @@ def access_gate() -> bool:
                     if ok:
                         st.success("Un nouveau code vient d'être envoyé.")
                     else:
-                        st.warning("Le nouveau code n'a pas pu être envoyé par email. Mode test affiché ci-dessous.")
-                        st.info(f"Mode test : nouveau code généré = {code}")
+                        st.warning("Le nouveau code n'a pas pu être envoyé. La configuration MAIL du serveur doit être vérifiée.")
+                        st.caption(msg)
             with edit_col:
                 if st.button("Modifier les informations"):
                     for k in ["access_code", "code_sent", "code_verified", "pending_beneficiaire", "access_request_events"]:
@@ -1891,6 +2031,7 @@ def page_traceability_rgpd():
 def main():
     ensure_state()
     ensure_access_state()
+    handle_hub_launch()
     sidebar()
     if st.session_state.get("show_contact_page"):
         contact_page()
