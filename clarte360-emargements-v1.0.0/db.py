@@ -311,6 +311,43 @@ I9G_SCHEMA = [
 )"""
 ]
 
+I9J2_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS quality_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE, organization_id INTEGER, agency_id INTEGER, action_id INTEGER, slot_id INTEGER, campaign_id INTEGER,
+ beneficiary_id INTEGER, trainer_id INTEGER, external_contact_id INTEGER, family TEXT NOT NULL, event_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'NOUVEAU',
+ detected_at TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'MANUEL', subject TEXT NOT NULL, description TEXT, theme TEXT, severity TEXT NOT NULL DEFAULT 'MINEURE',
+ urgency TEXT NOT NULL DEFAULT 'NORMALE', criticality TEXT, recurrence INTEGER NOT NULL DEFAULT 0, qualification TEXT, owner_type TEXT, owner_ref TEXT, owner_name TEXT,
+ immediate_action TEXT, cause_analysis TEXT, due_at TEXT, effectiveness_criteria TEXT, effectiveness_result TEXT, effectiveness_checked_at TEXT, effectiveness_checked_by TEXT,
+ closure_decision TEXT, closure_comment TEXT, closed_at TEXT, closed_by TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE SET NULL, FOREIGN KEY(slot_id) REFERENCES slots(id) ON DELETE SET NULL,
+ FOREIGN KEY(campaign_id) REFERENCES quality_campaigns(id) ON DELETE SET NULL, FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE SET NULL,
+ FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE SET NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS quality_event_actions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, quality_event_id INTEGER NOT NULL, action_kind TEXT NOT NULL DEFAULT 'CORRECTIVE', title TEXT NOT NULL, description TEXT,
+ owner_type TEXT, owner_ref TEXT, owner_name TEXT, due_at TEXT, status TEXT NOT NULL DEFAULT 'A_FAIRE', evidence_ref TEXT, effectiveness_result TEXT, completed_at TEXT,
+ created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(quality_event_id) REFERENCES quality_events(id) ON DELETE CASCADE
+)""",
+"""CREATE TABLE IF NOT EXISTS quality_event_messages (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, quality_event_id INTEGER NOT NULL, direction TEXT NOT NULL DEFAULT 'INTERNE', author TEXT NOT NULL, recipient TEXT, message TEXT NOT NULL,
+ channel TEXT NOT NULL DEFAULT 'NOTE', created_at TEXT NOT NULL, FOREIGN KEY(quality_event_id) REFERENCES quality_events(id) ON DELETE CASCADE
+)""",
+"""CREATE TABLE IF NOT EXISTS quality_contacts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER, first_name TEXT, last_name TEXT NOT NULL, organization_name TEXT, job_title TEXT, email TEXT, phone TEXT,
+ domain TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS quality_review_points (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id INTEGER NOT NULL, response_id INTEGER, question_id INTEGER NOT NULL, action_id INTEGER NOT NULL, score REAL, comment TEXT,
+ status TEXT NOT NULL DEFAULT 'A_EXAMINER', decision TEXT, decision_comment TEXT, quality_event_id INTEGER, created_at TEXT NOT NULL, reviewed_at TEXT, reviewed_by TEXT,
+ UNIQUE(campaign_id,question_id), FOREIGN KEY(campaign_id) REFERENCES quality_campaigns(id) ON DELETE CASCADE, FOREIGN KEY(response_id) REFERENCES quality_responses(id) ON DELETE SET NULL,
+ FOREIGN KEY(question_id) REFERENCES questionnaire_questions(id), FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE, FOREIGN KEY(quality_event_id) REFERENCES quality_events(id) ON DELETE SET NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS external_quality_contacts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER, contact_kind TEXT NOT NULL, company TEXT, first_name TEXT, last_name TEXT NOT NULL, job_title TEXT, email TEXT NOT NULL, phone TEXT,
+ active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+)"""
+]
+
 
 def init_db(engine: Engine):
     with engine.begin() as c:
@@ -331,6 +368,8 @@ def init_db(engine: Engine):
         for sql in I9F_SCHEMA:
             c.execute(text(sql))
         for sql in I9G_SCHEMA:
+            c.execute(text(sql))
+        for sql in I9J2_SCHEMA:
             c.execute(text(sql))
         # V1.1 additive migration: never rewrite existing evidence.
         migrations = [
@@ -377,6 +416,9 @@ def init_db(engine: Engine):
             "ALTER TABLE quality_campaigns ADD COLUMN manual_reminder_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE quality_campaigns ADD COLUMN last_manual_reminder_at TEXT",
             "ALTER TABLE quality_campaigns ADD COLUMN last_manual_reminder_by TEXT",
+            "ALTER TABLE quality_campaigns ADD COLUMN external_contact_id INTEGER",
+            "ALTER TABLE quality_campaigns ADD COLUMN external_recipient_email TEXT",
+            "ALTER TABLE quality_campaigns ADD COLUMN external_recipient_name TEXT",
             "ALTER TABLE participants ADD COLUMN pin_recovery_cipher TEXT",
             "ALTER TABLE trainers ADD COLUMN reset_requested_at TEXT",
             "ALTER TABLE trainers ADD COLUMN can_upload_documents INTEGER NOT NULL DEFAULT 0",
@@ -627,10 +669,6 @@ def init_db(engine: Engine):
             "ALTER TABLE quality_issues ADD COLUMN source_role TEXT",
             "ALTER TABLE quality_issues ADD COLUMN source_ref TEXT",
             "ALTER TABLE quality_issues ADD COLUMN updated_at TEXT",
-            # I9 Jalon 1 A: metadata documentaire additive, sans toucher aux preuves existantes.
-            "ALTER TABLE document_references ADD COLUMN origin TEXT",
-            "ALTER TABLE document_references ADD COLUMN regulatory INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE document_references ADD COLUMN immutable_reason TEXT",
         ]
         for sql in post_migrations:
             try: c.execute(text(sql))
@@ -676,6 +714,9 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_crm_contacts_email ON crm_contacts(email)",
             "CREATE INDEX IF NOT EXISTS ix_crm_contacts_beneficiary ON crm_contacts(beneficiary_id)",
             "CREATE INDEX IF NOT EXISTS ix_contractualization_action ON contractualization_cases(action_id,status,updated_at)",
+            "CREATE INDEX IF NOT EXISTS ix_quality_events_status ON quality_events(status,severity,due_at)",
+            "CREATE INDEX IF NOT EXISTS ix_quality_events_action ON quality_events(action_id,status,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_quality_review_points_status ON quality_review_points(status,action_id,created_at)",
         ]
         for sql in indexes: c.execute(text(sql))
 

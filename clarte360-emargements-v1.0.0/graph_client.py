@@ -129,12 +129,6 @@ class GraphClient:
         mid = parse.quote(str(meeting_id), safe="")
         return self.request_json("PATCH", f"/users/{uid}/onlineMeetings/{mid}", patch)
 
-    def delete_online_meeting(self, meeting_id):
-        """Delete a Teams online meeting owned by the configured organizer."""
-        uid = parse.quote(self.cfg["organizer_user_id"], safe="")
-        mid = parse.quote(str(meeting_id), safe="")
-        return self.request_json("DELETE", f"/users/{uid}/onlineMeetings/{mid}")
-
     def get_user(self, user_id_or_upn):
         uid = parse.quote(str(user_id_or_upn), safe="")
         return self.request_json("GET", f"/users/{uid}?$select=id,displayName,mail,userPrincipalName,userType")

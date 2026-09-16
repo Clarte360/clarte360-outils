@@ -725,12 +725,11 @@ def render_trainer_action(action, trainer):
         else: st.info('Aucun document mis à disposition pour cette action.')
         if trainer.get('can_upload_documents'):
             st.markdown('#### Déposer un document pour tous les bénéficiaires de cette action')
-            updoc=st.file_uploader('Document(s)',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],accept_multiple_files=True,key=f'tr_course_doc_{aid}')
-            if st.button('Déposer dans Documents de cours',key=f'tr_course_doc_btn_{aid}',disabled=not updoc):
+            updoc=st.file_uploader('Document',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'tr_course_doc_{aid}')
+            if st.button('Déposer dans Documents de cours',key=f'tr_course_doc_btn_{aid}',disabled=updoc is None):
                 try:
-                    for f in updoc:
-                        store_document(ENGINE,f.getvalue(),f.name,'COURS',actor,action_id=aid,audience='ACTION_BENEFICIARIES',origin='INTERVENANT')
-                    st.success(f'{len(updoc)} document(s) déposé(s).');rerun()
+                    rid,h,dedup=store_document(ENGINE,updoc.getvalue(),updoc.name,'COURS',actor,action_id=aid,audience='ACTION_BENEFICIARIES')
+                    st.success('Document déposé. '+('Le contenu existait déjà : aucune seconde copie physique n’a été créée.' if dedup else 'Nouveau fichier physique enregistré.'));rerun()
                 except Exception as ex: _ui_incident('operation_interface',ex)
         else: st.caption("Le dépôt de documents n'est pas autorisé pour votre compte. L'administrateur peut activer ce droit.")
     with tab_tools:
@@ -984,7 +983,7 @@ def beneficiary_portal_page():
                 hist=[]
                 for ev in evs:
                     occ=ev['occurrence']; rep=ev.get('report')
-                    hist.append({'Séance':f"{occ.get('slot_date')} — {occ.get('start_time')}–{occ.get('end_time')}",'Réunion Microsoft':'Constatée' if rep else 'Rapport en attente','Ma présence Teams':_duration_hms(ev.get('seconds')) if ev.get('seconds') else ('Rapprochement non établi' if rep else '—')})
+                    hist.append({'Séance':f"{occ.get('slot_date')} — {occ.get('start_time')}–{occ.get('end_time')}",'Réunion Microsoft':'Constatée' if rep else 'Rapport en attente','Ma présence Teams':_duration_hms(ev.get('seconds')) if ev.get('seconds') else ('Non observée' if rep else '—')})
                 if hist: st.dataframe(pd.DataFrame(hist),use_container_width=True,hide_index=True)
     with tabs[4]:
         if not prescriptions:
@@ -1019,8 +1018,17 @@ def beneficiary_portal_page():
                     except Exception as ex: st.error(f"{up.name} : {ex}")
                 if done: st.success(f'{done} fichier(s) déposé(s) dans votre espace.'); rerun()
     with tabs[7]:
+        actionable=[x for x in pending if quality_campaign_availability(x)=='OPEN']
         if not pending: st.success('Aucune action à réaliser actuellement.')
-        for x in pending: st.link_button(f"{x['action_no']} — {x['title']}",quality_token_url(x['token'],BASE_URL))
+        for x in pending:
+            availability=quality_campaign_availability(x)
+            if availability=='OPEN':
+                st.link_button(f"{x['action_no']} — {x['title']}",quality_token_url(x['token'],BASE_URL))
+            else:
+                due=local_dt(x.get('due_at')) if x.get('due_at') else None
+                label=due.strftime('%d/%m/%Y à %H:%M') if due else 'la date prévue'
+                st.markdown(f"**🔒 {x['action_no']} — {x['title']}**")
+                st.caption(f"Disponible à partir du {label}. Ce questionnaire ne peut pas être rempli avant son échéance.")
         if completed:
             st.markdown('#### Questionnaires terminés')
             for x in completed:
@@ -1041,7 +1049,7 @@ def beneficiary_portal_page():
                 sig=one(ENGINE,"SELECT * FROM signatures WHERE participant_id=:p AND slot_id=:s AND status='VALIDE'",{'p':pp['id'],'s':sl['id']})
                 cs_ok,_=required_slot_countersignatures_complete(ENGINE,sl['id'])
                 te=next((x for x in teams_participant_evidence(ENGINE,aa['id'],pp['id']) if int(x['occurrence']['slot_id'])==int(sl['id'])),None)
-                rows.append({'Séance':f"{sl['slot_date']} — {sl['start_time']}–{sl['end_time']}",'Mon émargement':'Signé' if sig else 'Non signé','Contresignature':'Validée' if cs_ok else 'En attente','Présence Teams':_duration_hms(te.get('seconds')) if te and te.get('seconds') else ('Rapprochement non établi' if te and te.get('report') else 'Rapport en attente')})
+                rows.append({'Séance':f"{sl['slot_date']} — {sl['start_time']}–{sl['end_time']}",'Mon émargement':'Signé' if sig else 'Non signé','Contresignature':'Validée' if cs_ok else 'En attente','Présence Teams':_duration_hms(te.get('seconds')) if te and te.get('seconds') else ('Non observée' if te and te.get('report') else 'Rapport en attente')})
             if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
             try:
                 epdf=individual_pdf(ENGINE,pp['id'])
@@ -1273,12 +1281,22 @@ def quality_page(token):
     header(f"{org_name} — Qualité",ctx['questionnaire_title'])
     if ctx.get('status')=='COMPLETED':
         st.success('Votre questionnaire a déjà été enregistré. Merci pour votre retour.');footer();return
+    if not quality_campaign_is_open(ctx):
+        due=local_dt(ctx.get('due_at')) if ctx.get('due_at') else None
+        label=due.strftime('%d/%m/%Y à %H:%M') if due else 'la date prévue'
+        st.info(f'Ce questionnaire sera disponible à partir du {label}. Il ne peut pas être rempli avant cette échéance.')
+        footer();return
     respondent=ctx.get('trainer_full_name') or f"{ctx.get('first_name') or ''} {ctx.get('last_name') or ''}".strip()
     st.markdown(f"<div class='c360-card'><b>{ctx['action_title']}</b><br>N° action : {ctx['action_no']}<br>Répondant : {respondent}<br>Questionnaire : {ctx['questionnaire_title']} — version {ctx['questionnaire_version']}</div>",unsafe_allow_html=True)
     privacy=org.get('privacy_notice') or "Les informations recueillies sont utilisées pour le suivi de l’action et l’amélioration de la qualité des prestations."
     contact=org.get('privacy_contact') or org.get('general_email') or ''
     st.info(f"Données personnelles : {privacy}" + (f" Contact : {contact}" if contact else ''))
     questions=quality_questions(ENGINE,ctx['id']);existing=quality_existing_answers(ENGINE,ctx['id']);answers={}
+    response_types={q.get('response_type') for q in questions}
+    if 'SCALE_1_5' in response_types:
+        st.info("Pour chaque affirmation notée de 1 à 5, la note 1 correspond au niveau d’appréciation le plus faible et la note 5 au niveau d’appréciation le plus élevé. Choisissez la note qui reflète le mieux votre appréciation.")
+    if 'NPS_0_10' in response_types:
+        st.info("Pour les questions notées de 0 à 10, 0 correspond au niveau le plus faible et 10 au niveau le plus élevé.")
     with st.form(f"quality_{ctx['id']}"):
         for qu in questions:
             label=qu['question_text'] + (' *' if qu.get('required') else '')
@@ -1625,26 +1643,6 @@ def dashboard():
             except Exception as ex: _ui_incident('operation_interface',ex)
     footer()
 
-def _delete_remote_teams_for_action(action_id):
-    """Delete the remote Teams meeting before a full local purge. No-op if none exists."""
-    room=one(ENGINE,'SELECT online_meeting_id FROM teams_action_rooms WHERE action_id=:a',{'a':action_id})
-    meeting_id=(room or {}).get('online_meeting_id')
-    if not meeting_id:
-        return True,''
-    try:
-        cfg=graph_config_from_mapping(dict(st.secrets))
-    except Exception:
-        cfg=graph_config_from_mapping({})
-    missing=graph_config_missing(cfg)
-    if missing:
-        return False,'La réunion Teams existe encore mais Microsoft Graph n’est pas disponible : '+', '.join(missing)
-    try:
-        GraphClient(cfg).delete_online_meeting(meeting_id)
-        return True,''
-    except Exception as ex:
-        return False,f"Impossible de supprimer la réunion Teams distante : {ex}"
-
-
 def actions_list():
     header('Clarté360 — Actions','Reprendre, modifier et suivre une action')
     c1,c2=st.columns([3,1]); search=c1.text_input('Rechercher une action, un bénéficiaire, un client ou un email'); include_archived=c2.checkbox('Inclure les archives',value=False); acts=search_actions(ENGINE,search,include_archived=include_archived)
@@ -1652,38 +1650,16 @@ def actions_list():
     labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a['status'])}":a['id'] for a in acts};sel=st.selectbox('Choisir une action',list(labels));aid=labels[sel];st.session_state.selected_action=aid
     action_detail(aid)
     a=one(ENGINE,'SELECT * FROM actions WHERE id=:a',{'a':aid})
-    purge_info=action_purge_summary(ENGINE,aid)
     with st.expander('🗑️ Supprimer définitivement cette action'):
-        st.error('Suppression irréversible et réservée à un administrateur. Toutes les données propres à cette action seront supprimées, y compris Teams/Graph, signatures, prescriptions, documents et qualité. Les identités permanentes partagées restent conservées.')
-        sig_count=int((purge_info or {}).get('signature_count') or 0)
-        if sig_count:
-            st.warning(f"ATTENTION : cette action possède déjà {sig_count} signature(s) ou contresignature(s). Elle ne peut pas être détruite sauf s’il s’agit explicitement d’une action d’essai terminée.")
-            is_test=st.radio('Est-ce une action d’essai ?', ['Non','Oui'],index=0,horizontal=True,key=f'delac_test_{aid}')
-            tests_done=st.radio('Avez-vous totalement terminé les essais sur cette action ?', ['Non','Oui'],index=0,horizontal=True,key=f'delac_done_{aid}',disabled=is_test!='Oui')
-        else:
-            st.info('Aucune signature ni contresignature n’est enregistrée sur cette action.')
-            is_test='Non'; tests_done='Non'
-        confirm=st.text_input(f"Pour confirmer, saisissez le n° d’action : {a['action_no']}",key=f'delactxt{aid}')
-        pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delacpw{aid}')
-        if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT L’ACTION',key=f'delac{aid}',type='primary'):
-            if confirm.strip()!=a['action_no']:
-                st.error('Le numéro d’action saisi ne correspond pas.')
-            elif sig_count and not (is_test=='Oui' and tests_done=='Oui'):
-                st.error('Cette action contient déjà une signature : suppression interdite sauf action d’essai explicitement terminée.')
-            elif not admin_password_ok(ENGINE,st.session_state.admin_email,pw):
-                st.error('Mot de passe administrateur incorrect.')
+        st.error('Suppression irréversible : participants, créneaux, signatures, absences, relances, contresignatures et historique de cette action seront supprimés.')
+        confirm=st.text_input(f"Pour confirmer, saisissez le n° d’action : {a['action_no']}",key=f'delactxt{aid}');pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delacpw{aid}')
+        if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT L’ACTION',key=f'delac{aid}'):
+            if confirm.strip()!=a['action_no']: st.error('Le numéro d’action saisi ne correspond pas.')
+            elif not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Mot de passe administrateur incorrect.')
             else:
-                teams_ok,teams_msg=_delete_remote_teams_for_action(aid)
-                if not teams_ok:
-                    st.error(teams_msg+' La suppression locale est bloquée pour éviter une purge partielle.')
-                else:
-                    ok,msg=purge_action(ENGINE,aid,st.session_state.admin_email)
-                    if ok:
-                        st.session_state.pop('selected_action',None)
-                        st.success('Action supprimée intégralement.')
-                        rerun()
-                    else:
-                        st.error(msg)
+                ok,msg=purge_action(ENGINE,aid,st.session_state.admin_email)
+                if ok: st.session_state.pop('selected_action',None);st.success('Action et données associées supprimées.');rerun()
+                else: st.error(msg)
     footer()
 
 def action_detail(aid):
@@ -1769,20 +1745,12 @@ def action_tools_tab(a):
         cmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in compatible_tools}
         current_codes={x['tool_code'] for x in allowed_tools}
         defaults=[label for label,x in cmap.items() if x['tool_code'] in current_codes]
-        with st.form(f'action_tools_allow_form_{a["id"]}'):
-            selected=st.multiselect('Outils disponibles pour cette action',list(cmap),default=defaults,key=f'action_tools_allow_{a["id"]}')
-            save_allowed=st.form_submit_button('ENREGISTRER LES OUTILS DE L’ACTION',type='primary')
-        if save_allowed:
+        selected=st.multiselect('Outils disponibles pour cette action',list(cmap),default=defaults,key=f'action_tools_allow_{a["id"]}')
+        if st.button('ENREGISTRER LES OUTILS DE L’ACTION',key=f'action_tools_allow_save_{a["id"]}',type='primary'):
             wanted={cmap[x]['tool_code'] for x in selected}
-            try:
-                persisted=set_action_tools_allowed(ENGINE,a['id'],wanted,st.session_state.admin_email)
-                persisted_codes={x['tool_code'] for x in persisted}
-                if persisted_codes != wanted:
-                    raise RuntimeError(f"La base n'a pas confirmé la sélection demandée. Demandé={sorted(wanted)} ; enregistré={sorted(persisted_codes)}")
-                st.session_state['_action_flash']=(a['id'],'success',f"Outils autorisés enregistrés : {len(persisted_codes)}.")
-                rerun()
-            except Exception as ex:
-                _ui_incident('action_outils',ex,action_id=a['id'],subject="L'enregistrement des outils autorisés")
+            for tx in compatible_tools:
+                set_action_tool_allowed(ENGINE,a['id'],tx['tool_code'],tx['tool_code'] in wanted,st.session_state.admin_email)
+            st.success('Liste des outils autorisés enregistrée.'); rerun()
     tools=action_allowed_tools(ENGINE,a['id'])
     c1,c2,c3=st.columns(3);c1.metric('Bénéficiaires rattachés',len(linked));c2.metric('Outils autorisés',len(tools));c3.metric('Prescriptions',len([x for x in list_tool_prescriptions(ENGINE,action_id=a['id']) if x.get('status')!='ANNULE']))
     if linked and tools:
@@ -1829,7 +1797,7 @@ def action_tools_tab(a):
     rows=list_tool_prescriptions(ENGINE,action_id=a['id'])
     if rows:
         st.markdown('#### Prescriptions de cette action')
-        st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Prescrit par':x.get('prescriber_display') or ('Administrateur — '+str(x.get('prescriber_id') or '') if x.get('prescriber_type')=='ADMIN' else 'Intervenant — '+str(x.get('prescriber_id') or '')),'Statut':x['status'].replace('_',' '),'Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or ''} for x in rows if x.get('status')!='ANNULE']),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Administrateur' if x.get('prescriber_type')=='ADMIN' else 'Intervenant','Statut':x['status'].replace('_',' '),'Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or ''} for x in rows if x.get('status')!='ANNULE']),use_container_width=True,hide_index=True)
         rmap={f"{x['prescription_id']} — {x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']}":x for x in rows}; rl=st.selectbox('Prescription à gérer',list(rmap),key=f'presc_manage_{a["id"]}'); rr=rmap[rl]
         statuses=['A_FAIRE','ENVOYE','CONSULTE','EN_COURS','TERMINE','A_REVOIR_EN_SEANCE','REVU_EN_SEANCE','ANNULE']; ns=st.selectbox('Statut',statuses,index=statuses.index(rr['status']) if rr['status'] in statuses else 0,key=f'presc_status_{rr["id"]}')
         if st.button('Enregistrer le statut',key=f'presc_status_save_{rr["id"]}'):
@@ -1839,12 +1807,7 @@ def action_tools_tab(a):
             ok,msg=cancel_tool_prescription_owned(ENGINE,rr['prescription_id'],'ADMIN',st.session_state.admin_email,st.session_state.admin_email)
             if ok: st.success('Prescription supprimée de la liste active et conservée dans la piste d’audit.');rerun()
             else: st.warning(msg)
-        if not owns and rr.get('status')!='ANNULE':
-            st.caption('Prescription créée par un autre utilisateur. Une annulation ADMIN constitue une décision de supervision et sera auditée.')
-            if st.button('ANNULER EN SUPERVISION ADMIN',key=f'presc_supervise_cancel_{rr["id"]}'):
-                ok,msg=cancel_tool_prescription_admin(ENGINE,rr['prescription_id'],st.session_state.admin_email,st.session_state.admin_email)
-                if ok: st.success('Prescription annulée par supervision ADMIN et historisée.');rerun()
-                else: st.warning(msg)
+        if not owns and rr.get('status')!='ANNULE': st.caption('Suppression indisponible : cette prescription a été créée par un autre utilisateur.')
     with st.expander('⚙️ Catalogue central des outils Clarté360'):
         cat=list_tool_catalog(ENGINE,active_only=False)
         if cat:
@@ -2007,7 +1970,7 @@ def teams_tab(a):
     if recon:
         st.markdown('#### Rapprochement présence Teams / émargement')
         st.caption('La présence Teams complète la preuve d’émargement. Une absence de rapport Microsoft n’est jamais affichée comme une absence du participant.')
-        st.dataframe(pd.DataFrame([{'Séance':f"{x['slot_date']} — {x['start_time']}",'Participant':x['participant'],'Présence Teams':'Oui' if x['teams_present'] else ('Rapprochement non établi' if any(ev.get('report') and ev.get('slot_id')==x['slot_id'] for ev in evidence) else 'Rapport en attente'),'Durée Teams':_duration_hms(x['teams_seconds']) if x['teams_present'] else '—','Émargé':'Oui' if x['signed'] else 'Non','Absent déclaré':'Oui' if x['absent'] else 'Non','À vérifier':'Oui' if x['anomaly'] else ''} for x in recon]),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame([{'Séance':f"{x['slot_date']} — {x['start_time']}",'Participant':x['participant'],'Présence Teams':'Oui' if x['teams_present'] else ('Non observée' if any(ev.get('report') and ev.get('slot_id')==x['slot_id'] for ev in evidence) else 'Rapport en attente'),'Durée Teams':_duration_hms(x['teams_seconds']) if x['teams_present'] else '—','Émargé':'Oui' if x['signed'] else 'Non','Absent déclaré':'Oui' if x['absent'] else 'Non','À vérifier':'Oui' if x['anomaly'] else ''} for x in recon]),use_container_width=True,hide_index=True)
 
     unmatched=teams_unmatched_attendance(ENGINE,a['id'])
     if unmatched:
@@ -2694,28 +2657,19 @@ def documents_tab(a):
     with st.expander('Déposer un document par n° d’action',expanded=False):
         st.caption(f"Action sélectionnée : {a['action_no']}. Le document de cours sera visible par tous les bénéficiaires de cette action disposant d’un espace personnel.")
         category=st.selectbox('Catégorie',['COURS','ADMINISTRATIF'],format_func=lambda x:'Documents de cours' if x=='COURS' else 'Document administratif',key=f'doccat_{a["id"]}')
-        updoc=st.file_uploader('Fichier(s) (25 Mo maximum par fichier)',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],accept_multiple_files=True,key=f'action_doc_{a["id"]}')
-        if st.button('DÉPOSER LE(S) DOCUMENT(S)',type='primary',key=f'action_doc_btn_{a["id"]}',disabled=not updoc):
+        updoc=st.file_uploader('Fichier (25 Mo maximum)',type=['pdf','json','doc','docx','xls','xlsx','ppt','pptx','txt','csv','jpg','jpeg','png','webp','zip'],key=f'action_doc_{a["id"]}')
+        if st.button('DÉPOSER LE DOCUMENT',type='primary',key=f'action_doc_btn_{a["id"]}',disabled=updoc is None):
             try:
-                for f in updoc:
-                    store_document(ENGINE,f.getvalue(),f.name,category,st.session_state.admin_email,action_id=a['id'],audience='ACTION_BENEFICIARIES',origin='ADMIN')
-                st.success(f'{len(updoc)} document(s) enregistré(s).');rerun()
+                rid,h,dedup=store_document(ENGINE,updoc.getvalue(),updoc.name,category,st.session_state.admin_email,action_id=a['id'],audience='ACTION_BENEFICIARIES')
+                st.success('Document enregistré. '+('Déduplication SHA-256 : le fichier physique existait déjà.' if dedup else 'Nouveau contenu physique enregistré.'));rerun()
             except Exception as ex: _ui_incident('operation_interface',ex)
     refs=list_action_documents(ENGINE,a['id'])
     if refs:
-        st.dataframe(pd.DataFrame([{'Nom':d['display_name'],'Catégorie':d['category'],'Origine':d.get('origin') or d.get('uploaded_by') or '',
-                                   'Date':(d.get('created_at') or '')[:16].replace('T',' '),'Taille (Ko)':round(d['size_bytes']/1024,1),
-                                   'SHA-256':d['sha256'][:16]+'…','Déposé par':d.get('uploaded_by') or '',
-                                   'Protégé':'Oui' if d.get('regulatory') or d.get('immutable_reason') else 'Non'} for d in refs]),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame([{'Nom':d['display_name'],'Catégorie':d['category'],'Taille (Ko)':round(d['size_bytes']/1024,1),'SHA-256':d['sha256'][:16]+'…','Déposé par':d.get('uploaded_by') or ''} for d in refs]),use_container_width=True,hide_index=True)
         rmap={f"#{d['id']} — {d['display_name']}":d for d in refs};rl=st.selectbox('Document à gérer',list(rmap),key=f'docref_{a["id"]}');rr=rmap[rl];path=Path(rr['storage_path'])
         cdl,cdel=st.columns(2)
         if path.is_file(): cdl.download_button('Télécharger',path.read_bytes(),file_name=rr['display_name'],key=f'adm_doc_dl_{rr["id"]}',use_container_width=True)
-        if cdel.button('Retirer de cette action',key=f'adm_doc_del_{rr["id"]}',use_container_width=True,
-                       disabled=bool(rr.get('regulatory') or rr.get('immutable_reason'))):
-            if delete_document_reference(ENGINE,rr['id'],st.session_state.admin_email):
-                st.success('Référence retirée. Le fichier physique n’est supprimé que s’il n’est plus utilisé ailleurs.');rerun()
-            else:
-                st.warning('Ce document est protégé et ne peut pas être supprimé par une opération métier standard.')
+        if cdel.button('Retirer de cette action',key=f'adm_doc_del_{rr["id"]}',use_container_width=True): delete_document_reference(ENGINE,rr['id'],st.session_state.admin_email);st.success('Référence retirée. Le fichier physique n’est supprimé que s’il n’est plus utilisé ailleurs.');rerun()
     else: st.info('Aucun document de bibliothèque pour cette action.')
 
     try:
@@ -2802,6 +2756,14 @@ def quality_management_screen():
     al=c3.selectbox('Action',list(amap),key='qm_action')
     action_id=amap[al]
     filters={'organization_id':om[ol],'prestation_type':None if pt=='Tous' else pt}
+    j2=quality_dashboard_v31(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt,action_id=action_id)
+    st.markdown('### Tableau de bord Qualité J2')
+    k1,k2,k3,k4,k5=st.columns(5)
+    k1.metric('Événements ouverts',j2['events_open']);k2.metric('Réclamations',j2['complaints_open']);k3.metric('Non-conformités',j2['nc_open']);k4.metric('Points ≤ 3',j2['review_points']);k5.metric('Actions en retard',j2['overdue_actions'])
+    score_cols=st.columns(5)
+    for col,(kind,label) in zip(score_cols,[('HOT','À chaud'),('COLD','À froid'),('TRAINER','Intervenant'),('CLIENT','Client / prescripteur'),('OPCO','OPCO')]):
+        x=j2['by_kind'][kind]; score='—' if x['score'] is None else f"{x['score']:.2f}/5"
+        col.metric(label,score,f"{x['responses']}/{x['invitations']} réponse(s)" if x['invitations'] else 'Aucune invitation')
     qd=quality_management_summary(ENGINE,**filters)
     c1,c2,c3,c4=st.columns(4)
     for c,n,l in [(c1,qd['campaigns'],'Questionnaires prévus'),(c2,f"{qd['response_rate']}%",'Taux de réponse'),(c3,qd['issues_open'],'Difficultés ouvertes'),(c4,qd['improvements_open'],'Améliorations ouvertes')]:
@@ -2828,8 +2790,32 @@ def quality_management_screen():
         st.markdown('### Détail de l’action sélectionnée')
         camps=list_quality_campaigns(ENGINE,action_id)
         if camps:
-            st.dataframe(pd.DataFrame([{'Type':x['campaign_kind'],'Questionnaire':x['questionnaire_title'],'Statut':x['status'],'Échéance':x.get('due_at') or ''} for x in camps]),use_container_width=True,hide_index=True)
+            campaign_rows=[]
+            for x in camps:
+                hist=quality_campaign_email_history(ENGINE,x['id']); sent=[h for h in hist if h.get('sent_at')]
+                campaign_rows.append({'Type':x['campaign_kind'],'Questionnaire':x['questionnaire_title'],'Statut':x['status'],'Disponibilité':quality_campaign_availability(x),'Échéance':x.get('due_at') or '',
+                  'Invitation initiale':next((h.get('sent_at') for h in hist if h['event_type']=='INITIAL' and h.get('sent_at')),'—'),'Dernière relance':next((h.get('sent_at') for h in reversed(hist) if h['event_type'].startswith('MANUAL_') and h.get('sent_at')),'—'),
+                  'Nb relances':sum(1 for h in hist if h['event_type'].startswith('MANUAL_') and h.get('sent_at')),'Réponse':x.get('completed_at') or '—'})
+            st.dataframe(pd.DataFrame(campaign_rows),use_container_width=True,hide_index=True)
         else: st.info('Aucune campagne qualité sur cette action.')
+
+    st.markdown('### Événements qualité et CAPA')
+    evs=list_quality_events(ENGINE,action_id=action_id) if action_id else list_quality_events(ENGINE)
+    if evs:
+        st.dataframe(pd.DataFrame([{'Réf.':e['public_id'],'Type':e['event_type'],'Objet':e['subject'],'Gravité':e['severity'],'Statut':e['status'],'Responsable':e.get('owner_name') or '','Échéance':e.get('due_at') or ''} for e in evs]),use_container_width=True,hide_index=True)
+    else: st.info('Aucun événement qualité avec ces filtres.')
+    with st.expander('Créer un événement qualité',expanded=False):
+        if aq:
+            emap={f"{x['action_no']} — {x['title']}":x['id'] for x in aq}; ea=st.selectbox('Action concernée',list(emap),key='j2_ev_action')
+            fam=st.selectbox('Famille',['EXPRESSION','CONFORMITE','QUESTIONNAIRES','AUDIT','TECHNIQUE','AMELIORATION'],key='j2_ev_family')
+            typ=st.selectbox('Type',['INFORMATION','OBSERVATION','SUGGESTION','DIFFICULTE','RECLAMATION','NON_CONFORMITE','INCIDENT','ECART_DOCUMENTAIRE','ECART_ORGANISATIONNEL','OPPORTUNITE'],key='j2_ev_type')
+            subj=st.text_input('Objet',key='j2_ev_subject');desc=st.text_area('Description factuelle',key='j2_ev_desc');sev=st.selectbox('Gravité',['MINEURE','MAJEURE','CRITIQUE'],key='j2_ev_sev')
+            if st.button('CRÉER LA FICHE QUALITÉ',type='primary',disabled=not subj.strip(),key='j2_ev_create'):
+                create_quality_event(ENGINE,fam,typ,subj.strip(),desc.strip(),st.session_state.admin_email,action_id=emap[ea],severity=sev);st.success('Fiche qualité créée et historisée.');rerun()
+    pts=quality_review_points(ENGINE,action_id=action_id,open_only=True)
+    if pts:
+        st.markdown('#### Points à examiner — notes ≤ 3')
+        st.dataframe(pd.DataFrame([{'ID':p['id'],'Action':p['action_no'],'Type':p['campaign_kind'],'Question':p['question_text'],'Note':p['score'],'Statut':p['status']} for p in pts]),use_container_width=True,hide_index=True)
 
     st.markdown('### Signalements à traiter et historique')
     trainer_rows=q(ENGINE,"""SELECT r.*,a.action_no,a.title action_title,t.full_name source_name FROM trainer_reports r

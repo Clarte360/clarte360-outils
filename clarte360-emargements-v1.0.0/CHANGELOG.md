@@ -1,29 +1,3 @@
-## 3.0.0-I9-J1-AB-RC2 — Consolidation ciblée Outils + suppression action — 15/09/2026
-
-- Hub Outils : enregistrement ADMIN déplacé dans un formulaire Streamlit atomique avec vérification immédiate de la vérité DB avant confirmation.
-- Hub Outils : ajout/retrait d'outils autorisés persistant après rerun/F5 ; retrait sans destruction des prescriptions historiques.
-- Prescriptions : affichage du prescripteur réel (nom/email + rôle Administrateur/Intervenant).
-- Prescriptions : interdiction de doublon actif conservée quel que soit le créateur.
-- Suppression d'action : disponible uniquement depuis l'onglet Actions et réservée à l'administrateur authentifié.
-- Suppression d'action signée : interdite par défaut ; exception uniquement pour une action d'essai avec double confirmation et mot de passe administrateur.
-- Purge : suppression des données propres à l'action (participants, créneaux, signatures/contresignatures, outils/prescriptions, documents, qualité, communications et données Teams locales), conservation des identités permanentes partagées.
-- Teams : suppression distante de la réunion Graph avant purge locale ; la purge locale est bloquée si la suppression distante échoue, afin d'éviter un état partiel.
-- Tests : 299 tests verts ; nouveaux tests ciblés base historique sans permissions, ajout/retrait outils, prescripteur explicite et purge action.
-
-## 3.0.0-I9-J1-AB-RC1 — Jalon 1 A+B
-
-- Sélection des outils par action persistée atomiquement et relue depuis la DB.
-- Contrôle serveur du droit intervenant `can_prescribe_tools`.
-- Annulation de prescription par supervision ADMIN avec audit.
-- Métadonnées documentaires additives : origine, preuve réglementaire, motif de protection.
-- Dépôts multiples ADMIN / INTERVENANT.
-- Suppression standard bloquée pour les preuves protégées.
-- Rappels Teams H-2 / H-15 pour bénéficiaires et intervenants/coanimateurs affectés au créneau.
-- Recalcul des rappels non envoyés après déplacement ; neutralisation des créneaux annulés/reportés/remplacés.
-- Emails Teams avec lien réunion + espace personnel et rappel d'activation bénéficiaire si nécessaire.
-- Terminologie Graph prudente : `Rapprochement non établi` au lieu d'une formulation assimilable à une absence.
-- Tests : 296 passed ; release_check : CANDIDATE TECHNIQUE OK.
-
 ## 3.0.0-I9-H2.8 — Consolidation ergonomie / outils / qualité / robustesse
 
 - Isolation de chaque onglet administrateur : une panne locale ne bloque plus les onglets suivants et les incidents sont journalisés avec leur contexte réel.
