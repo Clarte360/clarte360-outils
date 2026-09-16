@@ -49,7 +49,15 @@ def _run_communication_events(eng,smtp,base,limit=100):
                 rows=''.join(f"<li>{x['slot_date']} — {x['start_time']}–{x['end_time']}</li>" for x in slots) or '<li>Planning en cours de finalisation</li>'
                 modality=delivery_mode_label(e.get('delivery_mode'))
                 subject=f"{org_name} — Confirmation de votre planning — {e['action_no']}"
-                body=f"<p>Bonjour {e.get('first_name') or ''},</p><p>Votre inscription à <strong>{e['title']}</strong> est enregistrée.</p><p><strong>Modalité :</strong> {modality}<br><strong>Lieu / précision :</strong> {e.get('location') or 'À confirmer'}</p><ul>{rows}</ul>"
+                body=f"<p>Bonjour {e.get('first_name') or ''},</p><p>Votre inscription à <strong>{e['title']}</strong> est enregistrée.</p><p><strong>Modalité :</strong> {modality}<br><strong>Lieu / précision :</strong> {e.get('location') or 'À confirmer'}</p><ul>{rows}</ul><p><strong>Si vous êtes inscrit(e) à une formation en ligne, vous accéderez à la réunion depuis votre espace Clarté360, onglet Teams.</strong></p>"
+            elif e['communication_type'] in ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15'):
+                is_trainer=bool(e.get('trainer_id'))
+                who=e.get('trainer_name') if is_trainer else ((e.get('first_name') or '')+' '+(e.get('last_name') or '')).strip()
+                delay='2 heures' if e['communication_type']=='TEAMS_REMINDER_H2' else '15 minutes'
+                portal=(f"{base.rstrip('/')}?trainer_portal=1&action_id={e['action_id']}" if is_trainer else f"{base.rstrip('/')}?beneficiary_portal=1")
+                portal_label='MON ESPACE INTERVENANT' if is_trainer else 'MON ESPACE BÉNÉFICIAIRE'
+                subject=f"{org_name} — Rappel séance dans {delay} — action {e['action_no']}"
+                body=f"<p>Bonjour {who or ''},</p><p>Votre séance <strong>{e['title']}</strong> débute dans <strong>{delay}</strong>.</p><p><strong>N° d’action : {e['action_no']}</strong><br><strong>Date :</strong> {e.get('slot_date') or ''}<br><strong>Horaire :</strong> {e.get('start_time') or ''}–{e.get('end_time') or ''}</p><p>Connectez-vous à votre espace Clarté360, ouvrez l’action <strong>{e['action_no']}</strong>, puis rendez-vous dans l’onglet <strong>Teams</strong> pour rejoindre la séance.</p><p><a href='{portal}'>{portal_label}</a></p>"
             elif e['communication_type']=='COUNTERSIGN_REQUEST':
                 direct=f"{base.rstrip('/')}?trainer_portal=1&action_id={e['action_id']}&slot_id={e['slot_id']}"
                 subject=f"{org_name} — Contresignature requise — {e['action_no']}"

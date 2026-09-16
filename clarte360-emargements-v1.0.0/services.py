@@ -477,8 +477,10 @@ def countersign_slot(engine,sid,name,email,actor,declaration,trainer_id=None,sig
     existing=one(engine,'SELECT id FROM trainer_countersignatures_v3 WHERE slot_id=:s AND trainer_id IS :t',{'s':sid,'t':trainer_id})
     if existing:return False,'Cette contresignature est déjà enregistrée et ne peut pas être modifiée.'
     method='NOM_PRENOM'; path=None; digest=None
-    if assigned:
-        if not signature_bytes:return False,'La signature manuscrite de l’intervenant est obligatoire.'
+    if assigned and not signature_bytes:
+        if not (name or '').strip(): return False,'Nom et prénom obligatoires pour la certification numérique.'
+        method='NOM_PRENOM'
+    elif assigned and signature_bytes:
         digest=__import__('hashlib').sha256(signature_bytes).hexdigest()
         path=SIG_DIR/f"trainer_sig_{slot['action_id']}_{sid}_{trainer_id}_{digest[:12]}.png"
         path.write_bytes(signature_bytes); method='MANUSCRITE'
@@ -1139,6 +1141,11 @@ def action_calendar_ics(engine, action_id, *, trainer_id=None, beneficiary_id=No
     return ('\r\n'.join(lines)+'\r\n').encode('utf-8')
 
 
+def _report_type_to_quality_event_type(report_type):
+    raw=(report_type or 'INFORMATION').upper().replace('É','E').replace('È','E').replace(' ','_')
+    mapping={'OBSERVATION':'OBSERVATION','DIFFICULTE':'DIFFICULTE','INCIDENT':'INCIDENT','PROBLEME_LOGISTIQUE':'INCIDENT','BESOIN_DE_CONTACT':'INFORMATION','BESOIN_CONTACT':'INFORMATION','AUTRE':'INFORMATION','RECLAMATION':'RECLAMATION','SUGGESTION':'SUGGESTION'}
+    return mapping.get(raw,'INFORMATION')
+
 def create_trainer_report(engine,action_id,trainer_id,report_type,subject,description,quality_relevant=True,attachment_path=None,attachment_name=None):
     if not trainer_action_authorized(engine,trainer_id,action_id): return None
     # V3.1 corrective: every user report is, by definition, part of the quality follow-up.
@@ -1147,7 +1154,8 @@ def create_trainer_report(engine,action_id,trainer_id,report_type,subject,descri
     now=utcnow_iso(); rid=execute(engine,"""INSERT INTO trainer_reports(action_id,trainer_id,report_type,subject,description,status,quality_relevant,attachment_path,attachment_name,created_at,updated_at)
       VALUES(:a,:t,:rt,:s,:d,'NOUVEAU',:q,:ap,:an,:c,:c)""",{'a':action_id,'t':trainer_id,'rt':report_type,'s':subject,'d':description,'q':1 if quality_relevant else 0,'ap':attachment_path,'an':attachment_name,'c':now})
     if quality_relevant:
-        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at) VALUES(:a,:i,:t,:d,'OUVERTE','Administration',:c,'INTERVENANT',:r,:c)""",{'a':action_id,'i':'SIGNALEMENT_INTERVENANT','t':subject,'d':description,'c':now,'r':str(rid)})
+        create_quality_event(engine,'EXPRESSION',_report_type_to_quality_event_type(report_type),subject,description,f'trainer:{trainer_id}',action_id=action_id,trainer_id=trainer_id,origin='SIGNALEMENT_INTERVENANT')
+        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at) VALUES(:a,'SIGNALEMENT_INTERVENANT',:t,:d,'MIGRE','Administration',:c,'INTERVENANT',:r,:c)""",{'a':action_id,'t':subject,'d':description,'c':now,'r':str(rid)})
     audit(engine,'TRAINER_REPORT_CREATED',action_id,f'trainer:{trainer_id}','trainer_report',rid,{'report_type':report_type,'quality_relevant':bool(quality_relevant),'attachment_name':attachment_name})
     return rid
 
@@ -1162,8 +1170,8 @@ def create_beneficiary_report(engine,action_id,beneficiary_id,report_type,subjec
     now=utcnow_iso(); rid=execute(engine,"""INSERT INTO beneficiary_reports(action_id,beneficiary_id,report_type,subject,description,status,quality_relevant,attachment_path,attachment_name,created_at,updated_at)
       VALUES(:a,:b,:rt,:s,:d,'NOUVEAU',:q,:ap,:an,:c,:c)""",{'a':action_id,'b':beneficiary_id,'rt':report_type,'s':subject,'d':description,'q':1 if quality_relevant else 0,'ap':attachment_path,'an':attachment_name,'c':now})
     if quality_relevant:
-        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at)
-          VALUES(:a,'SIGNALEMENT_BENEFICIAIRE',:t,:d,'OUVERTE','Administration',:c,'BENEFICIAIRE',:r,:c)""",{'a':action_id,'t':subject,'d':description,'c':now,'r':str(rid)})
+        create_quality_event(engine,'EXPRESSION',_report_type_to_quality_event_type(report_type),subject,description,f'beneficiary:{beneficiary_id}',action_id=action_id,beneficiary_id=beneficiary_id,origin='SIGNALEMENT_BENEFICIAIRE')
+        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at) VALUES(:a,'SIGNALEMENT_BENEFICIAIRE',:t,:d,'MIGRE','Administration',:c,'BENEFICIAIRE',:r,:c)""",{'a':action_id,'t':subject,'d':description,'c':now,'r':str(rid)})
     audit(engine,'BENEFICIARY_REPORT_CREATED',action_id,f'beneficiary:{beneficiary_id}','beneficiary_report',rid,{'report_type':report_type,'quality_relevant':bool(quality_relevant)})
     return rid
 
@@ -1713,7 +1721,7 @@ def quality_question_stats(engine, organization_id=None, agency_id=None, prestat
     if action_id: wh.append('a.id=:aid');p['aid']=action_id
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
     rows=q(engine,"""SELECT qq.question_code,qq.rubric_code,qq.question_text,r.response_type,r.answer_json FROM quality_responses r JOIN questionnaire_questions qq ON qq.id=r.question_id JOIN quality_campaigns c ON c.id=r.campaign_id JOIN actions a ON a.id=c.action_id"""+where,p)
-    rubric_labels={'R01':'Information et objectifs','R02':'Organisation','R03':'Moyens et environnement','R04':'Supports et ressources','R05':'Intervenant / animation','R06':'Adaptation et accompagnement','R07':'Accessibilité','R08':'Atteinte des objectifs','R09':'Utilité / transfert','R10':'Satisfaction globale','R11':'Recommandation','R12':'Difficultés / réclamations','I06':'Difficultés / aléas'}
+    rubric_labels={'R01':'Information et objectifs','R02':'Organisation','R03':'Moyens et environnement','R04':'Supports et ressources','R05':'Intervenant / animation','R06':'Adaptation et accompagnement','R07':'Accessibilité','R08':'Atteinte des objectifs','R09':'Utilité / transfert','R10':'Satisfaction globale','R11':'Recommandation','R12':'Difficultés / réclamations','I01':'Information, préparation et coordination','I02':'Locaux, accès et moyens techniques','I03':'Ressources, supports et traçabilité','I04':'Organisation et conditions de réalisation','I05':'Adaptation et accessibilité','I06':'Difficultés / aléas','I07':'Améliorations proposées'}
     agg={}
     for r in rows:
       k=(r['rubric_code'],r['question_code']); x=agg.setdefault(k,{'Rubrique':rubric_labels.get(k[0],k[0]),'Code rubrique':k[0],'Question':r.get('question_text') or k[1],'Code question':k[1],'Réponses':0,'Moyenne':None,'_vals':[]})
@@ -3379,7 +3387,7 @@ def quality_event_actions(engine,event_id): return q(engine,'SELECT * FROM quali
 def update_quality_event_action(engine, action_id, actor, status=None, owner_name=None, due_at=None, evidence_ref=None, effectiveness_result=None):
     row=one(engine,'SELECT qa.*,qe.action_id parent_action_id FROM quality_event_actions qa JOIN quality_events qe ON qe.id=qa.quality_event_id WHERE qa.id=:i',{'i':action_id})
     if not row: raise ValueError('Action CAPA introuvable.')
-    allowed={'A_FAIRE','EN_COURS','EN_ATTENTE','TERMINEE'}
+    allowed={'A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE'}
     ns=status or row['status']
     if ns not in allowed: raise ValueError('Statut CAPA invalide.')
     now=utcnow_iso()
@@ -3399,9 +3407,9 @@ def quality_general_action_plan(engine, action_id=None):
       LEFT JOIN beneficiaries b ON b.id=qe.beneficiary_id LEFT JOIN trainers t ON t.id=qe.trainer_id"""+wh+' ORDER BY qa.created_at DESC',p)
 
 def review_quality_point(engine,point_id,decision,comment,actor,quality_event_id=None):
-    allowed={'CLASSE','EVENEMENT_CREE','RATTACHE','RETOUR_DEMANDE'}
+    allowed={'CLASSE','EVENEMENT_CREE','PLAN_ACTION','RATTACHE','RETOUR_DEMANDE'}
     if decision not in allowed: raise ValueError('Décision de revue invalide.')
-    now=utcnow_iso();execute(engine,"UPDATE quality_review_points SET status='TRAITE',decision=:d,decision_comment=:c,quality_event_id=:e,reviewed_at=:n,reviewed_by=:a WHERE id=:i",{'d':decision,'c':comment,'e':quality_event_id,'n':now,'a':actor,'i':point_id})
+    now=utcnow_iso(); new_status='REPRIS_PLAN_ACTION' if decision=='PLAN_ACTION' else 'EXAMINE'; execute(engine,"UPDATE quality_review_points SET status=:st,decision=:d,decision_comment=:c,quality_event_id=:e,reviewed_at=:n,reviewed_by=:a WHERE id=:i",{'st':new_status,'d':decision,'c':comment,'e':quality_event_id,'n':now,'a':actor,'i':point_id})
 
 def quality_review_points(engine,action_id=None,open_only=False):
     wh=[];p={}
@@ -3410,6 +3418,54 @@ def quality_review_points(engine,action_id=None,open_only=False):
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
     return q(engine,"""SELECT rp.*,qq.question_code,qq.question_text,qc.campaign_kind,a.action_no,a.title action_title
       FROM quality_review_points rp JOIN questionnaire_questions qq ON qq.id=rp.question_id JOIN quality_campaigns qc ON qc.id=rp.campaign_id JOIN actions a ON a.id=rp.action_id"""+where+' ORDER BY rp.created_at DESC',p)
+
+def quality_owner_choices(engine):
+    out=[]
+    for a in q(engine,"SELECT id,full_name,email FROM admins ORDER BY full_name,email"):
+        label=f"{a.get('full_name') or a.get('email')} — Administrateur"
+        out.append({'label':label,'owner_type':'ADMIN','owner_ref':str(a['id']),'owner_name':a.get('full_name') or a.get('email')})
+    for t in q(engine,"SELECT id,full_name,email FROM trainers WHERE active=1 ORDER BY full_name,email"):
+        label=f"{t.get('full_name') or t.get('email')} — Intervenant"
+        out.append({'label':label,'owner_type':'TRAINER','owner_ref':str(t['id']),'owner_name':t.get('full_name') or t.get('email')})
+    return out
+
+
+def quality_source_counts(engine, action_ids):
+    keys={'review_points':0,'difficulties':0,'complaints':0,'nonconformities':0,'incidents':0,'reports':0,'suggestions':0,'other':0}
+    if not action_ids:return keys
+    marks=','.join(':a'+str(i) for i in range(len(action_ids))); p={f'a{i}':v for i,v in enumerate(action_ids)}
+    keys['review_points']=one(engine,f"SELECT COUNT(*) n FROM quality_review_points WHERE action_id IN ({marks}) AND status='A_EXAMINER'",p)['n']
+    rows=q(engine,f"SELECT event_type,COUNT(*) n FROM quality_events WHERE action_id IN ({marks}) AND status NOT IN ('CLOTURE','REFUSE','CLASSE_SANS_SUITE') GROUP BY event_type",p)
+    mapping={'DIFFICULTE':'difficulties','RECLAMATION':'complaints','NON_CONFORMITE':'nonconformities','INCIDENT':'incidents','SUGGESTION':'suggestions','OPPORTUNITE':'suggestions','INFORMATION':'reports','OBSERVATION':'reports'}
+    for r in rows:
+        k=mapping.get((r.get('event_type') or '').upper(),'other'); keys[k]+=int(r['n'])
+    legacy=q(engine,f"SELECT issue_type,COUNT(*) n FROM quality_issues WHERE action_id IN ({marks}) AND status NOT IN ('CLOTUREE','CLOTURE','FERMEE','MIGRE') GROUP BY issue_type",p)
+    for r in legacy:
+        typ=(r.get('issue_type') or '').upper()
+        if 'RECLAM' in typ:k='complaints'
+        elif 'NON_CONFORM' in typ:k='nonconformities'
+        elif 'INCIDENT' in typ:k='incidents'
+        elif 'SUGGEST' in typ or 'AMELIOR' in typ:k='suggestions'
+        elif 'SIGNALEMENT' in typ:k='reports'
+        elif 'DIFFIC' in typ or 'ALEA' in typ:k='difficulties'
+        else:k='other'
+        keys[k]+=int(r['n'])
+    return keys
+
+
+def quality_plan_counts(engine, action_ids):
+    out={'total':0,'in_progress':0,'to_verify':0,'closed':0,'overdue':0}
+    if not action_ids:return out
+    marks=','.join(':a'+str(i) for i in range(len(action_ids))); p={f'a{i}':v for i,v in enumerate(action_ids)}
+    rows=q(engine,f"SELECT qa.status,qa.due_at FROM quality_event_actions qa JOIN quality_events qe ON qe.id=qa.quality_event_id WHERE qe.action_id IN ({marks})",p)
+    today=datetime.now().date().isoformat(); out['total']=len(rows)
+    for r in rows:
+        st=(r.get('status') or '').upper()
+        if st=='TERMINEE':out['closed']+=1
+        elif st=='A_VERIFIER':out['to_verify']+=1
+        else:out['in_progress']+=1
+        if st!='TERMINEE' and r.get('due_at') and str(r['due_at'])[:10] < today:out['overdue']+=1
+    return out
 
 def quality_dashboard_v31(engine, organization_id=None, agency_id=None, prestation_type=None, action_id=None):
     wh=[];p={}

@@ -710,17 +710,26 @@ def render_trainer_action(action, trainer):
                 st.info('Votre contresignature est enregistrée et constitue une preuve historique non modifiable.')
             else:
                 if not eligible: st.warning(why)
-                st.caption('Signature manuscrite de l’intervenant')
-                st.info('Signez dans le cadre gris ci-dessous avec la souris, le doigt ou un stylet.')
-                tr_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=4,stroke_color='#0F172A',background_color='#DDE5E7',height=190,width=420,drawing_mode='freedraw',display_toolbar=False,update_streamlit=True,key=f'tr_csig_v31fix_{aid}_{sl["id"]}_{trainer["id"]}')
+                st.markdown('##### Mode de signature')
+                tr_mode=st.radio('Mode de signature',['Signature manuscrite','Nom et prénom + certification'],horizontal=True,key=f'tr_mode_{aid}_{sl["id"]}')
+                tr_canvas=None; typed_name=trainer['full_name']
+                if tr_mode=='Signature manuscrite':
+                    st.info('Signez dans le cadre gris ci-dessous avec la souris, le doigt ou un stylet.')
+                    tr_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=4,stroke_color='#0F172A',background_color='#EEF2F3',height=190,width=520,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f'tr_csig_v32_{aid}_{sl["id"]}_{trainer["id"]}')
+                else:
+                    typed_name=st.text_input('Nom et prénom',value=trainer['full_name'],key=f'tr_typed_{aid}_{sl["id"]}')
+                    st.caption('La saisie du nom et la certification ci-dessous constituent la preuve de contresignature numérique.')
                 cert=st.checkbox("Je certifie l'exactitude des présences et absences indiquées pour ce créneau.",key=f'tr_cert_{aid}_{sl["id"]}')
                 if st.button('CONTRESIGNER CE CRÉNEAU',type='primary',key=f'tr_sign_{aid}_{sl["id"]}',disabled=not eligible):
                     if not cert: st.error('La certification est obligatoire.')
-                    elif not signature_trace_is_valid(tr_canvas.image_data): st.error('La signature semble vide ou trop courte. Merci d’apposer une signature manuscrite complète dans le cadre.')
+                    elif tr_mode=='Nom et prénom + certification' and not typed_name.strip(): st.error('Nom et prénom obligatoires.')
+                    elif tr_mode=='Signature manuscrite' and (tr_canvas is None or not signature_trace_is_valid(tr_canvas.image_data)): st.error('La signature semble vide ou trop courte. Merci d’apposer une signature manuscrite complète dans le cadre.')
                     else:
-                        img=PILImage.fromarray(tr_canvas.image_data.astype('uint8'),'RGBA').convert('RGB');buf=io.BytesIO();img.save(buf,format='PNG')
+                        sig_bytes=None
+                        if tr_mode=='Signature manuscrite':
+                            img=PILImage.fromarray(tr_canvas.image_data.astype('uint8'),'RGBA').convert('RGB');buf=io.BytesIO();img.save(buf,format='PNG');sig_bytes=buf.getvalue()
                         ip,ua=request_technical_context()
-                        ok,msg=countersign_slot(ENGINE,sl['id'],trainer['full_name'],trainer.get('email'),actor,"Je certifie l'exactitude des présences et absences indiquées pour ce créneau.",trainer_id=trainer['id'],signature_bytes=buf.getvalue(),ip_address=ip,user_agent=ua)
+                        ok,msg=countersign_slot(ENGINE,sl['id'],typed_name.strip(),trainer.get('email'),actor,"Je certifie l'exactitude des présences et absences indiquées pour ce créneau.",trainer_id=trainer['id'],signature_bytes=sig_bytes,ip_address=ip,user_agent=ua)
                         if ok: st.success('Contresignature enregistrée.'); rerun()
                         else: st.error(msg)
     with tab_codes:
@@ -879,6 +888,10 @@ def trainer_portal_page():
     for aa in acts:
         dd=trainer_action_dashboard(ENGINE,tid,aa['id'],TZ) or {}
         for sl in dd.get('slots') or []:
+            tz_name=organization_runtime_config(ENGINE,aa['id'])['timezone']
+            _,slot_end=slot_start_end(sl,tz_name)
+            if datetime.now(slot_end.tzinfo) < slot_end:
+                continue  # L'avenir n'est jamais à régulariser.
             global_slots += 1
             states=_slot_participant_states(ENGINE,sl['id'])
             missing=[x for x in states if x['status'] in ('EN_ATTENTE','PRESENT_REGULARISE')]
@@ -1322,16 +1335,21 @@ def trainer_page(token):
     else:
         if not eligible: st.warning(why)
         name=st.text_input('Nom et prénom de l’intervenant',value=row.get('trainer_name') or '')
-        st.info('Signez dans le cadre gris ci-dessous avec la souris, le doigt ou un stylet.')
-        legacy_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=4,stroke_color='#0F172A',background_color='#EEF2F3',height=190,width=520,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f'legacy_csig_{slot["id"]}')
-        cert=st.checkbox("Je certifie l'exactitude des présences et absences indiquées pour ce créneau.")
+        legacy_mode=st.radio('Mode de signature',['Signature manuscrite','Nom et prénom + certification'],horizontal=True,key=f'legacy_mode_{slot["id"]}')
+        legacy_canvas=None
+        if legacy_mode=='Signature manuscrite':
+            st.info('Signez dans le cadre gris ci-dessous avec la souris, le doigt ou un stylet.')
+            legacy_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=4,stroke_color='#0F172A',background_color='#EEF2F3',height=190,width=520,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f'legacy_csig_v32_{slot["id"]}')
+        cert=st.checkbox("Je certifie l'exactitude des présences et absences indiquées pour ce créneau.",key=f'legacy_cert_{slot["id"]}')
         if st.button('CONTRESIGNER CE CRÉNEAU',type='primary',disabled=(not eligible or (bool(assigned) and legacy_tid is None))):
             if not name.strip() or not cert: st.error('Nom et certification obligatoires.')
-            elif not signature_trace_is_valid(legacy_canvas.image_data): st.error('La signature semble vide ou trop courte. Merci d’apposer une signature manuscrite complète dans le cadre.')
+            elif legacy_mode=='Signature manuscrite' and (legacy_canvas is None or not signature_trace_is_valid(legacy_canvas.image_data)): st.error('La signature semble vide ou trop courte. Merci d’apposer une signature manuscrite complète dans le cadre.')
             else:
-                img=PILImage.fromarray(legacy_canvas.image_data.astype('uint8'),'RGBA').convert('RGB');buf=io.BytesIO();img.save(buf,format='PNG')
+                sig_bytes=None
+                if legacy_mode=='Signature manuscrite':
+                    img=PILImage.fromarray(legacy_canvas.image_data.astype('uint8'),'RGBA').convert('RGB');buf=io.BytesIO();img.save(buf,format='PNG');sig_bytes=buf.getvalue()
                 ip,ua=request_technical_context()
-                ok,msg=countersign_slot(ENGINE,slot['id'],name.strip(),row.get('trainer_email'),f"trainer:{name.strip()}","Je certifie l'exactitude des présences et absences indiquées pour ce créneau.",trainer_id=legacy_tid,signature_bytes=buf.getvalue(),ip_address=ip,user_agent=ua)
+                ok,msg=countersign_slot(ENGINE,slot['id'],name.strip(),row.get('trainer_email'),f"trainer:{name.strip()}","Je certifie l'exactitude des présences et absences indiquées pour ce créneau.",trainer_id=legacy_tid,signature_bytes=sig_bytes,ip_address=ip,user_agent=ua)
                 if ok: st.success('Contresignature enregistrée.');rerun()
                 else: st.error(msg)
     footer()
@@ -2799,17 +2817,27 @@ def quality_management_screen():
     action_id=amap[al]
     filters={'organization_id':om[ol],'prestation_type':None if pt=='Tous' else pt}
     j2=quality_dashboard_v31(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt,action_id=action_id)
-    st.markdown('### Tableau de bord Qualité J2')
-    k1,k2,k3,k4,k5=st.columns(5)
-    k1.metric('Événements ouverts',j2['events_open']);k2.metric('Réclamations',j2['complaints_open']);k3.metric('Non-conformités',j2['nc_open']);k4.metric('Points ≤ 3',j2['review_points']);k5.metric('Actions en retard',j2['overdue_actions'])
+    scope_ids=[action_id] if action_id else [x['id'] for x in aq]
+    src=quality_source_counts(ENGINE,scope_ids); pc=quality_plan_counts(ENGINE,scope_ids)
+    st.markdown('### Éléments Qualité à examiner / qualifier')
+    r1=st.columns(4); r2=st.columns(4)
+    for col,label,key in [(r1[0],'Points ≤ 3','review_points'),(r1[1],'Difficultés / aléas','difficulties'),(r1[2],'Réclamations','complaints'),(r1[3],'Non-conformités','nonconformities'),(r2[0],'Incidents','incidents'),(r2[1],'Signalements / contacts','reports'),(r2[2],'Suggestions / améliorations','suggestions'),(r2[3],'Autres','other')]:
+        col.metric(label,src[key])
+    st.caption("Ces compteurs représentent les files d'entrée encore à examiner. Un point repris dans le plan d'action quitte sa file d'entrée mais conserve toute sa filiation historique.")
+
+    st.markdown("### PLAN D’ACTION")
+    pcols=st.columns(5)
+    pcols[0].metric('Total',pc['total']); pcols[1].metric('En cours',pc['in_progress']); pcols[2].metric('À vérifier',pc['to_verify']); pcols[3].metric('Clôturées',pc['closed']); pcols[4].metric('En retard',pc['overdue'])
+
+    st.markdown('### Indicateurs questionnaires')
     score_cols=st.columns(5)
     for col,(kind,label) in zip(score_cols,[('HOT','À chaud'),('COLD','À froid'),('TRAINER','Intervenant'),('CLIENT','Client / prescripteur'),('OPCO','OPCO')]):
         x=j2['by_kind'][kind]; score='—' if x['score'] is None else f"{x['score']:.2f}/5"
         col.metric(label,score,f"{x['responses']}/{x['invitations']} réponse(s)" if x['invitations'] else 'Aucune invitation')
     qd=quality_management_summary(ENGINE,**filters)
-    c1,c2,c3,c4=st.columns(4)
-    for c,n,l in [(c1,qd['campaigns'],'Questionnaires prévus'),(c2,f"{qd['response_rate']}%",'Taux de réponse'),(c3,qd['issues_open'],'Difficultés ouvertes'),(c4,qd['improvements_open'],'Améliorations ouvertes')]:
-        c.markdown(f"<div class='c360-kpi'><div class='n'>{n}</div><div class='l'>{l}</div></div>",unsafe_allow_html=True)
+    qcols=st.columns(2)
+    qcols[0].markdown(f"<div class='c360-kpi'><div class='n'>{qd['campaigns']}</div><div class='l'>Questionnaires prévus</div></div>",unsafe_allow_html=True)
+    qcols[1].markdown(f"<div class='c360-kpi'><div class='n'>{qd['response_rate']}%</div><div class='l'>Taux de réponse</div></div>",unsafe_allow_html=True)
 
     st.markdown('### Lecture synthétique par thème')
     stats=quality_question_stats(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt,action_id=action_id)
@@ -2851,12 +2879,20 @@ def quality_management_screen():
             st.caption(f"Action : {ev.get('action_no') or '—'} — {ev.get('action_title') or '—'} · Origine : {ev.get('source_name') or ev.get('origin') or '—'} · Créée : {ev.get('detected_at') or ev.get('created_at')}")
             st.write(ev.get('description') or 'Aucune description.')
             statuses=['NOUVEAU','A_ANALYSER','EN_TRAITEMENT','EN_ATTENTE','A_VERIFIER','CLOTURE','CLASSE_SANS_SUITE','REFUSE']
-            c1,c2,c3=st.columns(3); es=c1.selectbox('Statut',statuses,index=statuses.index(ev['status']) if ev['status'] in statuses else 0,key=f"evs_{ev['id']}"); owner=c2.text_input('Responsable',value=ev.get('owner_name') or '',key=f"evo_{ev['id']}"); due=c3.text_input('Échéance',value=ev.get('due_at') or '',key=f"evd_{ev['id']}")
+            c1,c2,c3=st.columns(3)
+            es=c1.selectbox('Statut',statuses,index=statuses.index(ev['status']) if ev['status'] in statuses else 0,key=f"evs_{ev['id']}")
+            owners=quality_owner_choices(ENGINE); owner_labels=['— Non affecté —']+[x['label'] for x in owners]
+            current_owner=next((x['label'] for x in owners if x['owner_name']==(ev.get('owner_name') or '')), '— Non affecté —')
+            owner_label=c2.selectbox('Responsable Clarté360',owner_labels,index=owner_labels.index(current_owner) if current_owner in owner_labels else 0,key=f"evo_{ev['id']}")
+            owner=next((x for x in owners if x['label']==owner_label),None)
+            try: due_default=date.fromisoformat(str(ev.get('due_at') or '')[:10]) if ev.get('due_at') else None
+            except Exception: due_default=None
+            due=c3.date_input('Échéance',value=due_default,key=f"evd_{ev['id']}")
             qual=st.text_area('Qualification / analyse',value=ev.get('qualification') or '',key=f"evq_{ev['id']}"); imm=st.text_area('Action immédiate',value=ev.get('immediate_action') or '',key=f"evi_{ev['id']}"); cause=st.text_area('Analyse de cause',value=ev.get('cause_analysis') or '',key=f"evc_{ev['id']}")
             ec=st.text_area("Critères de vérification d'efficacité",value=ev.get('effectiveness_criteria') or '',key=f"evec_{ev['id']}"); er=st.text_area("Résultat de la vérification d'efficacité",value=ev.get('effectiveness_result') or '',key=f"ever_{ev['id']}"); close=st.text_area('Conclusion / motif de clôture ou classement',value=ev.get('closure_comment') or '',key=f"evcl_{ev['id']}")
             if st.button('ENREGISTRER LA FICHE',type='primary',key=f"evsave_{ev['id']}"):
                 try:
-                    update_quality_event(ENGINE,ev['id'],st.session_state.admin_email,status=es,owner_name=owner,severity=ev.get('severity'),urgency=ev.get('urgency'),due_at=due or None,qualification=qual,immediate_action=imm,cause_analysis=cause,effectiveness_criteria=ec,effectiveness_result=er,closure_comment=close)
+                    update_quality_event(ENGINE,ev['id'],st.session_state.admin_email,status=es,owner_name=(owner['owner_name'] if owner else None),severity=ev.get('severity'),urgency=ev.get('urgency'),due_at=(due.isoformat() if due else None),qualification=qual,immediate_action=imm,cause_analysis=cause,effectiveness_criteria=ec,effectiveness_result=er,closure_comment=close)
                     st.success('Fiche qualité enregistrée et historisée.'); rerun()
                 except ValueError as ex: st.error(str(ex))
             st.markdown('#### Actions correctives / préventives (CAPA)')
@@ -2864,13 +2900,17 @@ def quality_management_screen():
             if capas:
                 st.dataframe(pd.DataFrame([{'ID':x['id'],'Type':x['action_kind'],'Action':x['title'],'Responsable':x.get('owner_name') or '','Échéance':x.get('due_at') or '','Statut':x['status'],'Efficacité':x.get('effectiveness_result') or ''} for x in capas]),use_container_width=True,hide_index=True)
                 cm={f"#{x['id']} — {x['title']}":x for x in capas}; cl=st.selectbox('Action CAPA à mettre à jour',list(cm),key=f"capa_sel_{ev['id']}"); ca=cm[cl]
-                c1,c2=st.columns(2); cas=c1.selectbox('Statut CAPA',['A_FAIRE','EN_COURS','EN_ATTENTE','TERMINEE'],index=['A_FAIRE','EN_COURS','EN_ATTENTE','TERMINEE'].index(ca['status']) if ca['status'] in ['A_FAIRE','EN_COURS','EN_ATTENTE','TERMINEE'] else 0,key=f"capas_{ca['id']}"); cao=c2.text_input('Responsable CAPA',value=ca.get('owner_name') or '',key=f"capao_{ca['id']}")
+                c1,c2=st.columns(2); capa_statuses=['A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE']; cas=c1.selectbox('Statut CAPA',capa_statuses,index=capa_statuses.index(ca['status']) if ca['status'] in capa_statuses else 0,key=f"capas_{ca['id']}")
+                owners=quality_owner_choices(ENGINE); capa_owner_labels=['— Non affecté —']+[x['label'] for x in owners]; current_capa_owner=next((x['label'] for x in owners if x['owner_name']==(ca.get('owner_name') or '')), '— Non affecté —'); cao_label=c2.selectbox('Responsable CAPA',capa_owner_labels,index=capa_owner_labels.index(current_capa_owner) if current_capa_owner in capa_owner_labels else 0,key=f"capao_{ca['id']}"); cao=next((x for x in owners if x['label']==cao_label),None)
                 caer=st.text_area("Preuve / résultat d'efficacité CAPA",value=ca.get('effectiveness_result') or '',key=f"capaer_{ca['id']}")
                 if st.button('METTRE À JOUR CETTE ACTION',key=f"capau_{ca['id']}"):
-                    update_quality_event_action(ENGINE,ca['id'],st.session_state.admin_email,status=cas,owner_name=cao,effectiveness_result=caer); st.success('Action CAPA mise à jour.'); rerun()
+                    update_quality_event_action(ENGINE,ca['id'],st.session_state.admin_email,status=cas,owner_name=(cao['owner_name'] if cao else None),effectiveness_result=caer); st.success('Action CAPA mise à jour.'); rerun()
             with st.form(f"new_capa_{ev['id']}",clear_on_submit=True):
-                ct=st.text_input('Nouvelle action corrective / préventive'); co=st.text_input('Responsable'); cd=st.text_input('Échéance'); csub=st.form_submit_button('AJOUTER AU PLAN D’ACTION')
-            if csub and ct.strip(): add_quality_event_action(ENGINE,ev['id'],ct.strip(),st.session_state.admin_email,owner_name=co.strip() or None,due_at=cd.strip() or None); st.success('Action ajoutée au plan général.'); rerun()
+                ct=st.text_input('Nouvelle action corrective / préventive')
+                owners=quality_owner_choices(ENGINE); new_owner_labels=['— Non affecté —']+[x['label'] for x in owners]; co_label=st.selectbox('Responsable Clarté360',new_owner_labels)
+                cd=st.date_input('Échéance',value=None); csub=st.form_submit_button('AJOUTER AU PLAN D’ACTION')
+            if csub and ct.strip():
+                co=next((x for x in owners if x['label']==co_label),None); add_quality_event_action(ENGINE,ev['id'],ct.strip(),st.session_state.admin_email,owner_name=(co['owner_name'] if co else None),due_at=(cd.isoformat() if cd else None)); st.success('Action ajoutée au plan général.'); rerun()
     else: st.info('Aucun événement qualité avec ces filtres.')
     with st.expander('Créer un événement qualité',expanded=False):
         if aq:
@@ -2885,11 +2925,14 @@ def quality_management_screen():
         st.markdown('#### Points à examiner — notes ≤ 3')
         st.dataframe(pd.DataFrame([{'ID':p['id'],'Action':p['action_no'],'Intitulé':p.get('action_title') or '','Type':p['campaign_kind'],'Question':p['question_text'],'Note':p['score'],'Statut':p['status']} for p in pts]),use_container_width=True,hide_index=True)
         pm={f"#{p['id']} — {p['action_no']} — note {p['score']} — {p['question_text'][:60]}":p for p in pts}; pl=st.selectbox('Point à examiner',list(pm),key='review_point_sel'); rp=pm[pl]
-        dec=st.selectbox('Décision',['CLASSE','EVENEMENT_CREE','RETOUR_DEMANDE'],key=f"rpd_{rp['id']}"); com=st.text_area('Analyse / motif / retour demandé',key=f"rpc_{rp['id']}")
-        if st.button('TRAITER CE POINT',type='primary',key=f"rps_{rp['id']}"):
+        decisions={'Classer avec observation':'CLASSE',"Reprendre dans le plan d’action":'PLAN_ACTION','Demander un retour':'RETOUR_DEMANDE'}
+        dlabel=st.selectbox('Décision',list(decisions),key=f"rpd_{rp['id']}"); dec=decisions[dlabel]; com=st.text_area('Analyse / motif / retour demandé',key=f"rpc_{rp['id']}")
+        if st.button('VALIDER LA DÉCISION',type='primary',key=f"rps_{rp['id']}"):
             qev=None
-            if dec=='EVENEMENT_CREE': qev=create_quality_event(ENGINE,'QUESTIONNAIRES','DIFFICULTE',f"Point à examiner — {rp['question_text'][:100]}",f"Note {rp['score']}/5. {com}",st.session_state.admin_email,action_id=rp['action_id'],campaign_id=rp['campaign_id'],origin='QUESTIONNAIRE')
-            review_quality_point(ENGINE,rp['id'],dec,com,st.session_state.admin_email,qev); st.success('Point examiné et décision historisée.'); rerun()
+            if dec=='PLAN_ACTION':
+                qev=create_quality_event(ENGINE,'QUESTIONNAIRES','DIFFICULTE',f"Point à examiner — {rp['question_text'][:100]}",f"Note {rp['score']}/5. {com}",st.session_state.admin_email,action_id=rp['action_id'],campaign_id=rp['campaign_id'],origin='QUESTIONNAIRE')
+                add_quality_event_action(ENGINE,qev,f"Traiter le point ≤3 — {rp['question_text'][:90]}",st.session_state.admin_email,description=f"Origine questionnaire, note {rp['score']}/5. {com}")
+            review_quality_point(ENGINE,rp['id'],dec,com,st.session_state.admin_email,qev); st.success("Décision enregistrée. Le point repris dans le plan d'action n'est pas considéré comme clôturé tant que l'action n'est pas finalisée et vérifiée."); rerun()
 
     st.markdown('### Signalements à traiter et historique')
     trainer_rows=q(ENGINE,"""SELECT r.*,a.action_no,a.title action_title,t.full_name source_name FROM trainer_reports r
@@ -2920,12 +2963,13 @@ def quality_management_screen():
             if ok: st.success('Fiche mise à jour. Elle reste conservée dans l’historique.');rerun()
             else: st.warning(msg)
 
-    issues=list_quality_issues(ENGINE,action_id) if action_id else list_quality_issues(ENGINE)
+    issues=[x for x in (list_quality_issues(ENGINE,action_id) if action_id else list_quality_issues(ENGINE)) if x.get('status')!='MIGRE']
     if om[ol] and not action_id:
         aids={x['id'] for x in q(ENGINE,'SELECT id FROM actions WHERE organization_id=:o',{'o':om[ol]})};issues=[x for x in issues if x.get('action_id') in aids]
     if issues:
-        with st.expander('Historique qualité ancien format',expanded=False):
-            st.dataframe(pd.DataFrame(issues),use_container_width=True,hide_index=True)
+        with st.expander('Éléments historiques encore ouverts (migration)',expanded=False):
+            st.caption("Ces fiches historiques restent visibles jusqu'à leur reprise ou clôture. Elles ne sont pas perdues et alimentent les compteurs Qualité.")
+            st.dataframe(pd.DataFrame([{'Action':x.get('action_no') or x.get('action_id'),'Nature':x.get('issue_type') or '','Objet':x.get('title') or '','Description':x.get('description') or '','Statut':x.get('status') or '','Responsable':x.get('owner') or '','Créée':x.get('created_at') or ''} for x in issues]),use_container_width=True,hide_index=True)
     st.markdown("### Suivi du plan d'action général")
     plan=quality_general_action_plan(ENGINE,action_id=action_id)
     if plan:
