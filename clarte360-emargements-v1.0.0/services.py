@@ -634,22 +634,95 @@ def purge_participant(engine,pid,actor):
     return True,''
 
 
+def action_purge_summary(engine, aid):
+    """Return the destructive-purge preflight for one action without modifying anything."""
+    action=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':aid})
+    if not action:
+        return None
+    signed=one(engine,"""SELECT COUNT(*) n FROM signatures s JOIN participants p ON p.id=s.participant_id
+      WHERE p.action_id=:a""",{'a':aid})
+    counter_v2=one(engine,"""SELECT COUNT(*) n FROM trainer_countersignatures tc JOIN slots sl ON sl.id=tc.slot_id
+      WHERE sl.action_id=:a""",{'a':aid})
+    counter_v3=one(engine,"""SELECT COUNT(*) n FROM trainer_countersignatures_v3 tc JOIN slots sl ON sl.id=tc.slot_id
+      WHERE sl.action_id=:a""",{'a':aid})
+    counts={}
+    for table in ('participants','slots','quality_campaigns','quality_issues','improvement_actions','document_references',
+                  'tool_prescriptions','action_tool_permissions','communication_events','teams_action_rooms','teams_occurrences',
+                  'teams_participant_roles','teams_sync_events','trainer_reports','beneficiary_reports','action_trainers'):
+        try:
+            counts[table]=int((one(engine,f'SELECT COUNT(*) n FROM {table} WHERE action_id=:a',{'a':aid}) or {}).get('n') or 0)
+        except Exception:
+            counts[table]=0
+    room=one(engine,'SELECT online_meeting_id,join_web_url FROM teams_action_rooms WHERE action_id=:a',{'a':aid})
+    return {
+        'action':action,
+        'beneficiary_signatures':int((signed or {}).get('n') or 0),
+        'trainer_countersignatures':int((counter_v2 or {}).get('n') or 0)+int((counter_v3 or {}).get('n') or 0),
+        'signature_count':int((signed or {}).get('n') or 0)+int((counter_v2 or {}).get('n') or 0)+int((counter_v3 or {}).get('n') or 0),
+        'counts':counts,
+        'teams_online_meeting_id':(room or {}).get('online_meeting_id'),
+        'teams_join_web_url':(room or {}).get('join_web_url'),
+    }
+
+
 def purge_action(engine,aid,actor):
+    """Permanently purge one action and all action-owned local evidence.
+
+    Shared permanent identities (beneficiaries/trainers) are deliberately preserved.
+    Remote Teams deletion must be handled by the caller before this local purge.
+    """
     a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':aid})
     if not a:return False,'Action introuvable.'
-    sigs=q(engine,'SELECT x.signature_path FROM signatures x JOIN participants p ON p.id=x.participant_id WHERE p.action_id=:a',{'a':aid})
-    for r in sigs:
+
+    # Capture physical files before relational rows disappear.
+    file_paths=[]
+    for sql in [
+        "SELECT s.signature_path p FROM signatures s JOIN participants p ON p.id=s.participant_id WHERE p.action_id=:a",
+        "SELECT tc.signature_path p FROM trainer_countersignatures tc JOIN slots sl ON sl.id=tc.slot_id WHERE sl.action_id=:a",
+        "SELECT tc.signature_path p FROM trainer_countersignatures_v3 tc JOIN slots sl ON sl.id=tc.slot_id WHERE sl.action_id=:a",
+        "SELECT tr.attachment_path p FROM trainer_reports tr WHERE tr.action_id=:a",
+        "SELECT br.attachment_path p FROM beneficiary_reports br WHERE br.action_id=:a",
+    ]:
         try:
-            fp=Path(r.get('signature_path') or '')
-            if fp.is_file(): fp.unlink()
-        except Exception: pass
+            file_paths.extend([r.get('p') for r in q(engine,sql,{'a':aid}) if r.get('p')])
+        except Exception:
+            pass
+
+    stored_rows=[]
+    try:
+        stored_rows=q(engine,"""SELECT DISTINCT sf.id,sf.storage_path FROM stored_files sf
+          JOIN document_references dr ON dr.stored_file_id=sf.id WHERE dr.action_id=:a""",{'a':aid})
+    except Exception:
+        pass
+
+    # SET NULL quality relations must be deleted explicitly; otherwise they would survive the action.
     issue_ids=[x['id'] for x in q(engine,'SELECT id FROM quality_issues WHERE action_id=:a',{'a':aid})]
-    for iid in issue_ids: execute(engine,'DELETE FROM improvement_actions WHERE issue_id=:i',{'i':iid})
+    for iid in issue_ids:
+        execute(engine,'DELETE FROM improvement_actions WHERE issue_id=:i',{'i':iid})
     execute(engine,'DELETE FROM improvement_actions WHERE action_id=:a',{'a':aid})
     execute(engine,'DELETE FROM quality_issues WHERE action_id=:a',{'a':aid})
+
+    # Audit rows belonging to the action are intentionally removed for an authorised full test-action purge.
     execute(engine,'DELETE FROM audit_log WHERE action_id=:a',{'a':aid})
     execute(engine,'DELETE FROM actions WHERE id=:a',{'a':aid})
-    audit(engine,'ACTION_PURGED',None,actor,'action',aid,{'deleted_action_id':aid})
+
+    # Remove orphan stored-file records and physical payloads only when no other reference uses them.
+    for sf in stored_rows:
+        try:
+            refs=int((one(engine,'SELECT COUNT(*) n FROM document_references WHERE stored_file_id=:i',{'i':sf['id']}) or {}).get('n') or 0)
+            if refs==0:
+                execute(engine,'DELETE FROM stored_files WHERE id=:i',{'i':sf['id']})
+                file_paths.append(sf.get('storage_path'))
+        except Exception:
+            pass
+    for raw in file_paths:
+        try:
+            fp=Path(raw or '')
+            if fp.is_file(): fp.unlink()
+        except Exception:
+            pass
+
+    audit(engine,'ACTION_PURGED',None,actor,'action',aid,{'deleted_action_id':aid,'action_no':a.get('action_no')})
     return True,''
 
 
@@ -2898,7 +2971,10 @@ def list_tool_prescriptions(engine, *, beneficiary_id=None, action_id=None, trai
     if not include_cancelled: wh.append("tp.status<>'ANNULE'")
     where=('WHERE '+' AND '.join(wh)) if wh else ''
     return q(engine,f"""SELECT tp.*,tc.name tool_name,tc.category tool_category,tc.base_url,tc.launch_type,tc.connector_status,
-      b.public_id beneficiary_public_id,b.first_name beneficiary_first_name,b.last_name beneficiary_last_name,a.action_no,a.title action_title
+      b.public_id beneficiary_public_id,b.first_name beneficiary_first_name,b.last_name beneficiary_last_name,a.action_no,a.title action_title,
+      CASE WHEN tp.prescriber_type='ADMIN' THEN COALESCE((SELECT ad.full_name FROM admins ad WHERE ad.email=tp.prescriber_id),tp.prescriber_id) || ' — Administrateur'
+           WHEN tp.prescriber_type='TRAINER' THEN COALESCE((SELECT tr.full_name FROM trainers tr WHERE CAST(tr.id AS TEXT)=CAST(tp.prescriber_id AS TEXT)),tp.prescriber_id) || ' — Intervenant'
+           ELSE COALESCE(tp.prescriber_id,tp.prescriber_role,tp.prescriber_type) END prescriber_display
       FROM tool_prescriptions tp JOIN tool_catalog tc ON tc.id=tp.tool_id JOIN beneficiaries b ON b.id=tp.beneficiary_id
       JOIN actions a ON a.id=tp.action_id {where} ORDER BY tp.created_at DESC,tp.id DESC""",params)
 

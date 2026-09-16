@@ -1625,6 +1625,26 @@ def dashboard():
             except Exception as ex: _ui_incident('operation_interface',ex)
     footer()
 
+def _delete_remote_teams_for_action(action_id):
+    """Delete the remote Teams meeting before a full local purge. No-op if none exists."""
+    room=one(ENGINE,'SELECT online_meeting_id FROM teams_action_rooms WHERE action_id=:a',{'a':action_id})
+    meeting_id=(room or {}).get('online_meeting_id')
+    if not meeting_id:
+        return True,''
+    try:
+        cfg=graph_config_from_mapping(dict(st.secrets))
+    except Exception:
+        cfg=graph_config_from_mapping({})
+    missing=graph_config_missing(cfg)
+    if missing:
+        return False,'La réunion Teams existe encore mais Microsoft Graph n’est pas disponible : '+', '.join(missing)
+    try:
+        GraphClient(cfg).delete_online_meeting(meeting_id)
+        return True,''
+    except Exception as ex:
+        return False,f"Impossible de supprimer la réunion Teams distante : {ex}"
+
+
 def actions_list():
     header('Clarté360 — Actions','Reprendre, modifier et suivre une action')
     c1,c2=st.columns([3,1]); search=c1.text_input('Rechercher une action, un bénéficiaire, un client ou un email'); include_archived=c2.checkbox('Inclure les archives',value=False); acts=search_actions(ENGINE,search,include_archived=include_archived)
@@ -1632,16 +1652,38 @@ def actions_list():
     labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a['status'])}":a['id'] for a in acts};sel=st.selectbox('Choisir une action',list(labels));aid=labels[sel];st.session_state.selected_action=aid
     action_detail(aid)
     a=one(ENGINE,'SELECT * FROM actions WHERE id=:a',{'a':aid})
+    purge_info=action_purge_summary(ENGINE,aid)
     with st.expander('🗑️ Supprimer définitivement cette action'):
-        st.error('Suppression irréversible : participants, créneaux, signatures, absences, relances, contresignatures et historique de cette action seront supprimés.')
-        confirm=st.text_input(f"Pour confirmer, saisissez le n° d’action : {a['action_no']}",key=f'delactxt{aid}');pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delacpw{aid}')
-        if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT L’ACTION',key=f'delac{aid}'):
-            if confirm.strip()!=a['action_no']: st.error('Le numéro d’action saisi ne correspond pas.')
-            elif not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Mot de passe administrateur incorrect.')
+        st.error('Suppression irréversible et réservée à un administrateur. Toutes les données propres à cette action seront supprimées, y compris Teams/Graph, signatures, prescriptions, documents et qualité. Les identités permanentes partagées restent conservées.')
+        sig_count=int((purge_info or {}).get('signature_count') or 0)
+        if sig_count:
+            st.warning(f"ATTENTION : cette action possède déjà {sig_count} signature(s) ou contresignature(s). Elle ne peut pas être détruite sauf s’il s’agit explicitement d’une action d’essai terminée.")
+            is_test=st.radio('Est-ce une action d’essai ?', ['Non','Oui'],index=0,horizontal=True,key=f'delac_test_{aid}')
+            tests_done=st.radio('Avez-vous totalement terminé les essais sur cette action ?', ['Non','Oui'],index=0,horizontal=True,key=f'delac_done_{aid}',disabled=is_test!='Oui')
+        else:
+            st.info('Aucune signature ni contresignature n’est enregistrée sur cette action.')
+            is_test='Non'; tests_done='Non'
+        confirm=st.text_input(f"Pour confirmer, saisissez le n° d’action : {a['action_no']}",key=f'delactxt{aid}')
+        pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delacpw{aid}')
+        if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT L’ACTION',key=f'delac{aid}',type='primary'):
+            if confirm.strip()!=a['action_no']:
+                st.error('Le numéro d’action saisi ne correspond pas.')
+            elif sig_count and not (is_test=='Oui' and tests_done=='Oui'):
+                st.error('Cette action contient déjà une signature : suppression interdite sauf action d’essai explicitement terminée.')
+            elif not admin_password_ok(ENGINE,st.session_state.admin_email,pw):
+                st.error('Mot de passe administrateur incorrect.')
             else:
-                ok,msg=purge_action(ENGINE,aid,st.session_state.admin_email)
-                if ok: st.session_state.pop('selected_action',None);st.success('Action et données associées supprimées.');rerun()
-                else: st.error(msg)
+                teams_ok,teams_msg=_delete_remote_teams_for_action(aid)
+                if not teams_ok:
+                    st.error(teams_msg+' La suppression locale est bloquée pour éviter une purge partielle.')
+                else:
+                    ok,msg=purge_action(ENGINE,aid,st.session_state.admin_email)
+                    if ok:
+                        st.session_state.pop('selected_action',None)
+                        st.success('Action supprimée intégralement.')
+                        rerun()
+                    else:
+                        st.error(msg)
     footer()
 
 def action_detail(aid):
@@ -1727,11 +1769,20 @@ def action_tools_tab(a):
         cmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in compatible_tools}
         current_codes={x['tool_code'] for x in allowed_tools}
         defaults=[label for label,x in cmap.items() if x['tool_code'] in current_codes]
-        selected=st.multiselect('Outils disponibles pour cette action',list(cmap),default=defaults,key=f'action_tools_allow_{a["id"]}')
-        if st.button('ENREGISTRER LES OUTILS DE L’ACTION',key=f'action_tools_allow_save_{a["id"]}',type='primary'):
+        with st.form(f'action_tools_allow_form_{a["id"]}'):
+            selected=st.multiselect('Outils disponibles pour cette action',list(cmap),default=defaults,key=f'action_tools_allow_{a["id"]}')
+            save_allowed=st.form_submit_button('ENREGISTRER LES OUTILS DE L’ACTION',type='primary')
+        if save_allowed:
             wanted={cmap[x]['tool_code'] for x in selected}
-            set_action_tools_allowed(ENGINE,a['id'],wanted,st.session_state.admin_email)
-            st.success('Liste des outils autorisés enregistrée en base.'); rerun()
+            try:
+                persisted=set_action_tools_allowed(ENGINE,a['id'],wanted,st.session_state.admin_email)
+                persisted_codes={x['tool_code'] for x in persisted}
+                if persisted_codes != wanted:
+                    raise RuntimeError(f"La base n'a pas confirmé la sélection demandée. Demandé={sorted(wanted)} ; enregistré={sorted(persisted_codes)}")
+                st.session_state['_action_flash']=(a['id'],'success',f"Outils autorisés enregistrés : {len(persisted_codes)}.")
+                rerun()
+            except Exception as ex:
+                _ui_incident('action_outils',ex,action_id=a['id'],subject="L'enregistrement des outils autorisés")
     tools=action_allowed_tools(ENGINE,a['id'])
     c1,c2,c3=st.columns(3);c1.metric('Bénéficiaires rattachés',len(linked));c2.metric('Outils autorisés',len(tools));c3.metric('Prescriptions',len([x for x in list_tool_prescriptions(ENGINE,action_id=a['id']) if x.get('status')!='ANNULE']))
     if linked and tools:
@@ -1778,7 +1829,7 @@ def action_tools_tab(a):
     rows=list_tool_prescriptions(ENGINE,action_id=a['id'])
     if rows:
         st.markdown('#### Prescriptions de cette action')
-        st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Administrateur' if x.get('prescriber_type')=='ADMIN' else 'Intervenant','Statut':x['status'].replace('_',' '),'Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or ''} for x in rows if x.get('status')!='ANNULE']),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Prescrit par':x.get('prescriber_display') or ('Administrateur — '+str(x.get('prescriber_id') or '') if x.get('prescriber_type')=='ADMIN' else 'Intervenant — '+str(x.get('prescriber_id') or '')),'Statut':x['status'].replace('_',' '),'Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or ''} for x in rows if x.get('status')!='ANNULE']),use_container_width=True,hide_index=True)
         rmap={f"{x['prescription_id']} — {x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']}":x for x in rows}; rl=st.selectbox('Prescription à gérer',list(rmap),key=f'presc_manage_{a["id"]}'); rr=rmap[rl]
         statuses=['A_FAIRE','ENVOYE','CONSULTE','EN_COURS','TERMINE','A_REVOIR_EN_SEANCE','REVU_EN_SEANCE','ANNULE']; ns=st.selectbox('Statut',statuses,index=statuses.index(rr['status']) if rr['status'] in statuses else 0,key=f'presc_status_{rr["id"]}')
         if st.button('Enregistrer le statut',key=f'presc_status_save_{rr["id"]}'):
