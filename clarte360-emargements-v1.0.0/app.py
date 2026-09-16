@@ -515,6 +515,34 @@ def render_trainer_action(action, trainer):
     else:
         st.warning('Aucun créneau n’est actuellement enregistré pour cette action.')
 
+    # V3.1 corrective — synthèse opérationnelle des émargements pour l'intervenant.
+    follow_rows=[]
+    total_missing=total_absent=total_finalized=0
+    for sl in slots:
+        states=_slot_participant_states(ENGINE,sl['id'])
+        missing=[x for x in states if x['status'] in ('EN_ATTENTE','PRESENT_REGULARISE')]
+        absent=[x for x in states if x['status']=='ABSENT']
+        signed=[x for x in states if x['status']=='SIGNE']
+        cs_ok,cs_missing=required_slot_countersignatures_complete(ENGINE,sl['id'])
+        total_missing += len(missing); total_absent += len(absent)
+        finalized=(not missing and cs_ok)
+        total_finalized += 1 if finalized else 0
+        follow_rows.append({
+            'Séance':f"{sl['slot_date']} — {sl['start_time']}–{sl['end_time']}",
+            'Signatures bénéficiaires':f"{len(signed)}/{len(states)}" + (f" · {len(missing)} à régulariser" if missing else ' · complet'),
+            'Absences signalées':len(absent),
+            'Contresignature':'Validée' if cs_ok else f"{len(cs_missing)} attendue(s)",
+            'État':'Finalisé' if finalized else 'À suivre'
+        })
+    if follow_rows:
+        st.markdown('#### Suivi des émargements de cette action')
+        m1,m2,m3,m4=st.columns(4)
+        m1.metric('Signatures à régulariser',total_missing)
+        m2.metric('Absences signalées',total_absent)
+        m3.metric('Contresignatures à faire',sum(1 for r in follow_rows if r['Contresignature']!='Validée'))
+        m4.metric('Créneaux finalisés',f"{total_finalized}/{len(follow_rows)}")
+        st.dataframe(pd.DataFrame(follow_rows),use_container_width=True,hide_index=True)
+
     # H2 — visibilité immédiate de l'activation des espaces bénéficiaires avant la première séance.
     ben_rows=[]
     for p in parts:
@@ -802,7 +830,7 @@ def render_trainer_action(action, trainer):
         with st.form(f'tr_report_{aid}',clear_on_submit=True):
             rt=st.selectbox('Nature',['Observation','Difficulté','Incident','Problème logistique','Besoin de contact','Autre'])
             subject=st.text_input('Objet *'); desc=st.text_area('Description *',height=150)
-            qrel=st.checkbox('Ce signalement doit également alimenter le suivi qualité',value=rt in ('Difficulté','Incident','Problème logistique'))
+            st.caption('Ce signalement sera automatiquement intégré au suivi qualité, avec la nature sélectionnée ci-dessus.')
             up=st.file_uploader('Joindre éventuellement un document (10 Mo max)',type=['pdf','docx','xlsx','png','jpg','jpeg','txt'],key=f'tr_report_file_{aid}')
             submit=st.form_submit_button('TRANSMETTRE À L’ADMINISTRATION',type='primary')
         if submit:
@@ -812,7 +840,7 @@ def render_trainer_action(action, trainer):
                 ap=an=None
                 if up is not None:
                     safe=re.sub(r'[^A-Za-z0-9._-]+','_',up.name)[:120]; an=up.name; ap=str(TRAINER_REPORT_DIR/f"{aid}_{tid}_{int(datetime.now().timestamp())}_{safe}"); Path(ap).write_bytes(up.getvalue())
-                rid=create_trainer_report(ENGINE,aid,tid,rt,subject.strip(),desc.strip(),qrel,ap,an)
+                rid=create_trainer_report(ENGINE,aid,tid,rt,subject.strip(),desc.strip(),True,ap,an)
                 if rid: st.success('Votre message a été transmis à l’administration et journalisé.')
                 else: st.error('Transmission impossible : action non autorisée.')
         history=trainer_reports(ENGINE,aid,tid)
@@ -846,10 +874,27 @@ def trainer_portal_page():
     if not acts:
         st.info('Aucune action ne vous est actuellement affectée.'); footer(); return
     tasks=trainer_countersign_tasks(ENGINE,tid)
-    if tasks:
-        st.info(f"{len(tasks)} créneau(x) à contresigner ou à finaliser.")
-    else:
-        st.success('Aucune contresignature en attente actuellement.')
+    # Tableau de bord global : obligations de l'intervenant + signatures bénéficiaires à suivre.
+    global_missing=global_absent=global_finalized=global_slots=0
+    for aa in acts:
+        dd=trainer_action_dashboard(ENGINE,tid,aa['id'],TZ) or {}
+        for sl in dd.get('slots') or []:
+            global_slots += 1
+            states=_slot_participant_states(ENGINE,sl['id'])
+            missing=[x for x in states if x['status'] in ('EN_ATTENTE','PRESENT_REGULARISE')]
+            absent=[x for x in states if x['status']=='ABSENT']
+            cs_ok,_=required_slot_countersignatures_complete(ENGINE,sl['id'])
+            global_missing += len(missing); global_absent += len(absent)
+            if not missing and cs_ok: global_finalized += 1
+    st.markdown('#### Suivi de mes émargements')
+    d1,d2,d3,d4=st.columns(4)
+    d1.metric('Créneaux à contresigner / finaliser',len(tasks))
+    d2.metric('Signatures bénéficiaires à régulariser',global_missing)
+    d3.metric('Absences signalées',global_absent)
+    d4.metric('Créneaux finalisés',f"{global_finalized}/{global_slots}" if global_slots else '0')
+    if tasks: st.info('Des créneaux nécessitent encore votre intervention. Ouvrez l’action concernée pour voir le détail bénéficiaire par bénéficiaire.')
+    elif global_missing: st.warning('Aucune contresignature immédiatement réalisable, mais des signatures bénéficiaires restent à régulariser.')
+    else: st.success('Aucune contresignature ni signature bénéficiaire en attente actuellement.')
     cards=[]
     for a in acts:
         data=trainer_action_dashboard(ENGINE,tid,a['id'],TZ); nxt=data.get('next_slot') if data else None
@@ -1090,7 +1135,7 @@ def beneficiary_portal_page():
                 al=st.selectbox('Action concernée',list(amap),key='benef_report_action'); aa=amap[al]
                 rt=st.selectbox('Nature',['Observation','Difficulté','Incident','Problème logistique','Besoin de contact','Autre'],key='benef_report_type')
                 subject=st.text_input('Objet *',key='benef_report_subject'); desc=st.text_area('Description *',height=150,key='benef_report_desc')
-                qrel=st.checkbox('Ce signalement doit également alimenter le suivi qualité',value=rt in ('Difficulté','Incident','Problème logistique'),key='benef_report_quality')
+                st.caption('Ce signalement sera automatiquement intégré au suivi qualité, avec la nature sélectionnée ci-dessus.')
                 up=st.file_uploader('Joindre éventuellement un document (10 Mo max)',type=['pdf','docx','xlsx','png','jpg','jpeg','txt','json'],key='benef_report_file')
                 submit=st.form_submit_button('TRANSMETTRE À L’ADMINISTRATION',type='primary')
             if submit:
@@ -1100,7 +1145,7 @@ def beneficiary_portal_page():
                     ap=an=None
                     if up is not None:
                         safe=re.sub(r'[^A-Za-z0-9._-]+','_',up.name)[:120]; an=up.name; ap=str(TRAINER_REPORT_DIR/f"benef_{aa['id']}_{bid}_{int(datetime.now().timestamp())}_{safe}"); Path(ap).write_bytes(up.getvalue())
-                    rid=create_beneficiary_report(ENGINE,aa['id'],bid,rt,subject.strip(),desc.strip(),qrel,ap,an)
+                    rid=create_beneficiary_report(ENGINE,aa['id'],bid,rt,subject.strip(),desc.strip(),True,ap,an)
                     if rid: st.success("Votre signalement a été transmis à l'administration et journalisé."); rerun()
                     else: st.error('Transmission impossible pour cette action.')
         hist=beneficiary_reports(ENGINE,beneficiary_id=bid)

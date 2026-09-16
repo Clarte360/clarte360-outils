@@ -1139,8 +1139,11 @@ def action_calendar_ics(engine, action_id, *, trainer_id=None, beneficiary_id=No
     return ('\r\n'.join(lines)+'\r\n').encode('utf-8')
 
 
-def create_trainer_report(engine,action_id,trainer_id,report_type,subject,description,quality_relevant=False,attachment_path=None,attachment_name=None):
+def create_trainer_report(engine,action_id,trainer_id,report_type,subject,description,quality_relevant=True,attachment_path=None,attachment_name=None):
     if not trainer_action_authorized(engine,trainer_id,action_id): return None
+    # V3.1 corrective: every user report is, by definition, part of the quality follow-up.
+    # The selected report_type remains the business classification (contact, incident, etc.).
+    quality_relevant=True
     now=utcnow_iso(); rid=execute(engine,"""INSERT INTO trainer_reports(action_id,trainer_id,report_type,subject,description,status,quality_relevant,attachment_path,attachment_name,created_at,updated_at)
       VALUES(:a,:t,:rt,:s,:d,'NOUVEAU',:q,:ap,:an,:c,:c)""",{'a':action_id,'t':trainer_id,'rt':report_type,'s':subject,'d':description,'q':1 if quality_relevant else 0,'ap':attachment_path,'an':attachment_name,'c':now})
     if quality_relevant:
@@ -1152,6 +1155,8 @@ def trainer_reports(engine,action_id,trainer_id):
     return q(engine,'SELECT * FROM trainer_reports WHERE action_id=:a AND trainer_id=:t ORDER BY created_at DESC',{'a':action_id,'t':trainer_id})
 
 def create_beneficiary_report(engine,action_id,beneficiary_id,report_type,subject,description,quality_relevant=True,attachment_path=None,attachment_name=None):
+    # V3.1 corrective: every beneficiary report automatically feeds quality follow-up.
+    quality_relevant=True
     linked=one(engine,'SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1',{'a':action_id,'b':beneficiary_id})
     if not linked: return None
     now=utcnow_iso(); rid=execute(engine,"""INSERT INTO beneficiary_reports(action_id,beneficiary_id,report_type,subject,description,status,quality_relevant,attachment_path,attachment_name,created_at,updated_at)
