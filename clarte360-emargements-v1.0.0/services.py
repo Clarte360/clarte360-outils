@@ -2682,8 +2682,9 @@ def list_tool_catalog(engine, active_only=True, prescription_only=False, prestat
         if prescription_only and not row.get('prescription_allowed'): continue
         publics=_json_load(row.get('allowed_publics_json'),[])
         if public and publics and public.upper() not in [str(x).upper() for x in publics]: continue
+        # V3.1: compatibility metadata is legacy/informational only.
+        # An active + prescriptible tool may be authorized on every action type.
         comps=_json_load(row.get('compatible_prestations_json'),[])
-        if p and comps and p not in [str(x).upper() for x in comps]: continue
         row['allowed_publics']=publics; row['compatible_prestations']=comps
         out.append(row)
     return out
@@ -2785,11 +2786,8 @@ def create_tool_prescription(engine, tool_code, beneficiary_id, action_id, parti
         linked=one(engine,'SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1 ORDER BY id LIMIT 1',{'a':action_id,'b':beneficiary_id})
         participant_id=(linked or {}).get('id')
         if not participant_id: raise ValueError("Ce bénéficiaire n'est pas rattaché à cette action.")
-    # Compatibility is enforced by the generic catalogue contract.
-    comps=_json_load(tool.get('compatible_prestations_json'),[])
-    prestation=(action.get('prestation_type') or action.get('nature') or '').upper().replace(' ','_')
-    if comps and prestation not in [str(x).upper() for x in comps]:
-        raise ValueError('Cet outil n’est pas déclaré compatible avec cette prestation.')
+    # V3.1: prestation compatibility is no longer an eligibility rule.
+    # Per-action ADMIN authorization is the business gate.
     now=utcnow_iso()
     if not expires_at:
         expires_at=(datetime.now(ZoneInfo('UTC'))+timedelta(hours=int(tool.get('access_validity_hours') or 168))).isoformat()
@@ -3338,10 +3336,15 @@ def create_quality_event(engine,family,event_type,subject,description='',actor='
 
 def list_quality_events(engine,action_id=None,status=None):
     wh=[];p={}
-    if action_id is not None: wh.append('action_id=:a');p['a']=action_id
-    if status: wh.append('status=:s');p['s']=status
+    if action_id is not None: wh.append('qe.action_id=:a');p['a']=action_id
+    if status: wh.append('qe.status=:s');p['s']=status
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
-    return q(engine,'SELECT * FROM quality_events'+where+' ORDER BY CASE severity WHEN \'CRITIQUE\' THEN 0 WHEN \'MAJEURE\' THEN 1 ELSE 2 END, created_at DESC',p)
+    return q(engine,"""SELECT qe.*,a.action_no,a.title action_title,
+      COALESCE(b.first_name||' '||b.last_name,t.full_name,eqc.first_name||' '||eqc.last_name,qe.created_by) source_name
+      FROM quality_events qe LEFT JOIN actions a ON a.id=qe.action_id
+      LEFT JOIN beneficiaries b ON b.id=qe.beneficiary_id LEFT JOIN trainers t ON t.id=qe.trainer_id
+      LEFT JOIN external_quality_contacts eqc ON eqc.id=qe.external_contact_id"""+where+
+      " ORDER BY CASE qe.severity WHEN 'CRITIQUE' THEN 0 WHEN 'MAJEURE' THEN 1 ELSE 2 END, qe.created_at DESC",p)
 
 def update_quality_event(engine,event_id,actor,status=None,owner_name=None,severity=None,urgency=None,due_at=None,qualification=None,immediate_action=None,cause_analysis=None,
                          effectiveness_criteria=None,effectiveness_result=None,closure_comment=None):
@@ -3366,6 +3369,29 @@ def add_quality_event_action(engine,event_id,title,actor,description='',owner_na
     ev=one(engine,'SELECT action_id FROM quality_events WHERE id=:e',{'e':event_id}) or {};audit(engine,'QUALITY_CAPA_CREATED',ev.get('action_id'),actor,'quality_event_action',aid,{'quality_event_id':event_id});return aid
 
 def quality_event_actions(engine,event_id): return q(engine,'SELECT * FROM quality_event_actions WHERE quality_event_id=:e ORDER BY id',{'e':event_id})
+
+
+def update_quality_event_action(engine, action_id, actor, status=None, owner_name=None, due_at=None, evidence_ref=None, effectiveness_result=None):
+    row=one(engine,'SELECT qa.*,qe.action_id parent_action_id FROM quality_event_actions qa JOIN quality_events qe ON qe.id=qa.quality_event_id WHERE qa.id=:i',{'i':action_id})
+    if not row: raise ValueError('Action CAPA introuvable.')
+    allowed={'A_FAIRE','EN_COURS','EN_ATTENTE','TERMINEE'}
+    ns=status or row['status']
+    if ns not in allowed: raise ValueError('Statut CAPA invalide.')
+    now=utcnow_iso()
+    execute(engine,"""UPDATE quality_event_actions SET status=:s,owner_name=:o,due_at=:d,evidence_ref=:e,effectiveness_result=:r,
+      completed_at=CASE WHEN :s='TERMINEE' THEN COALESCE(completed_at,:n) ELSE NULL END,updated_at=:n WHERE id=:i""",
+      {'s':ns,'o':owner_name if owner_name is not None else row.get('owner_name'),'d':due_at if due_at is not None else row.get('due_at'),
+       'e':evidence_ref if evidence_ref is not None else row.get('evidence_ref'),'r':effectiveness_result if effectiveness_result is not None else row.get('effectiveness_result'),'n':now,'i':action_id})
+    audit(engine,'QUALITY_CAPA_UPDATED',row.get('parent_action_id'),actor,'quality_event_action',action_id,{'old_status':row['status'],'new_status':ns})
+
+def quality_general_action_plan(engine, action_id=None):
+    wh=' WHERE qe.action_id=:a' if action_id is not None else ''
+    p={'a':action_id} if action_id is not None else {}
+    return q(engine,"""SELECT qa.id,qe.public_id event_ref,qe.origin,qe.detected_at,qe.event_type,qe.subject,qe.severity,
+      qe.status event_status,a.action_no,a.title action_title,COALESCE(b.first_name||' '||b.last_name,t.full_name,qe.created_by) source_name,
+      qa.action_kind,qa.title action_title_capa,qa.owner_name,qa.due_at,qa.status,qa.evidence_ref,qa.effectiveness_result,qa.completed_at
+      FROM quality_event_actions qa JOIN quality_events qe ON qe.id=qa.quality_event_id LEFT JOIN actions a ON a.id=qe.action_id
+      LEFT JOIN beneficiaries b ON b.id=qe.beneficiary_id LEFT JOIN trainers t ON t.id=qe.trainer_id"""+wh+' ORDER BY qa.created_at DESC',p)
 
 def review_quality_point(engine,point_id,decision,comment,actor,quality_event_id=None):
     allowed={'CLASSE','EVENEMENT_CREE','RATTACHE','RETOUR_DEMANDE'}

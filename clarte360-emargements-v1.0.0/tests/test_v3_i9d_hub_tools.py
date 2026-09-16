@@ -108,11 +108,12 @@ def test_i9d_beneficiary_portal_has_business_tool_tab_and_no_connector_technical
     assert 'launch_token_ref' not in block and 'connector_code' not in block
 
 
-def test_i9d_rejects_prescription_when_tool_not_compatible_with_action():
+def test_v31_tool_compatibility_metadata_does_not_block_other_action_types():
     e=eng(); aid,pid,bid=seed_action(e,prestation='FORMATION')
     upsert_tool_catalog(e,{'tool_code':'COACH_ONLY','name':'Coach only','base_url':'https://example.org','launch_type':'HUB_REDIRECT','compatible_prestations':['COACHING']},'admin')
-    with pytest.raises(ValueError):
-        create_tool_prescription(e,'COACH_ONLY',bid,aid,pid,actor='admin')
+    assert any(x['tool_code']=='COACH_ONLY' for x in list_tool_catalog(e,prescription_only=True,prestation_type='FORMATION'))
+    pr=create_tool_prescription(e,'COACH_ONLY',bid,aid,pid,actor='admin')
+    assert pr['status']=='A_FAIRE'
 
 
 def test_i9h22_registry_seeds_deployed_boussole_and_plans_future_tools_disabled():
