@@ -18,8 +18,11 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from validation import ValidationError, clean_text, decode_json_bytes, email as validate_email, name as validate_name, validate_state
+from guard_state import business_state_fingerprint
+
 APP_TITLE = "Clarté360 - Roue des valeurs"
-APP_VERSION = "V2.7 - Socle Clarté360"
+APP_VERSION = "V2.8.1 - Validation saisies / VPS / Hub ready / garde-fou"
 SOCLE_CLARTE360_VERSION = "3.0 / alignement Boussole v1.8.2"
 BENEFICIARY_TIMEOUT_MINUTES = 15
 BRAND_COLOR = "#008080"
@@ -27,7 +30,6 @@ BASE_DIR = Path(__file__).resolve().parent
 LOGO_PATH = BASE_DIR / "assets" / "logo_clarte360.png"
 DOMAINES = ["Personnel", "Travail", "Famille", "Social", "Couple / intimité"]
 FINAL_EMAIL_TO = "contact@clarte360.com"
-ENERGY_ACCESS_CODE = "CLAENER360"
 DEFAULT_COLORS = [
     "#008080", "#F2C94C", "#EB5757", "#2F80ED", "#9B51E0", "#27AE60",
     "#F2994A", "#56CCF2", "#BB6BD9", "#219653", "#F67280", "#6C5CE7",
@@ -223,6 +225,15 @@ def timeout_watchdog():
     components.html("""<script>setTimeout(function(){try{window.parent.postMessage({type:'clarte360_tick'}, '*');}catch(e){}},10000);</script>""", height=0)
 
 
+def get_energy_access_code() -> str:
+    """Code espace Valeurs énergies : secret de déploiement, jamais versionné."""
+    try:
+        value = str(st.secrets.get("security", {}).get("energy_access_code", "")).strip()
+        return value
+    except Exception:
+        return ""
+
+
 def get_email_config() -> dict | None:
     """Lit la configuration SMTP Streamlit Secrets au format déjà utilisé par Clarté360."""
     try:
@@ -236,6 +247,14 @@ def get_email_config() -> dict | None:
 
 
 def send_email(to_email: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> tuple[bool, str]:
+    try:
+        to_email = validate_email(to_email)
+        subject = clean_text(subject, "Objet e-mail", 180, True).replace("\r", " ").replace("\n", " ")
+        body = clean_text(body, "Corps e-mail", 20000, True)
+        if attachment_name:
+            attachment_name = clean_text(Path(attachment_name).name, "Nom de pièce jointe", 180, True)
+    except ValidationError as exc:
+        return False, str(exc)
     cfg = get_email_config()
     if not cfg:
         return False, "SMTP non configuré. Aucun email n'a été envoyé."
@@ -309,6 +328,10 @@ def send_access_code_email(beneficiaire: dict, access_code: str) -> tuple[bool, 
 
 
 def send_final_json_to_consultant(data: dict, json_bytes: bytes, file_name: str) -> tuple[bool, str]:
+    try:
+        validate_state(data)
+    except ValidationError as exc:
+        return False, str(exc)
     cfg = get_email_config()
     destination = cfg.get("to_email", FINAL_EMAIL_TO) if cfg else FINAL_EMAIL_TO
     b = data.get("beneficiaire", {})
@@ -381,11 +404,10 @@ def import_json_screen() -> bool:
     uploaded = st.file_uploader("Importer mon fichier JSON", type=["json"], key="welcome_json_upload_standard")
     if uploaded is not None:
         try:
-            loaded = json.loads(uploaded.getvalue().decode("utf-8"))
-            if not isinstance(loaded, dict):
-                raise ValueError("Format JSON invalide")
+            loaded = decode_json_bytes(uploaded.getvalue())
             st.session_state.data = loaded
             record_import_event(st.session_state.data)
+            set_json_baseline(st.session_state.data)
             st.session_state.code_verified = True
             st.session_state.welcome_done = True
             st.session_state.new_session_requested = False
@@ -569,12 +591,17 @@ def access_gate() -> bool:
             consent = st.checkbox("J'ai lu les informations RGPD ci-dessus et je consens à l'utilisation de ces données dans le cadre exclusif de mon accompagnement. Je comprends qu'aucune donnée n'est conservée sur un serveur Clarté360 et que le fichier JSON reste sous mon contrôle.")
             submit = st.form_submit_button("Recevoir / générer mon code d'accès", type="primary")
         if submit:
-            if not prenom.strip() or not nom.strip() or not email.strip() or "@" not in email:
-                st.error("Merci de renseigner le prénom, le nom et une adresse email valide.")
-            elif not consent:
-                st.error("Merci de confirmer le consentement RGPD.")
+            try:
+                p = validate_name(prenom, "Prénom")
+                n = validate_name(nom, "Nom")
+                e = validate_email(email)
+                c = clean_text(consultant, "Consultant", 100)
+                if not consent:
+                    raise ValidationError("Merci de confirmer le consentement RGPD.")
+            except ValidationError as exc:
+                st.error(str(exc))
             else:
-                beneficiaire_tmp = {"prenom": prenom.strip(), "nom": nom.strip(), "email": email.strip(), "consultant": consultant.strip()}
+                beneficiaire_tmp = {"prenom": p, "nom": n, "email": e, "consultant": c}
                 code = generate_access_code()
                 ok, msg = send_access_code_email(beneficiaire_tmp, code)
                 st.session_state.pending_beneficiaire = beneficiaire_tmp
@@ -649,6 +676,8 @@ def empty_state():
 def ensure_state():
     if "data" not in st.session_state:
         st.session_state.data = empty_state()
+        st.session_state.json_saved_fingerprint = business_state_fingerprint(st.session_state.data)
+        st.session_state.json_downloaded = True
     ensure_energy_state()
     if "page" not in st.session_state:
         st.session_state.page = "1. Bénéficiaire"
@@ -1025,21 +1054,48 @@ def add_default_values(nb):
     update_timestamp()
 
 
+def set_json_baseline(data: dict | None = None):
+    data = data if isinstance(data, dict) else st.session_state.get("data")
+    if isinstance(data, dict):
+        st.session_state.json_saved_fingerprint = business_state_fingerprint(data)
+        st.session_state.json_downloaded = True
+
+
 def mark_json_downloaded():
-    st.session_state.json_downloaded = True
+    set_json_baseline()
+
+
+def has_unsaved_business_changes() -> bool:
+    data = st.session_state.get("data")
+    if not isinstance(data, dict):
+        return False
+    current = business_state_fingerprint(data)
+    baseline = st.session_state.get("json_saved_fingerprint")
+    if baseline is None:
+        # Baseline de démarrage : le premier vrai changement métier armera le garde-fou.
+        st.session_state.json_saved_fingerprint = current
+        return False
+    dirty = current != baseline
+    st.session_state.json_downloaded = not dirty
+    return dirty
 
 
 def install_beforeunload_warning():
-    if isinstance(st.session_state.get("data"), dict) and not st.session_state.get("json_downloaded"):
+    dirty = has_unsaved_business_changes()
+    if isinstance(st.session_state.get("data"), dict) and dirty:
         components.html("""
         <script>
         window.parent.onbeforeunload = function (e) {
-            const message = "Avant de quitter, utilisez le bouton Clarté360 : Quitter et télécharger mon JSON.";
+            const message = "Des modifications n'ont pas encore été sauvegardées dans votre JSON Clarté360.";
             e.preventDefault();
             e.returnValue = message;
             return message;
         };
         </script>
+        """, height=0)
+    else:
+        components.html("""
+        <script>window.parent.onbeforeunload = null;</script>
         """, height=0)
 
 
@@ -1056,7 +1112,6 @@ def prepare_sidebar_json(close_session: bool = False, reason: str = "sauvegarde_
     st.session_state.exit_json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     st.session_state.exit_json_filename = f"{base}.json"
     st.session_state.exit_json_ready = True
-    st.session_state.json_downloaded = False
 
 
 def sidebar():
@@ -1103,7 +1158,7 @@ def sidebar():
     st.sidebar.caption(f"App {APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION}")
     if not data_active:
         if st.sidebar.button("Réinitialiser la session"):
-            for key in ["data", "code_verified", "welcome_done", "welcome_choice", "code_sent", "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page", "exit_json_ready", "exit_json_bytes", "exit_json_filename"]:
+            for key in ["data", "code_verified", "welcome_done", "welcome_choice", "code_sent", "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page", "exit_json_ready", "exit_json_bytes", "exit_json_filename", "json_saved_fingerprint", "json_downloaded"]:
                 st.session_state.pop(key, None)
             st.rerun()
 
@@ -1255,6 +1310,11 @@ def page_roue():
     png_bytes = fig_to_png_bytes(fig)
     plt.close(fig)
     data = st.session_state.data
+    try:
+        validate_state(data)
+    except ValidationError as exc:
+        st.error(f"Impossible d'exporter tant qu'une donnée est incohérente : {exc}")
+        return
     base = export_basename(data)
     json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     rows = build_rows(data)
@@ -1268,7 +1328,7 @@ def page_roue():
     st.info("Vous pouvez télécharger ici le rapport complet de la roue principale, le JSON modifiable et les fichiers utiles. Le travail sur les Valeurs énergies reste optionnel et produit ses propres sorties uniquement s'il est activé.")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.download_button("Télécharger le JSON modifiable", json_bytes, file_name=f"{base}.json", mime="application/json")
+        st.download_button("Télécharger le JSON modifiable", json_bytes, file_name=f"{base}.json", mime="application/json", on_click=mark_json_downloaded)
     with c2:
         st.download_button("Télécharger le rapport Roue des valeurs", data=create_pdf_bytes(data, include_values=True, include_energy=False), file_name=f"{base}_rapport_roue_valeurs.pdf", mime="application/pdf")
     with c3:
@@ -1325,7 +1385,10 @@ def page_valeurs_energies():
         st.info("Cet espace complémentaire est activé uniquement lorsque le consultant le propose dans le cadre de l'accompagnement.")
         code = st.text_input("Code consultant", type="password")
         if st.button("Déverrouiller l'espace Valeurs énergies", type="primary"):
-            if code == ENERGY_ACCESS_CODE:
+            expected_code = get_energy_access_code()
+            if not expected_code:
+                st.error("Le code consultant n'est pas configuré sur cet environnement.")
+            elif secrets.compare_digest(str(code), expected_code):
                 ve["access_granted"] = True
                 ve["created_at"] = ve.get("created_at") or datetime.now().isoformat(timespec="seconds")
                 ve["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -1401,6 +1464,11 @@ def page_valeurs_energies():
 def page_export():
     st.markdown("## 6. Export / Rapports")
     data = st.session_state.data
+    try:
+        validate_state(data)
+    except ValidationError as exc:
+        st.error(f"Impossible d'exporter tant qu'une donnée est incohérente : {exc}")
+        return
     base = export_basename(data)
     json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     rows = build_rows(data)
@@ -1415,7 +1483,7 @@ def page_export():
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.download_button("JSON modifiable complet", json_bytes, file_name=f"{base}.json", mime="application/json")
+        st.download_button("JSON modifiable complet", json_bytes, file_name=f"{base}.json", mime="application/json", on_click=mark_json_downloaded)
     with c2:
         st.download_button("CSV roue des valeurs", csv_buf.getvalue().encode("utf-8-sig"), file_name=f"{base}.csv", mime="text/csv")
     with c3:

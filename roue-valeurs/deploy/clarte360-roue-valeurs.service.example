@@ -1,0 +1,15 @@
+[Unit]
+Description=Clarte360 Roue des valeurs
+After=network.target
+
+[Service]
+Type=simple
+User=clarte360
+WorkingDirectory=/opt/clarte360/clarte360-outils/roue-valeurs
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/clarte360/clarte360-outils/roue-valeurs/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8514 --server.headless true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

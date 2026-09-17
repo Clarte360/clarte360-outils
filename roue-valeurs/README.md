@@ -45,3 +45,17 @@ Cette version ajoute le socle Clarté360 récent : accueil import/nouvelle sessi
 
 ### Correction V2.6
 La navigation depuis Contact / RGPD est alignée sur la Boussole : sélectionner une page métier dans la barre latérale ferme la page institutionnelle et revient dans l’application.
+
+## V2.8 — Validation saisies / VPS / Hub ready
+
+Cette version conserve le métier V2.7 et ajoute une validation métier centralisée, la préparation au VPS Clarté360 et le contrat de prescription Gestion des Actions I9-H1.
+
+- URL cible : `https://roue-valeurs.clarte360.com` (préparée, non déployée).
+- JSON : les JSON V2.7 conformes restent importables afin de permettre la continuité Streamlit Cloud → VPS.
+- Prescription Hub : Administrateur ou Intervenant → bénéficiaire d'une action existante.
+- Le code d'accès à l'espace « Valeurs énergies » n'est plus codé en dur ; il doit être fourni par les secrets de l'environnement.
+- Aucun déploiement VPS n'est effectué par ce livrable.
+
+## V2.8.1 — Garde-fou sortie / rafraîchissement
+
+La protection navigateur est désormais liée aux modifications métier depuis le dernier JSON réellement sauvegardé. Après un téléchargement JSON, l'alerte est levée ; toute nouvelle modification la réactive automatiquement. Les simples reruns et traces techniques Streamlit ne sont pas considérés comme des modifications du travail bénéficiaire.

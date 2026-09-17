@@ -1,0 +1,12 @@
+{
+  "tool_id": "roue-valeurs",
+  "app_name": "Clarté360 - Roue des valeurs",
+  "app_version": "2.8.1-validation-saisies-vps-hub-ready-garde-fou",
+  "target_url": "https://roue-valeurs.clarte360.com",
+  "deployment_status": "planned",
+  "audience": ["beneficiaire"],
+  "prescribers": ["admin", "intervenant"],
+  "hub_compatible": true,
+  "hub_source": "GESTION_ACTIONS_I9",
+  "service_name": "clarte360-roue-valeurs.service"
+}
