@@ -1844,6 +1844,76 @@ def refresh_countersign_communications(engine, *, now=None, tz_name=None):
             created+=1
     return created
 
+
+def refresh_all_worker_events(engine, base_url, tz_name='Europe/Paris', actor='admin'):
+    """Rebuild the automatic queues for every active action, idempotently.
+
+    This is the business equivalent of a MAJ WORKER: it does not restart the
+    systemd service and it does not send mail itself. It repairs/prepares the
+    durable queues that the background worker consumes even when nobody is
+    connected to the Streamlit application.
+    """
+    current_utc=datetime.now(ZoneInfo('UTC'))
+    actions=q(engine,"SELECT id FROM actions WHERE status IN ('ACTIVE','A_CLOTURER') ORDER BY id")
+    stats={'actions':0,'attendance':0,'quality':0,'teams_reminders':0,'countersignatures':0}
+
+    def _upsert_reminder(aid, slot, typ, email, *, participant_id=None, trainer_id=None, due_at=None):
+        if not (email or '').strip():
+            return 0
+        existing=one(engine,"""SELECT * FROM communication_events
+          WHERE action_id=:a AND slot_id=:s AND communication_type=:ct
+            AND COALESCE(participant_id,0)=COALESCE(:p,0) AND COALESCE(trainer_id,0)=COALESCE(:t,0)
+          ORDER BY id DESC LIMIT 1""",{'a':aid,'s':slot['id'],'ct':typ,'p':participant_id,'t':trainer_id})
+        now_iso=utcnow_iso()
+        if existing:
+            if existing.get('status')=='ENVOYE':
+                return 0
+            execute(engine,"""UPDATE communication_events SET recipient_email=:e,status='A_ENVOYER',due_at=:d,
+              last_error=NULL,claimed_at=NULL,claim_token=NULL,updated_at=:u WHERE id=:i""",
+              {'e':email.strip(),'d':due_at,'u':now_iso,'i':existing['id']})
+            return 1
+        queue_communication(engine,aid,typ,email.strip(),participant_id=participant_id,trainer_id=trainer_id,
+          slot_id=slot['id'],trigger_mode='AUTO',due_at=due_at,
+          idempotency_key=f"teams-reminder:{typ}:{slot['id']}:{participant_id or 0}:{trainer_id or 0}")
+        return 1
+
+    for a in actions:
+        aid=a['id']; stats['actions']+=1
+        runtime=organization_runtime_config(engine,aid); local_tz=runtime.get('timezone') or tz_name or 'Europe/Paris'
+        try:
+            ensure_tokens_and_events(engine,aid,base_url,local_tz); stats['attendance']+=1
+        except Exception as ex:
+            audit(engine,'WORKER_REFRESH_ATTENDANCE_FAILED',aid,actor,'action',aid,{'error':str(ex)[:500]})
+        try:
+            reschedule_pending_quality_campaigns(engine,aid,actor); stats['quality']+=1
+        except Exception as ex:
+            audit(engine,'WORKER_REFRESH_QUALITY_FAILED',aid,actor,'action',aid,{'error':str(ex)[:500]})
+
+        if action_module_enabled(engine,aid,'TEAMS'):
+            slots=q(engine,"""SELECT * FROM slots WHERE action_id=:a AND COALESCE(status,'PREVU') NOT IN ('ANNULE','REPORTE','REMPLACE')
+              ORDER BY slot_date,start_time""",{'a':aid})
+            participants=q(engine,"SELECT id,email FROM participants WHERE action_id=:a AND active=1",{'a':aid})
+            for sl in slots:
+                try:
+                    start,_=slot_start_end(sl,local_tz); start_utc=start.astimezone(ZoneInfo('UTC'))
+                except Exception:
+                    continue
+                if start_utc <= current_utc:
+                    continue
+                h2=(start_utc-timedelta(hours=2)).isoformat(); h15=(start_utc-timedelta(minutes=15)).isoformat()
+                for p in participants:
+                    stats['teams_reminders'] += _upsert_reminder(aid,sl,'TEAMS_REMINDER_H2',p.get('email'),participant_id=p['id'],due_at=h2)
+                    stats['teams_reminders'] += _upsert_reminder(aid,sl,'TEAMS_REMINDER_H15',p.get('email'),participant_id=p['id'],due_at=h15)
+                for tr in list_slot_trainers(engine,sl['id']):
+                    stats['teams_reminders'] += _upsert_reminder(aid,sl,'TEAMS_REMINDER_H2',tr.get('email'),trainer_id=tr['trainer_id'],due_at=h2)
+                    stats['teams_reminders'] += _upsert_reminder(aid,sl,'TEAMS_REMINDER_H15',tr.get('email'),trainer_id=tr['trainer_id'],due_at=h15)
+    try:
+        stats['countersignatures']=refresh_countersign_communications(engine,now=current_utc)
+    except Exception as ex:
+        audit(engine,'WORKER_REFRESH_COUNTERSIGN_FAILED',actor=actor,entity_type='worker_refresh',details={'error':str(ex)[:500]})
+    audit(engine,'WORKER_ALL_ACTIONS_REFRESHED',actor=actor,entity_type='worker_refresh',details=stats)
+    return stats
+
 # --- V2.2 LOT 2: beneficiaires permanents + portail documentaire ---
 BENEFICIARY_DOC_DIR=ROOT/'data'/'documents'/'blobs'
 BENEFICIARY_DOC_DIR.mkdir(parents=True,exist_ok=True)

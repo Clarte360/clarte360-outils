@@ -714,8 +714,9 @@ def render_trainer_action(action, trainer):
                 tr_mode=st.radio('Mode de signature',['Signature manuscrite','Nom et prénom + certification'],horizontal=True,key=f'tr_mode_{aid}_{sl["id"]}')
                 tr_canvas=None; typed_name=trainer['full_name']
                 if tr_mode=='Signature manuscrite':
+                    st.caption('Signez dans le cadre avec votre doigt, votre stylet ou votre souris.')
                     st.info('Signez dans le cadre gris ci-dessous avec la souris, le doigt ou un stylet.')
-                    tr_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=4,stroke_color='#0F172A',background_color='#EEF2F3',height=190,width=520,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f'tr_csig_v32_{aid}_{sl["id"]}_{trainer["id"]}')
+                    tr_canvas=st_canvas(fill_color='rgba(255,255,255,0)',stroke_width=4,stroke_color='#0F172A',background_color='#EEF2F3',height=190,width=520,drawing_mode='freedraw',display_toolbar=True,update_streamlit=True,key=f'tr_csig_rc4_{aid}_{sl["id"]}_{trainer["id"]}')
                 else:
                     typed_name=st.text_input('Nom et prénom',value=trainer['full_name'],key=f'tr_typed_{aid}_{sl["id"]}')
                     st.caption('La saisie du nom et la certification ci-dessous constituent la preuve de contresignature numérique.')
@@ -1037,11 +1038,11 @@ def beneficiary_portal_page():
                 ics=action_calendar_ics(ENGINE,aa['id'],beneficiary_id=bid)
                 if ics:
                     st.download_button(f"📅 {aa['action_no']} — ajouter / actualiser dans mon agenda",ics,file_name=f"{aa['action_no']}_planning.ics",mime='text/calendar',key=f'benef_ics_{aa["id"]}')
-    def _show_docs(rows,empty):
+    def _show_docs(rows,empty,key_prefix='docs'):
         if not rows: st.info(empty);return
         for d in rows:
             path=Path(d['storage_path'])
-            if path.is_file(): st.download_button(f"{d.get('action_no') or 'Général'} — {d['display_name']}",path.read_bytes(),file_name=d['display_name'],key=f"bdl_{d['id']}")
+            if path.is_file(): st.download_button(f"{d.get('action_no') or 'Général'} — {d['display_name']}",path.read_bytes(),file_name=d['display_name'],key=f"bdl_{key_prefix}_{d['id']}")
     with tabs[3]:
         meetings=[]
         for aa in acts:
@@ -1076,9 +1077,9 @@ def beneficiary_portal_page():
                         st.link_button('OUVRIR CET OUTIL',f"{BASE_URL.rstrip('/')}?tool_launch={quote(tok)}",type='primary')
                     except ValueError as ex: st.warning(str(ex))
                 st.divider()
-    with tabs[5]: _show_docs([d for d in docs if d['category']!='COURS'],'Aucun document administratif disponible.')
+    with tabs[5]: _show_docs([d for d in docs if d['category']!='COURS'],'Aucun document administratif disponible.','admin')
     with tabs[6]:
-        _show_docs([d for d in docs if d['category']=='COURS'],'Aucun document de cours disponible.')
+        _show_docs([d for d in docs if d['category']=='COURS'],'Aucun document de cours disponible.','cours')
         st.markdown('#### Déposer mes documents / résultats d’applications')
         st.caption('Vous pouvez déposer plusieurs fichiers PDF ou JSON issus des outils Clarté360. Ils restent rattachés à votre espace et à l’action choisie.')
         if acts:
@@ -1170,7 +1171,7 @@ def beneficiary_portal_page():
         st.caption('Vous pouvez télécharger à tout moment une copie des documents actuellement mis à disposition dans votre portail.')
         z=beneficiary_portal_zip(ENGINE,bid)
         st.download_button('TÉLÉCHARGER MON ESPACE EN ZIP',z,file_name=f"{b['public_id']}_ESPACE_CLARTE360.zip",mime='application/zip',type='primary')
-        _show_docs(docs,'Aucun document disponible.')
+        _show_docs(docs,'Aucun document disponible.','archives')
     footer()
 
 def footer(action_id=None):
@@ -1415,6 +1416,12 @@ def sidebar():
     pages=['Tableau de bord','Nouvelle action','Importer une action','Actions','Relances','Qualité','Études PIP/O*NET','Contacts / Prospects','Paramètres']
     page=st.sidebar.radio('Navigation',pages,key='nav')
     st.sidebar.divider()
+    if st.sidebar.button('🔄 MAJ WORKER — toutes les actions',use_container_width=True,help='Recalcule les files automatiques (émargements, rappels Teams, contresignatures et qualité) sans envoyer de doublons.'):
+        try:
+            result=refresh_all_worker_events(ENGINE,BASE_URL,TZ,st.session_state.get('admin_email') or 'admin')
+            st.sidebar.success(f"Worker synchronisé : {result.get('actions',0)} action(s), {result.get('teams_reminders',0)} rappel(s) Teams préparé(s).")
+        except Exception as ex:
+            _ui_incident('admin_refresh_worker_all',ex,subject='La mise à jour Worker',level='warning')
     if st.sidebar.button('Se déconnecter',use_container_width=True): _logout_persistent('ADMIN',['admin_email','admin_name','nav'])
     return page
 
@@ -3322,19 +3329,23 @@ def tool_launch_page(token):
         st.info("L'accès a été validé par le Hub Clarté360. Vous pouvez maintenant ouvrir l'outil.")
         st.link_button("OUVRIR L'OUTIL",ctx['base_url'],type='primary')
     elif ctx.get('launch_type')=='EXTERNAL_SIGNED':
-        try:
-            if ctx.get('tool_code')=='PIP_RIASEC_ONET':
+        if ctx.get('tool_code')=='PIP_RIASEC_ONET':
+            try:
                 key=secret('pip_connector','launch_signing_key','')
                 url=build_pip_prescription_launch(ENGINE,ctx['prescription_id'],key,valid_seconds=900)
-                label="OUVRIR LE PIP RIASEC / O*NET"
-            else:
-                key=secret('hub','hmac_secret','')
-                url=build_generic_tool_launch(ENGINE,ctx['prescription_id'],key,valid_seconds=900)
-                label=f"OUVRIR {ctx.get('tool_name') or 'L’OUTIL'}"
-            st.info("Votre accès sécurisé Clarté360 est prêt. Aucun secret ni identifiant technique n'est affiché.")
-            st.link_button(label,url,type='primary')
-        except Exception:
-            st.warning("Cet outil est temporairement indisponible. Votre prescription reste enregistrée ; réessayez plus tard ou contactez Clarté360.")
+                st.info("Votre accès sécurisé Clarté360 au PIP RIASEC / O*NET est prêt.")
+                st.link_button("OUVRIR LE PIP RIASEC / O*NET",url,type='primary')
+            except Exception as ex:
+                _ui_incident('pip_prescription_launch',ex,action_id=ctx.get('action_id'),entity_type='tool_prescription',entity_id=ctx.get('prescription_id'),subject='Le lancement PIP est temporairement indisponible',level='warning')
+        elif ctx.get('base_url'):
+            # Les autres applications Clarté360 restent autonomes : Gestion des Actions
+            # autorise la prescription et le passage depuis l'espace bénéficiaire, puis
+            # laisse l'application utiliser son propre mécanisme d'identification,
+            # de sauvegarde et de reprise. Aucun secret Hub n'est requis ici.
+            st.info("Prescription validée par Clarté360. L’outil s’ouvre ensuite avec son propre système d’accès et de sauvegarde.")
+            st.link_button(f"OUVRIR {ctx.get('tool_name') or 'L’OUTIL'}",ctx['base_url'],type='primary')
+        else:
+            st.warning("L’URL de cet outil n’est pas configurée.")
     elif ctx.get('base_url'):
         st.link_button("OUVRIR L'OUTIL",ctx['base_url'],type='primary')
     else:
