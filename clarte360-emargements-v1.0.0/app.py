@@ -1070,12 +1070,18 @@ def beneficiary_portal_page():
                 st.markdown(f"**{pr['tool_name']}** — {pr['action_no']} · Statut : {pr['status'].replace('_',' ')}")
                 if pr.get('due_at'): st.caption(f"Échéance : {pr['due_at']}")
                 if pr.get('status')=='TERMINE':
-                    st.success('Outil terminé.')
-                else:
-                    try:
-                        tok=create_prescription_launch_token(ENGINE,pr['prescription_id'],actor=f"beneficiary:{bid}")
-                        st.link_button('OUVRIR CET OUTIL',f"{BASE_URL.rstrip('/')}?tool_launch={quote(tok)}",type='primary')
-                    except ValueError as ex: st.warning(str(ex))
+                    st.success('Outil terminé — vous pouvez le rouvrir à tout moment depuis votre espace.')
+                try:
+                    if pr.get('tool_code')=='PIP_RIASEC_ONET':
+                        key=secret('pip_connector','launch_signing_key','')
+                        launch_url=build_pip_prescription_launch(ENGINE,pr['prescription_id'],key,valid_seconds=3600)
+                    else:
+                        launch_url=(pr.get('base_url') or '').strip()
+                        if not launch_url:
+                            raise ValueError("URL de l'outil non configurée.")
+                    st.link_button('OUVRIR CET OUTIL',launch_url,type='primary')
+                except ValueError as ex:
+                    st.warning(str(ex))
                 st.divider()
     with tabs[5]: _show_docs([d for d in docs if d['category']!='COURS'],'Aucun document administratif disponible.','admin')
     with tabs[6]:
@@ -1806,16 +1812,21 @@ def action_tools_tab(a):
     linked=q(ENGINE,"""SELECT p.id participant_id,b.id beneficiary_id,b.public_id,b.first_name,b.last_name
       FROM participants p JOIN beneficiaries b ON b.id=p.beneficiary_id WHERE p.action_id=:a AND p.active=1 AND b.active=1 ORDER BY b.last_name,b.first_name""",{'a':a['id']})
     compatible_tools=list_tool_catalog(ENGINE,active_only=True,prescription_only=True)
+    allowed_tools_all=action_allowed_tools(ENGINE,a['id'],active_only=False)
+    by_code={x['tool_code']:x for x in compatible_tools}
+    for x in allowed_tools_all:
+        by_code.setdefault(x['tool_code'],x)
+    selectable_tools=sorted(by_code.values(),key=lambda x:(x.get('name') or '',x.get('tool_code') or ''))
     allowed_tools=action_allowed_tools(ENGINE,a['id'])
     with st.expander('Outils autorisés sur cette action',expanded=not bool(allowed_tools)):
-        st.caption("L'administrateur choisit ici les outils que les intervenants autorisés pourront prescrire dans cette action. Le catalogue global reste inchangé.")
-        cmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in compatible_tools}
-        current_codes={x['tool_code'] for x in allowed_tools}
+        st.caption("L'administrateur peut ajouter ou retirer librement les outils de cette action. Le catalogue global reste inchangé.")
+        cmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in selectable_tools}
+        current_codes={x['tool_code'] for x in allowed_tools_all}
         defaults=[label for label,x in cmap.items() if x['tool_code'] in current_codes]
         selected=st.multiselect('Outils disponibles pour cette action',list(cmap),default=defaults,key=f'action_tools_allow_{a["id"]}')
         if st.button('ENREGISTRER LES OUTILS DE L’ACTION',key=f'action_tools_allow_save_{a["id"]}',type='primary'):
             wanted={cmap[x]['tool_code'] for x in selected}
-            for tx in compatible_tools:
+            for tx in selectable_tools:
                 set_action_tool_allowed(ENGINE,a['id'],tx['tool_code'],tx['tool_code'] in wanted,st.session_state.admin_email)
             st.success('Liste des outils autorisés enregistrée.'); rerun()
     tools=action_allowed_tools(ENGINE,a['id'])
@@ -1866,6 +1877,20 @@ def action_tools_tab(a):
         st.markdown('#### Prescriptions de cette action')
         st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Administrateur' if x.get('prescriber_type')=='ADMIN' else 'Intervenant','Statut':x['status'].replace('_',' '),'Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or ''} for x in rows if x.get('status')!='ANNULE']),use_container_width=True,hide_index=True)
         rmap={f"{x['prescription_id']} — {x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']}":x for x in rows}; rl=st.selectbox('Prescription à gérer',list(rmap),key=f'presc_manage_{a["id"]}'); rr=rmap[rl]
+        if rr.get('tool_code')=='PIP_RIASEC_ONET':
+            try: _meta=json.loads(rr.get('metadata_json') or '{}')
+            except Exception: _meta={}
+            _summary=_meta.get('pip_result_summary') if isinstance(_meta,dict) else None
+            if _summary:
+                with st.expander('Résultat PIP RIASEC — exploitable en accompagnement',expanded=True):
+                    _pip=_summary.get('pip') or {}
+                    c1,c2=st.columns(2)
+                    c1.metric('Code Holland',_pip.get('holland_code') or 'À interpréter')
+                    c2.write('Ordre RIASEC : '+(' > '.join(_pip.get('order') or []) or '—'))
+                    if _pip.get('indices'):
+                        st.dataframe(pd.DataFrame([{'Dimension':k,'Indice /100':v} for k,v in _pip['indices'].items()]),hide_index=True,use_container_width=True)
+                    if (_summary.get('onet') or {}).get('completed'):
+                        st.caption('O*NET 60 terminé : résultat disponible dans cette passation.')
         statuses=['A_FAIRE','ENVOYE','CONSULTE','EN_COURS','TERMINE','A_REVOIR_EN_SEANCE','REVU_EN_SEANCE','ANNULE']; ns=st.selectbox('Statut',statuses,index=statuses.index(rr['status']) if rr['status'] in statuses else 0,key=f'presc_status_{rr["id"]}')
         if st.button('Enregistrer le statut',key=f'presc_status_save_{rr["id"]}'):
             update_tool_prescription_status(ENGINE,rr['prescription_id'],ns,st.session_state.admin_email,{'source':'admin_ui'});st.success('Statut mis à jour.');rerun()
@@ -1878,7 +1903,7 @@ def action_tools_tab(a):
     with st.expander('⚙️ Catalogue central des outils Clarté360'):
         cat=list_tool_catalog(ENGINE,active_only=False)
         if cat:
-            st.dataframe(pd.DataFrame([{'Code':x['tool_code'],'Nom':x['name'],'Catégorie':x['category'],'Version':x.get('tool_version') or '','Actif':'Oui' if x['active'] else 'Non','Prescriptible':'Oui' if x['prescription_allowed'] else 'Non','Connexion':'Sécurisée Clarté360' if x['launch_type']=='EXTERNAL_SIGNED' else ('Redirection Hub' if x['launch_type']=='HUB_REDIRECT' else 'Interne'),'État':'Connecté' if x.get('connector_status')=='CONNECTED' else ('Lancement prêt' if x.get('connector_status')=='LAUNCH_ONLY' else 'Configuration VPS à terminer')} for x in cat]),use_container_width=True,hide_index=True)
+            st.dataframe(pd.DataFrame([{'Code':x['tool_code'],'Nom':x['name'],'Catégorie':x['category'],'Version':x.get('tool_version') or '','Actif':'Oui' if x['active'] else 'Non','Prescriptible':'Oui' if x['prescription_allowed'] else 'Non','Connexion':'PIP sécurisé / connecteur signé' if x['tool_code']=='PIP_RIASEC_ONET' else ('Outil autonome — lien direct' if x['launch_type'] in ('EXTERNAL_SIGNED','HUB_REDIRECT') else 'Interne'),'État':'Connecté' if x.get('connector_status')=='CONNECTED' else ('Lancement prêt' if x.get('connector_status')=='LAUNCH_ONLY' else 'Configuration VPS à terminer')} for x in cat]),use_container_width=True,hide_index=True)
         st.caption("Les outils Clarté360 connus sont préchargés automatiquement. Sélectionnez un outil existant pour le consulter ou le mettre à jour.")
         existing_map={'➕ Nouvel outil':None}
         for x in cat:
@@ -1896,7 +1921,7 @@ def action_tools_tab(a):
             base_url=c3.text_input('URL de base vérifiée',value=(selected_tool or {}).get('base_url') or ('https://pip-riasec.clarte360.com' if pip_selected else ''),disabled=pip_selected)
             launch_values=['HUB_REDIRECT','EXTERNAL_SIGNED','INTERNAL']
             current_launch='EXTERNAL_SIGNED' if pip_selected else ((selected_tool or {}).get('launch_type') or 'HUB_REDIRECT')
-            launch=st.selectbox('Type de connexion',launch_values,index=launch_values.index(current_launch),disabled=pip_selected,help='Connexion sécurisée signée pour le PIP ; redirection simple pour un outil web sans contrat signé ; interne pour un module de Gestion des Actions.')
+            launch=st.selectbox('Type de connexion',launch_values,index=launch_values.index(current_launch),disabled=pip_selected,help='PIP : connexion signée obligatoire. Autres outils : accès autonome par leur URL. Interne : module de Gestion des Actions.')
             if pip_selected: st.caption('PIP RIASEC / O*NET : connexion sécurisée Clarté360 imposée automatiquement.')
             active=st.checkbox('Actif',value=bool((selected_tool or {}).get('active',1)))
             presc=st.checkbox('Prescription autorisée',value=bool((selected_tool or {}).get('prescription_allowed',1)))

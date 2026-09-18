@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-09-15",
+  "updated_at": "2026-09-17",
   "tools": [
     {
       "tool_code": "PIP_RIASEC_ONET",
@@ -43,7 +43,7 @@
         "BILAN_COMPETENCES",
         "COACHING"
       ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
       "connector_status": "LAUNCH_ONLY",
@@ -118,8 +118,8 @@
       "category": "VALEURS",
       "base_url": "https://roue-valeurs.clarte360.com",
       "tool_version": "2.8.1",
-      "active": false,
-      "prescription_allowed": false,
+      "active": true,
+      "prescription_allowed": true,
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
@@ -128,12 +128,12 @@
         "BILAN_COMPETENCES",
         "COACHING"
       ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
-      "connector_status": "NOT_CONFIGURED",
+      "connector_status": "LAUNCH_ONLY",
       "metadata": {
-        "deployment_status": "planned"
+        "deployment_status": "production"
       }
     },
     {

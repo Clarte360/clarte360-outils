@@ -3106,6 +3106,12 @@ def consume_pip_outbox(engine, outbox_path, limit=500, actor='worker'):
             if ref not in refs and (ref['passation_id'] or ref['app_version']):
                 refs.append(ref)
                 execute(engine,'UPDATE tool_prescriptions SET result_refs_json=:r,updated_at=:u WHERE prescription_id=:p',{'r':json.dumps(refs,ensure_ascii=False),'u':utcnow_iso(),'p':pr['prescription_id']})
+            summary=payload.get('result_summary')
+            if event.get('event_type')=='TERMINE' and isinstance(summary,dict):
+                meta=_json_load(pr.get('metadata_json'),{})
+                if not isinstance(meta,dict): meta={}
+                meta['pip_result_summary']=summary
+                execute(engine,'UPDATE tool_prescriptions SET metadata_json=:m,updated_at=:u WHERE prescription_id=:p',{'m':json.dumps(meta,ensure_ascii=False),'u':utcnow_iso(),'p':pr['prescription_id']})
             processed+=1; committed=after; last_event_at=event.get('timestamp') or utcnow_iso()
         except Exception as exc:
             # Do not advance past a bad/crossed event: administrator can correct then retry.
