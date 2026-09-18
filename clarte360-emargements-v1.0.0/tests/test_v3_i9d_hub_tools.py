@@ -41,7 +41,7 @@ def test_i9d_additive_schema_contains_generic_catalog_prescriptions_tokens_event
 
 def test_i9d_seeded_pip_is_documented_but_connector_waits_for_i9e():
     e=eng(); row=one(e,"SELECT * FROM tool_catalog WHERE tool_code='PIP_RIASEC_ONET'")
-    assert row['tool_version']=='1.0.7-RC5'
+    assert row['tool_version']=='1.0.10-ACCOMPAGNEMENT'
     assert row['base_url']=='https://pip-riasec.clarte360.com'
     assert row['launch_type']=='EXTERNAL_SIGNED'
     assert row['connector_status']=='PENDING_I9_E'

@@ -15,7 +15,7 @@ def test_trainer_task_message_does_not_render_deltagenerator_expression():
 
 def test_h2_version():
     from branding import APP_VERSION
-    assert APP_VERSION=='3.0.0-I9-J2C-MAJ-RC5-OUTILS-PIP'
+    assert APP_VERSION=='3.0.0-I9-J2C-MAJ-RC6-OUTILS-PIP110'
 
 def test_beneficiary_portal_status_lifecycle(tmp_path):
     e=make_engine(f"sqlite:///{tmp_path/'x.db'}"); init_db(e)
@@ -32,7 +32,7 @@ def test_beneficiary_portal_status_lifecycle(tmp_path):
 def test_catalog_admin_update_preserves_pip_connector_contract(tmp_path):
     e=make_engine(f"sqlite:///{tmp_path/'x.db'}"); init_db(e); seed_tool_catalog(e)
     execute(e,"UPDATE tool_catalog SET connector_status='CONNECTED' WHERE tool_code='PIP_RIASEC_ONET'")
-    upsert_tool_catalog(e,{'tool_code':'PIP_RIASEC_ONET','name':'PIP RIASEC / O*NET','category':'ORIENTATION_PROFESSIONNELLE','tool_version':'1.0.7-RC5','base_url':'https://pip-riasec.clarte360.com','launch_type':'EXTERNAL_SIGNED','active':True,'prescription_allowed':True,'allowed_publics':['BENEFICIAIRE']})
+    upsert_tool_catalog(e,{'tool_code':'PIP_RIASEC_ONET','name':'PIP RIASEC / O*NET','category':'ORIENTATION_PROFESSIONNELLE','tool_version':'1.0.10-ACCOMPAGNEMENT','base_url':'https://pip-riasec.clarte360.com','launch_type':'EXTERNAL_SIGNED','active':True,'prescription_allowed':True,'allowed_publics':['BENEFICIAIRE']})
     row=one(e,"SELECT * FROM tool_catalog WHERE tool_code='PIP_RIASEC_ONET'")
     assert row['connector_code']=='PIP_RC5'
     assert row['connector_status']=='CONNECTED'

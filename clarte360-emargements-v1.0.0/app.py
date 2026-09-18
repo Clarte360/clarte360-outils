@@ -1824,11 +1824,26 @@ def action_tools_tab(a):
         current_codes={x['tool_code'] for x in allowed_tools_all}
         defaults=[label for label,x in cmap.items() if x['tool_code'] in current_codes]
         selected=st.multiselect('Outils disponibles pour cette action',list(cmap),default=defaults,key=f'action_tools_allow_{a["id"]}')
-        if st.button('ENREGISTRER LES OUTILS DE L’ACTION',key=f'action_tools_allow_save_{a["id"]}',type='primary'):
-            wanted={cmap[x]['tool_code'] for x in selected}
+        wanted={cmap[x]['tool_code'] for x in selected}
+        if wanted != current_codes:
+            changed=[]
             for tx in selectable_tools:
-                set_action_tool_allowed(ENGINE,a['id'],tx['tool_code'],tx['tool_code'] in wanted,st.session_state.admin_email)
-            st.success('Liste des outils autorisés enregistrée.'); rerun()
+                code=tx['tool_code']
+                should_allow=code in wanted
+                was_allowed=code in current_codes
+                if should_allow != was_allowed:
+                    ok,msg=set_action_tool_allowed(ENGINE,a['id'],code,should_allow,st.session_state.admin_email)
+                    if not ok:
+                        st.error(msg or f"Impossible de modifier l'autorisation de {tx.get('name') or code}.")
+                    else:
+                        changed.append((tx.get('name') or code,should_allow))
+            if changed:
+                added=[name for name,allowed in changed if allowed]
+                removed=[name for name,allowed in changed if not allowed]
+                messages=[]
+                if added: messages.append('Ajouté : '+', '.join(added))
+                if removed: messages.append('Retiré : '+', '.join(removed))
+                st.success(' · '.join(messages))
     tools=action_allowed_tools(ENGINE,a['id'])
     c1,c2,c3=st.columns(3);c1.metric('Bénéficiaires rattachés',len(linked));c2.metric('Outils autorisés',len(tools));c3.metric('Prescriptions',len([x for x in list_tool_prescriptions(ENGINE,action_id=a['id']) if x.get('status')!='ANNULE']))
     if linked and tools:

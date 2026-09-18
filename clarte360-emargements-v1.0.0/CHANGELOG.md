@@ -1,3 +1,11 @@
+
+## 3.0.0-I9-J2C-MAJ-RC6-OUTILS-PIP110 — 2026-09-18
+- Sauvegarde automatique des ajouts/retraits d’outils autorisés par action.
+- Suppression du bouton de validation intermédiaire des outils afin d’éviter les sélections visuelles non persistées.
+- Maintien explicite de l’accès à tous les outils actifs/prescriptibles quel que soit le type de prestation.
+- Registre PIP aligné sur 1.0.10 ACCOMPAGNEMENT et statut de déploiement production.
+- Ajout de tests ciblés de persistance multi-outils et de non-régression du filtrage prestation.
+
 ## 3.0.0-I9-H2.8 — Consolidation ergonomie / outils / qualité / robustesse
 
 - Isolation de chaque onglet administrateur : une panne locale ne bloque plus les onglets suivants et les incidents sont journalisés avec leur contexte réel.

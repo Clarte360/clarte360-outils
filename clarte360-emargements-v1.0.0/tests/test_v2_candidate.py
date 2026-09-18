@@ -22,4 +22,4 @@ def test_candidate_transferable_pdf_branding():
 
 def test_candidate_version_is_rc():
     from branding import APP_VERSION
-    assert APP_VERSION=='3.0.0-I9-J2C-MAJ-RC5-OUTILS-PIP'
+    assert APP_VERSION=='3.0.0-I9-J2C-MAJ-RC6-OUTILS-PIP110'
