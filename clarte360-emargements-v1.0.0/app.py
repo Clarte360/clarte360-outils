@@ -1820,7 +1820,7 @@ def action_tools_tab(a):
     allowed_tools=action_allowed_tools(ENGINE,a['id'])
     with st.expander('Outils autorisés sur cette action',expanded=not bool(allowed_tools)):
         st.caption("L'administrateur peut ajouter ou retirer librement les outils de cette action. Le catalogue global reste inchangé.")
-        cmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in selectable_tools}
+        cmap={x['name']:x for x in selectable_tools}
         current_codes={x['tool_code'] for x in allowed_tools_all}
         defaults=[label for label,x in cmap.items() if x['tool_code'] in current_codes]
         selected=st.multiselect('Outils disponibles pour cette action',list(cmap),default=defaults,key=f'action_tools_allow_{a["id"]}')
@@ -1847,7 +1847,7 @@ def action_tools_tab(a):
     tools=action_allowed_tools(ENGINE,a['id'])
     c1,c2,c3=st.columns(3);c1.metric('Bénéficiaires rattachés',len(linked));c2.metric('Outils autorisés',len(tools));c3.metric('Prescriptions',len([x for x in list_tool_prescriptions(ENGINE,action_id=a['id']) if x.get('status')!='ANNULE']))
     if linked and tools:
-        bmap={f"{x['last_name']} {x['first_name']} — {x['public_id']}":x for x in linked}; tmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in tools}
+        bmap={f"{x['last_name']} {x['first_name']} — {x['public_id']}":x for x in linked}; tmap={x['name']:x for x in tools}
         with st.form(f'admin_tool_prescribe_{a["id"]}'):
             bl=st.selectbox('Bénéficiaire',list(bmap)); tl=st.selectbox('Outil Clarté360',list(tmap)); due=st.date_input('Échéance indicative',value=None,key=f'tool_due_{a["id"]}')
             submit=st.form_submit_button('PRESCRIRE CET OUTIL',type='primary')
@@ -1918,41 +1918,47 @@ def action_tools_tab(a):
     with st.expander('⚙️ Catalogue central des outils Clarté360'):
         cat=list_tool_catalog(ENGINE,active_only=False)
         if cat:
-            st.dataframe(pd.DataFrame([{'Code':x['tool_code'],'Nom':x['name'],'Catégorie':x['category'],'Version':x.get('tool_version') or '','Actif':'Oui' if x['active'] else 'Non','Prescriptible':'Oui' if x['prescription_allowed'] else 'Non','Connexion':'PIP sécurisé / connecteur signé' if x['tool_code']=='PIP_RIASEC_ONET' else ('Outil autonome — lien direct' if x['launch_type'] in ('EXTERNAL_SIGNED','HUB_REDIRECT') else 'Interne'),'État':'Connecté' if x.get('connector_status')=='CONNECTED' else ('Lancement prêt' if x.get('connector_status')=='LAUNCH_ONLY' else 'Configuration VPS à terminer')} for x in cat]),use_container_width=True,hide_index=True)
-        st.caption("Les outils Clarté360 connus sont préchargés automatiquement. Sélectionnez un outil existant pour le consulter ou le mettre à jour.")
+            st.dataframe(pd.DataFrame([{'Code':x['tool_code'],'Nom':x['name'],'Catégorie':x['category'],'Actif':'Oui' if x['active'] else 'Non','Prescriptible':'Oui' if x['prescription_allowed'] else 'Non','Accès':'Connexion sécurisée PIP' if x['tool_code']=='PIP_RIASEC_ONET' else ('Lien direct vers l’outil' if x['launch_type']!='INTERNAL' else 'Interne')} for x in cat]),use_container_width=True,hide_index=True)
+        st.caption("La version technique n'est pas utilisée pour autoriser ou prescrire un outil. Les outils actifs et prescriptibles sont disponibles pour toutes les actions.")
         existing_map={'➕ Nouvel outil':None}
         for x in cat:
             existing_map[f"{x['name']} — {x['tool_code']}"]=x
         selected_label=st.selectbox('Outil du catalogue',list(existing_map),key=f'tool_catalog_select_{a["id"]}')
         selected_tool=existing_map[selected_label]
-        with st.form(f'tool_catalog_add_{a["id"]}'):
-            pip_selected=bool(selected_tool and selected_tool.get('tool_code')=='PIP_RIASEC_ONET')
+        if selected_tool:
+            pip_selected=selected_tool.get('tool_code')=='PIP_RIASEC_ONET'
             c1,c2=st.columns(2)
-            code=c1.text_input('Code outil',value=(selected_tool or {}).get('tool_code') or '',disabled=pip_selected)
-            name=c2.text_input('Nom outil',value=(selected_tool or {}).get('name') or '',disabled=pip_selected)
-            c1,c2,c3=st.columns(3)
-            category=c1.text_input('Catégorie',value=(selected_tool or {}).get('category') or 'OUTIL',disabled=pip_selected)
-            version=c2.text_input('Version',value=(selected_tool or {}).get('tool_version') or '',disabled=pip_selected)
-            base_url=c3.text_input('URL de base vérifiée',value=(selected_tool or {}).get('base_url') or ('https://pip-riasec.clarte360.com' if pip_selected else ''),disabled=pip_selected)
-            launch_values=['HUB_REDIRECT','EXTERNAL_SIGNED','INTERNAL']
-            current_launch='EXTERNAL_SIGNED' if pip_selected else ((selected_tool or {}).get('launch_type') or 'HUB_REDIRECT')
-            launch=st.selectbox('Type de connexion',launch_values,index=launch_values.index(current_launch),disabled=pip_selected,help='PIP : connexion signée obligatoire. Autres outils : accès autonome par leur URL. Interne : module de Gestion des Actions.')
-            if pip_selected: st.caption('PIP RIASEC / O*NET : connexion sécurisée Clarté360 imposée automatiquement.')
-            active=st.checkbox('Actif',value=bool((selected_tool or {}).get('active',1)))
-            presc=st.checkbox('Prescription autorisée',value=bool((selected_tool or {}).get('prescription_allowed',1)))
-            save_tool=st.form_submit_button('ENREGISTRER LE CATALOGUE')
-        if save_tool:
-            try:
-                effective=selected_tool or {}
-                final_code=effective.get('tool_code') or code
-                final_name=effective.get('name') or name
-                final_category=effective.get('category') or category
-                final_version=effective.get('tool_version') or version
-                final_url=effective.get('base_url') or base_url
-                final_launch='EXTERNAL_SIGNED' if final_code=='PIP_RIASEC_ONET' else launch
-                upsert_tool_catalog(ENGINE,{'tool_code':final_code,'name':final_name,'category':final_category,'tool_version':final_version,'base_url':final_url,'launch_type':final_launch,'active':active,'prescription_allowed':presc,'allowed_publics':['BENEFICIAIRE']},st.session_state.admin_email)
-                st.success('Catalogue mis à jour.');rerun()
-            except ValueError as ex: st.error(str(ex))
+            c1.text_input('Code outil',value=selected_tool.get('tool_code') or '',disabled=True,key=f'cat_code_{selected_tool["id"]}')
+            c2.text_input('Nom outil',value=selected_tool.get('name') or '',disabled=True,key=f'cat_name_{selected_tool["id"]}')
+            c1,c2=st.columns(2)
+            c1.text_input('Catégorie',value=selected_tool.get('category') or '',disabled=True,key=f'cat_cat_{selected_tool["id"]}')
+            c2.text_input('URL de base vérifiée',value=selected_tool.get('base_url') or '',disabled=True,key=f'cat_url_{selected_tool["id"]}')
+            access_label='Connexion sécurisée PIP' if pip_selected else ('Interne' if selected_tool.get('launch_type')=='INTERNAL' else 'Lien direct vers l’outil')
+            st.text_input('Mode d’accès',value=access_label,disabled=True,key=f'cat_access_{selected_tool["id"]}')
+            active=st.checkbox('Actif',value=bool(selected_tool.get('active')),key=f'cat_active_{selected_tool["id"]}')
+            presc=st.checkbox('Prescription autorisée',value=bool(selected_tool.get('prescription_allowed')),key=f'cat_presc_{selected_tool["id"]}')
+            if active!=bool(selected_tool.get('active')) or presc!=bool(selected_tool.get('prescription_allowed')):
+                try:
+                    upsert_tool_catalog(ENGINE,{'tool_code':selected_tool['tool_code'],'name':selected_tool['name'],'category':selected_tool.get('category') or 'OUTIL','base_url':selected_tool.get('base_url'),'active':active,'prescription_allowed':presc,'allowed_publics':['BENEFICIAIRE']},st.session_state.admin_email)
+                    st.success('Catalogue mis à jour automatiquement.'); rerun()
+                except ValueError as ex: st.error(str(ex))
+        else:
+            with st.form(f'tool_catalog_add_{a["id"]}'):
+                c1,c2=st.columns(2)
+                code=c1.text_input('Code outil')
+                name=c2.text_input('Nom outil')
+                c1,c2=st.columns(2)
+                category=c1.text_input('Catégorie',value='OUTIL')
+                base_url=c2.text_input('URL de base vérifiée')
+                st.caption('Les nouveaux outils sont créés comme applications autonomes avec ouverture directe. Le PIP conserve son connecteur sécurisé spécifique.')
+                active=st.checkbox('Actif',value=True)
+                presc=st.checkbox('Prescription autorisée',value=True)
+                save_tool=st.form_submit_button('AJOUTER AU CATALOGUE')
+            if save_tool:
+                try:
+                    upsert_tool_catalog(ENGINE,{'tool_code':code,'name':name,'category':category,'base_url':base_url,'active':active,'prescription_allowed':presc,'allowed_publics':['BENEFICIAIRE']},st.session_state.admin_email)
+                    st.success('Outil ajouté au catalogue.'); rerun()
+                except ValueError as ex: st.error(str(ex))
 
 
 def teams_tab(a):

@@ -1,4 +1,10 @@
 
+## 3.0.0-I9-J2C-MAJ-RC8-OUTILS-PIP-CONTRAT — 2026-09-18
+- Reprise intégrale de RC7 OUTILS SIMPLES.
+- Correction du contrat de lancement PIP 1.0.10 ACCOMPAGNEMENT : scopes PIP_RUN, PIP_RESUME, PIP_STATUS, PIP_RESULT_READ.
+- Aucun renommage des secrets : pip_connector.launch_signing_key reste inchangé côté Gestion des Actions.
+
+
 ## 3.0.0-I9-J2C-MAJ-RC6-OUTILS-PIP110 — 2026-09-18
 - Sauvegarde automatique des ajouts/retraits d’outils autorisés par action.
 - Suppression du bouton de validation intermédiaire des outils afin d’éviter les sélections visuelles non persistées.

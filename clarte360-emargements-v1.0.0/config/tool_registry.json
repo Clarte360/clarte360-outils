@@ -17,7 +17,7 @@
       "launch_type": "EXTERNAL_SIGNED",
       "access_validity_hours": 168,
       "connector_code": "PIP_RC5",
-      "connector_status": "PENDING_I9_E",
+      "connector_status": "CONNECTED",
       "metadata": {
         "source": "REGISTRE_I9",
         "connector": "pip_specialized",
@@ -37,11 +37,7 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
+      "compatible_prestations": [],
       "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
@@ -74,12 +70,8 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "compatible_prestations": [],
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
       "connector_status": "NOT_CONFIGURED",
@@ -98,12 +90,8 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "compatible_prestations": [],
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
       "connector_status": "NOT_CONFIGURED",
@@ -122,11 +110,7 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
+      "compatible_prestations": [],
       "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
@@ -146,12 +130,8 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "compatible_prestations": [],
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
       "connector_status": "NOT_CONFIGURED",
@@ -170,12 +150,8 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "compatible_prestations": [],
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
       "connector_status": "NOT_CONFIGURED",
@@ -194,12 +170,8 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "compatible_prestations": [],
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
       "connector_status": "NOT_CONFIGURED",
@@ -218,12 +190,8 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "compatible_prestations": [],
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
       "connector_status": "NOT_CONFIGURED",
@@ -242,12 +210,8 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "compatible_prestations": [],
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
       "connector_status": "NOT_CONFIGURED",
@@ -266,12 +230,8 @@
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
-      "compatible_prestations": [
-        "BILAN_DE_COMPETENCES",
-        "BILAN_COMPETENCES",
-        "COACHING"
-      ],
-      "launch_type": "EXTERNAL_SIGNED",
+      "compatible_prestations": [],
+      "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
       "connector_status": "NOT_CONFIGURED",

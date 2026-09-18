@@ -44,7 +44,7 @@ def test_i9d_seeded_pip_is_documented_but_connector_waits_for_i9e():
     assert row['tool_version']=='1.0.10-ACCOMPAGNEMENT'
     assert row['base_url']=='https://pip-riasec.clarte360.com'
     assert row['launch_type']=='EXTERNAL_SIGNED'
-    assert row['connector_status']=='PENDING_I9_E'
+    assert row['connector_status']=='CONNECTED'
 
 
 def test_i9d_generic_catalog_accepts_another_tool_without_pip_specific_fields():

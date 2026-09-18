@@ -2777,14 +2777,13 @@ def upsert_tool_catalog(engine, data, actor='admin'):
     code=(data.get('tool_code') or '').strip().upper()
     name=(data.get('name') or '').strip()
     if not code or not name: raise ValueError('Code outil et nom obligatoires.')
-    launch=(data.get('launch_type') or 'HUB_REDIRECT').strip().upper()
-    if launch not in ('HUB_REDIRECT','EXTERNAL_SIGNED','INTERNAL'):
-        raise ValueError('Type de lancement non reconnu.')
     now=utcnow_iso()
     existing=one(engine,'SELECT * FROM tool_catalog WHERE tool_code=:c',{'c':code})
+    # Politique Clarté360 : PIP utilise le connecteur signé ; les autres outils web sont autonomes.
+    launch='EXTERNAL_SIGNED' if code=='PIP_RIASEC_ONET' else ((existing or {}).get('launch_type') if (existing or {}).get('launch_type')=='INTERNAL' else 'HUB_REDIRECT')
     payload={
         'c':code,'n':name,'cat':(data.get('category') or 'OUTIL').strip().upper(),'url':(data.get('base_url') or '').strip() or None,
-        'v':(data.get('tool_version') or '').strip() or None,'a':1 if data.get('active',True) else 0,
+        'v':((data.get('tool_version') if 'tool_version' in data else (existing or {}).get('tool_version')) or '').strip() or None,'a':1 if data.get('active',True) else 0,
         'pub':json.dumps(data.get('allowed_publics') or ['BENEFICIAIRE'],ensure_ascii=False),
         'comp':json.dumps(data.get('compatible_prestations') if 'compatible_prestations' in data else _json_load((existing or {}).get('compatible_prestations_json'),[]),ensure_ascii=False),'pa':1 if data.get('prescription_allowed',True) else 0,
         'lt':launch,'iv':int(data.get('access_validity_hours') or (existing or {}).get('access_validity_hours') or 168),
@@ -2802,6 +2801,8 @@ def upsert_tool_catalog(engine, data, actor='admin'):
       rgpd_rules_json=excluded.rgpd_rules_json,connector_code=excluded.connector_code,connector_status=excluded.connector_status,
       metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",payload)
     row=one(engine,'SELECT * FROM tool_catalog WHERE tool_code=:c',{'c':code})
+    if not row.get('active') or not row.get('prescription_allowed'):
+        execute(engine,'UPDATE action_tool_permissions SET allowed=0,updated_at=:u WHERE tool_id=:t AND allowed<>0',{'u':now,'t':row['id']})
     audit(engine,'TOOL_CATALOG_UPDATED' if existing else 'TOOL_CATALOG_CREATED',actor=actor,entity_type='tool_catalog',entity_id=row['id'],details={'tool_code':code})
     return row
 
@@ -3053,7 +3054,7 @@ def build_pip_prescription_launch(engine, prescription_id, signing_key, valid_se
         except ValueError: raise
         except Exception: pass
     tok=build_pip_launch_token(beneficiary_id=row['beneficiary_id'],action_id=row['action_id'],participant_id=row.get('participant_id'),
-      prescription_id=row['prescription_id'],signing_key=signing_key,rights=['PIP_RIASEC','ONET60'],valid_seconds=valid_seconds)
+      prescription_id=row['prescription_id'],signing_key=signing_key,rights=['PIP_RUN','PIP_RESUME','PIP_STATUS','PIP_RESULT_READ'],valid_seconds=valid_seconds)
     return build_pip_launch_url(row.get('base_url'),tok)
 
 
