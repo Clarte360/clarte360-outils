@@ -96,3 +96,11 @@
 - Ajout d’une sauvegarde JSON pendant la séquence O*NET publique et prise en compte immédiate de la réponse O*NET courante.
 - Une reprise depuis un JSON conforme est considérée comme un état sauvegardé.
 - Aucun changement du questionnaire PIP, du scoring RIASEC/Holland, des 120 items ou de l’algorithme O*NET.
+## 1.0.10-l1-vps-hub-ready-guard-accompagnement — ACCOMPAGNEMENT / SYNTHÈSE RIASEC
+- Base technique strictement issue de la 1.0.9 `GARDE-FOU SORTIE / RAFRAÎCHISSEMENT`.
+- Conservation intégrale des validations de saisie, garde-fous navigateur, accès public, O*NET, sécurité Hub et persistance accompagnée de la 1.0.9.
+- En mode ACCOMPAGNEMENT uniquement, l'événement `TERMINE` publié vers l'outbox Gestion des Actions contient désormais un `result_summary` minimal exploitable en séance : code Holland, indices RIASEC, ordre, égalités exactes et version d'algorithme.
+- Les réponses item par item du PIP ne sont jamais publiées dans ce résumé.
+- Si O*NET a été réalisé, son état terminé et ses résultats descriptifs sont ajoutés au résumé ; sinon la section reste absente.
+- Aucun changement du questionnaire PIP, des 120 items, du scoring RIASEC/Holland, du mode PUBLIC ou du mécanisme de reprise serveur.
+

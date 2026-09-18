@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_versions_and_required_layout():
-    assert APP_VERSION == "1.0.9-l1-vps-hub-ready-guard"
-    assert BUILD_INCREMENT == "L1-D-VH1-GUARD"
+    assert APP_VERSION == "1.0.10-l1-vps-hub-ready-guard-accompagnement"
+    assert BUILD_INCREMENT == "L1-D-VH1-GUARD-ACCOMP"
     assert FRAMEWORK_VERSION == "4.0"
     assert FRAMEWORK_VPS_VERSION == "1.0"
     for rel in [

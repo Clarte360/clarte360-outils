@@ -1,7 +1,7 @@
 {
   "tool_id": "pip-riasec-onet",
   "app_name": "PIP RIASEC / O*NET Clarte360",
-  "app_version": "1.0.9-l1-vps-hub-ready-guard",
+  "app_version": "1.0.10-l1-vps-hub-ready-guard-accompagnement",
   "production_url": "https://pip-riasec.clarte360.com",
   "deployment_status": "deployed",
   "hub_compatible": true,

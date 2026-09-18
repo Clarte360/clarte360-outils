@@ -35,14 +35,32 @@ def _publish_if_accompanied(event_type: str) -> None:
     if not launch or launch.mode is not RunMode.ACCOMPANIMENT:
         return
     port = GestionActionsPort(None)
-    port.publish_event(event_type, {
+    payload = {
         "beneficiary_id": launch.beneficiary_id,
         "action_id": launch.action_id,
         "participant_id": launch.participant_id,
         "prescription_id": launch.prescription_id,
         "passation_id": st.session_state.get("passation_id"),
         "app_version": st.session_state.get("app_version"),
-    })
+    }
+    if event_type == "TERMINE":
+        pip = dict(st.session_state.get("pip_scoring") or {})
+        onet = dict(st.session_state.get("onet_state") or {})
+        payload["result_summary"] = {
+            "journey": st.session_state.get("journey"),
+            "pip": {
+                "holland_code": pip.get("holland_code"),
+                "indices": pip.get("indices") or {},
+                "order": pip.get("order") or [],
+                "exact_ties": pip.get("exact_ties") or [],
+                "algorithm_version": pip.get("algorithm_version"),
+            },
+            "onet": {
+                "completed": bool(onet.get("completed")),
+                "results": onet.get("results") or [],
+            } if onet else None,
+        }
+    port.publish_event(event_type, payload)
 
 DIMENSION_LABELS = {
     "R": "Réaliste — agir concrètement sur le réel",
