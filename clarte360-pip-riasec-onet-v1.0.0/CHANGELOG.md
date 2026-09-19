@@ -243,3 +243,12 @@
 - Aucune migration rétroactive complexe des JSON H1/H2 : les bases d'essai seront vidées avant recette réelle.
 - Séparation CRM / étude H3 inchangée ; aucun `study_id` exporté vers le CRM.
 - Aucun changement banque 72 items, scoring, ROME, O*NET, rapports ou ACCOMPAGNEMENT.
+
+## Jalon H3.2 — 2026-09-19
+- Correctif ciblé de prévisualisation du rapport PIP avant le questionnaire de ressenti.
+- Suppression de l'iframe PDF `data:` bloquée par Microsoft Edge.
+- Rendu serveur des pages 3 et 4 du rapport PIP en PNG via `pdftoppm`, puis affichage direct dans Streamlit.
+- Conservation du téléchargement du PDF complet.
+- Conservation stricte du flux H3.1 : banque 72 items, scoring, ROME, O*NET, CRM, étude pseudonymisée et ACCOMPAGNEMENT inchangés.
+- Ajout de tests de non-régression H3.2.
+- Recette automatisée : 196 tests réussis, 0 échec.

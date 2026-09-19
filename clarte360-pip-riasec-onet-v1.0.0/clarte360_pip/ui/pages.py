@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import base64
 from datetime import datetime, timezone
 from uuid import uuid4
 import streamlit as st
-import streamlit.components.v1 as components
 
 from clarte360_pip.domain import LaunchContext, RunMode
 from clarte360_pip.framework.config import LOGO_PATH, ASSETS_DIR, RGPD_TEXT_VERSION, load_smtp_settings, load_onet_settings
@@ -24,6 +22,7 @@ from clarte360_pip.connectors.gestion_actions import GestionActionsPort, persist
 from clarte360_pip.connectors.onet import OnetPort, OnetApiError, normalize_onet_results, ONET_INSTRUMENT, ONET_API_VERSION, ONET_LANGUAGE
 from clarte360_pip.framework.public_access import (validate_public_identity, validated_public_identity, issue_public_code, verify_public_code, save_public_lead, save_public_study_record)
 from clarte360_pip.reporting import build_pip_report_pdf, build_onet_report_pdf, PIP_REPORT_VERSION, ONET_REPORT_VERSION, REPORT_VERSION
+from clarte360_pip.pdf_preview import pdf_pages_as_png
 from clarte360_pip.version import APP_VERSION
 
 
@@ -336,27 +335,24 @@ def render_pip_questionnaire() -> None:
 
 
 def _render_pip_report_preview_before_feeling() -> None:
-    """Show the substantive PIP report before asking the participant to rate it."""
+    """Show substantive PIP report pages before asking the participant to rate the profile."""
     try:
         pdf_bytes = build_pip_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png")
+        preview_pages = pdf_pages_as_png(pdf_bytes, 3, 4)
     except Exception as exc:
         st.warning(f"La prévisualisation du rapport n’a pas pu être générée : {exc}")
         return
     st.markdown("### Prenez connaissance de votre synthèse avant de donner votre ressenti")
     st.markdown(
-        "Consultez ci-dessous votre rapport PIP, notamment le **profil global**, "
+        "Consultez ci-dessous les pages essentielles de votre rapport PIP : le **profil global**, "
         "l’**interprétation de vos dimensions dominantes** et les **facettes qui nuancent votre profil**. "
-        "Le questionnaire de ressenti vient ensuite afin que vos réponses portent sur une restitution suffisamment complète."
+        "Elles sont affichées directement dans Clarté360 afin d’éviter les blocages des lecteurs PDF intégrés aux navigateurs."
     )
-    encoded = base64.b64encode(pdf_bytes).decode("ascii")
-    components.html(
-        f'<iframe src="data:application/pdf;base64,{encoded}#page=3&view=FitH" '
-        'width="100%" height="950" style="border:1px solid #d9e2e3;border-radius:8px;"></iframe>',
-        height=970,
-        scrolling=True,
-    )
+    for page_number, image_bytes in enumerate(preview_pages, start=3):
+        st.caption(f"Rapport PIP — page {page_number}")
+        st.image(image_bytes, use_container_width=True)
     st.download_button(
-        "Ouvrir / télécharger la synthèse PIP en PDF",
+        "Ouvrir / télécharger la synthèse PIP complète en PDF",
         data=pdf_bytes,
         file_name="rapport_pip_riasec_clarte360.pdf",
         mime="application/pdf",
