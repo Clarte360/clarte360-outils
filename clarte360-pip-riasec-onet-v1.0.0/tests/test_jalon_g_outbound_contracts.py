@@ -11,7 +11,7 @@ def test_outbox_is_idempotent_and_retryable(monkeypatch, tmp_path):
     import clarte360_pip.connectors.gestion_actions as ga
     monkeypatch.setattr(ga, "PERSISTENT_DATA_DIR", tmp_path)
     port = GestionActionsPort(None)
-    payload = {"participant_id": "PUB-1", "source": "PIP_PUBLIC", "email": "a@example.org"}
+    payload = {"source": "PIP_PUBLIC", "email": "a@example.org"}
     p1 = port.publish_event("CONTACT_EMAIL_VERIFIED", payload)
     p2 = port.publish_event("CONTACT_EMAIL_VERIFIED", payload)
     assert p1 == p2
@@ -41,7 +41,7 @@ def test_public_contract_event_types_are_allowed(monkeypatch, tmp_path):
     monkeypatch.setattr(ga, "PERSISTENT_DATA_DIR", tmp_path)
     port = GestionActionsPort(None)
     for typ in ("CONTACT_EMAIL_VERIFIED", "CONTACT_UPDATED", "CALLBACK_REQUESTED"):
-        path = port.publish_event(typ, {"participant_id": "PUB-1", "source": "PIP_PUBLIC", "marker": typ})
+        path = port.publish_event(typ, {"source": "PIP_PUBLIC", "email": "a@example.org", "marker": typ})
         assert path.exists()
 
 
@@ -95,7 +95,7 @@ def test_public_study_dataset_has_no_crm_join_key(monkeypatch, tmp_path):
     path = save_public_study_record(state)
     payload = json.loads(path.read_text(encoding="utf-8"))
     raw = json.dumps(payload)
-    assert payload["schema"] == "clarte360.pip.public-study.v2"
+    assert payload["schema"] == "clarte360.pip.public-study.v1"
     assert "public_participant_id" not in payload
     assert "passation_id" not in payload
     assert "public_identity" not in payload

@@ -86,6 +86,7 @@ def build_snapshot(session_state: dict[str, Any]) -> dict[str, Any]:
         "public_email_verified_at": session_state.get("public_email_verified_at"),
         "public_callback_requested": bool(session_state.get("public_callback_requested")),
         "public_callback_requested_at": session_state.get("public_callback_requested_at"),
+        "public_study_id": session_state.get("public_study_id"),
         "study_consent": bool(session_state.get("study_consent")),
         "onet_selected_timing": session_state.get("onet_selected_timing"),
         # navigation_page is deliberately a resume destination, never "timeout".
@@ -205,7 +206,7 @@ def restore_snapshot(payload: dict[str, Any], session_state: Any) -> None:
         "feeling", "session_history", "public_participant_id", "public_identity",
         "public_access_verified", "public_marketing_opt_in", "public_interests",
         "public_other_interest", "public_email_verified_at", "public_callback_requested",
-        "public_callback_requested_at", "study_consent", "onet_selected_timing",
+        "public_callback_requested_at", "public_study_id", "study_consent", "onet_selected_timing",
         "rgpd_acceptance", "report_documents", "final_event_published", "completed_at",
     ):
         if key in payload:

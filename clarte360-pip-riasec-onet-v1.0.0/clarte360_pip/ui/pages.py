@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import base64
 from datetime import datetime, timezone
 from uuid import uuid4
 import streamlit as st
+import streamlit.components.v1 as components
 
 from clarte360_pip.domain import LaunchContext, RunMode
 from clarte360_pip.framework.config import LOGO_PATH, ASSETS_DIR, RGPD_TEXT_VERSION, load_smtp_settings, load_onet_settings
@@ -37,7 +39,6 @@ def _public_contact_payload() -> dict:
         interests.append("PIP-RIASEC")
     acceptance = dict(st.session_state.get("rgpd_acceptance") or {})
     return {
-        "participant_id": st.session_state.get("public_participant_id"),
         "source": "PIP_PUBLIC",
         "first_name": identity.get("first_name"),
         "last_name": identity.get("last_name"),
@@ -332,6 +333,39 @@ def render_pip_questionnaire() -> None:
         st.info("Sauvegarde automatique Clarté360 active. Vous pourrez reprendre depuis votre espace bénéficiaire.")
 
 
+
+
+def _render_pip_report_preview_before_feeling() -> None:
+    """Show the substantive PIP report before asking the participant to rate it."""
+    try:
+        pdf_bytes = build_pip_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png")
+    except Exception as exc:
+        st.warning(f"La prévisualisation du rapport n’a pas pu être générée : {exc}")
+        return
+    st.markdown("### Prenez connaissance de votre synthèse avant de donner votre ressenti")
+    st.markdown(
+        "Consultez ci-dessous votre rapport PIP, notamment le **profil global**, "
+        "l’**interprétation de vos dimensions dominantes** et les **facettes qui nuancent votre profil**. "
+        "Le questionnaire de ressenti vient ensuite afin que vos réponses portent sur une restitution suffisamment complète."
+    )
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    components.html(
+        f'<iframe src="data:application/pdf;base64,{encoded}#page=3&view=FitH" '
+        'width="100%" height="950" style="border:1px solid #d9e2e3;border-radius:8px;"></iframe>',
+        height=970,
+        scrolling=True,
+    )
+    st.download_button(
+        "Ouvrir / télécharger la synthèse PIP en PDF",
+        data=pdf_bytes,
+        file_name="rapport_pip_riasec_clarte360.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        key="download_pip_preview_before_feeling",
+    )
+    st.info("Après avoir pris connaissance de cette synthèse, vous pourrez donner votre ressenti sur le profil présenté.")
+
+
 def render_pip_results() -> None:
     scoring = st.session_state.get("pip_scoring", {})
     if not scoring or not scoring.get("complete"):
@@ -356,13 +390,15 @@ def render_pip_results() -> None:
             st.session_state.journey="PIP_PUIS_ONET60"
             st.session_state.onet_selected_timing="POST_PIP_RESULTS"
             st.session_state.navigation_page="onet_intro"; st.rerun()
-    if st.button("Continuer vers mon ressenti", type="primary", use_container_width=True):
+    st.markdown("---")
+    _render_pip_report_preview_before_feeling()
+    if st.button("J’ai consulté ma synthèse — donner mon ressenti", type="primary", use_container_width=True):
         st.session_state.navigation_page = "feeling"; st.rerun()
 
 
 def render_feeling() -> None:
     st.subheader("Votre ressenti sur le profil")
-    st.caption("Ce questionnaire fermé sert à comparer votre ressenti au résultat sans modifier le scoring PIP.")
+    st.caption("Vous avez maintenant consulté une restitution détaillée de votre profil. Ce questionnaire fermé compare votre ressenti à cette restitution sans modifier le scoring PIP.")
     answers = {}
     scale = [1, 2, 3, 4, 5]
     labels = {1:"Pas du tout",2:"Plutôt non",3:"Partagé(e)",4:"Plutôt oui",5:"Tout à fait"}
@@ -403,7 +439,6 @@ def render_feeling() -> None:
                 # Deliberately contains no scores, RIASEC profile or raw answers.
                 payload = _public_contact_payload()
                 callback_payload = {
-                    "participant_id": payload.get("participant_id"),
                     "source": "PIP_PUBLIC",
                     "first_name": payload.get("first_name"),
                     "last_name": payload.get("last_name"),
@@ -558,7 +593,9 @@ def render_combined_results() -> None:
     launch=st.session_state.get("launch_context")
     if launch and launch.mode is RunMode.PUBLIC and st.session_state.get("study_consent"):
         save_public_study_record(dict(st.session_state))
-    if st.button("Continuer vers mon ressenti", type="primary", use_container_width=True):
+    st.markdown("---")
+    _render_pip_report_preview_before_feeling()
+    if st.button("J’ai consulté ma synthèse — donner mon ressenti", type="primary", use_container_width=True):
         st.session_state.navigation_page="feeling"; st.rerun()
 
 

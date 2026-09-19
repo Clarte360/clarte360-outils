@@ -21,7 +21,7 @@ def _text(pdf,tmp_path,name):
     return ' '.join(out.read_text(encoding='utf-8',errors='ignore').split())
 
 def test_final_versions():
-    assert JALON_ID=='H1'; assert BUILD_INCREMENT=='L1-H1-RAPPORT-PUBLIC-SYNTHESE'
+    assert JALON_ID=='H3.1'; assert BUILD_INCREMENT=='L1-H3.1-STUDY-ID-RESUME-IDEMPOTENCE'
     assert PIP_BANK_VERSION=='PIP-BANK-0.5'; assert PIP_INTERPRETATION_VERSION=='PIP-INT-1.0'
     assert PIP_REPORT_VERSION=='PIP-RPT-1.6'; assert ONET_REPORT_VERSION=='ONET-RPT-1.1'
 

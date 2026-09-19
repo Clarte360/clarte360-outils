@@ -25,6 +25,29 @@ ALLOWED_EVENT_TYPES = {
     "CONSULTE", "EN_COURS", "TERMINE", "ERREUR",
     "CONTACT_EMAIL_VERIFIED", "CONTACT_UPDATED", "CALLBACK_REQUESTED",
 }
+PUBLIC_CRM_EVENT_TYPES = {"CONTACT_EMAIL_VERIFIED", "CONTACT_UPDATED", "CALLBACK_REQUESTED"}
+PUBLIC_CRM_FORBIDDEN_KEYS = {
+    "beneficiary_id", "action_id", "participant_id", "prescription_id",
+    "study_id", "study_pseudonym", "pseudonym", "passation_id",
+    "scores", "score", "holland_code", "pip_answers", "onet_answers",
+    "answers", "responses", "report", "report_ref",
+}
+
+
+def _find_forbidden_public_crm_key(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if str(key) in PUBLIC_CRM_FORBIDDEN_KEYS:
+                return str(key)
+            found = _find_forbidden_public_crm_key(nested)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for nested in value:
+            found = _find_forbidden_public_crm_key(nested)
+            if found:
+                return found
+    return None
 
 
 class LaunchTokenError(ValueError):
@@ -188,10 +211,14 @@ class GestionActionsPort:
             raise ValueError("Type d'événement PIP non autorisé.")
         if not isinstance(payload, dict) or len(payload) > 80:
             raise ValueError("Payload connecteur invalide.")
-        # Validate technical ids when present, but PUBLIC CRM events are allowed to carry PII.
-        for field in ("beneficiary_id", "action_id", "prescription_id", "passation_id", "participant_id"):
-            if payload.get(field) is not None:
-                validate_safe_id(payload.get(field), field, required=False)
+        if event_type in PUBLIC_CRM_EVENT_TYPES:
+            forbidden = _find_forbidden_public_crm_key(payload)
+            if forbidden:
+                raise ValueError(f"Événement CRM PUBLIC contenant une clé interdite: {forbidden}")
+        else:
+            for field in ("beneficiary_id", "action_id", "prescription_id", "passation_id", "participant_id"):
+                if payload.get(field) is not None:
+                    validate_safe_id(payload.get(field), field, required=False)
         event_id = _event_id(event_type, payload)
         pending = _outbox_root() / "pending" / f"{event_id}.json"
         delivered = _outbox_root() / "delivered" / f"{event_id}.json"

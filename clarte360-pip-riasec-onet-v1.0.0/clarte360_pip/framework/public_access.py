@@ -126,23 +126,48 @@ def pseudonym_for(participant_id: str) -> str:
     return hashlib.sha256(("clarte360-pip-study:" + participant_id).encode("utf-8")).hexdigest()[:24]
 
 
-def save_public_study_record(session_state: dict[str, Any]) -> Path:
+STUDY_SCHEMA = "clarte360.pip.public-study.v1"
+STUDY_FORBIDDEN_KEYS = {
+    "first_name", "last_name", "email", "phone", "identity", "public_identity",
+    "crm_id", "contact_id", "beneficiary_id", "action_id", "participant_id",
+    "public_participant_id", "prescription_id", "passation_id", "source_ref",
+}
+
+
+def _assert_study_payload_separation(value: Any, path: str = "payload") -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if str(key) in STUDY_FORBIDDEN_KEYS:
+                raise ValueError(f"Clé interdite dans le dataset étude: {path}.{key}")
+            _assert_study_payload_separation(nested, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            _assert_study_payload_separation(nested, f"{path}[{index}]")
+
+
+def save_public_study_record(session_state: dict[str, Any]) -> Path | None:
+    if not bool(session_state.get("study_consent")):
+        return None
     pip_state = session_state.get("pip_state", {}) or {}
     study_id = str(session_state.get("public_study_id") or "").strip() or new_study_id()
     session_state["public_study_id"] = study_id
+    pip_scoring = dict(session_state.get("pip_scoring", {}) or {})
+    onet_state = dict(session_state.get("onet_state", {}) or {})
     payload = {
-        "schema": "clarte360.pip.public-study.v2",
+        "schema": STUDY_SCHEMA,
         "study_id": study_id,
         "journey": session_state.get("journey", "PIP_SEUL"),
         "onet_selected_timing": session_state.get("onet_selected_timing"),
         "pip_bank_version": pip_state.get("bank_version"),
+        "pip_scoring_version": pip_scoring.get("algorithm_version"),
         "pip_answers": pip_state.get("answers", {}),
-        "pip_scoring": session_state.get("pip_scoring", {}),
-        "onet_state": session_state.get("onet_state", {}),
+        "pip_scoring": pip_scoring,
+        "onet_state": onet_state,
         "feeling": session_state.get("feeling", {}),
-        "study_consent": bool(session_state.get("study_consent")),
+        "study_consent": True,
         "completed_at": datetime.now().isoformat(timespec="seconds"),
     }
+    _assert_study_payload_separation(payload)
     path = STUDY_DIR / f"{payload['study_id']}.json"
     _atomic_json(path, payload)
     return path

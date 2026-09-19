@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_final_version():
     assert APP_VERSION == "1.0.10-l1-vps-hub-ready-guard-accompagnement"
-    assert BUILD_INCREMENT == "L1-H1-RAPPORT-PUBLIC-SYNTHESE"
+    assert BUILD_INCREMENT == "L1-H3.1-STUDY-ID-RESUME-IDEMPOTENCE"
     assert FRAMEWORK_VPS_VERSION == "1.0"
 
 

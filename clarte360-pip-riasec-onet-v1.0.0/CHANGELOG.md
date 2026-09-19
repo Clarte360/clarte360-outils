@@ -219,3 +219,27 @@
 - Suppression du PUBLIC des 30 facettes exhaustives et des formulations propres à l'accompagnement.
 - Aucun changement du scoring, de la banque PIP, du référentiel d'interprétation, du moteur ROME ou du rapport O*NET.
 - Rapport PIP : PIP-RPT-1.6. Build : L1-H1-RAPPORT-PUBLIC-SYNTHESE.
+
+## H2 - 2026-09-19 - Ressenti après restitution
+- Prévisualisation intégrée du rapport PIP avant le questionnaire de ressenti.
+- Ouverture à partir de la page 3 et confirmation explicite de consultation avant poursuite.
+- Aucun changement du rapport PUBLIC PIP-RPT-1.6, de la banque, du scoring, du ROME ou d'O*NET.
+
+## H3 - 2026-09-19 - Correctif recette réelle PUBLIC / liaison Gestion des Actions
+- Suppression de `participant_id` des événements CRM PUBLIC et ajout d'un garde-fou central récursif contre toute clé de jonction/recherche interdite.
+- `CONTACT_EMAIL_VERIFIED`, `CONTACT_UPDATED` et `CALLBACK_REQUESTED` respectent désormais la séparation stricte CRM identifié / étude pseudonymisée.
+- Dataset étude aligné sur le contrat réel Gestion : `schema=clarte360.pip.public-study.v1`, `study_id` aléatoire indépendant et non vide.
+- Ajout d'un garde-fou récursif empêchant toute identité ou clé CRM/passation dans le dataset étude.
+- Aucun dataset étude créé sans consentement recherche.
+- Outbox active conservée : `data/connector_outbox/gestion_actions/events.jsonl`.
+- Correction H2 rapport avant ressenti conservée sans modification.
+- 190 tests réussis.
+
+## H3.1 - 2026-09-19 - Reprise JSON PUBLIC / idempotence étude
+- Base exclusive : H3.
+- Persistance de `public_study_id` dans le JSON de sauvegarde PUBLIC.
+- Restauration de `public_study_id` lors d'une reprise JSON.
+- Le rechargement répété du même JSON H3.1 conserve le même `study_id` et réécrit le même fichier d'étude au lieu d'en créer plusieurs.
+- Aucune migration rétroactive complexe des JSON H1/H2 : les bases d'essai seront vidées avant recette réelle.
+- Séparation CRM / étude H3 inchangée ; aucun `study_id` exporté vers le CRM.
+- Aucun changement banque 72 items, scoring, ROME, O*NET, rapports ou ACCOMPAGNEMENT.
