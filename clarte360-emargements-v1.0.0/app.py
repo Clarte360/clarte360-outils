@@ -1417,6 +1417,23 @@ def quality_page(token):
         except ValueError as ex: st.error(str(ex))
     footer()
 
+def _crm_interests(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, tuple):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            pass
+        return [x.strip() for x in value.split(",") if x.strip()]
+    return []
+
 def sidebar():
     st.sidebar.image(str(LOGO_PATH),width=70);st.sidebar.markdown(f"**{st.session_state.get('admin_name','Administrateur')}**")
     pages=['Tableau de bord','Nouvelle action','Importer une action','Actions','Relances','Qualité','Études PIP/O*NET','Contacts / Prospects','Paramètres']
