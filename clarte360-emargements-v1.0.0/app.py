@@ -1477,6 +1477,25 @@ def create_action_screen(prefill=None,participants_prefill=None):
     modality_labels={delivery_mode_label(x):x for x in modality_codes}
     imported_mod=p.get('delivery_mode'); imported_mod=imported_mod if imported_mod in modality_codes else modality_codes[0]
 
+    # CRM-0 : recherche/rattachement du donneur d'ordre avant création de l'action.
+    crm_prefill_id=st.session_state.get('crm_prefill_contact_id')
+    crm_prefill=one(ENGINE,'SELECT * FROM crm_contacts WHERE id=:i',{'i':crm_prefill_id}) if crm_prefill_id else None
+    crm_mode=st.radio('Le client existe déjà dans le CRM ?', ['Oui','Non'],index=0 if crm_prefill else 1,horizontal=True,key='new_action_crm_mode')
+    selected_crm=None; create_crm_from_action=False
+    if crm_mode=='Oui':
+        search=st.text_input('Rechercher le client / prospect',value='',placeholder='Nom, entreprise, e-mail ou téléphone',key='new_action_crm_search')
+        crm_rows=find_crm_contacts(ENGINE,search,100)
+        if crm_prefill and all(x['id']!=crm_prefill['id'] for x in crm_rows): crm_rows=[crm_prefill]+crm_rows
+        if crm_rows:
+            crm_opts={f"{x['first_name']} {x['last_name']} — {x.get('company') or 'Particulier'} — {x['email']}":x for x in crm_rows}
+            default_label=next((k for k,v in crm_opts.items() if crm_prefill and v['id']==crm_prefill['id']),list(crm_opts)[0])
+            crm_label=st.selectbox('Client / prospect CRM',list(crm_opts),index=list(crm_opts).index(default_label),key='new_action_crm_pick')
+            selected_crm=crm_opts[crm_label]
+            st.caption(f"Sélectionné : {selected_crm['public_id']} — centres d’intérêt : {', '.join(_crm_interests(selected_crm.get('interests_json'))) or '—'}")
+        else: st.warning('Aucun contact trouvé. Passez sur « Non » pour créer une nouvelle fiche CRM avec l’action.')
+    else:
+        create_crm_from_action=st.checkbox('Créer aussi une fiche CRM Client / Prospect',value=True,key='new_action_create_crm')
+
     with st.form('new_action', enter_to_submit=False):
         action_no=st.text_input('N° D’ACTION *',value=p.get('action_no','')).strip().upper()
         title=st.text_input('Intitulé *',value=p.get('title',''))
@@ -1493,8 +1512,16 @@ def create_action_screen(prefill=None,participants_prefill=None):
         group=c4.text_input('Code de groupe / session INTER',value=p.get('group_code') or '')
 
         c1,c2=st.columns(2)
-        client=c1.text_input('Client / entreprise (facultatif)',value=p.get('client_name') or '')
-        client_type=c2.selectbox('Type client',['Non précisé','Professionnel','Particulier'])
+        selected_client_name=((selected_crm.get('company') or f"{selected_crm.get('first_name','')} {selected_crm.get('last_name','')}").strip() if selected_crm else None)
+        client=c1.text_input('Client / entreprise (facultatif)',value=selected_client_name or p.get('client_name') or '')
+        client_type_default='Professionnel' if selected_crm and selected_crm.get('company') else ('Particulier' if selected_crm else 'Non précisé')
+        client_types=['Non précisé','Professionnel','Particulier']; client_type=c2.selectbox('Type client',client_types,index=client_types.index(client_type_default))
+        crm_new_fn=crm_new_ln=crm_new_email=crm_new_phone=crm_new_job=''
+        if crm_mode=='Non' and create_crm_from_action:
+            st.markdown('**Nouvelle fiche CRM liée à cette action**')
+            r1,r2=st.columns(2); crm_new_fn=r1.text_input('Prénom contact CRM *'); crm_new_ln=r2.text_input('Nom contact CRM *')
+            r1,r2=st.columns(2); crm_new_email=r1.text_input('E-mail contact CRM *'); crm_new_phone=r2.text_input('Téléphone contact CRM')
+            crm_new_job=st.text_input('Fonction contact CRM')
 
         orgs=list_organizations(ENGINE,active_only=True)
         org_opts={o['name']:o['id'] for o in orgs}
@@ -1592,6 +1619,18 @@ def create_action_screen(prefill=None,participants_prefill=None):
                 'notes':notes or None,
                 'source':p.get('source') or 'SAISIE MANUELLE'
             },st.session_state.admin_email)
+
+            crm_contact_for_action=selected_crm
+            if crm_mode=='Non' and create_crm_from_action:
+                try:
+                    crm_contact_for_action=create_crm_contact(ENGINE,crm_new_fn,crm_new_ln,crm_new_email,phone=crm_new_phone or None,
+                      job_title=crm_new_job or None,company=client or None,actor=st.session_state.admin_email)
+                except ValueError as ex:
+                    st.warning(f"Action créée, mais fiche CRM non créée : {ex}")
+            if crm_contact_for_action:
+                try: link_crm_contact_action(ENGINE,crm_contact_for_action['id'],aid,'CLIENT',st.session_state.admin_email)
+                except Exception as ex: st.warning(f"Action créée, mais rattachement CRM non effectué : {ex}")
+            st.session_state.pop('crm_prefill_contact_id',None)
 
             if trainer_opts.get(trainer_label):
                 assign_trainer(ENGINE,aid,trainer_opts[trainer_label],st.session_state.admin_email)
@@ -3087,8 +3126,8 @@ def studies_screen():
 
 
 def crm_screen():
-    header('Clarté360 — Contacts / Prospects','CRM léger séparé des données de recherche')
-    st.caption("Le consentement marketing est indépendant du consentement recherche. Une conversion en bénéficiaire contrôle les doublons avant toute création.")
+    header('Clarté360 — Contacts / Prospects','CRM-0 : fiche prospect, notes, tâches, timeline et actions liées')
+    st.caption("CRM opérationnel léger. Le CRM reste strictement séparé des données pseudonymisées d'étude PIP/O*NET.")
     with st.expander('Ajouter un contact / prospect', expanded=False):
         with st.form('crm_add_contact'):
             c1,c2=st.columns(2); fn=c1.text_input('Prénom *'); ln=c2.text_input('Nom *')
@@ -3110,26 +3149,84 @@ def crm_screen():
         st.info('Aucun contact / prospect enregistré.'); footer(); return
     st.dataframe(pd.DataFrame([{'ID':x['public_id'],'Nom':f"{x['first_name']} {x['last_name']}",'E-mail':x['email'],
       'Téléphone':x.get('phone') or '','Entreprise':x.get('company') or '','Marketing':'Oui' if x.get('marketing_consent') else 'Non',
-      'Statut':x['status'].replace('_',' '),'Bénéficiaire':x.get('beneficiary_public_id') or ''} for x in rows]),use_container_width=True,hide_index=True)
+      'Statut':x['status'].replace('_',' '),'Dernière activité':(x.get('updated_at') or '')[:16].replace('T',' ')} for x in rows]),use_container_width=True,hide_index=True)
     cmap={f"{x['public_id']} — {x['first_name']} {x['last_name']} — {x['email']}":x for x in rows}
-    label=st.selectbox('Contact à gérer',list(cmap)); c=cmap[label]
-    c1,c2=st.columns(2)
-    statuses=['NOUVEAU','A_CONTACTER','CONTACTE','CONVERTI','SANS_SUITE']
-    ns=c1.selectbox('Statut CRM',statuses,index=statuses.index(c['status']) if c['status'] in statuses else 0)
-    if c1.button('Enregistrer le statut'):
-        update_crm_status(ENGINE,c['id'],ns,st.session_state.admin_email); st.success('Statut mis à jour.'); rerun()
-    consent=c2.checkbox('Consentement marketing',value=bool(c.get('marketing_consent')),key=f"crm_consent_{c['id']}")
-    if c2.button('Enregistrer le consentement',key=f"crm_consent_save_{c['id']}"):
-        set_crm_marketing_consent(ENGINE,c['id'],consent,st.session_state.admin_email,c.get('rgpd_notice_version') or 'I9-G')
-        st.success('Consentement mis à jour et tracé.'); rerun()
-    if not c.get('beneficiary_id'):
-        st.markdown('#### Conversion en bénéficiaire')
-        bd=st.date_input('Date de naissance pour contrôle anti-doublon',value=None,key=f"crm_bd_{c['id']}")
-        if st.button('CONVERTIR / RATTACHER AU BÉNÉFICIAIRE',disabled=bd is None,key=f"crm_convert_{c['id']}"):
+    label=st.selectbox('Ouvrir la fiche prospect / client',list(cmap)); c=cmap[label]
+    st.markdown(f"### {c['first_name']} {c['last_name']} — {c['public_id']}")
+    with st.expander('Coordonnées et centres d’intérêt', expanded=True):
+        with st.form(f"crm_profile_{c['id']}"):
+            c1,c2=st.columns(2); fn=c1.text_input('Prénom',value=c.get('first_name') or ''); ln=c2.text_input('Nom',value=c.get('last_name') or '')
+            c1,c2=st.columns(2); em=c1.text_input('E-mail',value=c.get('email') or ''); ph=c2.text_input('Téléphone',value=c.get('phone') or '')
+            c1,c2=st.columns(2); job=c1.text_input('Fonction',value=c.get('job_title') or ''); comp=c2.text_input('Entreprise',value=c.get('company') or '')
+            ints=', '.join(_crm_interests(c.get('interests_json'))); interests=st.text_input("Centres d'intérêt",value=ints)
+            save_profile=st.form_submit_button('ENREGISTRER LA FICHE')
+        if save_profile:
             try:
-                b=convert_crm_contact_to_beneficiary(ENGINE,c['id'],bd.isoformat(),st.session_state.admin_email)
-                st.success(f"Contact rattaché à {b['public_id']}."); rerun()
+                update_crm_contact(ENGINE,c['id'],first_name=fn,last_name=ln,email=em,phone=ph or None,job_title=job or None,company=comp or None,
+                  interests=[x.strip() for x in interests.split(',') if x.strip()],actor=st.session_state.admin_email)
+                st.success('Fiche mise à jour.'); rerun()
             except ValueError as ex: st.error(str(ex))
+        c1,c2=st.columns(2)
+        statuses=['NOUVEAU','A_CONTACTER','CONTACTE','A_RELANCER','OPPORTUNITE','CLIENT','SANS_SUITE','ARCHIVE']
+        ns=c1.selectbox('Statut CRM',statuses,index=statuses.index(c['status']) if c['status'] in statuses else 0)
+        if c1.button('Enregistrer le statut',key=f"crm_status_save_{c['id']}"):
+            update_crm_status(ENGINE,c['id'],ns,st.session_state.admin_email); st.success('Statut mis à jour.'); rerun()
+        consent=c2.checkbox('Consentement marketing',value=bool(c.get('marketing_consent')),key=f"crm_consent_{c['id']}")
+        if c2.button('Enregistrer le consentement',key=f"crm_consent_save_{c['id']}"):
+            set_crm_marketing_consent(ENGINE,c['id'],consent,st.session_state.admin_email,c.get('rgpd_notice_version') or 'I9-G')
+            st.success('Consentement mis à jour et tracé.'); rerun()
+
+    st.markdown('#### Notes et actions commerciales')
+    with st.form(f"crm_note_{c['id']}",clear_on_submit=True):
+        note=st.text_area('Ajouter une note',placeholder='Ex. Appel effectué, besoin identifié, prochaine étape...')
+        note_ok=st.form_submit_button('AJOUTER LA NOTE')
+    if note_ok:
+        try: add_crm_note(ENGINE,c['id'],note,st.session_state.admin_email); st.success('Note ajoutée.'); rerun()
+        except ValueError as ex: st.error(str(ex))
+    with st.form(f"crm_task_{c['id']}",clear_on_submit=True):
+        c1,c2=st.columns([2,1]); task_title=c1.text_input('Nouvelle tâche / action à mener'); due=c2.date_input('Échéance',value=None)
+        task_notes=st.text_input('Commentaire tâche')
+        task_ok=st.form_submit_button('AJOUTER LA TÂCHE')
+    if task_ok:
+        try:
+            create_crm_task(ENGINE,c['id'],task_title,due_at=due.isoformat() if due else None,notes=task_notes or None,actor=st.session_state.admin_email)
+            st.success('Tâche ajoutée.'); rerun()
+        except ValueError as ex: st.error(str(ex))
+    tasks=list_crm_tasks(ENGINE,c['id'])
+    if tasks:
+        st.dataframe(pd.DataFrame([{'ID':x['id'],'Tâche':x['title'],'Échéance':x.get('due_at') or '','Statut':x['status'].replace('_',' '),'Commentaire':x.get('notes') or ''} for x in tasks]),use_container_width=True,hide_index=True)
+        open_tasks=[x for x in tasks if x['status']=='A_FAIRE']
+        if open_tasks:
+            tmap={f"#{x['id']} — {x['title']}":x for x in open_tasks}; tl=st.selectbox('Tâche à terminer',list(tmap),key=f"task_pick_{c['id']}")
+            if st.button('MARQUER FAIT',key=f"task_done_{c['id']}"):
+                set_crm_task_status(ENGINE,tmap[tl]['id'],'FAIT',st.session_state.admin_email); rerun()
+
+    st.markdown('#### Actions liées')
+    links=list_crm_action_links(ENGINE,c['id'])
+    if links:
+        st.dataframe(pd.DataFrame([{'Action':x['action_no'],'Intitulé':x['title'],'Statut':x['status'],'Période':f"{x.get('start_date') or '—'} → {x.get('end_date') or '—'}",'Rôle':x['role']} for x in links]),use_container_width=True,hide_index=True)
+    else: st.info('Aucune action liée à ce contact pour le moment.')
+    c1,c2=st.columns(2)
+    if c1.button('CRÉER UNE ACTION POUR CE CONTACT',key=f"crm_new_action_{c['id']}"):
+        st.session_state['crm_prefill_contact_id']=c['id']; st.session_state['nav']='Nouvelle action'; rerun()
+    acts=q(ENGINE,"SELECT id,action_no,title,status FROM actions ORDER BY created_at DESC,id DESC LIMIT 200")
+    linked_ids={x['action_id'] for x in links}; candidates=[a for a in acts if a['id'] not in linked_ids]
+    if candidates:
+        amap={f"{a['action_no']} — {a['title']} — {a['status']}":a for a in candidates}
+        al=c2.selectbox('Rattacher une action existante',list(amap),key=f"crm_link_action_{c['id']}")
+        if c2.button('RATTACHER',key=f"crm_link_btn_{c['id']}"):
+            link_crm_contact_action(ENGINE,c['id'],amap[al]['id'],'CLIENT',st.session_state.admin_email); st.success('Action rattachée.'); rerun()
+
+    st.markdown('#### Timeline')
+    evs=list_crm_events(ENGINE,c['id'],100)
+    if evs:
+        timeline=[]
+        for e in evs:
+            try: d=json.loads(e.get('details_json') or '{}')
+            except Exception: d={}
+            detail=d.get('note') or d.get('activity') or d.get('title') or ', '.join(f"{k}: {v}" for k,v in d.items() if k not in {'fields'})
+            timeline.append({'Date':(e.get('created_at') or '')[:16].replace('T',' '),'Événement':e['event_type'].replace('_',' '),'Détail':detail or '','Auteur':e.get('actor') or ''})
+        st.dataframe(pd.DataFrame(timeline),use_container_width=True,hide_index=True)
     footer()
 
 def contractualization_tab(a):

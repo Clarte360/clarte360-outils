@@ -3223,7 +3223,8 @@ def process_pip_public_event(engine, event, *, raw_line=None, actor='pip_public'
             result=upsert_pip_public_crm_contact(engine,payload.get('first_name'),payload.get('last_name'),email,
               phone=payload.get('phone'),job_title=payload.get('job_title'),company=payload.get('company'),
               interests=payload.get('interests') or payload.get('centres_interet') or [],email_verified_at=verified_at,
-              marketing_consent=payload.get('marketing_consent'),rgpd_notice_version=payload.get('rgpd_notice_version'),actor=actor)
+              marketing_consent=(payload.get('marketing_consent') if payload.get('marketing_consent') is not None else payload.get('marketing_opt_in')),
+              rgpd_notice_version=payload.get('rgpd_notice_version') or payload.get('rgpd_text_version'),actor=actor)
         else:
             result=register_pip_public_callback(engine,event_id,email,requested_at=payload.get('requested_at') or event.get('timestamp'),actor=actor)
         finish_external_incoming_event(engine,'PIP_PUBLIC',event_id)
@@ -3467,7 +3468,7 @@ def export_study_xlsx(engine, records, actor, purpose, filters=None):
 
 
 # --- I9-G : CRM léger + contrat d'intégration Contractualisation ---
-CRM_STATUSES={'NOUVEAU','A_CONTACTER','CONTACTE','CONVERTI','SANS_SUITE'}
+CRM_STATUSES={'NOUVEAU','A_CONTACTER','CONTACTE','A_RELANCER','OPPORTUNITE','CLIENT','CONVERTI','SANS_SUITE','ARCHIVE'}
 CONTRACTUALIZATION_STATUSES={'A_PREPARER','EN_COURS','GENEREE','SIGNEE','ANNULEE'}
 
 def _crm_public_id():
@@ -3572,6 +3573,102 @@ def set_crm_marketing_consent(engine, contact_id, consent, actor='admin', rgpd_n
     execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'MARKETING_CONSENT',:a,:d,:n)",
             {'c':contact_id,'a':actor,'d':json.dumps({'consent':yes,'rgpd_notice_version':rgpd_notice_version},ensure_ascii=False),'n':now})
     audit(engine,actor,'CRM_MARKETING_CONSENT','crm_contact',contact_id,{'consent':yes})
+
+def update_crm_contact(engine, contact_id, *, first_name, last_name, email, phone=None, job_title=None, company=None, interests=None, actor='admin'):
+    row=one(engine,'SELECT * FROM crm_contacts WHERE id=:i',{'i':contact_id})
+    if not row: raise ValueError('Contact introuvable.')
+    vd=validate_crm_payload(first_name,last_name,email,phone,job_title,company)
+    merged=_crm_interests(interests if interests is not None else row.get('interests_json'))
+    now=utcnow_iso()
+    execute(engine,"""UPDATE crm_contacts SET first_name=:f,last_name=:l,email=:e,phone=:ph,job_title=:j,company=:c,
+      interests_json=:ints,updated_at=:n WHERE id=:i""",{'f':vd['first_name'],'l':vd['last_name'],'e':vd['email'],'ph':vd['phone'],
+      'j':vd['job_title'],'c':vd['company'],'ints':json.dumps(merged,ensure_ascii=False),'n':now,'i':contact_id})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'CONTACT_UPDATED',:a,:d,:n)",
+      {'c':contact_id,'a':actor,'d':json.dumps({'fields':['identity','contact','company','interests']},ensure_ascii=False),'n':now})
+    audit(engine,actor,'CRM_CONTACT_UPDATED','crm_contact',contact_id,{})
+    return one(engine,'SELECT * FROM crm_contacts WHERE id=:i',{'i':contact_id})
+
+
+def add_crm_note(engine, contact_id, note, actor='admin'):
+    row=one(engine,'SELECT id FROM crm_contacts WHERE id=:i',{'i':contact_id})
+    if not row: raise ValueError('Contact introuvable.')
+    text=validate_short_text(note,'Note',required=True,max_len=4000)
+    now=utcnow_iso()
+    eid=execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'NOTE',:a,:d,:n)",
+      {'c':contact_id,'a':actor,'d':json.dumps({'note':text},ensure_ascii=False),'n':now})
+    execute(engine,'UPDATE crm_contacts SET updated_at=:n WHERE id=:i',{'n':now,'i':contact_id})
+    audit(engine,actor,'CRM_NOTE_ADDED','crm_contact',contact_id,{'event_id':eid})
+    return eid
+
+
+def list_crm_events(engine, contact_id, limit=100):
+    return q(engine,'SELECT * FROM crm_events WHERE contact_id=:c ORDER BY id DESC LIMIT :l',{'c':contact_id,'l':int(limit)})
+
+
+def create_crm_task(engine, contact_id, title, *, due_at=None, notes=None, actor='admin'):
+    if not one(engine,'SELECT id FROM crm_contacts WHERE id=:i',{'i':contact_id}): raise ValueError('Contact introuvable.')
+    title=validate_short_text(title,'Tâche',required=True,max_len=250)
+    notes=validate_short_text(notes,'Commentaire',required=False,max_len=2000) if notes else None
+    now=utcnow_iso()
+    tid=execute(engine,"""INSERT INTO crm_tasks(contact_id,title,due_at,status,notes,created_by,created_at,updated_at)
+      VALUES(:c,:t,:d,'A_FAIRE',:n,:a,:now,:now)""",{'c':contact_id,'t':title,'d':due_at,'n':notes,'a':actor,'now':now})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'TASK_CREATED',:a,:d,:n)",
+      {'c':contact_id,'a':actor,'d':json.dumps({'task_id':tid,'title':title,'due_at':due_at},ensure_ascii=False),'n':now})
+    execute(engine,'UPDATE crm_contacts SET updated_at=:n WHERE id=:i',{'n':now,'i':contact_id})
+    return one(engine,'SELECT * FROM crm_tasks WHERE id=:i',{'i':tid})
+
+
+def list_crm_tasks(engine, contact_id, include_done=True):
+    sql='SELECT * FROM crm_tasks WHERE contact_id=:c'
+    if not include_done: sql+=" AND status<>'FAIT'"
+    sql+=' ORDER BY CASE WHEN status=\'A_FAIRE\' THEN 0 ELSE 1 END, COALESCE(due_at,\'9999\'), id DESC'
+    return q(engine,sql,{'c':contact_id})
+
+
+def set_crm_task_status(engine, task_id, status, actor='admin'):
+    status=str(status or '').upper()
+    if status not in {'A_FAIRE','FAIT'}: raise ValueError('Statut de tâche invalide.')
+    task=one(engine,'SELECT * FROM crm_tasks WHERE id=:i',{'i':task_id})
+    if not task: raise ValueError('Tâche introuvable.')
+    now=utcnow_iso()
+    execute(engine,'UPDATE crm_tasks SET status=:s,completed_at=:ca,updated_at=:n WHERE id=:i',
+      {'s':status,'ca':now if status=='FAIT' else None,'n':now,'i':task_id})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'TASK_STATUS',:a,:d,:n)",
+      {'c':task['contact_id'],'a':actor,'d':json.dumps({'task_id':task_id,'old':task['status'],'new':status},ensure_ascii=False),'n':now})
+    return one(engine,'SELECT * FROM crm_tasks WHERE id=:i',{'i':task_id})
+
+
+def link_crm_contact_action(engine, contact_id, action_id, role='CLIENT', actor='admin'):
+    if not one(engine,'SELECT id FROM crm_contacts WHERE id=:i',{'i':contact_id}): raise ValueError('Contact introuvable.')
+    if not one(engine,'SELECT id FROM actions WHERE id=:i',{'i':action_id}): raise ValueError('Action introuvable.')
+    now=utcnow_iso(); role=(str(role or 'CLIENT').strip().upper() or 'CLIENT')[:40]
+    try:
+        lid=execute(engine,"INSERT INTO crm_action_links(contact_id,action_id,role,created_by,created_at) VALUES(:c,:a,:r,:by,:n)",
+          {'c':contact_id,'a':action_id,'r':role,'by':actor,'n':now})
+    except Exception:
+        row=one(engine,'SELECT * FROM crm_action_links WHERE contact_id=:c AND action_id=:a AND role=:r',{'c':contact_id,'a':action_id,'r':role})
+        return row
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'ACTION_LINKED',:by,:d,:n)",
+      {'c':contact_id,'by':actor,'d':json.dumps({'action_id':action_id,'role':role},ensure_ascii=False),'n':now})
+    execute(engine,"UPDATE crm_contacts SET status=CASE WHEN status IN ('NOUVEAU','A_CONTACTER','CONTACTE','A_RELANCER','OPPORTUNITE') THEN 'CLIENT' ELSE status END,updated_at=:n WHERE id=:c",
+      {'n':now,'c':contact_id})
+    return one(engine,'SELECT * FROM crm_action_links WHERE id=:i',{'i':lid})
+
+
+def list_crm_action_links(engine, contact_id):
+    return q(engine,"""SELECT l.*,a.action_no,a.title,a.status,a.start_date,a.end_date,a.client_name
+      FROM crm_action_links l JOIN actions a ON a.id=l.action_id WHERE l.contact_id=:c ORDER BY a.created_at DESC,a.id DESC""",{'c':contact_id})
+
+
+def find_crm_contacts(engine, search=None, limit=50):
+    term=str(search or '').strip().lower(); params={'l':int(limit)}
+    sql='SELECT * FROM crm_contacts'
+    if term:
+        sql+=" WHERE lower(first_name||' '||last_name||' '||email||' '||COALESCE(company,'')||' '||COALESCE(phone,'')) LIKE :q"
+        params['q']=f'%{term}%'
+    sql+=' ORDER BY updated_at DESC,id DESC LIMIT :l'
+    return q(engine,sql,params)
+
 
 def convert_crm_contact_to_beneficiary(engine, contact_id, birth_date, actor='admin'):
     c=one(engine,'SELECT * FROM crm_contacts WHERE id=:i',{'i':contact_id})

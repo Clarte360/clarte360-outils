@@ -1,3 +1,9 @@
+## 3.0.0-I9-J2C-PIP-LIAISON-I-CRM0-RC1 — 2026-09-19
+- Correctif marketing PIP PUBLIC (`marketing_opt_in` -> consentement CRM).
+- Centres d’intérêt PIP PUBLIC conservés/visibles.
+- CRM-0 : fiche prospect, notes, tâches, timeline et actions liées.
+- Recherche/création CRM lors de la création d’une action.
+
 ## 3.0.0-I9-J2C-PIP-LIAISON-I-RECETTE-FINALE — 2026-09-18
 - Candidate finale construite exclusivement depuis le Jalon H validé.
 - Aucun changement fonctionnel : gel du code après intégration PIP H.

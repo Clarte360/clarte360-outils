@@ -311,6 +311,21 @@ I9G_SCHEMA = [
 )"""
 ]
 
+CRM0_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS crm_tasks (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, title TEXT NOT NULL, due_at TEXT, status TEXT NOT NULL DEFAULT 'A_FAIRE',
+ notes TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT, updated_at TEXT NOT NULL,
+ FOREIGN KEY(contact_id) REFERENCES crm_contacts(id) ON DELETE CASCADE
+)""",
+"""CREATE TABLE IF NOT EXISTS crm_action_links (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, action_id INTEGER NOT NULL, role TEXT NOT NULL DEFAULT 'CLIENT',
+ created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+ UNIQUE(contact_id,action_id,role),
+ FOREIGN KEY(contact_id) REFERENCES crm_contacts(id) ON DELETE CASCADE,
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE
+)"""
+]
+
 PIP_LIAISON_B_SCHEMA = [
 """CREATE TABLE IF NOT EXISTS external_incoming_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, event_id TEXT NOT NULL, event_type TEXT NOT NULL,
@@ -397,6 +412,8 @@ def init_db(engine: Engine):
         for sql in I9F_SCHEMA:
             c.execute(text(sql))
         for sql in I9G_SCHEMA:
+            c.execute(text(sql))
+        for sql in CRM0_SCHEMA:
             c.execute(text(sql))
         for sql in I9J2_SCHEMA:
             c.execute(text(sql))
@@ -749,6 +766,9 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_crm_contacts_status ON crm_contacts(status,updated_at)",
             "CREATE INDEX IF NOT EXISTS ix_crm_contacts_email ON crm_contacts(email)",
             "CREATE INDEX IF NOT EXISTS ix_crm_contacts_beneficiary ON crm_contacts(beneficiary_id)",
+            "CREATE INDEX IF NOT EXISTS ix_crm_tasks_contact_status ON crm_tasks(contact_id,status,due_at)",
+            "CREATE INDEX IF NOT EXISTS ix_crm_action_links_contact ON crm_action_links(contact_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_crm_action_links_action ON crm_action_links(action_id,created_at)",
             "CREATE INDEX IF NOT EXISTS ix_contractualization_action ON contractualization_cases(action_id,status,updated_at)",
             "CREATE INDEX IF NOT EXISTS ix_quality_events_status ON quality_events(status,severity,due_at)",
             "CREATE INDEX IF NOT EXISTS ix_quality_events_action ON quality_events(action_id,status,created_at)",
