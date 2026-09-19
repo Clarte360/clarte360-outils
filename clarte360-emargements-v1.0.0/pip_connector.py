@@ -11,7 +11,7 @@ from typing import Any, Mapping
 from urllib.parse import urlencode
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
-_ALLOWED_EVENTS = {"CONSULTE", "EN_COURS", "TERMINE"}
+_ALLOWED_EVENTS = {"CONSULTE", "EN_COURS", "TERMINE", "ERREUR", "CONTACT_EMAIL_VERIFIED", "CONTACT_UPDATED", "CALLBACK_REQUESTED"}
 
 
 class PipConnectorError(ValueError):
@@ -35,13 +35,20 @@ def _safe_id(value: Any, field: str) -> str:
 
 def build_pip_launch_token(*, beneficiary_id: Any, action_id: Any, prescription_id: Any,
                            participant_id: Any | None, signing_key: str, rights: list[str] | None = None,
-                           valid_seconds: int = 900, now_epoch: int | None = None) -> str:
-    """Build the exact compact HMAC-SHA256 contract implemented by PIP RC5."""
+                           valid_seconds: int = 900, now_epoch: int | None = None,
+                           beneficiary_first_name: str | None = None, beneficiary_last_name: str | None = None,
+                           action_number: str | None = None, action_title: str | None = None) -> str:
+    """Build the compact HMAC-SHA256 ACCOMPAGNEMENT launch token.
+
+    Jalon D adds display-only context while preserving the v1 technical IDs, rights,
+    signature algorithm and existing secret. Older callers remain compatible.
+    """
     key = (signing_key or "").strip()
     if len(key) < 24:
         raise PipConnectorError("Clé de signature PIP non configurée ou trop courte.")
     now = int(datetime.now(timezone.utc).timestamp()) if now_epoch is None else int(now_epoch)
     ttl = max(60, min(int(valid_seconds), 7 * 24 * 3600))
+    granted = [str(x) for x in (rights or [])]
     payload = {
         "v": 1,
         "iat": now,
@@ -49,10 +56,26 @@ def build_pip_launch_token(*, beneficiary_id: Any, action_id: Any, prescription_
         "beneficiary_id": _safe_id(beneficiary_id, "beneficiary_id"),
         "action_id": _safe_id(action_id, "action_id"),
         "prescription_id": _safe_id(prescription_id, "prescription_id"),
-        "rights": [str(x) for x in (rights or [])],
+        # Legacy + vocabulary common Hub actually accepted by PIP Jalon E1.
+        "rights": granted,
+        "scopes": granted,
+        "tool_id": "pip-riasec-onet",
+        "hub_source": "GESTION_ACTIONS_I9_H1",
+        "return_mode": "OUTBOX",
     }
     if participant_id is not None:
         payload["participant_id"] = _safe_id(participant_id, "participant_id")
+    # Display context requested by the liaison CDC. These values are signed with the
+    # token, are not identifiers/authorization inputs, and may be ignored by older PIP.
+    display = {
+        "beneficiary_first_name": str(beneficiary_first_name or "").strip(),
+        "beneficiary_last_name": str(beneficiary_last_name or "").strip(),
+        "action_number": str(action_number or "").strip(),
+        "action_title": str(action_title or "").strip(),
+    }
+    for field, value in display.items():
+        if value:
+            payload[field] = value[:240]
     payload_part = _b64url(_canonical_json(payload))
     signature = hmac.new(key.encode("utf-8"), payload_part.encode("ascii"), hashlib.sha256).digest()
     return f"{payload_part}.{_b64url(signature)}"
@@ -79,10 +102,20 @@ def parse_pip_outbox_line(raw_line: str) -> dict[str, Any]:
     payload = event.get("payload")
     if not isinstance(payload, dict):
         raise PipConnectorError("Charge utile PIP invalide.")
-    for field in ("beneficiary_id", "action_id", "prescription_id"):
-        _safe_id(payload.get(field), field)
-    if payload.get("participant_id") is not None:
-        _safe_id(payload.get("participant_id"), "participant_id")
+    et = str(event.get("event_type") or "")
+    if et in {"CONSULTE", "EN_COURS", "TERMINE", "ERREUR"}:
+        for field in ("beneficiary_id", "action_id", "prescription_id"):
+            _safe_id(payload.get(field), field)
+        if payload.get("participant_id") is not None:
+            _safe_id(payload.get("participant_id"), "participant_id")
+    else:
+        # PUBLIC must never carry dossier identifiers or study linkage keys.
+        forbidden = {"beneficiary_id", "action_id", "participant_id", "prescription_id",
+                     "study_id", "study_pseudonym", "pseudonym", "passation_id"}
+        if forbidden.intersection(payload):
+            raise PipConnectorError("Événement PIP PUBLIC contenant une clé de jonction interdite.")
+        if not str(payload.get("email") or "").strip():
+            raise PipConnectorError("Événement PIP PUBLIC sans e-mail.")
     return event
 
 

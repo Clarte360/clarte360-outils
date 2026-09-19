@@ -311,6 +311,35 @@ I9G_SCHEMA = [
 )"""
 ]
 
+PIP_LIAISON_B_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS external_incoming_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, event_id TEXT NOT NULL, event_type TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'RECU', received_at TEXT NOT NULL, processed_at TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+ last_error TEXT, payload_sha256 TEXT NOT NULL, metadata_json TEXT,
+ UNIQUE(source,event_id)
+)"""
+]
+
+
+PIP_LIAISON_C_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS crm_callback_notifications (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, external_event_id TEXT NOT NULL UNIQUE,
+ status TEXT NOT NULL DEFAULT 'A_ENVOYER', requested_at TEXT NOT NULL, sent_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(contact_id) REFERENCES crm_contacts(id) ON DELETE CASCADE
+)"""
+]
+
+
+PIP_LIAISON_F_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS prescription_documents (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, prescription_id TEXT NOT NULL, document_reference_id INTEGER NOT NULL, document_kind TEXT NOT NULL DEFAULT 'PIP_REPORT',
+ source_event_id TEXT, source_reference TEXT, created_at TEXT NOT NULL,
+ UNIQUE(prescription_id,document_kind), UNIQUE(source_event_id),
+ FOREIGN KEY(prescription_id) REFERENCES tool_prescriptions(prescription_id) ON DELETE CASCADE,
+ FOREIGN KEY(document_reference_id) REFERENCES document_references(id) ON DELETE CASCADE
+)"""
+]
+
 I9J2_SCHEMA = [
 """CREATE TABLE IF NOT EXISTS quality_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE, organization_id INTEGER, agency_id INTEGER, action_id INTEGER, slot_id INTEGER, campaign_id INTEGER,
@@ -370,6 +399,12 @@ def init_db(engine: Engine):
         for sql in I9G_SCHEMA:
             c.execute(text(sql))
         for sql in I9J2_SCHEMA:
+            c.execute(text(sql))
+        for sql in PIP_LIAISON_B_SCHEMA:
+            c.execute(text(sql))
+        for sql in PIP_LIAISON_C_SCHEMA:
+            c.execute(text(sql))
+        for sql in PIP_LIAISON_F_SCHEMA:
             c.execute(text(sql))
         # V1.1 additive migration: never rewrite existing evidence.
         migrations = [
@@ -708,6 +743,7 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_beneficiary_reports_action ON beneficiary_reports(action_id,status,created_at)",
             "CREATE INDEX IF NOT EXISTS ix_prescription_tokens_expiry ON prescription_access_tokens(expires_at,revoked_at)",
             "CREATE INDEX IF NOT EXISTS ix_prescription_events_prescription ON prescription_events(prescription_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_prescription_documents_prescription ON prescription_documents(prescription_id,created_at)",
             "CREATE INDEX IF NOT EXISTS ix_connector_cursors_updated ON connector_cursors(updated_at)",
             "CREATE INDEX IF NOT EXISTS ix_study_exports_date ON study_export_events(exported_at,actor)",
             "CREATE INDEX IF NOT EXISTS ix_crm_contacts_status ON crm_contacts(status,updated_at)",

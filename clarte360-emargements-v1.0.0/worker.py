@@ -18,6 +18,39 @@ def load_cfg():
     return tomllib.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
 
 
+def _callback_recipient(cfg, smtp):
+    section=cfg.get('pip_public') or cfg.get('PIP_PUBLIC') or {}
+    return str(section.get('callback_email') or section.get('internal_email') or smtp.get('from_email') or '').strip()
+
+def _run_crm_callback_notifications(eng,smtp,cfg,limit=50):
+    recipient=_callback_recipient(cfg,smtp)
+    if not recipient:
+        return 0
+    rows=q(eng,"""SELECT n.*,c.first_name,c.last_name,c.email,c.phone,c.job_title,c.company
+      FROM crm_callback_notifications n JOIN crm_contacts c ON c.id=n.contact_id
+      WHERE n.status IN ('A_ENVOYER','ECHEC') ORDER BY n.id LIMIT :lim""",{'lim':limit})
+    sent=0
+    for row in rows:
+        now=datetime.now(timezone.utc).isoformat()
+        execute(eng,"UPDATE crm_callback_notifications SET status='EN_COURS',attempts=attempts+1,updated_at=:n WHERE id=:i AND status IN ('A_ENVOYER','ECHEC')",{'n':now,'i':row['id']})
+        try:
+            subject='Clarté360 — Demande de rappel PIP-RIASEC PUBLIC'
+            body=(f"<p>Une personne demande à être recontactée depuis PIP-RIASEC PUBLIC.</p>"
+                  f"<p><strong>Prénom :</strong> {row.get('first_name') or ''}<br>"
+                  f"<strong>Nom :</strong> {row.get('last_name') or ''}<br>"
+                  f"<strong>Email :</strong> {row.get('email') or ''}<br>"
+                  f"<strong>Téléphone :</strong> {row.get('phone') or ''}<br>"
+                  f"<strong>Fonction :</strong> {row.get('job_title') or ''}<br>"
+                  f"<strong>Entreprise :</strong> {row.get('company') or ''}<br>"
+                  f"<strong>Demande :</strong> Demande à être recontacté(e)<br>"
+                  f"<strong>Date/heure :</strong> {row.get('requested_at') or ''}</p>")
+            send_mail(smtp,recipient,subject,body)
+            done=datetime.now(timezone.utc).isoformat()
+            execute(eng,"UPDATE crm_callback_notifications SET status='ENVOYE',sent_at=:n,last_error=NULL,updated_at=:n WHERE id=:i",{'n':done,'i':row['id']}); sent+=1
+        except Exception as ex:
+            execute(eng,"UPDATE crm_callback_notifications SET status='ECHEC',last_error=:er,updated_at=:n WHERE id=:i",{'er':str(ex)[:500],'n':datetime.now(timezone.utc).isoformat(),'i':row['id']})
+    return sent
+
 def _claim_communication(eng,event_id):
     token=uuid.uuid4().hex; now=datetime.now(timezone.utc).isoformat()
     with eng.begin() as c:
@@ -346,6 +379,7 @@ def _process_teams(eng, cfg, base_url):
 def run_once():
     cfg=load_cfg(); dburl=(cfg.get('database') or {}).get('url'); eng=make_engine(dburl);init_db(eng)
     smtp=resolve_mail_config(cfg); app=cfg.get('app') or {}; base=app.get('base_url','http://localhost:8501')
+    _run_crm_callback_notifications(eng,smtp,cfg)
     _quarantine_stale_sending(eng)
     _quarantine_stale_quality(eng)
     _quarantine_stale_client_transmissions(eng)

@@ -1901,11 +1901,19 @@ def action_tools_tab(a):
                     _pip=_summary.get('pip') or {}
                     c1,c2=st.columns(2)
                     c1.metric('Code Holland',_pip.get('holland_code') or 'À interpréter')
-                    c2.write('Ordre RIASEC : '+(' > '.join(_pip.get('order') or []) or '—'))
-                    if _pip.get('indices'):
-                        st.dataframe(pd.DataFrame([{'Dimension':k,'Indice /100':v} for k,v in _pip['indices'].items()]),hide_index=True,use_container_width=True)
+                    c2.write('Ordre RIASEC : '+(' > '.join(_pip.get('ranking') or _pip.get('order') or []) or '—'))
+                    if _pip.get('scores') or _pip.get('indices'):
+                        _scores=_pip.get('scores') or _pip.get('indices') or {}
+                        st.dataframe(pd.DataFrame([{'Dimension':k,'Score':v} for k,v in _scores.items()]),hide_index=True,use_container_width=True)
                     if (_summary.get('onet') or {}).get('completed'):
                         st.caption('O*NET 60 terminé : résultat disponible dans cette passation.')
+                    _pip_report=get_pip_prescription_report(ENGINE,rr['prescription_id'])
+                    if _pip_report:
+                        _rp=Path(_pip_report['storage_path'])
+                        if _rp.is_file():
+                            st.download_button('Télécharger le rapport professionnel PIP (PDF)',_rp.read_bytes(),file_name=_pip_report['display_name'],mime='application/pdf',key=f'pip_report_{rr["id"]}')
+                        else:
+                            st.warning('Le rapport PIP est référencé mais le fichier physique est indisponible.')
         statuses=['A_FAIRE','ENVOYE','CONSULTE','EN_COURS','TERMINE','A_REVOIR_EN_SEANCE','REVU_EN_SEANCE','ANNULE']; ns=st.selectbox('Statut',statuses,index=statuses.index(rr['status']) if rr['status'] in statuses else 0,key=f'presc_status_{rr["id"]}')
         if st.button('Enregistrer le statut',key=f'presc_status_save_{rr["id"]}'):
             update_tool_prescription_status(ENGINE,rr['prescription_id'],ns,st.session_state.admin_email,{'source':'admin_ui'});st.success('Statut mis à jour.');rerun()
@@ -3033,9 +3041,14 @@ def quality_management_screen():
 def studies_screen():
     header('Clarté360 — Études PIP/O*NET','Pilotage méthodologique pseudonymisé')
     study_dir=secret('pip_connector','study_dir','')
-    if not study_dir:
-        st.info("Le répertoire d'études PIP n'est pas encore configuré. Il sera raccordé aux données persistantes PIP lors de la recette VPS.")
+    storage=pip_study_storage_status(study_dir)
+    if not storage['ready']:
+        if storage['reason']=='NOT_CONFIGURED':
+            st.warning("Le stockage pseudonymisé PIP n'est pas configuré (`pip_connector.study_dir`).")
+        else:
+            st.error(f"Stockage d'études PIP indisponible : {storage['reason']}. Vérifier le répertoire configuré sur le VPS.")
         footer(); return
+    st.caption(f"Stockage d'études opérationnel · {storage['json_files']} fichier(s) source pseudonymisé(s).")
     records=load_pip_study_records(study_dir)
     if not records:
         st.info("Aucun enregistrement d'étude pseudonymisé disponible.")

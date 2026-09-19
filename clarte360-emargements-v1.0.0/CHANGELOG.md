@@ -1,3 +1,68 @@
+## 3.0.0-I9-J2C-PIP-LIAISON-I-RECETTE-FINALE — 2026-09-18
+- Candidate finale construite exclusivement depuis le Jalon H validé.
+- Aucun changement fonctionnel : gel du code après intégration PIP H.
+- Recette locale complète : 358 tests historiques et nouveaux réussis, 0 échec.
+- Recette ciblée liaison PIP A à H + RC8 : 62 tests réussis, 0 échec.
+- Contrôles compilation/imports principaux réussis.
+- Contrat PIP/Gestion des Actions V1 conservé ; aucune modification du programme PIP, Calendar ou Teams.
+- Limite d'intégration externe maintenue : l'émission PUBLIC signée et le transfert automatique des PDF doivent être activés côté chantier PIP avant recette bout-en-bout VPS.
+
+## 3.0.0-I9-J2C-PIP-LIAISON-H-INTEGRATION — 2026-09-18
+- Intégration finale côté Gestion des Actions avec le contrat observé du PIP Jalon E1.
+- Jeton Hub enrichi du vocabulaire `scopes/tool_id/hub_source/return_mode` sans retirer `rights`.
+- Routage unifié des événements PUBLIC et ACCOMPAGNEMENT ; enveloppe HMAC cible.
+- Support documentaire séparé PIP / O*NET par prescription.
+- Documentation du contrat V1 et alignement des chemins persistants PIP.
+
+# 3.0.0-I9-J2C-PIP-LIAISON-G-ETUDES — 2026-09-18
+
+- Reprise exclusive du jalon F PDF/DOCUMENTS.
+- Rend opérationnel le raccordement en lecture seule au stockage d'études PUBLIC pseudonymisé via `pip_connector.study_dir`.
+- Ajoute un diagnostic explicite du stockage (non configuré, absent, non-répertoire, prêt).
+- Renforce la séparation absolue CRM / études : suppression récursive des identifiants et clés de rapprochement (`crm_id`, `contact_id`, `source_ref`, `passation_id`, identités, e-mail, téléphone, bénéficiaire/participant).
+- Déduplique les enregistrements par `study_id` et ignore les liens symboliques et schémas non conformes.
+- Documente le bloc `[pip_connector]` dans `secrets.example.toml` sans modifier ni renommer le secret HMAC existant.
+- Aucun changement Calendar/Teams, aucun calcul PIP/O*NET dans Gestion des Actions, aucun contrat final PIP figé avant H.
+- Tests ciblés A à G + RC8 : 63 réussis.
+
+# 3.0.0-I9-J2C-PIP-LIAISON-E-RESUME-RESULTATS — 2026-09-18
+
+- Jalon E construit exclusivement depuis le jalon D.
+- Réception et canonicalisation minimale du résumé final PIP ACCOMPAGNEMENT.
+- Garde-fous stricts : aucune réponse brute PIP/O*NET, identité ou clé étude/CRM dans le résumé.
+- Affichage admin compatible avec le modèle canonique.
+- 43 tests ciblés réussis.
+
+# 3.0.0-I9-J2C-PIP-LIAISON-D-TOKEN-ENRICHI — 2026-09-18
+- Jalon D construit exclusivement à partir du jalon C validé.
+- Enrichissement additif du token ACCOMPAGNEMENT signé : prénom et nom d’affichage du bénéficiaire, numéro lisible et titre de l’action.
+- Conservation stricte des identifiants techniques, des quatre droits RC8, de HMAC-SHA256 et du secret existant `pip_connector.launch_signing_key`.
+- Compatibilité descendante : le constructeur de token reste utilisable sans les champs d’affichage ; aucun contrat d’événement PIP n’est figé ici.
+- Aucune adresse e-mail, date de naissance, réponse ou résultat PIP/O*NET ajoutés au token.
+- Aucun changement Calendar/Teams, CRM PUBLIC, callback, documents ou programme PIP.
+
+# 3.0.0-I9-J2C-PIP-LIAISON-C-CALLBACK — 2026-09-18
+- Jalon C : demande de rappel PIP PUBLIC reliée au CRM existant.
+- Activité CRM datée, notification interne asynchrone robuste et idempotente par event_id.
+- Email limité aux données commerciales CRM ; aucune donnée d'étude/PIP n'est incluse.
+- Aucun changement Calendar/Teams ni programme PIP.
+
+## 3.0.0-I9-J2C-PIP-LIAISON-B-IDEMPOTENCE-SECURITE — 2026-09-18
+- Jalon B construit exclusivement à partir du jalon A validé.
+- Registre additif `external_incoming_events` avec unicité `(source,event_id)`, empreinte SHA-256 du payload et aucun stockage du payload sensible.
+- Détection des collisions : un même `event_id` avec un contenu différent est rejeté.
+- Cycle de traitement/retry traçable : RECU, EN_COURS, ERREUR, TRAITE, compteur de tentatives et erreur tronquée.
+- Vérification HMAC-SHA256 générique à comparaison constante ; aucun secret en URL, payload persistant ou log.
+- Le contrat externe PIP définitif (enveloppe, signature et noms d'événements) reste volontairement non figé avant le jalon H.
+- Aucun changement Calendar/Teams, PIP, documents ou flux ACCOMPAGNEMENT existant.
+
+## 3.0.0-I9-J2C-PIP-LIAISON-A-CRM-PUBLIC — 2026-09-18
+- Jalon A liaison PIP : CRM PUBLIC additif à partir de RC8.
+- Upsert par e-mail normalisé après vérification ; ajout automatique non destructif de `PIP-RIASEC` et fusion des intérêts.
+- Consentement marketing facultatif ; refus sans blocage de création du prospect.
+- Aucune donnée d'étude pseudonymisée, réponse, score, code Holland ou identifiant de passation PUBLIC dans le CRM.
+- Aucun changement Calendar/Teams, documents, prescriptions ou connecteur ACCOMPAGNEMENT.
+
 
 ## 3.0.0-I9-J2C-MAJ-RC8-OUTILS-PIP-CONTRAT — 2026-09-18
 - Reprise intégrale de RC7 OUTILS SIMPLES.
@@ -421,3 +486,13 @@ Voir `INCREMENT_V3_I9_H2_4_CONTRESIGNATURE_DOCUMENTS_ERGONOMIE.md`.
 - Corrige le workflow de contresignature : aucune demande future prématurée ; activation seulement quand le créneau est actionnable.
 - Annule automatiquement les anciennes demandes futures créées par les builds précédents.
 - Clarifie l'UX Teams pour les séances futures versus les rapports réellement en attente.
+
+## 3.0.0-I9-J2C-PIP-LIAISON-F — Rapport PDF PIP / documents / droits — 2026-09-18
+- Reprise exclusive du jalon E.
+- Archivage du rapport professionnel PDF PIP dans le système documentaire existant (`stored_files` + `document_references`), sans silo PIP.
+- Liaison additive prescription-document (`prescription_documents`) avec unicité par prescription et traçabilité source.
+- Déduplication SHA-256 et rejeu idempotent : un même rapport ne crée ni seconde copie physique ni seconde référence métier.
+- Protection contre le remplacement silencieux d'un rapport déjà archivé par un contenu différent.
+- Rattachement automatique action + bénéficiaire + participant ; visibilité bénéficiaire et intervenant via les droits documentaires existants de l'action.
+- Téléchargement du PDF depuis la vue de résultat PIP administrateur ; les intervenants autorisés le retrouvent dans Documents de leur action.
+- Le transport PIP -> Gestion des Actions reste volontairement non figé avant le contrat d'intégration final du jalon H.

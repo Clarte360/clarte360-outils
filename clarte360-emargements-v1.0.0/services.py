@@ -3041,8 +3041,14 @@ def pip_connector_configured(signing_key):
 def build_pip_prescription_launch(engine, prescription_id, signing_key, valid_seconds=900):
     """Return a beneficiary-safe PIP URL carrying only the signed launch token."""
     from pip_connector import build_pip_launch_token, build_pip_launch_url
-    row=one(engine,"""SELECT tp.*,tc.base_url,tc.launch_type,tc.connector_code,tc.connector_status
-      FROM tool_prescriptions tp JOIN tool_catalog tc ON tc.id=tp.tool_id WHERE tp.prescription_id=:p""",{'p':prescription_id})
+    row=one(engine,"""SELECT tp.*,tc.base_url,tc.launch_type,tc.connector_code,tc.connector_status,
+      b.first_name beneficiary_first_name,b.last_name beneficiary_last_name,
+      a.action_no action_number,a.title action_title
+      FROM tool_prescriptions tp
+      JOIN tool_catalog tc ON tc.id=tp.tool_id
+      JOIN beneficiaries b ON b.id=tp.beneficiary_id
+      JOIN actions a ON a.id=tp.action_id
+      WHERE tp.prescription_id=:p""",{'p':prescription_id})
     if not row or row.get('tool_code')!='PIP_RIASEC_ONET': raise ValueError('Prescription PIP introuvable.')
     if row.get('status')=='ANNULE': raise ValueError('Prescription PIP annulée.')
     now=datetime.now(ZoneInfo('UTC'))
@@ -3054,7 +3060,9 @@ def build_pip_prescription_launch(engine, prescription_id, signing_key, valid_se
         except ValueError: raise
         except Exception: pass
     tok=build_pip_launch_token(beneficiary_id=row['beneficiary_id'],action_id=row['action_id'],participant_id=row.get('participant_id'),
-      prescription_id=row['prescription_id'],signing_key=signing_key,rights=['PIP_RUN','PIP_RESUME','PIP_STATUS','PIP_RESULT_READ'],valid_seconds=valid_seconds)
+      prescription_id=row['prescription_id'],signing_key=signing_key,rights=['PIP_RUN','PIP_RESUME','PIP_STATUS','PIP_RESULT_READ'],valid_seconds=valid_seconds,
+      beneficiary_first_name=row.get('beneficiary_first_name'),beneficiary_last_name=row.get('beneficiary_last_name'),
+      action_number=row.get('action_number'),action_title=row.get('action_title'))
     return build_pip_launch_url(row.get('base_url'),tok)
 
 
@@ -3070,14 +3078,222 @@ def _save_connector_cursor(engine, code, source_ref, offset, *, last_event_at=No
       {'c':code,'s':str(source_ref or ''),'o':int(offset or 0),'e':last_event_at,'er':last_error,'u':now})
 
 
-def consume_pip_outbox(engine, outbox_path, limit=500, actor='worker'):
-    """Consume the PIP RC5 durable JSONL outbox idempotently.
+PIP_SUMMARY_FORBIDDEN_KEYS = {
+    'answers','answer','responses','response','pip_answers','onet_answers','raw_answers',
+    'raw_responses','questions','questionnaire','items','study_pseudonym','pseudonym',
+    'email','phone','birth_date','first_name','last_name','crm_id','source_ref'
+}
+PIP_RIASEC_CODES = ('R','I','A','S','E','C')
 
-    The PIP remains owner of its snapshots/results. Gestion des Actions only consumes the
-    minimal connector events currently emitted by RC5 (CONSULTE/EN_COURS/TERMINE + refs).
+
+def _pip_summary_assert_no_forbidden(value, path='result_summary'):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized=str(key).strip().lower()
+            if normalized in PIP_SUMMARY_FORBIDDEN_KEYS:
+                raise ValueError(f'Champ interdit dans le résumé PIP: {path}.{key}')
+            _pip_summary_assert_no_forbidden(child, f'{path}.{key}')
+    elif isinstance(value, list):
+        for idx, child in enumerate(value):
+            _pip_summary_assert_no_forbidden(child, f'{path}[{idx}]')
+
+
+def _pip_numeric_map(value, allowed_keys=None):
+    if not isinstance(value, dict): return {}
+    out={}
+    for key,val in value.items():
+        k=str(key).strip().upper()
+        if allowed_keys is not None and k not in allowed_keys: continue
+        if isinstance(val,bool): continue
+        try: out[k]=float(val)
+        except (TypeError,ValueError): continue
+    return out
+
+
+def normalize_pip_result_summary(summary, *, completed_at=None, app_version=None):
+    # Internal canonical accompaniment summary; this is not the final PIP wire contract.
+    # Raw answers and identity/study linkage fields are rejected recursively.
+    if not isinstance(summary,dict): raise ValueError('Résumé PIP invalide.')
+    _pip_summary_assert_no_forbidden(summary)
+    pip=summary.get('pip') if isinstance(summary.get('pip'),dict) else {}
+    onet=summary.get('onet') if isinstance(summary.get('onet'),dict) else {}
+    scores=_pip_numeric_map(pip.get('scores') or pip.get('indices'),set(PIP_RIASEC_CODES))
+    ranking=pip.get('ranking') or pip.get('order') or []
+    if isinstance(ranking,str): ranking=[x.strip().upper() for x in ranking.replace('>',' ').split() if x.strip()]
+    ranking=[str(x).strip().upper() for x in ranking if str(x).strip().upper() in PIP_RIASEC_CODES][:6] if isinstance(ranking,list) else []
+    holland=str(pip.get('holland_code') or '').strip().upper()[:6]
+    if holland and any(x not in PIP_RIASEC_CODES for x in holland): holland=''
+    method_versions=summary.get('method_versions') if isinstance(summary.get('method_versions'),dict) else {}
+    method_versions={str(k)[:80]:str(v)[:120] for k,v in method_versions.items() if v is not None}
+    if app_version and 'pip_app' not in method_versions: method_versions['pip_app']=str(app_version)[:120]
+    onet_scores=_pip_numeric_map(onet.get('scores'))
+    onet_ranking=onet.get('ranking') or []
+    if not isinstance(onet_ranking,list): onet_ranking=[]
+    onet_ranking=[str(x)[:160] for x in onet_ranking[:30]]
+    report=summary.get('report') if isinstance(summary.get('report'),dict) else {}
+    report_ref=report.get('reference') or report.get('ref') or summary.get('report_ref')
+    feeling=summary.get('feeling')
+    if isinstance(feeling,(dict,list)): feeling=json.dumps(feeling,ensure_ascii=False)[:1000]
+    elif feeling is not None: feeling=str(feeling)[:1000]
+    return {
+      'schema':'clarte360.gestion-actions.pip-summary.v1',
+      'status':'TERMINE',
+      'completed_at':str(summary.get('completed_at') or completed_at or utcnow_iso())[:40],
+      'method_versions':method_versions,
+      'pip':{'scores':scores,'ranking':ranking,'holland_code':holland},
+      'onet':{'completed':bool(onet.get('completed') or onet.get('present')),'scores':onet_scores,'ranking':onet_ranking},
+      'feeling':feeling,
+      'report':{'reference':str(report_ref)[:500] if report_ref else None},
+    }
+
+
+
+def archive_pip_report_pdf(engine, prescription_id, data: bytes, *, display_name=None, source_event_id=None, source_reference=None, document_kind='PIP_REPORT', actor='pip_connector'):
+    """Archive one PIP professional PDF in the existing document system.
+
+    Transport is deliberately outside this function: the final PIP contract may provide bytes
+    through a secure fetch or another authenticated channel. Replay is idempotent per prescription.
     """
-    from pip_connector import read_outbox_from_offset, event_identity, PipConnectorError
-    code='PIP_RC5'; cur=_connector_cursor(engine,code) or {}; start=int(cur.get('byte_offset') or 0)
+    pr=one(engine,"SELECT * FROM tool_prescriptions WHERE prescription_id=:p AND tool_code='PIP_RIASEC_ONET'",{'p':prescription_id})
+    if not pr: raise ValueError('Prescription PIP inconnue dans le Hub.')
+    kind=str(document_kind or 'PIP_REPORT').strip().upper()
+    if kind not in {'PIP_REPORT','ONET_REPORT'}: raise ValueError('Type de rapport PIP/O*NET invalide.')
+    existing=one(engine,"""SELECT pd.*,dr.display_name,sf.sha256,sf.storage_path FROM prescription_documents pd
+      JOIN document_references dr ON dr.id=pd.document_reference_id JOIN stored_files sf ON sf.id=dr.stored_file_id
+      WHERE pd.prescription_id=:p AND pd.document_kind=:k""",{'p':prescription_id,'k':kind})
+    import hashlib
+    digest=hashlib.sha256(data or b'').hexdigest() if data else None
+    if existing:
+        if digest and existing.get('sha256')==digest: return existing['document_reference_id'],digest,True
+        raise ValueError('Un rapport PIP différent est déjà archivé pour cette prescription.')
+    prefix='Rapport_ONET' if kind=='ONET_REPORT' else 'Rapport_PIP_RIASEC'
+    name=(display_name or f"{prefix}_{prescription_id}.pdf").strip()
+    if not name.lower().endswith('.pdf'): raise ValueError('Le rapport PIP doit être un PDF.')
+    rid,digest,dedup=store_document(engine,data,name,'PIP_RIASEC_ONET',actor,action_id=pr['action_id'],beneficiary_id=pr['beneficiary_id'],participant_id=pr.get('participant_id'),audience='ACTION_BENEFICIARIES',visible_to_beneficiary=True,allowed_extensions={'.pdf'})
+    try:
+        execute(engine,"""INSERT INTO prescription_documents(prescription_id,document_reference_id,document_kind,source_event_id,source_reference,created_at)
+          VALUES(:p,:d,:k,:e,:r,:c)""",{'p':prescription_id,'d':rid,'k':kind,'e':source_event_id,'r':str(source_reference)[:500] if source_reference else None,'c':utcnow_iso()})
+    except Exception:
+        # A concurrent/replayed insert must resolve to the already linked report.
+        linked=one(engine,"SELECT document_reference_id FROM prescription_documents WHERE prescription_id=:p AND document_kind=:k",{'p':prescription_id,'k':kind})
+        if linked: return linked['document_reference_id'],digest,True
+        raise
+    audit(engine,'PIP_REPORT_ARCHIVED',pr['action_id'],actor,'tool_prescription',pr['id'],{'prescription_id':prescription_id,'document_kind':kind,'document_reference_id':rid,'sha256':digest,'source_event_id':source_event_id})
+    return rid,digest,dedup
+
+def get_pip_prescription_report(engine, prescription_id, document_kind='PIP_REPORT'):
+    kind=str(document_kind or 'PIP_REPORT').strip().upper()
+    return one(engine,"""SELECT pd.*,dr.display_name,dr.action_id,dr.beneficiary_id,dr.participant_id,dr.audience,dr.visible_to_beneficiary,dr.deleted_at,
+      sf.sha256,sf.storage_path,sf.size_bytes,sf.mime_type FROM prescription_documents pd
+      JOIN document_references dr ON dr.id=pd.document_reference_id JOIN stored_files sf ON sf.id=dr.stored_file_id
+      WHERE pd.prescription_id=:p AND pd.document_kind=:k AND dr.deleted_at IS NULL""",{'p':prescription_id,'k':kind})
+
+PIP_PUBLIC_EVENT_TYPES = {'CONTACT_EMAIL_VERIFIED','CONTACT_UPDATED','CALLBACK_REQUESTED'}
+PIP_ACCOMP_EVENT_TYPES = {'CONSULTE','EN_COURS','TERMINE','ERREUR'}
+
+
+def _pip_event_stable_id(event, raw_line=None):
+    """Use sender event_id when available; keep deterministic fallback for current PIP E1 outbox."""
+    eid=str((event or {}).get('event_id') or '').strip()
+    if eid: return eid[:200]
+    from pip_connector import event_identity
+    if raw_line is None:
+        raw_line=json.dumps(event,ensure_ascii=False,sort_keys=True,separators=(',',':'))
+    return event_identity(raw_line, source_name='pip_e1')
+
+
+def process_pip_public_event(engine, event, *, raw_line=None, actor='pip_public'):
+    """Apply the frozen PUBLIC contract without ever linking CRM to the study dataset."""
+    if not isinstance(event,dict) or event.get('event_type') not in PIP_PUBLIC_EVENT_TYPES:
+        raise ValueError('Événement PIP PUBLIC non reconnu.')
+    payload=event.get('payload') or {}
+    forbidden={'beneficiary_id','action_id','participant_id','prescription_id','study_id','study_pseudonym','pseudonym','passation_id',
+               'scores','score','holland_code','pip_answers','onet_answers','answers','responses','report','report_ref'}
+    if forbidden.intersection({str(k).lower() for k in payload.keys()}):
+        raise ValueError('Événement PIP PUBLIC contenant une donnée interdite CRM/étude.')
+    event_id=_pip_event_stable_id(event,raw_line)
+    reg=register_external_incoming_event(engine,'PIP_PUBLIC',event_id,event['event_type'],payload,metadata={'timestamp':event.get('timestamp')})
+    claim=claim_external_incoming_event(engine,'PIP_PUBLIC',event_id)
+    if not claim['claimed']:
+        return {'replayed':True,'event_id':event_id}
+    try:
+        typ=event['event_type']; email=payload.get('email')
+        if typ in {'CONTACT_EMAIL_VERIFIED','CONTACT_UPDATED'}:
+            verified_at=payload.get('email_verified_at') or payload.get('verified_at') or event.get('timestamp') or utcnow_iso()
+            result=upsert_pip_public_crm_contact(engine,payload.get('first_name'),payload.get('last_name'),email,
+              phone=payload.get('phone'),job_title=payload.get('job_title'),company=payload.get('company'),
+              interests=payload.get('interests') or payload.get('centres_interet') or [],email_verified_at=verified_at,
+              marketing_consent=payload.get('marketing_consent'),rgpd_notice_version=payload.get('rgpd_notice_version'),actor=actor)
+        else:
+            result=register_pip_public_callback(engine,event_id,email,requested_at=payload.get('requested_at') or event.get('timestamp'),actor=actor)
+        finish_external_incoming_event(engine,'PIP_PUBLIC',event_id)
+        return {'replayed':not reg['created'],'event_id':event_id,'result':result}
+    except Exception as exc:
+        finish_external_incoming_event(engine,'PIP_PUBLIC',event_id,error=str(exc))
+        raise
+
+
+def process_pip_accompaniment_event(engine, event, *, raw_line=None, actor='worker'):
+    """Consume the exact accompanied event shape emitted by PIP Jalon E1."""
+    if not isinstance(event,dict) or event.get('event_type') not in PIP_ACCOMP_EVENT_TYPES:
+        raise ValueError('Événement PIP ACCOMPAGNEMENT non reconnu.')
+    payload=event.get('payload') or {}; event_id=_pip_event_stable_id(event,raw_line)
+    pr=one(engine,"SELECT * FROM tool_prescriptions WHERE prescription_id=:p AND tool_code='PIP_RIASEC_ONET'",{'p':payload.get('prescription_id')})
+    if not pr: raise ValueError('Prescription PIP inconnue dans le Hub.')
+    if str(pr.get('beneficiary_id')) != str(payload.get('beneficiary_id')) or str(pr.get('action_id')) != str(payload.get('action_id')):
+        raise ValueError('Identifiants PIP incohérents avec la prescription.')
+    if payload.get('participant_id') is not None and str(pr.get('participant_id')) != str(payload.get('participant_id')):
+        raise ValueError('Participant PIP incohérent avec la prescription.')
+    if one(engine,'SELECT id FROM prescription_events WHERE event_id=:e',{'e':event_id}):
+        return {'replayed':True,'event_id':event_id,'prescription':pr}
+    details={'source':'PIP_E1','timestamp':event.get('timestamp'),'passation_id':payload.get('passation_id'),'app_version':payload.get('app_version')}
+    if event['event_type']=='ERREUR':
+        execute(engine,"INSERT INTO prescription_events(prescription_id,event_type,old_status,new_status,actor,details_json,event_id,created_at) VALUES(:p,'PIP_ERROR',:o,:o,:a,:d,:e,:c)",
+          {'p':pr['prescription_id'],'o':pr.get('status'),'a':actor,'d':json.dumps(details,ensure_ascii=False),'e':event_id,'c':utcnow_iso()})
+        audit(engine,'PIP_EVENT_ERROR',pr.get('action_id'),actor,'tool_prescription',pr.get('id'),details)
+        return {'replayed':False,'event_id':event_id,'prescription':pr}
+    update_tool_prescription_status(engine,pr['prescription_id'],event['event_type'],actor,details,event_id=event_id)
+    refs=_json_load(pr.get('result_refs_json'),[])
+    ref={'source':'PIP_E1','passation_id':payload.get('passation_id'),'app_version':payload.get('app_version')}
+    if ref not in refs and (ref['passation_id'] or ref['app_version']):
+        refs.append(ref)
+        execute(engine,'UPDATE tool_prescriptions SET result_refs_json=:r,updated_at=:u WHERE prescription_id=:p',
+          {'r':json.dumps(refs,ensure_ascii=False),'u':utcnow_iso(),'p':pr['prescription_id']})
+    summary=payload.get('result_summary')
+    if event.get('event_type')=='TERMINE' and isinstance(summary,dict):
+        canonical_summary=normalize_pip_result_summary(summary,completed_at=event.get('timestamp'),app_version=payload.get('app_version'))
+        current=one(engine,'SELECT metadata_json FROM tool_prescriptions WHERE prescription_id=:p',{'p':pr['prescription_id']}) or {}
+        meta=_json_load(current.get('metadata_json'),{})
+        if not isinstance(meta,dict): meta={}
+        meta['pip_result_summary']=canonical_summary
+        execute(engine,'UPDATE tool_prescriptions SET metadata_json=:m,updated_at=:u WHERE prescription_id=:p',
+          {'m':json.dumps(meta,ensure_ascii=False),'u':utcnow_iso(),'p':pr['prescription_id']})
+    return {'replayed':False,'event_id':event_id,'prescription':one(engine,'SELECT * FROM tool_prescriptions WHERE prescription_id=:p',{'p':pr['prescription_id']})}
+
+
+def process_signed_pip_event(engine, envelope, signing_key, *, actor='pip_connector'):
+    """Final signed server-to-server envelope. Signature covers all fields except signature itself."""
+    if not isinstance(envelope,dict): raise ValueError('Enveloppe PIP invalide.')
+    signature=envelope.get('signature'); body={k:v for k,v in envelope.items() if k!='signature'}
+    if not verify_external_event_signature(body,signature,signing_key):
+        raise ValueError('Signature HMAC PIP invalide.')
+    typ=str(envelope.get('event_type') or '')
+    if typ in PIP_PUBLIC_EVENT_TYPES:
+        return process_pip_public_event(engine,envelope,actor=actor)
+    if typ in PIP_ACCOMP_EVENT_TYPES:
+        return process_pip_accompaniment_event(engine,envelope,actor=actor)
+    raise ValueError('Type d’événement PIP non supporté.')
+
+
+def consume_pip_outbox(engine, outbox_path, limit=500, actor='worker'):
+    """Consume the current PIP E1 outbox and the frozen future PUBLIC envelope.
+
+    Current accompanied E1 records have no sender event_id/signature, so a deterministic
+    hash fallback is retained for non-regression. PUBLIC events are expected to use the
+    frozen signed envelope when the parallel PIP chantier emits them.
+    """
+    from pip_connector import read_outbox_from_offset
+    code='PIP_E1'; cur=_connector_cursor(engine,code) or {}; start=int(cur.get('byte_offset') or 0)
     try:
         rows,next_offset=read_outbox_from_offset(outbox_path,start,limit)
     except Exception as exc:
@@ -3086,39 +3302,18 @@ def consume_pip_outbox(engine, outbox_path, limit=500, actor='worker'):
         return {'processed':0,'ignored':0,'errors':1,'offset':start}
     processed=ignored=errors=0; committed=start; last_event_at=None
     for after,raw,event in rows:
-        payload=event.get('payload') or {}; event_id=event_identity(raw)
         try:
-            pr=one(engine,"SELECT * FROM tool_prescriptions WHERE prescription_id=:p AND tool_code='PIP_RIASEC_ONET'",{'p':payload.get('prescription_id')})
-            if not pr:
-                raise ValueError('Prescription PIP inconnue dans le Hub.')
-            # Strong anti-crossing checks: every technical identifier emitted by PIP must
-            # agree with the prescription stored by the Hub.
-            if str(pr.get('beneficiary_id')) != str(payload.get('beneficiary_id')) or str(pr.get('action_id')) != str(payload.get('action_id')):
-                raise ValueError('Identifiants PIP incohérents avec la prescription.')
-            if payload.get('participant_id') is not None and str(pr.get('participant_id')) != str(payload.get('participant_id')):
-                raise ValueError('Participant PIP incohérent avec la prescription.')
-            if one(engine,'SELECT id FROM prescription_events WHERE event_id=:e',{'e':event_id}):
-                ignored+=1; committed=after; continue
-            details={'source':'PIP_RC5','timestamp':event.get('timestamp'),'passation_id':payload.get('passation_id'),'app_version':payload.get('app_version')}
-            update_tool_prescription_status(engine,pr['prescription_id'],event['event_type'],actor,details,event_id=event_id)
-            # Persist only references actually emitted by RC5; no score/result is invented.
-            refs=_json_load(pr.get('result_refs_json'),[])
-            ref={'source':'PIP_RC5','passation_id':payload.get('passation_id'),'app_version':payload.get('app_version')}
-            if ref not in refs and (ref['passation_id'] or ref['app_version']):
-                refs.append(ref)
-                execute(engine,'UPDATE tool_prescriptions SET result_refs_json=:r,updated_at=:u WHERE prescription_id=:p',{'r':json.dumps(refs,ensure_ascii=False),'u':utcnow_iso(),'p':pr['prescription_id']})
-            summary=payload.get('result_summary')
-            if event.get('event_type')=='TERMINE' and isinstance(summary,dict):
-                meta=_json_load(pr.get('metadata_json'),{})
-                if not isinstance(meta,dict): meta={}
-                meta['pip_result_summary']=summary
-                execute(engine,'UPDATE tool_prescriptions SET metadata_json=:m,updated_at=:u WHERE prescription_id=:p',{'m':json.dumps(meta,ensure_ascii=False),'u':utcnow_iso(),'p':pr['prescription_id']})
-            processed+=1; committed=after; last_event_at=event.get('timestamp') or utcnow_iso()
+            if event.get('event_type') in PIP_PUBLIC_EVENT_TYPES:
+                result=process_pip_public_event(engine,event,raw_line=raw,actor='pip_public')
+            else:
+                result=process_pip_accompaniment_event(engine,event,raw_line=raw,actor=actor)
+            if result.get('replayed'): ignored+=1
+            else: processed+=1
+            committed=after; last_event_at=event.get('timestamp') or utcnow_iso()
         except Exception as exc:
-            # Do not advance past a bad/crossed event: administrator can correct then retry.
             errors+=1
             _save_connector_cursor(engine,code,outbox_path,committed,last_event_at=last_event_at,last_error=str(exc)[:500])
-            audit(engine,'PIP_OUTBOX_EVENT_REJECTED',actor=actor,entity_type='connector',details={'event_id':event_id,'error':str(exc)[:500]})
+            audit(engine,'PIP_OUTBOX_EVENT_REJECTED',actor=actor,entity_type='connector',details={'error':str(exc)[:500]})
             return {'processed':processed,'ignored':ignored,'errors':errors,'offset':committed}
     _save_connector_cursor(engine,code,outbox_path,next_offset,last_event_at=last_event_at,last_error=None)
     if processed:
@@ -3137,7 +3332,7 @@ def refresh_pip_connector_runtime_status(engine, signing_key=None, outbox_path=N
     return status
 
 # I9-F — Espace Études PIP/O*NET. Les fichiers sources sont déjà pseudonymisés par le PIP RC5.
-_STUDY_IDENTITY_KEYS={'identity','public_identity','first_name','last_name','name','email','phone','telephone','participant_id','public_participant_id','beneficiary_id'}
+_STUDY_IDENTITY_KEYS={'identity','public_identity','first_name','last_name','name','email','phone','telephone','participant_id','public_participant_id','beneficiary_id','crm_id','crm_contact_id','contact_id','source_ref','passation_id'}
 
 def _study_safe(value):
     if isinstance(value,dict):
@@ -3145,18 +3340,39 @@ def _study_safe(value):
     if isinstance(value,list): return [_study_safe(v) for v in value]
     return value
 
+def pip_study_storage_status(study_dir):
+    """Read-only readiness check for the PIP pseudonymised research store."""
+    raw=str(study_dir or '').strip()
+    if not raw:
+        return {'configured':False,'ready':False,'reason':'NOT_CONFIGURED','path':None,'json_files':0}
+    root=Path(raw).expanduser()
+    if not root.exists():
+        return {'configured':True,'ready':False,'reason':'MISSING_DIRECTORY','path':str(root),'json_files':0}
+    if not root.is_dir():
+        return {'configured':True,'ready':False,'reason':'NOT_A_DIRECTORY','path':str(root),'json_files':0}
+    try:
+        count=sum(1 for p in root.glob('*.json') if p.is_file() and not p.is_symlink())
+    except OSError:
+        return {'configured':True,'ready':False,'reason':'UNREADABLE','path':str(root),'json_files':0}
+    return {'configured':True,'ready':True,'reason':'READY','path':str(root),'json_files':count}
+
 def load_pip_study_records(study_dir):
-    root=Path(study_dir).expanduser()
-    if not root.is_dir(): return []
+    status=pip_study_storage_status(study_dir)
+    if not status['ready']: return []
+    root=Path(status['path'])
     rows=[]
+    seen=set()
     for path in sorted(root.glob('*.json')):
+        if not path.is_file() or path.is_symlink(): continue
         try:
             raw=json.loads(path.read_text(encoding='utf-8'))
-            if raw.get('schema')!='clarte360.pip.public-study.v1' or not raw.get('study_id'): continue
+            if not isinstance(raw,dict) or raw.get('schema')!='clarte360.pip.public-study.v1' or not raw.get('study_id'): continue
+            study_id=str(raw['study_id']).strip()
+            if not study_id or study_id in seen: continue
             safe=_study_safe(raw)
-            safe['_source_file']=path.name
-            rows.append(safe)
-        except Exception:
+            safe['study_id']=study_id
+            rows.append(safe); seen.add(study_id)
+        except (OSError,UnicodeError,json.JSONDecodeError,TypeError,ValueError):
             continue
     return rows
 
@@ -3274,6 +3490,54 @@ def create_crm_contact(engine, first_name, last_name, email, *, phone=None, job_
     execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'CREATE',:a,:d,:n)",
             {'c':row['id'],'a':actor,'d':json.dumps({'source':source},ensure_ascii=False),'n':now})
     return row
+
+def _crm_interests(value):
+    if value is None: return []
+    if isinstance(value, str):
+        try: value=json.loads(value)
+        except Exception: value=[value]
+    if not isinstance(value,(list,tuple,set)): value=[value]
+    out=[]; seen=set()
+    for item in value:
+        label=str(item or '').strip(); key=label.casefold()
+        if label and key not in seen: seen.add(key); out.append(label)
+    return out
+
+def _merge_crm_interests(existing,incoming,required='PIP-RIASEC'):
+    out=[]; seen=set()
+    for item in [required]+_crm_interests(existing)+_crm_interests(incoming):
+        label=str(item or '').strip(); key=label.casefold()
+        if label and key not in seen: seen.add(key); out.append(label)
+    return out
+
+def upsert_pip_public_crm_contact(engine, first_name, last_name, email, *, phone=None, job_title=None, company=None,
+                                  interests=None, email_verified_at=None, marketing_consent=None,
+                                  rgpd_notice_version=None, actor='pip_public'):
+    """Upsert CRM PIP PUBLIC by normalized e-mail; never stores study/PIP result data."""
+    vd=validate_crm_payload(first_name,last_name,email,phone,job_title,company)
+    fn,ln,em=vd['first_name'],vd['last_name'],vd['email']
+    now=utcnow_iso(); verified=email_verified_at or now
+    existing=one(engine,'SELECT * FROM crm_contacts WHERE lower(trim(email))=:e ORDER BY id LIMIT 1',{'e':em})
+    if not existing:
+        return create_crm_contact(engine,fn,ln,em,phone=vd['phone'],job_title=vd['job_title'],company=vd['company'],
+            interests=_merge_crm_interests([],interests),source='PIP_PUBLIC',source_ref=None,email_verified_at=verified,
+            marketing_consent=bool(marketing_consent),rgpd_notice_version=rgpd_notice_version,actor=actor)
+    merged=_merge_crm_interests(existing.get('interests_json'),interests)
+    def keep_or_new(new,old): return new if new not in (None,'') else old
+    params={'i':existing['id'],'f':fn,'l':ln,'e':em,'ev':existing.get('email_verified_at') or verified,
+        'ph':keep_or_new(vd['phone'],existing.get('phone')),'j':keep_or_new(vd['job_title'],existing.get('job_title')),
+        'c':keep_or_new(vd['company'],existing.get('company')),'ints':json.dumps(merged,ensure_ascii=False),
+        'ver':rgpd_notice_version,'n':now}
+    execute(engine,"""UPDATE crm_contacts SET first_name=:f,last_name=:l,email=:e,email_verified_at=:ev,
+      phone=:ph,job_title=:j,company=:c,interests_json=:ints,source=CASE WHEN source='MANUEL' THEN source ELSE 'PIP_PUBLIC' END,
+      rgpd_notice_version=COALESCE(:ver,rgpd_notice_version),updated_at=:n WHERE id=:i""",params)
+    if marketing_consent is not None:
+        set_crm_marketing_consent(engine,existing['id'],bool(marketing_consent),actor=actor,rgpd_notice_version=rgpd_notice_version)
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'PIP_PUBLIC_UPSERT',:a,:d,:n)",
+        {'c':existing['id'],'a':actor,'d':json.dumps({'source':'PIP_PUBLIC','email_verified':True,'interests_merged':True},ensure_ascii=False),'n':now})
+    audit(engine,actor,'CRM_PIP_PUBLIC_UPSERT','crm_contact',existing['id'],{'created':False})
+    return one(engine,'SELECT * FROM crm_contacts WHERE id=:i',{'i':existing['id']})
+
 
 def list_crm_contacts(engine, status=None):
     sql='SELECT c.*,b.public_id beneficiary_public_id FROM crm_contacts c LEFT JOIN beneficiaries b ON b.id=c.beneficiary_id'
@@ -3609,3 +3873,104 @@ def create_stakeholder_campaign(engine,action_id,contact_id,campaign_kind,due_at
     name=' '.join(x for x in [ct.get('first_name'),ct.get('last_name')] if x)
     execute(engine,'UPDATE quality_campaigns SET recipient_kind=:r,external_contact_id=:x,external_recipient_email=:e,external_recipient_name=:n WHERE id=:c',{'r':campaign_kind,'x':contact_id,'e':ct['email'],'n':name,'c':cid})
     schedule_quality_email_events(engine,cid,due_at,campaign_kind);return cid,token
+
+
+# --- Liaison PIP - Jalon B: idempotence / retry / security ---
+def _canonical_event_payload(payload):
+    """Canonical bytes for hashing/signing. Never logs or persists the payload itself."""
+    if not isinstance(payload, dict):
+        raise ValueError('Payload événement externe invalide.')
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')
+
+
+def verify_external_event_signature(payload, signature, signing_key):
+    """Generic HMAC-SHA256 verifier; final PIP transport/envelope remains to be frozen at jalon H."""
+    key=str(signing_key or '').encode('utf-8')
+    sig=str(signature or '').strip().lower()
+    if not key or not sig:
+        return False
+    if sig.startswith('sha256='):
+        sig=sig[7:]
+    expected=hmac.new(key, _canonical_event_payload(payload), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+
+
+def register_external_incoming_event(engine, source, event_id, event_type, payload, *, metadata=None):
+    """Register a stable external event once. Payload is represented only by SHA-256."""
+    src=validate_code(source, 'source', max_len=80)
+    eid=validate_short_text(event_id, 'event_id', required=True, max_len=200)
+    typ=validate_code(event_type, 'event_type', max_len=100)
+    digest=hashlib.sha256(_canonical_event_payload(payload)).hexdigest()
+    existing=one(engine,'SELECT * FROM external_incoming_events WHERE source=:s AND event_id=:e',{'s':src,'e':eid})
+    if existing:
+        # A stable event id must never silently identify different content.
+        if existing.get('payload_sha256') != digest:
+            raise ValueError('Collision event_id : contenu différent pour un événement déjà reçu.')
+        return {'created':False,'event':existing}
+    now=utcnow_iso()
+    try:
+        execute(engine,"""INSERT INTO external_incoming_events(source,event_id,event_type,status,received_at,payload_sha256,metadata_json)
+          VALUES(:s,:e,:t,'RECU',:n,:h,:m)""",{'s':src,'e':eid,'t':typ,'n':now,'h':digest,
+          'm':json.dumps(metadata or {},ensure_ascii=False,default=str)})
+    except Exception:
+        # Handles concurrent duplicate delivery safely thanks to UNIQUE(source,event_id).
+        existing=one(engine,'SELECT * FROM external_incoming_events WHERE source=:s AND event_id=:e',{'s':src,'e':eid})
+        if existing and existing.get('payload_sha256') == digest:
+            return {'created':False,'event':existing}
+        raise
+    row=one(engine,'SELECT * FROM external_incoming_events WHERE source=:s AND event_id=:e',{'s':src,'e':eid})
+    return {'created':True,'event':row}
+
+
+def claim_external_incoming_event(engine, source, event_id):
+    """Mark a registered event as being processed and count attempts for retry observability."""
+    row=one(engine,'SELECT * FROM external_incoming_events WHERE source=:s AND event_id=:e',{'s':source,'e':event_id})
+    if not row: raise ValueError('Événement externe introuvable.')
+    if row.get('status')=='TRAITE': return {'claimed':False,'event':row}
+    execute(engine,"""UPDATE external_incoming_events SET status='EN_COURS',attempts=attempts+1,last_error=NULL
+      WHERE id=:i AND status<>'TRAITE'""",{'i':row['id']})
+    return {'claimed':True,'event':one(engine,'SELECT * FROM external_incoming_events WHERE id=:i',{'i':row['id']})}
+
+
+def finish_external_incoming_event(engine, source, event_id, *, error=None):
+    row=one(engine,'SELECT * FROM external_incoming_events WHERE source=:s AND event_id=:e',{'s':source,'e':event_id})
+    if not row: raise ValueError('Événement externe introuvable.')
+    if error:
+        execute(engine,"UPDATE external_incoming_events SET status='ERREUR',last_error=:er WHERE id=:i",
+                {'er':str(error)[:500],'i':row['id']})
+    else:
+        execute(engine,"UPDATE external_incoming_events SET status='TRAITE',processed_at=:n,last_error=NULL WHERE id=:i",
+                {'n':utcnow_iso(),'i':row['id']})
+    return one(engine,'SELECT * FROM external_incoming_events WHERE id=:i',{'i':row['id']})
+
+
+# --- Liaison PIP - Jalon C: demande de rappel PUBLIC ---
+def register_pip_public_callback(engine, event_id, email, *, requested_at=None, actor='pip_public'):
+    """Record one callback request for an existing PIP PUBLIC CRM contact.
+
+    Only commercial CRM data are referenced. PIP/study scores, answers, pseudonyms and reports
+    are neither accepted nor persisted here. external_event_id makes replay idempotent.
+    """
+    eid=validate_short_text(event_id, 'event_id', required=True, max_len=200)
+    em=validate_email(email, required=True)
+    contact=one(engine,'SELECT * FROM crm_contacts WHERE lower(trim(email))=:e ORDER BY id LIMIT 1',{'e':em})
+    if not contact:
+        raise ValueError('Contact CRM PIP PUBLIC introuvable pour la demande de rappel.')
+    existing=one(engine,'SELECT * FROM crm_callback_notifications WHERE external_event_id=:e',{'e':eid})
+    if existing:
+        return {'created':False,'contact':contact,'notification':existing}
+    now=utcnow_iso(); at=requested_at or now
+    detail=f"Demande à être recontacté(e) — PIP-RIASEC PUBLIC — {at}"
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'CALLBACK_REQUESTED',:a,:d,:n)",
+        {'c':contact['id'],'a':actor,'d':json.dumps({'activity':detail},ensure_ascii=False),'n':now})
+    execute(engine,'UPDATE crm_contacts SET updated_at=:n WHERE id=:i',{'n':now,'i':contact['id']})
+    try:
+        execute(engine,"""INSERT INTO crm_callback_notifications(contact_id,external_event_id,status,requested_at,created_at,updated_at)
+          VALUES(:c,:e,'A_ENVOYER',:r,:n,:n)""",{'c':contact['id'],'e':eid,'r':at,'n':now})
+    except Exception:
+        existing=one(engine,'SELECT * FROM crm_callback_notifications WHERE external_event_id=:e',{'e':eid})
+        if existing: return {'created':False,'contact':contact,'notification':existing}
+        raise
+    audit(engine,actor,'CRM_PIP_PUBLIC_CALLBACK','crm_contact',contact['id'],{'event_id':eid})
+    return {'created':True,'contact':one(engine,'SELECT * FROM crm_contacts WHERE id=:i',{'i':contact['id']}),
+            'notification':one(engine,'SELECT * FROM crm_callback_notifications WHERE external_event_id=:e',{'e':eid})}
