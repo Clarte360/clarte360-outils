@@ -3638,6 +3638,76 @@ def set_crm_task_status(engine, task_id, status, actor='admin'):
     return one(engine,'SELECT * FROM crm_tasks WHERE id=:i',{'i':task_id})
 
 
+def delete_crm_note(engine, contact_id, event_id, actor='admin'):
+    row=one(engine,"SELECT * FROM crm_events WHERE id=:e AND contact_id=:c AND event_type='NOTE'",{'e':event_id,'c':contact_id})
+    if not row: raise ValueError('Note introuvable.')
+    execute(engine,'DELETE FROM crm_events WHERE id=:e',{'e':event_id})
+    now=utcnow_iso()
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'NOTE_DELETED',:a,:d,:n)",
+      {'c':contact_id,'a':actor,'d':json.dumps({'deleted_event_id':event_id},ensure_ascii=False),'n':now})
+    execute(engine,'UPDATE crm_contacts SET updated_at=:n WHERE id=:i',{'n':now,'i':contact_id})
+    audit(engine,actor,'CRM_NOTE_DELETED','crm_contact',contact_id,{'event_id':event_id})
+    return True
+
+
+def update_crm_task(engine, task_id, *, title, due_at=None, notes=None, status=None, actor='admin'):
+    task=one(engine,'SELECT * FROM crm_tasks WHERE id=:i',{'i':task_id})
+    if not task: raise ValueError('Tâche introuvable.')
+    title=validate_short_text(title,'Tâche',required=True,max_len=250)
+    notes=validate_short_text(notes,'Commentaire',required=False,max_len=2000) if notes else None
+    st=str(status or task.get('status') or 'A_FAIRE').upper()
+    if st not in {'A_FAIRE','FAIT'}: raise ValueError('Statut de tâche invalide.')
+    now=utcnow_iso()
+    execute(engine,"""UPDATE crm_tasks SET title=:t,due_at=:d,notes=:notes,status=:s,
+      completed_at=:ca,updated_at=:n WHERE id=:i""",
+      {'t':title,'d':due_at,'notes':notes,'s':st,'ca':now if st=='FAIT' else None,'n':now,'i':task_id})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'TASK_UPDATED',:a,:d,:n)",
+      {'c':task['contact_id'],'a':actor,'d':json.dumps({'task_id':task_id,'status':st},ensure_ascii=False),'n':now})
+    execute(engine,'UPDATE crm_contacts SET updated_at=:n WHERE id=:i',{'n':now,'i':task['contact_id']})
+    audit(engine,actor,'CRM_TASK_UPDATED','crm_contact',task['contact_id'],{'task_id':task_id,'status':st})
+    return one(engine,'SELECT * FROM crm_tasks WHERE id=:i',{'i':task_id})
+
+
+def delete_crm_task(engine, task_id, actor='admin'):
+    task=one(engine,'SELECT * FROM crm_tasks WHERE id=:i',{'i':task_id})
+    if not task: raise ValueError('Tâche introuvable.')
+    cid=task['contact_id']; now=utcnow_iso()
+    execute(engine,'DELETE FROM crm_tasks WHERE id=:i',{'i':task_id})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'TASK_DELETED',:a,:d,:n)",
+      {'c':cid,'a':actor,'d':json.dumps({'task_id':task_id},ensure_ascii=False),'n':now})
+    execute(engine,'UPDATE crm_contacts SET updated_at=:n WHERE id=:i',{'n':now,'i':cid})
+    audit(engine,actor,'CRM_TASK_DELETED','crm_contact',cid,{'task_id':task_id})
+    return True
+
+
+def unlink_crm_contact_action(engine, contact_id, action_id, actor='admin'):
+    row=one(engine,'SELECT * FROM crm_action_links WHERE contact_id=:c AND action_id=:a ORDER BY id LIMIT 1',{'c':contact_id,'a':action_id})
+    if not row: raise ValueError('Liaison action introuvable.')
+    now=utcnow_iso()
+    execute(engine,'DELETE FROM crm_action_links WHERE contact_id=:c AND action_id=:a',{'c':contact_id,'a':action_id})
+    execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'ACTION_UNLINKED',:by,:d,:n)",
+      {'c':contact_id,'by':actor,'d':json.dumps({'action_id':action_id},ensure_ascii=False),'n':now})
+    execute(engine,'UPDATE crm_contacts SET updated_at=:n WHERE id=:i',{'n':now,'i':contact_id})
+    audit(engine,actor,'CRM_ACTION_UNLINKED','crm_contact',contact_id,{'action_id':action_id})
+    return True
+
+
+def purge_crm_contact(engine, contact_id, actor='admin'):
+    """Supprime uniquement la fiche CRM et son contenu CRM; jamais l'action, le bénéficiaire ou les études PIP/O*NET."""
+    c=one(engine,'SELECT * FROM crm_contacts WHERE id=:i',{'i':contact_id})
+    if not c: return False,'Contact introuvable.'
+    counts={
+      'notes_events': one(engine,'SELECT COUNT(*) n FROM crm_events WHERE contact_id=:c',{'c':contact_id})['n'],
+      'tasks': one(engine,'SELECT COUNT(*) n FROM crm_tasks WHERE contact_id=:c',{'c':contact_id})['n'],
+      'action_links': one(engine,'SELECT COUNT(*) n FROM crm_action_links WHERE contact_id=:c',{'c':contact_id})['n'],
+      'callback_notifications': one(engine,'SELECT COUNT(*) n FROM crm_callback_notifications WHERE contact_id=:c',{'c':contact_id})['n'],
+    }
+    public_id=c.get('public_id')
+    execute(engine,'DELETE FROM crm_contacts WHERE id=:i',{'i':contact_id})
+    audit(engine,actor,'CRM_CONTACT_PURGED','crm_contact',contact_id,{'public_id':public_id,**counts})
+    return True,''
+
+
 def link_crm_contact_action(engine, contact_id, action_id, role='CLIENT', actor='admin'):
     if not one(engine,'SELECT id FROM crm_contacts WHERE id=:i',{'i':contact_id}): raise ValueError('Contact introuvable.')
     if not one(engine,'SELECT id FROM actions WHERE id=:i',{'i':action_id}): raise ValueError('Action introuvable.')

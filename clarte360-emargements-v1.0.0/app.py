@@ -3143,107 +3143,183 @@ def studies_screen():
 
 
 def crm_screen():
-    header('Clarté360 — Contacts / Prospects','CRM-0 : fiche prospect, notes, tâches, timeline et actions liées')
-    st.caption("CRM opérationnel léger. Le CRM reste strictement séparé des données pseudonymisées d'étude PIP/O*NET.")
-    with st.expander('Ajouter un contact / prospect', expanded=False):
+    header('Clarté360 — Contacts / Prospects','CRM-0 RC2 : fiche compacte, notes, tâches et actions liées')
+    st.caption("CRM opérationnel léger. Les données CRM restent strictement séparées des études pseudonymisées PIP/O*NET.")
+
+    with st.expander('➕ Ajouter un contact / prospect', expanded=False):
         with st.form('crm_add_contact'):
             c1,c2=st.columns(2); fn=c1.text_input('Prénom *'); ln=c2.text_input('Nom *')
             c1,c2=st.columns(2); em=c1.text_input('E-mail *'); ph=c2.text_input('Téléphone')
             c1,c2=st.columns(2); job=c1.text_input('Fonction'); comp=c2.text_input('Entreprise')
             interests=st.text_input("Centres d'intérêt (séparés par des virgules)")
-            marketing=st.checkbox('Consentement marketing explicite recueilli')
-            rgpd=st.text_input("Version de l'information RGPD",value='I9-G')
+            c1,c2=st.columns(2); marketing=c1.checkbox('Consentement marketing explicite recueilli'); rgpd=c2.text_input("Version information RGPD",value='I9-G')
             add=st.form_submit_button('AJOUTER LE CONTACT',type='primary')
         if add:
             try:
-                create_crm_contact(ENGINE,fn,ln,em,phone=ph or None,job_title=job or None,company=comp or None,
-                                   interests=[x.strip() for x in interests.split(',') if x.strip()],marketing_consent=marketing,
-                                   rgpd_notice_version=rgpd or None,actor=st.session_state.admin_email)
-                st.success('Contact ajouté.'); rerun()
+                cc=create_crm_contact(ENGINE,fn,ln,em,phone=ph or None,job_title=job or None,company=comp or None,
+                    interests=[x.strip() for x in interests.split(',') if x.strip()],marketing_consent=marketing,
+                    rgpd_notice_version=rgpd or None,actor=st.session_state.admin_email)
+                st.session_state['crm_selected_contact_id']=cc['id']; st.success('Contact ajouté.'); rerun()
             except ValueError as ex: st.error(str(ex))
+
     rows=list_crm_contacts(ENGINE)
     if not rows:
         st.info('Aucun contact / prospect enregistré.'); footer(); return
-    st.dataframe(pd.DataFrame([{'ID':x['public_id'],'Nom':f"{x['first_name']} {x['last_name']}",'E-mail':x['email'],
-      'Téléphone':x.get('phone') or '','Entreprise':x.get('company') or '','Marketing':'Oui' if x.get('marketing_consent') else 'Non',
-      'Statut':x['status'].replace('_',' '),'Dernière activité':(x.get('updated_at') or '')[:16].replace('T',' ')} for x in rows]),use_container_width=True,hide_index=True)
+
+    # Tableau CRM compact avec commandes directes.
+    st.markdown('### Contacts')
+    search=st.text_input('🔎 Rechercher dans le CRM',placeholder='Nom, entreprise, e-mail ou téléphone',key='crm_table_search')
+    filtered=find_crm_contacts(ENGINE,search,250) if search.strip() else rows
+    if not filtered:
+        st.info('Aucun contact correspondant à cette recherche.')
+    else:
+        hdr=st.columns([1.25,1.6,2.0,1.5,1.0,.8,.8])
+        for col,label in zip(hdr,['ID','Nom','E-mail','Entreprise','Statut','Ouvrir','Suppr.']): col.caption(f'**{label}**')
+        for x in filtered:
+            cols=st.columns([1.25,1.6,2.0,1.5,1.0,.8,.8])
+            cols[0].write(x['public_id']); cols[1].write(f"{x['first_name']} {x['last_name']}")
+            cols[2].write(x.get('email') or '—'); cols[3].write(x.get('company') or '—'); cols[4].write((x.get('status') or '').replace('_',' '))
+            if cols[5].button('✏️',key=f"crm_open_{x['id']}",help='Ouvrir / modifier la fiche'):
+                st.session_state['crm_selected_contact_id']=x['id']; rerun()
+            if cols[6].button('🗑️',key=f"crm_delete_{x['id']}",help='Supprimer définitivement la fiche CRM'):
+                st.session_state['crm_delete_contact_id']=x['id']; st.session_state['crm_selected_contact_id']=x['id']; rerun()
+
+    delete_id=st.session_state.get('crm_delete_contact_id')
+    if delete_id:
+        dc=one(ENGINE,'SELECT * FROM crm_contacts WHERE id=:i',{'i':delete_id})
+        if dc:
+            linked=list_crm_action_links(ENGINE,delete_id); tasks=list_crm_tasks(ENGINE,delete_id); events=list_crm_events(ENGINE,delete_id,500)
+            with st.container(border=True):
+                st.error(f"Suppression définitive de la fiche CRM {dc['public_id']} — {dc['first_name']} {dc['last_name']}")
+                st.caption(f"Seront supprimés : fiche CRM, {len(tasks)} tâche(s), {len(events)} événement(s)/note(s) et {len(linked)} liaison(s) avec des actions. Les actions elles-mêmes, les bénéficiaires et les études PIP/O*NET ne seront jamais supprimés.")
+                conf=st.text_input(f"Saisissez SUPPRIMER {dc['public_id']}",key=f'crm_del_conf_{delete_id}')
+                pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'crm_del_pw_{delete_id}')
+                c1,c2=st.columns(2)
+                if c1.button('🗑️ SUPPRIMER DÉFINITIVEMENT',type='primary',key=f'crm_del_confirm_{delete_id}'):
+                    if conf.strip()!=f"SUPPRIMER {dc['public_id']}": st.error('Confirmation incorrecte.')
+                    elif not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Mot de passe administrateur incorrect.')
+                    else:
+                        ok,msg=purge_crm_contact(ENGINE,delete_id,st.session_state.admin_email)
+                        if ok:
+                            st.session_state.pop('crm_delete_contact_id',None); st.session_state.pop('crm_selected_contact_id',None)
+                            st.success('Fiche CRM et contenu CRM supprimés. Les actions et autres référentiels sont conservés.'); rerun()
+                        else: st.error(msg)
+                if c2.button('ANNULER',key=f'crm_del_cancel_{delete_id}'):
+                    st.session_state.pop('crm_delete_contact_id',None); rerun()
+
+    rows=list_crm_contacts(ENGINE)
+    selected_id=st.session_state.get('crm_selected_contact_id')
+    if selected_id and not any(x['id']==selected_id for x in rows): selected_id=None
+    if not selected_id: selected_id=rows[0]['id']
     cmap={f"{x['public_id']} — {x['first_name']} {x['last_name']} — {x['email']}":x for x in rows}
-    label=st.selectbox('Ouvrir la fiche prospect / client',list(cmap)); c=cmap[label]
-    st.markdown(f"### {c['first_name']} {c['last_name']} — {c['public_id']}")
-    with st.expander('Coordonnées et centres d’intérêt', expanded=True):
+    labels=list(cmap); default_idx=next((i for i,k in enumerate(labels) if cmap[k]['id']==selected_id),0)
+    label=st.selectbox('Fiche ouverte',labels,index=default_idx,key='crm_open_select'); c=cmap[label]
+    st.session_state['crm_selected_contact_id']=c['id']
+
+    st.markdown(f"## {c['first_name']} {c['last_name']} — {c['public_id']}")
+    k1,k2,k3,k4=st.columns(4)
+    k1.metric('Statut',(c.get('status') or '—').replace('_',' ')); k2.metric('Marketing','Oui' if c.get('marketing_consent') else 'Non')
+    k3.metric('Source',(c.get('source') or '—').replace('_',' ')); k4.metric('Actions liées',len(list_crm_action_links(ENGINE,c['id'])))
+    st.caption(f"Créé : {(c.get('created_at') or '')[:16].replace('T',' ')} · Dernière activité : {(c.get('updated_at') or '')[:16].replace('T',' ')}")
+
+    tab_fiche,tab_suivi,tab_actions,tab_timeline=st.tabs(['👤 Fiche','📝 Notes & tâches','🔗 Actions liées','🕘 Timeline'])
+    with tab_fiche:
         with st.form(f"crm_profile_{c['id']}"):
-            c1,c2=st.columns(2); fn=c1.text_input('Prénom',value=c.get('first_name') or ''); ln=c2.text_input('Nom',value=c.get('last_name') or '')
-            c1,c2=st.columns(2); em=c1.text_input('E-mail',value=c.get('email') or ''); ph=c2.text_input('Téléphone',value=c.get('phone') or '')
-            c1,c2=st.columns(2); job=c1.text_input('Fonction',value=c.get('job_title') or ''); comp=c2.text_input('Entreprise',value=c.get('company') or '')
+            r1,r2,r3=st.columns(3); fn=r1.text_input('Prénom',value=c.get('first_name') or ''); ln=r2.text_input('Nom',value=c.get('last_name') or ''); em=r3.text_input('E-mail',value=c.get('email') or '')
+            r1,r2,r3=st.columns(3); ph=r1.text_input('Téléphone',value=c.get('phone') or ''); job=r2.text_input('Fonction',value=c.get('job_title') or ''); comp=r3.text_input('Entreprise',value=c.get('company') or '')
             ints=', '.join(_crm_interests(c.get('interests_json'))); interests=st.text_input("Centres d'intérêt",value=ints)
-            save_profile=st.form_submit_button('ENREGISTRER LA FICHE')
+            save_profile=st.form_submit_button('💾 ENREGISTRER LA FICHE',type='primary')
         if save_profile:
             try:
                 update_crm_contact(ENGINE,c['id'],first_name=fn,last_name=ln,email=em,phone=ph or None,job_title=job or None,company=comp or None,
-                  interests=[x.strip() for x in interests.split(',') if x.strip()],actor=st.session_state.admin_email)
+                    interests=[x.strip() for x in interests.split(',') if x.strip()],actor=st.session_state.admin_email)
                 st.success('Fiche mise à jour.'); rerun()
             except ValueError as ex: st.error(str(ex))
-        c1,c2=st.columns(2)
+        r1,r2=st.columns(2)
         statuses=['NOUVEAU','A_CONTACTER','CONTACTE','A_RELANCER','OPPORTUNITE','CLIENT','SANS_SUITE','ARCHIVE']
-        ns=c1.selectbox('Statut CRM',statuses,index=statuses.index(c['status']) if c['status'] in statuses else 0)
-        if c1.button('Enregistrer le statut',key=f"crm_status_save_{c['id']}"):
+        ns=r1.selectbox('Statut CRM',statuses,index=statuses.index(c['status']) if c['status'] in statuses else 0,key=f"crm_status_{c['id']}")
+        if r1.button('Enregistrer le statut',key=f"crm_status_save_{c['id']}"):
             update_crm_status(ENGINE,c['id'],ns,st.session_state.admin_email); st.success('Statut mis à jour.'); rerun()
-        consent=c2.checkbox('Consentement marketing',value=bool(c.get('marketing_consent')),key=f"crm_consent_{c['id']}")
-        if c2.button('Enregistrer le consentement',key=f"crm_consent_save_{c['id']}"):
-            set_crm_marketing_consent(ENGINE,c['id'],consent,st.session_state.admin_email,c.get('rgpd_notice_version') or 'I9-G')
-            st.success('Consentement mis à jour et tracé.'); rerun()
+        consent=r2.checkbox('Consentement marketing',value=bool(c.get('marketing_consent')),key=f"crm_consent_{c['id']}")
+        if r2.button('Enregistrer le consentement',key=f"crm_consent_save_{c['id']}"):
+            set_crm_marketing_consent(ENGINE,c['id'],consent,st.session_state.admin_email,c.get('rgpd_notice_version') or 'I9-G'); st.success('Consentement mis à jour et tracé.'); rerun()
 
-    st.markdown('#### Notes et actions commerciales')
-    with st.form(f"crm_note_{c['id']}",clear_on_submit=True):
-        note=st.text_area('Ajouter une note',placeholder='Ex. Appel effectué, besoin identifié, prochaine étape...')
-        note_ok=st.form_submit_button('AJOUTER LA NOTE')
-    if note_ok:
-        try: add_crm_note(ENGINE,c['id'],note,st.session_state.admin_email); st.success('Note ajoutée.'); rerun()
-        except ValueError as ex: st.error(str(ex))
-    with st.form(f"crm_task_{c['id']}",clear_on_submit=True):
-        c1,c2=st.columns([2,1]); task_title=c1.text_input('Nouvelle tâche / action à mener'); due=c2.date_input('Échéance',value=None)
-        task_notes=st.text_input('Commentaire tâche')
-        task_ok=st.form_submit_button('AJOUTER LA TÂCHE')
-    if task_ok:
-        try:
-            create_crm_task(ENGINE,c['id'],task_title,due_at=due.isoformat() if due else None,notes=task_notes or None,actor=st.session_state.admin_email)
-            st.success('Tâche ajoutée.'); rerun()
-        except ValueError as ex: st.error(str(ex))
-    tasks=list_crm_tasks(ENGINE,c['id'])
-    if tasks:
-        st.dataframe(pd.DataFrame([{'ID':x['id'],'Tâche':x['title'],'Échéance':x.get('due_at') or '','Statut':x['status'].replace('_',' '),'Commentaire':x.get('notes') or ''} for x in tasks]),use_container_width=True,hide_index=True)
-        open_tasks=[x for x in tasks if x['status']=='A_FAIRE']
-        if open_tasks:
-            tmap={f"#{x['id']} — {x['title']}":x for x in open_tasks}; tl=st.selectbox('Tâche à terminer',list(tmap),key=f"task_pick_{c['id']}")
-            if st.button('MARQUER FAIT',key=f"task_done_{c['id']}"):
-                set_crm_task_status(ENGINE,tmap[tl]['id'],'FAIT',st.session_state.admin_email); rerun()
+    with tab_suivi:
+        left,right=st.columns(2)
+        with left:
+            st.markdown('#### Notes')
+            with st.form(f"crm_note_{c['id']}",clear_on_submit=True):
+                note=st.text_area('Nouvelle note',placeholder='Appel effectué, besoin identifié, prochaine étape...',height=110)
+                note_ok=st.form_submit_button('AJOUTER LA NOTE')
+            if note_ok:
+                try: add_crm_note(ENGINE,c['id'],note,st.session_state.admin_email); st.success('Note ajoutée.'); rerun()
+                except ValueError as ex: st.error(str(ex))
+            notes=[]
+            for e in list_crm_events(ENGINE,c['id'],100):
+                if e.get('event_type')!='NOTE': continue
+                try: d=json.loads(e.get('details_json') or '{}')
+                except Exception: d={}
+                notes.append((e,d.get('note') or ''))
+            if not notes: st.caption('Aucune note.')
+            for e,text in notes:
+                with st.container(border=True):
+                    st.write(text); st.caption(f"{(e.get('created_at') or '')[:16].replace('T',' ')} · {e.get('actor') or ''}")
+                    if st.button('🗑️ Supprimer la note',key=f"crm_note_del_{e['id']}"):
+                        delete_crm_note(ENGINE,c['id'],e['id'],st.session_state.admin_email); rerun()
+        with right:
+            st.markdown('#### Tâches / actions commerciales')
+            with st.form(f"crm_task_{c['id']}",clear_on_submit=True):
+                task_title=st.text_input('Nouvelle tâche / action à mener'); due=st.date_input('Échéance',value=None); task_notes=st.text_input('Commentaire')
+                task_ok=st.form_submit_button('AJOUTER LA TÂCHE')
+            if task_ok:
+                try:
+                    create_crm_task(ENGINE,c['id'],task_title,due_at=due.isoformat() if due else None,notes=task_notes or None,actor=st.session_state.admin_email); st.success('Tâche ajoutée.'); rerun()
+                except ValueError as ex: st.error(str(ex))
+            tasks=list_crm_tasks(ENGINE,c['id'])
+            if not tasks: st.caption('Aucune tâche.')
+            for t in tasks:
+                with st.expander(f"{'✅' if t['status']=='FAIT' else '⬜'} {t['title']} — {t.get('due_at') or 'sans échéance'}"):
+                    title=st.text_input('Objet',value=t['title'],key=f"crm_task_title_{t['id']}")
+                    due_val=date.fromisoformat(t['due_at']) if t.get('due_at') else None
+                    due2=st.date_input('Échéance',value=due_val,key=f"crm_task_due_{t['id']}")
+                    notes2=st.text_input('Commentaire',value=t.get('notes') or '',key=f"crm_task_notes_{t['id']}")
+                    status2=st.selectbox('Statut',['A_FAIRE','FAIT'],index=0 if t['status']=='A_FAIRE' else 1,key=f"crm_task_status_{t['id']}")
+                    b1,b2=st.columns(2)
+                    if b1.button('💾 Enregistrer',key=f"crm_task_save_{t['id']}"):
+                        update_crm_task(ENGINE,t['id'],title=title,due_at=due2.isoformat() if due2 else None,notes=notes2 or None,status=status2,actor=st.session_state.admin_email); rerun()
+                    if b2.button('🗑️ Supprimer',key=f"crm_task_delete_{t['id']}"):
+                        delete_crm_task(ENGINE,t['id'],st.session_state.admin_email); rerun()
 
-    st.markdown('#### Actions liées')
-    links=list_crm_action_links(ENGINE,c['id'])
-    if links:
-        st.dataframe(pd.DataFrame([{'Action':x['action_no'],'Intitulé':x['title'],'Statut':x['status'],'Période':f"{x.get('start_date') or '—'} → {x.get('end_date') or '—'}",'Rôle':x['role']} for x in links]),use_container_width=True,hide_index=True)
-    else: st.info('Aucune action liée à ce contact pour le moment.')
-    c1,c2=st.columns(2)
-    if c1.button('CRÉER UNE ACTION POUR CE CONTACT',key=f"crm_new_action_{c['id']}"):
-        st.session_state['crm_prefill_contact_id']=c['id']; st.session_state['nav']='Nouvelle action'; rerun()
-    acts=q(ENGINE,"SELECT id,action_no,title,status FROM actions ORDER BY created_at DESC,id DESC LIMIT 200")
-    linked_ids={x['action_id'] for x in links}; candidates=[a for a in acts if a['id'] not in linked_ids]
-    if candidates:
-        amap={f"{a['action_no']} — {a['title']} — {a['status']}":a for a in candidates}
-        al=c2.selectbox('Rattacher une action existante',list(amap),key=f"crm_link_action_{c['id']}")
-        if c2.button('RATTACHER',key=f"crm_link_btn_{c['id']}"):
-            link_crm_contact_action(ENGINE,c['id'],amap[al]['id'],'CLIENT',st.session_state.admin_email); st.success('Action rattachée.'); rerun()
+    with tab_actions:
+        links=list_crm_action_links(ENGINE,c['id'])
+        if links:
+            for x in links:
+                cols=st.columns([1.3,2.2,1.1,1.6,.7])
+                cols[0].write(x['action_no']); cols[1].write(x['title']); cols[2].write(x['status']); cols[3].write(f"{x.get('start_date') or '—'} → {x.get('end_date') or '—'}")
+                if cols[4].button('✖',key=f"crm_unlink_{c['id']}_{x['action_id']}",help="Retirer uniquement la liaison CRM"):
+                    unlink_crm_contact_action(ENGINE,c['id'],x['action_id'],st.session_state.admin_email); rerun()
+        else: st.info('Aucune action liée à ce contact pour le moment.')
+        if st.button('➕ CRÉER UNE ACTION POUR CE CONTACT',key=f"crm_new_action_{c['id']}"):
+            st.session_state['crm_prefill_contact_id']=c['id']; st.session_state['_next_nav']='Nouvelle action'; rerun()
+        acts=q(ENGINE,"SELECT id,action_no,title,status FROM actions ORDER BY created_at DESC,id DESC LIMIT 500")
+        linked_ids={x['action_id'] for x in links}; candidates=[a for a in acts if a['id'] not in linked_ids]
+        if candidates:
+            amap={f"{a['action_no']} — {a['title']} — {a['status']}":a for a in candidates}
+            al=st.selectbox('Rattacher une action existante',list(amap),key=f"crm_link_action_{c['id']}")
+            if st.button('RATTACHER CETTE ACTION',key=f"crm_link_btn_{c['id']}"):
+                link_crm_contact_action(ENGINE,c['id'],amap[al]['id'],'CLIENT',st.session_state.admin_email); st.success('Action rattachée.'); rerun()
 
-    st.markdown('#### Timeline')
-    evs=list_crm_events(ENGINE,c['id'],100)
-    if evs:
-        timeline=[]
-        for e in evs:
-            try: d=json.loads(e.get('details_json') or '{}')
-            except Exception: d={}
-            detail=d.get('note') or d.get('activity') or d.get('title') or ', '.join(f"{k}: {v}" for k,v in d.items() if k not in {'fields'})
-            timeline.append({'Date':(e.get('created_at') or '')[:16].replace('T',' '),'Événement':e['event_type'].replace('_',' '),'Détail':detail or '','Auteur':e.get('actor') or ''})
-        st.dataframe(pd.DataFrame(timeline),use_container_width=True,hide_index=True)
+    with tab_timeline:
+        evs=list_crm_events(ENGINE,c['id'],200)
+        if not evs: st.info('Aucun événement.')
+        else:
+            timeline=[]
+            for e in evs:
+                try: d=json.loads(e.get('details_json') or '{}')
+                except Exception: d={}
+                detail=d.get('note') or d.get('activity') or d.get('title') or ', '.join(f"{k}: {v}" for k,v in d.items() if k not in {'fields'} and v not in (None,''))
+                timeline.append({'Date':(e.get('created_at') or '')[:16].replace('T',' '),'Événement':e['event_type'].replace('_',' '),'Détail':detail or '','Auteur':e.get('actor') or ''})
+            st.dataframe(pd.DataFrame(timeline),use_container_width=True,hide_index=True)
     footer()
 
 def contractualization_tab(a):

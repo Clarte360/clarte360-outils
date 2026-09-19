@@ -1,3 +1,12 @@
+## 3.0.0-I9-J2C-PIP-LIAISON-I-CRM0-RC2 — 2026-09-19
+- CRM-0 : fiche plus compacte avec onglets Fiche / Notes & tâches / Actions liées / Timeline.
+- Ajout d’actions directes Ouvrir/Modifier et Supprimer sur la liste des contacts.
+- Suppression sécurisée d’une fiche CRM et de son contenu CRM uniquement ; les actions, bénéficiaires et études PIP/O*NET sont préservés.
+- Notes supprimables ; tâches modifiables, terminables et supprimables.
+- Liaison à une action existante réversible sans supprimer l’action.
+- Correctif « Créer une action pour ce contact » : navigation différée via _next_nav pour éviter l’incident Streamlit de session_state.
+- Conservation des correctifs RC1 marketing_opt_in -> marketing_consent et centres d’intérêt PIP PUBLIC.
+
 ## 3.0.0-I9-J2C-PIP-LIAISON-I-CRM0-RC1 — 2026-09-19
 - Correctif marketing PIP PUBLIC (`marketing_opt_in` -> consentement CRM).
 - Centres d’intérêt PIP PUBLIC conservés/visibles.
