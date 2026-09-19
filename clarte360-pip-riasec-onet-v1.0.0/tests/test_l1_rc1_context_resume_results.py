@@ -6,20 +6,19 @@ from clarte360_pip.journey import results_allowed
 
 ROOT=Path(__file__).resolve().parents[1]
 
-def test_120_context_examples_are_present_and_nonempty():
+def test_72_concrete_items_are_present_without_separate_examples():
     bank=load_pip_bank()
-    assert len(bank['items'])==120
-    assert len({x['item_id'] for x in bank['items']})==120
-    assert all(isinstance(x.get('exemple_concret'),str) and x['exemple_concret'].strip() for x in bank['items'])
-    assert bank.get('contextualisation_version')=='PIP-CONTEXT-0.4'
+    assert len(bank['items'])==72
+    assert len({x['item_id'] for x in bank['items']})==72
+    assert all(isinstance(x.get('texte_fr'),str) and x['texte_fr'].strip() for x in bank['items'])
+    assert all('exemple_concret' not in x for x in bank['items'])
 
-def test_context_does_not_change_original_question_texts():
+def test_first_item_is_concrete_v05():
     bank=load_pip_bank()
-    assert bank['items'][0]['texte_fr']=='Assembler des éléments pour fabriquer un objet fonctionnel.'
-    assert bank['items'][0]['exemple_concret'] != bank['items'][0]['texte_fr']
+    assert 'Assembler plusieurs pièces' in bank['items'][0]['texte_fr']
 
 def test_mid_passation_snapshot_restores_index_order_answers():
-    state={'passation_id':'p1','session_id':'s1','navigation_page':'pip_questionnaire','journey':'PIP_SEUL','pip_state':{'bank_version':'PIP-BANK-0.3','order':['a','b','c'],'answers':{'a':4,'b':2},'index':1},'pip_scoring':{},'onet_state':{},'feeling':{},'session_history':[]}
+    state={'passation_id':'p1','session_id':'s1','navigation_page':'pip_questionnaire','journey':'PIP_SEUL','pip_state':{'bank_version':'PIP-BANK-0.4','order':['a','b','c'],'answers':{'a':4,'b':2},'index':1},'pip_scoring':{},'onet_state':{},'feeling':{},'session_history':[]}
     payload=build_snapshot(state)
     target={}
     restore_snapshot(payload,target)

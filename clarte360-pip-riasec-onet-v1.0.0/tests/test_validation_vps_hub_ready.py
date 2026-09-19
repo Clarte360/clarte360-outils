@@ -33,6 +33,10 @@ def _hub_payload(**overrides):
         "action_id": "CLA0003",
         "participant_id": "PART-1",
         "prescription_id": "PRESC-1",
+        "beneficiary_first_name": "Alice",
+        "beneficiary_last_name": "Martin",
+        "action_number": "CLA0003",
+        "action_title": "Bilan de compétences",
         "scopes": ["PIP_RUN", "PIP_RESUME", "PIP_STATUS"],
         "return_mode": "OUTBOX",
     }

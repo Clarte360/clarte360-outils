@@ -10,15 +10,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_final_version():
     assert APP_VERSION == "1.0.10-l1-vps-hub-ready-guard-accompagnement"
-    assert BUILD_INCREMENT == "L1-D-VH1-GUARD-ACCOMP"
+    assert BUILD_INCREMENT == "L1-H1-RAPPORT-PUBLIC-SYNTHESE"
     assert FRAMEWORK_VPS_VERSION == "1.0"
 
 
 def test_runtime_bank_final_integrity():
     bank = load_pip_bank()
     assert_valid_bank(bank)
-    assert len(bank["items"]) == 120
-    assert len({x["item_id"] for x in bank["items"]}) == 120
+    assert len(bank["items"]) == 72
+    assert len({x["item_id"] for x in bank["items"]}) == 72
     assert RUNTIME_FILE.is_relative_to(RESOURCES_DIR)
 
 

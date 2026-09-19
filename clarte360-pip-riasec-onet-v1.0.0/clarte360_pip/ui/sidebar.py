@@ -19,6 +19,9 @@ def render_sidebar(mode_label: str) -> None:
     if st.sidebar.button("Accueil", use_container_width=True):
         st.session_state.navigation_page = "accueil"; st.rerun()
     if st.sidebar.button("RGPD et mentions", use_container_width=True):
+        current = st.session_state.get("navigation_page", "accueil")
+        if current not in {"rgpd", "timeout", "contact"}:
+            st.session_state.rgpd_return_page = current
         st.session_state.navigation_page = "rgpd"; st.rerun()
     if st.sidebar.button("Contacter Clarté360", use_container_width=True):
         st.session_state.navigation_page = "contact"; st.rerun()

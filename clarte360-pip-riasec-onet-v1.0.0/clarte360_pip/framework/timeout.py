@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .config import DEFAULT_SESSION_LIMIT_MINUTES
+from .persistence import RESUMABLE_PAGES, infer_resume_page
 
 
 def session_limit_minutes(secrets=None) -> int:
@@ -27,6 +28,14 @@ def is_timed_out(last_activity_at: str | None, now: datetime | None = None, limi
 def enforce_timeout() -> None:
     import streamlit as st
 
+    if st.session_state.get("navigation_page") == "timeout":
+        return
     limit = session_limit_minutes(st.secrets)
     if is_timed_out(st.session_state.get("last_activity_at"), limit_minutes=limit):
+        current = st.session_state.get("navigation_page")
+        if current in RESUMABLE_PAGES:
+            st.session_state.last_useful_page = current
+        elif not st.session_state.get("last_useful_page"):
+            st.session_state.last_useful_page = infer_resume_page(dict(st.session_state))
+        st.session_state.timeout_at = datetime.now().isoformat(timespec="seconds")
         st.session_state.navigation_page = "timeout"

@@ -10,4 +10,4 @@ L1-A definit seulement la frontiere `GestionActionsPort`. Le futur connecteur de
 
 ## ROME
 
-`RomePort` reserve la frontiere de recherche par profil RIASEC equivalent. Aucune recommandation, classement ou score de compatibilite n'est implemente.
+Depuis le Jalon F, `RomePort` charge le référentiel ROME/RIASEC versionné et propose une exploration limitée par profil RIASEC exact à deux lettres. Il ne calcule aucun score de compatibilité et ne produit ni recommandation ni prescription de métier.

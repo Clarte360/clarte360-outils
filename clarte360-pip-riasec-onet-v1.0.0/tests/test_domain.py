@@ -23,4 +23,8 @@ def test_accompaniment_context_valid():
         beneficiary_id="B1",
         action_id="A1",
         prescription_id="P1",
+        beneficiary_first_name="Alice",
+        beneficiary_last_name="Martin",
+        action_number="CLA0003",
+        action_title="Bilan de compétences",
     ).validate()

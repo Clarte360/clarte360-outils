@@ -1,0 +1,293 @@
+{
+  "schema_version": "PIP-INTERPRETATION-RUNTIME-1.0",
+  "interpretation_version": "PIP-INT-1.0",
+  "source_file": "REFERENTIEL_INTERPRETATION_PIP_RIASEC_CLARTE360_V1_0.xlsx",
+  "source_sha256": "0587352346e2595c35064ef22f26828f7035d2a568309750c55e07e1ecb67679",
+  "dimension_order": [
+    "R",
+    "I",
+    "A",
+    "S",
+    "E",
+    "C"
+  ],
+  "labels": {
+    "R": "Réaliste",
+    "I": "Investigateur",
+    "A": "Artistique",
+    "S": "Social",
+    "E": "Entreprenant",
+    "C": "Conventionnel"
+  },
+  "descriptions": {
+    "R": "Attirance pour les activités concrètes, techniques et pratiques, où l’on agit sur des objets, des matières, des équipements, le vivant ou un environnement réel.",
+    "I": "Attirance pour l’observation, l’analyse, la recherche d’informations, l’expérimentation, la compréhension et la résolution de problèmes.",
+    "A": "Attirance pour l’imagination, la création, l’expression et les activités laissant une place à l’originalité et aux choix personnels.",
+    "S": "Attirance pour les activités où l’on aide, transmet, conseille, accompagne, soigne ou rend un service directement utile à d’autres personnes.",
+    "E": "Attirance pour l’initiative, la persuasion, la négociation, la décision, la direction et la mobilisation autour d’objectifs.",
+    "C": "Attirance pour l’organisation, la fiabilité, le suivi, les règles, les données, les procédures et les processus structurés."
+  },
+  "bands": [
+    {
+      "rule_id": "B01",
+      "min_inclus": 0,
+      "max_inclus": 24.999,
+      "libelle": "très peu marqué",
+      "texte_autorise": "vos réponses traduisent globalement peu d’attirance pour les activités de cette famille",
+      "statut": "ACTIF"
+    },
+    {
+      "rule_id": "B02",
+      "min_inclus": 25,
+      "max_inclus": 44.999,
+      "libelle": "plutôt peu marqué",
+      "texte_autorise": "l’attirance exprimée reste plutôt limitée, même si certaines activités peuvent vous intéresser",
+      "statut": "ACTIF"
+    },
+    {
+      "rule_id": "B03",
+      "min_inclus": 45,
+      "max_inclus": 59.999,
+      "libelle": "intermédiaire",
+      "texte_autorise": "vos réponses se situent autour d’une zone partagée, sans attirance ni rejet fortement affirmé",
+      "statut": "ACTIF"
+    },
+    {
+      "rule_id": "B04",
+      "min_inclus": 60,
+      "max_inclus": 79.999,
+      "libelle": "marqué",
+      "texte_autorise": "vos réponses traduisent une attirance assez nette pour cette famille d’activités",
+      "statut": "ACTIF"
+    },
+    {
+      "rule_id": "B05",
+      "min_inclus": 80,
+      "max_inclus": 100.001,
+      "libelle": "très marqué",
+      "texte_autorise": "vos réponses traduisent une attirance très nette pour cette famille d’activités",
+      "statut": "ACTIF"
+    }
+  ],
+  "relief_rules": [
+    {
+      "rule_id": "R01",
+      "spread_min_inclus": 0,
+      "spread_max_inclus": 10,
+      "libelle": "très homogène",
+      "texte_autorise": "Les six dimensions sont très proches : le classement donne peu de relief au profil. Il est préférable de regarder les nuances, les facettes et votre expérience plutôt que de chercher une dominante unique.",
+      "statut": "ACTIF"
+    },
+    {
+      "rule_id": "R02",
+      "spread_min_inclus": 10.000001,
+      "spread_max_inclus": 24,
+      "libelle": "peu contrasté",
+      "texte_autorise": "Les écarts entre dimensions restent limités : plusieurs familles d’activités peuvent coexister sans qu’une seule structure fortement le profil.",
+      "statut": "ACTIF"
+    },
+    {
+      "rule_id": "R03",
+      "spread_min_inclus": 24.000001,
+      "spread_max_inclus": 44,
+      "libelle": "contrasté",
+      "texte_autorise": "Le profil présente des écarts suffisamment visibles pour distinguer des zones d’intérêt plus et moins présentes, tout en conservant plusieurs pôles possibles.",
+      "statut": "ACTIF"
+    },
+    {
+      "rule_id": "R04",
+      "spread_min_inclus": 44.000001,
+      "spread_max_inclus": 100.001,
+      "libelle": "très contrasté",
+      "texte_autorise": "Le profil présente de forts écarts entre les dimensions les plus et les moins élevées. Certaines familles d’activités ressortent donc nettement davantage que d’autres.",
+      "statut": "ACTIF"
+    }
+  ],
+  "head_gap_rules": [
+    {
+      "rule_id": "T01",
+      "gap_min_inclus": 0,
+      "gap_max_inclus": 10,
+      "libelle": "double tête très proche",
+      "texte_modele": "Les deux premières dimensions, {top_code} et {second_code}, sont très proches ({top_score:.0f} et {second_score:.0f}). Il est plus juste de les lire comme deux pôles associés que comme une première et une seconde nettement séparées.",
+      "statut": "ACTIF"
+    },
+    {
+      "rule_id": "T02",
+      "gap_min_inclus": 10.000001,
+      "gap_max_inclus": 19,
+      "libelle": "première dimension légèrement détachée",
+      "texte_modele": "La première dimension {top_code} ({top_score:.0f}) devance {second_code} ({second_score:.0f}), mais l’écart reste modéré. Les deux dimensions méritent d’être examinées ensemble.",
+      "statut": "ACTIF"
+    },
+    {
+      "rule_id": "T03",
+      "gap_min_inclus": 19.000001,
+      "gap_max_inclus": 100.001,
+      "libelle": "première dimension nettement détachée",
+      "texte_modele": "La première dimension {top_code} ({top_score:.0f}) se détache nettement de {second_code} ({second_score:.0f}). Elle donne davantage de relief au profil, sans constituer pour autant une aptitude ou une prescription professionnelle.",
+      "statut": "ACTIF"
+    }
+  ],
+  "summary_scenarios": [
+    {
+      "priorite": 10,
+      "rule_id": "S01",
+      "top_lt": 45,
+      "top_gte": null,
+      "second_gte": null,
+      "gap12_lte": null,
+      "gap12_gte": null,
+      "headline_modele": "{top_code} arrive en tête, mais aucune forte dominante ne ressort",
+      "summary_modele": "{top_code} - {top_label} est votre dimension la plus élevée ({top_score:.0f}/100), mais ce niveau reste plutôt bas sur l’échelle PIP. Le premier rang signifie donc surtout qu’elle est la plus élevée relativement aux autres dimensions ; il ne signifie pas qu’il s’agit d’un intérêt fortement affirmé.",
+      "statut": "ACTIF"
+    },
+    {
+      "priorite": 20,
+      "rule_id": "S02",
+      "top_lt": null,
+      "top_gte": 60,
+      "second_gte": 60,
+      "gap12_lte": 10,
+      "gap12_gte": null,
+      "headline_modele": "Deux dimensions ressortent à un niveau proche",
+      "summary_modele": "{top_code} - {top_label} ({top_score:.0f}/100) et {second_code} - {second_label} ({second_score:.0f}/100) forment deux pôles d’intérêt proches. Il serait réducteur de présenter la première comme une dominante unique.",
+      "statut": "ACTIF"
+    },
+    {
+      "priorite": 30,
+      "rule_id": "S03",
+      "top_lt": null,
+      "top_gte": 80,
+      "second_gte": null,
+      "gap12_lte": null,
+      "gap12_gte": 15,
+      "headline_modele": "Une dominante {top_label_lower} très marquée se détache",
+      "summary_modele": "{top_code} - {top_label} atteint {top_score:.0f}/100 et se détache nettement de la dimension suivante. Cela traduit une attirance déclarée particulièrement forte pour cette famille d’activités, et non une compétence ou une aptitude supérieure.",
+      "statut": "ACTIF"
+    },
+    {
+      "priorite": 99,
+      "rule_id": "S99",
+      "top_lt": null,
+      "top_gte": null,
+      "second_gte": null,
+      "gap12_lte": null,
+      "gap12_gte": null,
+      "headline_modele": "{top_code} - {top_label} constitue le premier pôle du profil",
+      "summary_modele": "{top_code} - {top_label} arrive en tête à {top_score:.0f}/100. Son sens dépend à la fois de ce niveau absolu et de l’écart avec les autres dimensions : un rang ne s’interprète jamais seul.",
+      "statut": "ACTIF"
+    }
+  ],
+  "safeguards": [
+    {
+      "id": "G01",
+      "regle": "Le PIP mesure des intérêts professionnels, pas des compétences.",
+      "consequence_pour_le_rapport": "Ne jamais transformer un score élevé en aptitude, capacité ou niveau de compétence.",
+      "statut": "ACTIF"
+    },
+    {
+      "id": "G02",
+      "regle": "Le classement relatif ne remplace pas le niveau absolu.",
+      "consequence_pour_le_rapport": "Une première dimension à 31/100 ne doit pas être décrite comme une forte dominante.",
+      "statut": "ACTIF"
+    },
+    {
+      "id": "G03",
+      "regle": "Les seuils sont descriptifs Clarté360 et non normatifs.",
+      "consequence_pour_le_rapport": "Ne pas employer percentile, norme, population de référence, diagnostic ou seuil clinique.",
+      "statut": "ACTIF"
+    },
+    {
+      "id": "G04",
+      "regle": "Les écarts et quasi-égalités doivent être visibles.",
+      "consequence_pour_le_rapport": "Ne pas forcer une dominante unique lorsque les deux premières dimensions sont proches.",
+      "statut": "ACTIF"
+    },
+    {
+      "id": "G05",
+      "regle": "Les 30 facettes sont des indicateurs descriptifs.",
+      "consequence_pour_le_rapport": "Avec 2 ou 3 items par facette, ne pas les présenter comme 30 sous-échelles psychométriques validées.",
+      "statut": "ACTIF"
+    },
+    {
+      "id": "G06",
+      "regle": "Le PIP ne prescrit pas de métier.",
+      "consequence_pour_le_rapport": "Les rapprochements professionnels servent à explorer, jamais à recommander automatiquement un métier.",
+      "statut": "ACTIF"
+    },
+    {
+      "id": "G07",
+      "regle": "Ce référentiel ne s’applique pas à O*NET.",
+      "consequence_pour_le_rapport": "Ne pas appliquer les bandes 0–100 PIP aux scores O*NET.",
+      "statut": "ACTIF"
+    }
+  ],
+  "examples": [
+    {
+      "case_id": "EX01",
+      "R": 31,
+      "I": 28,
+      "A": 26,
+      "S": 24,
+      "E": 22,
+      "C": 20,
+      "ordre_attendu": "R,I,A,S,E,C",
+      "scenario_attendu": "S01",
+      "relief_attendu": "peu contrasté",
+      "commentaire": "Première dimension basse : ne pas parler de forte dominante."
+    },
+    {
+      "case_id": "EX02",
+      "R": 35,
+      "I": 48,
+      "A": 87,
+      "S": 93,
+      "E": 42,
+      "C": 30,
+      "ordre_attendu": "S,A,I,E,R,C",
+      "scenario_attendu": "S02",
+      "relief_attendu": "très contrasté",
+      "commentaire": "Deux pôles élevés et proches : 93/87."
+    },
+    {
+      "case_id": "EX03",
+      "R": 30,
+      "I": 41,
+      "A": 52,
+      "S": 93,
+      "E": 35,
+      "C": 20,
+      "ordre_attendu": "S,A,I,E,R,C",
+      "scenario_attendu": "S03",
+      "relief_attendu": "très contrasté",
+      "commentaire": "Dominante élevée très détachée : 93/52."
+    },
+    {
+      "case_id": "EX04",
+      "R": 62,
+      "I": 60,
+      "A": 58,
+      "S": 57,
+      "E": 55,
+      "C": 53,
+      "ordre_attendu": "R,I,A,S,E,C",
+      "scenario_attendu": "S02",
+      "relief_attendu": "très homogène",
+      "commentaire": "Profil très homogène ; deux premières proches mais niveaux marqués."
+    },
+    {
+      "case_id": "EX05",
+      "R": 78,
+      "I": 65,
+      "A": 50,
+      "S": 45,
+      "E": 35,
+      "C": 25,
+      "ordre_attendu": "R,I,A,S,E,C",
+      "scenario_attendu": "S99",
+      "relief_attendu": "très contrasté",
+      "commentaire": "Premier pôle marqué, écart intermédiaire avec le second."
+    }
+  ]
+}

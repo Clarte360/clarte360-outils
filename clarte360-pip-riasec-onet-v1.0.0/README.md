@@ -21,7 +21,7 @@ Première version testable de la vraie application PIP RIASEC Clarté360. Le mot
 - tests automatisés et recette utilisateur L1.
 
 ## Hors périmètre volontaire L1
-La passation O*NET réelle/API, la restitution/rapport professionnel final, l'exploration ROME finale et l'intégration signée Gestion des actions appartiennent aux lots suivants. Aucun O*NET seul n'est proposé.
+La passation O*NET réelle/API, les rapports séparés PIP/O*NET et l'exploration ROME du rapport PIP sont désormais intégrés. L'intégration complète des événements sortants vers Gestion des actions appartient aux jalons suivants. Aucun O*NET seul n'est proposé.
 
 ## Lancer en développement
 ```bash

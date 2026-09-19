@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_versions_and_required_layout():
     assert APP_VERSION == "1.0.10-l1-vps-hub-ready-guard-accompagnement"
-    assert BUILD_INCREMENT == "L1-D-VH1-GUARD-ACCOMP"
+    assert BUILD_INCREMENT == "L1-H1-RAPPORT-PUBLIC-SYNTHESE"
     assert FRAMEWORK_VERSION == "4.0"
     assert FRAMEWORK_VPS_VERSION == "1.0"
     for rel in [
@@ -35,7 +35,7 @@ def test_four_master_sources_are_carried_forward():
     }
     names = {p.name for p in src.iterdir() if p.is_file()}
     assert expected.issubset(names)
-    assert names - expected <= {"CLARTE360_PIP_RIASEC_TABLEUR_MAITRE_V0_4_CONTEXTES.xlsx"}
+    assert names - expected <= {"CLARTE360_PIP_RIASEC_TABLEUR_MAITRE_V0_4_CONTEXTES.xlsx", "CLARTE360_PIP_RIASEC_TABLEUR_MAITRE_V0_5_BANQUE72.xlsx", "CLARTE360_PIP_RIASEC_TABLEUR_MAITRE_V0_6_ACTIF.xlsx", "REFERENTIEL_INTERPRETATION_PIP_RIASEC_CLARTE360_V1_0.xlsx"}
     assert (ROOT / "docs" / "references" / "rome_riasec_clarte360.xlsx").exists()
 
 
@@ -75,7 +75,7 @@ def test_vps_forbidden_artifacts_are_ignored_by_git():
 
 
 def test_versioned_runtime_is_not_under_ignored_data_directory():
-    assert (ROOT / "resources/runtime/pip_bank_PIP-BANK-0.3.json").is_file()
+    assert (ROOT / "resources/runtime/pip_bank_PIP-BANK-0.4.json").is_file()
     assert (ROOT / "resources/schemas/pip_run_schema_v0.json").is_file()
     assert not (ROOT / "data/runtime").exists()
     assert not (ROOT / "data/schemas").exists()

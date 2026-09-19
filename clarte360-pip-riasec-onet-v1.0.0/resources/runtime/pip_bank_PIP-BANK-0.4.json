@@ -1,0 +1,678 @@
+{
+  "schema_version": "PIP-RUNTIME-1.0",
+  "bank_version": "PIP-BANK-0.4",
+  "source_file": "CLARTE360_PIP_RIASEC_TABLEUR_MAITRE_V0_5_BANQUE72.xlsx",
+  "source_sha256": "8e15a76ea331ffcb5df6c7a2ec2444199efec370bfc455f387492d9904d21523",
+  "dimensions_order": [
+    "R",
+    "I",
+    "A",
+    "S",
+    "E",
+    "C"
+  ],
+  "blocks_order": [
+    "ACT",
+    "SIT",
+    "ENV"
+  ],
+  "response_scale": {
+    "1": "Cela ne m’attire pas du tout",
+    "2": "Cela m’attire peu",
+    "3": "Je suis partagé(e) / sans préférence marquée",
+    "4": "Cela m’attire",
+    "5": "Cela m’attire beaucoup"
+  },
+  "items": [
+    {
+      "item_id": "PIP-ACT-R-R1-001",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R1",
+      "texte_fr": "Assembler les pièces d’un petit meuble ou d’un support pour qu’il soit solide et utilisable."
+    },
+    {
+      "item_id": "PIP-ACT-R-R1-002",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R1",
+      "texte_fr": "Travailler du bois, du métal ou un autre matériau pour obtenir une pièce ayant une fonction précise."
+    },
+    {
+      "item_id": "PIP-SIT-R-R1-003",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "R",
+      "facette": "R1",
+      "texte_fr": "À partir de pièces séparées, réaliser concrètement une étagère, un présentoir ou une petite structure."
+    },
+    {
+      "item_id": "PIP-ACT-R-R2-005",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R2",
+      "texte_fr": "Installer un poste de travail, un appareil ou un équipement puis vérifier qu’il fonctionne."
+    },
+    {
+      "item_id": "PIP-ACT-R-R2-006",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R2",
+      "texte_fr": "Rechercher la panne d’un appareil simple puis intervenir concrètement pour le remettre en service."
+    },
+    {
+      "item_id": "PIP-ACT-R-R3-009",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R3",
+      "texte_fr": "Utiliser des outils de mesure et des outils manuels pour réaliser un montage avec précision."
+    },
+    {
+      "item_id": "PIP-ACT-R-R3-010",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R3",
+      "texte_fr": "Régler une machine ou un équipement pour obtenir une dimension, une forme ou un résultat précis."
+    },
+    {
+      "item_id": "PIP-SIT-R-R3-011",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "R",
+      "facette": "R3",
+      "texte_fr": "Réaliser une opération qui demande de manipuler directement un appareil, une machine ou un instrument."
+    },
+    {
+      "item_id": "PIP-ACT-R-R4-013",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R4",
+      "texte_fr": "Se déplacer sur plusieurs sites pour constater une situation et intervenir directement sur place."
+    },
+    {
+      "item_id": "PIP-ACT-R-R4-014",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R4",
+      "texte_fr": "Passer l’essentiel de sa journée de travail dehors, sur un chantier, un site naturel ou un espace extérieur."
+    },
+    {
+      "item_id": "PIP-ACT-R-R5-017",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R5",
+      "texte_fr": "S’occuper concrètement de cultures, de plantes ou d’animaux : nourrir, entretenir, surveiller leur état."
+    },
+    {
+      "item_id": "PIP-ACT-R-R5-018",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "R",
+      "facette": "R5",
+      "texte_fr": "Manipuler des matériaux, déplacer des éléments ou préparer physiquement des produits pour réaliser une opération utile."
+    },
+    {
+      "item_id": "PIP-ACT-I-I1-001",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I1",
+      "texte_fr": "Observer un fonctionnement, un phénomène ou une situation et relever les détails importants avant de conclure."
+    },
+    {
+      "item_id": "PIP-ACT-I-I1-002",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I1",
+      "texte_fr": "Comparer deux séries d’informations ou d’observations pour identifier précisément ce qui diffère."
+    },
+    {
+      "item_id": "PIP-SIT-I-I1-003",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "I",
+      "facette": "I1",
+      "texte_fr": "Face à une situation inhabituelle, prendre le temps d’examiner les faits avant d’avancer une explication."
+    },
+    {
+      "item_id": "PIP-ACT-I-I2-005",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I2",
+      "texte_fr": "Analyser plusieurs données pour comprendre comment elles sont liées et ce qu’elles expliquent."
+    },
+    {
+      "item_id": "PIP-ACT-I-I2-006",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I2",
+      "texte_fr": "Découper un problème complexe en plusieurs questions plus simples afin d’en comprendre la logique."
+    },
+    {
+      "item_id": "PIP-SIT-I-I2-007",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "I",
+      "facette": "I2",
+      "texte_fr": "Un problème n’a pas de réponse évidente : raisonner étape par étape pour comprendre ce qui se passe."
+    },
+    {
+      "item_id": "PIP-ACT-I-I3-009",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I3",
+      "texte_fr": "Chercher des informations dans plusieurs sources fiables pour répondre à une question précise."
+    },
+    {
+      "item_id": "PIP-ACT-I-I3-010",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I3",
+      "texte_fr": "Vérifier une information incertaine en recoupant des sources et en recherchant des éléments de preuve."
+    },
+    {
+      "item_id": "PIP-ACT-I-I4-013",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I4",
+      "texte_fr": "Tester une hypothèse en définissant une manière simple de vérifier si elle se confirme."
+    },
+    {
+      "item_id": "PIP-ACT-I-I4-014",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I4",
+      "texte_fr": "Réaliser plusieurs essais en modifiant un paramètre pour comprendre ce qui change le résultat."
+    },
+    {
+      "item_id": "PIP-ACT-I-I5-017",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I5",
+      "texte_fr": "Rechercher la cause d’un dysfonctionnement ou d’un phénomène avant de proposer une explication."
+    },
+    {
+      "item_id": "PIP-ACT-I-I5-018",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "I",
+      "facette": "I5",
+      "texte_fr": "Résoudre un problème nouveau en utilisant les informations disponibles pour construire une solution raisonnée."
+    },
+    {
+      "item_id": "PIP-ACT-A-A1-001",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A1",
+      "texte_fr": "Imaginer plusieurs concepts différents pour répondre à un même thème ou à une même demande."
+    },
+    {
+      "item_id": "PIP-ACT-A-A1-002",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A1",
+      "texte_fr": "Inventer une manière originale de présenter un message, un objet ou une expérience."
+    },
+    {
+      "item_id": "PIP-SIT-A-A1-003",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "A",
+      "facette": "A1",
+      "texte_fr": "Une demande est ouverte et aucune solution n’est imposée : imaginer une proposition nouvelle et personnelle."
+    },
+    {
+      "item_id": "PIP-ACT-A-A2-005",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A2",
+      "texte_fr": "Concevoir librement la mise en page d’une affiche, d’une brochure ou d’un support visuel pour transmettre une intention."
+    },
+    {
+      "item_id": "PIP-ACT-A-A2-006",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A2",
+      "texte_fr": "Composer un ensemble en choisissant personnellement la disposition des formes, textes, images, sons ou autres éléments."
+    },
+    {
+      "item_id": "PIP-SIT-A-A2-007",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "A",
+      "facette": "A2",
+      "texte_fr": "Créer une proposition en décidant librement comment agencer les éléments d’un support visuel, d’un espace ou d’une présentation créative."
+    },
+    {
+      "item_id": "PIP-ACT-A-A3-009",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A3",
+      "texte_fr": "Écrire un texte, un récit ou un message destiné à faire ressentir une idée, une émotion ou un point de vue."
+    },
+    {
+      "item_id": "PIP-ACT-A-A3-010",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A3",
+      "texte_fr": "Transformer un sujet factuel en récit vivant pour capter l’attention d’un public."
+    },
+    {
+      "item_id": "PIP-ACT-A-A4-013",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A4",
+      "texte_fr": "Créer une affiche, une illustration ou une composition visuelle en jouant librement sur les formes et les couleurs."
+    },
+    {
+      "item_id": "PIP-ACT-A-A4-014",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A4",
+      "texte_fr": "Imaginer l’ambiance d’un espace, d’un événement ou d’un contenu à partir de sons, d’images, de matières ou de lumière."
+    },
+    {
+      "item_id": "PIP-ACT-A-A5-017",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A5",
+      "texte_fr": "Explorer plusieurs pistes créatives pour un même projet avant de retenir celle qui exprime le mieux l’intention recherchée."
+    },
+    {
+      "item_id": "PIP-ACT-A-A5-018",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "A",
+      "facette": "A5",
+      "texte_fr": "Repenser une manière habituelle de présenter ou de réaliser quelque chose afin de proposer une approche originale."
+    },
+    {
+      "item_id": "PIP-ACT-S-S1-001",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S1",
+      "texte_fr": "Expliquer une notion à une personne jusqu’à ce qu’elle puisse la comprendre par elle-même."
+    },
+    {
+      "item_id": "PIP-ACT-S-S1-002",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S1",
+      "texte_fr": "Montrer étape par étape à quelqu’un comment réaliser une tâche pour qu’il puisse ensuite la refaire seul."
+    },
+    {
+      "item_id": "PIP-SIT-S-S1-003",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "S",
+      "facette": "S1",
+      "texte_fr": "Une personne ne comprend pas une première explication : chercher une autre manière de lui présenter les choses."
+    },
+    {
+      "item_id": "PIP-ACT-S-S2-005",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S2",
+      "texte_fr": "Accompagner une personne dans les étapes nécessaires pour atteindre un objectif qui compte pour elle."
+    },
+    {
+      "item_id": "PIP-ACT-S-S2-006",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S2",
+      "texte_fr": "Soutenir quelqu’un qui traverse une difficulté professionnelle ou personnelle liée à son parcours."
+    },
+    {
+      "item_id": "PIP-SIT-S-S2-007",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "S",
+      "facette": "S2",
+      "texte_fr": "Être présent auprès d’une personne pendant un changement important et l’aider à avancer progressivement."
+    },
+    {
+      "item_id": "PIP-ACT-S-S3-009",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S3",
+      "texte_fr": "Écouter la situation d’une personne puis l’aider à repérer les différentes options possibles."
+    },
+    {
+      "item_id": "PIP-ACT-S-S3-010",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S3",
+      "texte_fr": "Donner à quelqu’un les informations utiles pour qu’il puisse prendre lui-même une décision éclairée."
+    },
+    {
+      "item_id": "PIP-ACT-S-S4-013",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S4",
+      "texte_fr": "Aider concrètement une personne fragilisée à préserver ou retrouver son confort, sa santé ou son autonomie."
+    },
+    {
+      "item_id": "PIP-ACT-S-S4-014",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S4",
+      "texte_fr": "Réaliser des gestes d’assistance ou de prévention destinés à protéger la santé ou la sécurité d’une personne."
+    },
+    {
+      "item_id": "PIP-ACT-S-S5-017",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S5",
+      "texte_fr": "Accueillir une personne, comprendre ce dont elle a besoin et l’aider à obtenir le service recherché."
+    },
+    {
+      "item_id": "PIP-ACT-S-S5-018",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "S",
+      "facette": "S5",
+      "texte_fr": "Répondre concrètement à la demande d’un usager ou d’un client afin de lui faciliter une démarche."
+    },
+    {
+      "item_id": "PIP-ACT-E-E1-001",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E1",
+      "texte_fr": "Lancer un nouveau service, une activité ou un projet à partir d’une idée ou d’une opportunité identifiée."
+    },
+    {
+      "item_id": "PIP-ACT-E-E1-002",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E1",
+      "texte_fr": "Chercher de nouvelles possibilités pour développer un projet, une activité ou une offre existante."
+    },
+    {
+      "item_id": "PIP-SIT-E-E1-003",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "E",
+      "facette": "E1",
+      "texte_fr": "Repérer une opportunité et prendre l’initiative de réunir les moyens nécessaires pour en faire un projet concret."
+    },
+    {
+      "item_id": "PIP-ACT-E-E2-005",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E2",
+      "texte_fr": "Présenter une proposition à un client, une équipe ou un partenaire de façon à susciter son adhésion."
+    },
+    {
+      "item_id": "PIP-ACT-E-E2-006",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E2",
+      "texte_fr": "Promouvoir un produit, un service, un projet ou une idée auprès d’un public susceptible d’être intéressé."
+    },
+    {
+      "item_id": "PIP-SIT-E-E2-007",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "E",
+      "facette": "E2",
+      "texte_fr": "Défendre une proposition devant des personnes hésitantes afin de les convaincre de la retenir."
+    },
+    {
+      "item_id": "PIP-ACT-E-E3-009",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E3",
+      "texte_fr": "Négocier avec plusieurs parties les conditions d’un accord afin de parvenir à une solution acceptable."
+    },
+    {
+      "item_id": "PIP-ACT-E-E3-010",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E3",
+      "texte_fr": "Rechercher un compromis lorsque deux personnes ou organisations défendent des intérêts différents."
+    },
+    {
+      "item_id": "PIP-ACT-E-E4-013",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E4",
+      "texte_fr": "Coordonner plusieurs personnes, répartir les responsabilités et suivre l’avancement d’un projet."
+    },
+    {
+      "item_id": "PIP-ACT-E-E4-014",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E4",
+      "texte_fr": "Prendre une décision qui donne une direction claire à une équipe ou à un projet."
+    },
+    {
+      "item_id": "PIP-ACT-E-E5-017",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E5",
+      "texte_fr": "Prendre la parole au nom d’une organisation, d’un projet ou d’une cause devant des interlocuteurs externes."
+    },
+    {
+      "item_id": "PIP-ACT-E-E5-018",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "E",
+      "facette": "E5",
+      "texte_fr": "Mobiliser plusieurs personnes autour d’un objectif et leur donner envie de contribuer."
+    },
+    {
+      "item_id": "PIP-ACT-C-C1-001",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C1",
+      "texte_fr": "Organiser des dossiers ou informations dans une arborescence claire afin qu’ils soient rapidement retrouvés."
+    },
+    {
+      "item_id": "PIP-ACT-C-C1-002",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C1",
+      "texte_fr": "Classer des documents ou des données selon des catégories et des règles définies."
+    },
+    {
+      "item_id": "PIP-SIT-C-C1-003",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "C",
+      "facette": "C1",
+      "texte_fr": "Reprendre un ensemble de fichiers ou d’informations dispersés et les réorganiser pour qu’ils deviennent faciles à utiliser."
+    },
+    {
+      "item_id": "PIP-ACT-C-C2-005",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C2",
+      "texte_fr": "Saisir avec précision des informations dans un dossier, une base ou un système de suivi."
+    },
+    {
+      "item_id": "PIP-ACT-C-C2-006",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C2",
+      "texte_fr": "Mettre à jour régulièrement un fichier de suivi afin que les informations restent exactes et actuelles."
+    },
+    {
+      "item_id": "PIP-SIT-C-C2-007",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "SIT",
+      "dimension": "C",
+      "facette": "C2",
+      "texte_fr": "Reprendre un dossier contenant des informations manquantes, les compléter et vérifier qu’il est à jour."
+    },
+    {
+      "item_id": "PIP-ACT-C-C3-009",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C3",
+      "texte_fr": "Contrôler des informations avant leur utilisation afin de vérifier qu’elles sont exactes et complètes."
+    },
+    {
+      "item_id": "PIP-ACT-C-C3-010",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C3",
+      "texte_fr": "Comparer des données entre plusieurs documents pour repérer une erreur, un écart ou une incohérence."
+    },
+    {
+      "item_id": "PIP-ACT-C-C4-013",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C4",
+      "texte_fr": "Réaliser une opération en suivant une procédure précise afin de respecter les règles prévues."
+    },
+    {
+      "item_id": "PIP-ACT-C-C4-014",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C4",
+      "texte_fr": "Contrôler qu’une opération, un dossier ou une activité respecte les critères et règles applicables."
+    },
+    {
+      "item_id": "PIP-ACT-C-C5-017",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C5",
+      "texte_fr": "Suivre un dossier depuis son ouverture jusqu’à sa clôture en vérifiant que chaque étape est réalisée."
+    },
+    {
+      "item_id": "PIP-ACT-C-C5-018",
+      "item_version": "0.5",
+      "statut": "PILOTE",
+      "bloc": "ACT",
+      "dimension": "C",
+      "facette": "C5",
+      "texte_fr": "Planifier plusieurs échéances et vérifier régulièrement que les opérations prévues sont réalisées au bon moment."
+    }
+  ],
+  "contextualisation_version": "PIP-CONTEXT-0.4",
+  "methodology_note": "72 items: 12 par dimension, 30 facettes couvertes (>=2 items/facette). Formulations concrètes intégrées dans la question; aucun exemple séparé."
+}

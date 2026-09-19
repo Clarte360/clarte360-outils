@@ -24,6 +24,10 @@ def payload(**overrides):
         "action_id": "CLA0003",
         "participant_id": "PART-1",
         "prescription_id": "PRESC-1",
+        "beneficiary_first_name": "Alice",
+        "beneficiary_last_name": "Martin",
+        "action_number": "CLA0003",
+        "action_title": "Bilan de compétences",
         "rights": ["PIP_RUN"],
     }
     base.update(overrides)

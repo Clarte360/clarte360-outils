@@ -1,3 +1,29 @@
+## Jalon E - 2026-09-18
+- Rapport PDF professionnel Clarté360 PIP-RPT-1.0.
+- Restitution PIP : classement, graphique, code Holland non forcé, descriptions dominantes et limites.
+- Restitution O*NET séparée et comparaison descriptive des rangs si passation effectuée.
+- Ressenti séparé du scoring.
+- Téléchargement PDF final PUBLIC et ACCOMPAGNEMENT.
+- Génération locale déterministe sans dépendance réseau.
+
+## Jalon A1 — 18/09/2026
+- Tableur maître actif porté en V0.6 avec trois onglets de travail visibles : `01_QUESTIONS_72`, `02_REPONSES_CONSIGNE`, `03_REVUE_HISTORIQUE`.
+- Les onglets historiques et techniques sont conservés mais masqués par défaut.
+- Les 72 items restent équilibrés : 12 par dimension R/I/A/S/E/C et 30 facettes couvertes.
+- Formulations finales centrées sur l’intérêt pour une activité professionnelle, indépendamment du métier actuel et de la compétence perçue.
+- Échelle PIP harmonisée : de « Je n’aimerais pas du tout faire cela » à « J’aimerais beaucoup faire cela ».
+- Nouvelle banque `PIP-BANK-0.5`, `item_version=0.6`.
+- Le tableur maître devient la source métier contrôlée ; `scripts/build_pip_runtime.py` génère le JSON runtime et `--check` détecte tout écart tableur/JSON.
+- Aucun changement de formule de scoring.
+- 121 tests automatisés réussis.
+
+## Jalon A — 18/09/2026
+- Banque PIP portée de 120 à 72 items (12 par dimension).
+- 30 facettes conservées, au moins 2 items par facette.
+- Questions concrétisées à partir de la revue de contextualisation V0.4 ; suppression des exemples séparés du runtime.
+- Tableur maître V0.5 ajouté ; historique 120 conservé.
+- Scoring inchangé.
+
 # Changelog
 
 ## 1.0.5-l1-vps — RC3
@@ -104,3 +130,92 @@
 - Si O*NET a été réalisé, son état terminé et ses résultats descriptifs sont ajoutés au résumé ; sinon la section reste absente.
 - Aucun changement du questionnaire PIP, des 120 items, du scoring RIASEC/Holland, du mode PUBLIC ou du mécanisme de reprise serveur.
 
+
+## Jalon B — RGPD / navigation / sauvegarde / reprise / timeout — 2026-09-18
+- Consentement RGPD reconnu par version de texte : une validation déjà enregistrée n'est plus redemandée tant que la version RGPD n'a pas changé.
+- Parcours PUBLIC réordonné : information RGPD avant la saisie d'identité et la vérification e-mail.
+- Consultation des pages Accueil et RGPD sans remise à zéro d'une passation existante.
+- Conservation et restauration explicites de `rgpd_acceptance`, `study_consent`, du choix de parcours et du timing O*NET.
+- Reprise protégée : une passation PIP déjà commencée n'est plus réinitialisée par le bouton de démarrage ; le parcours reprend au bon écran utile.
+- Sauvegardes manuelles et sauvegardes timeout utilisent désormais la même logique de destination de reprise.
+- Un snapshot créé sur l'écran timeout ne contient jamais `navigation_page=timeout` comme cible de reprise ; les anciens snapshots timeout sont réparés à l'import.
+- Réinitialisation de l'horloge d'inactivité lors d'une restauration JSON.
+- Message et bouton timeout alignés sur le CDC, avec rappel qu'un seul téléchargement suffit.
+- Import + reprise JSON disponible également depuis l'écran timeout.
+- Compatibilité de chargement préparée par `bank_version` afin de ne pas imposer une réinitialisation lorsqu'une banque runtime correspondante est disponible.
+- Aucun changement du scoring RIASEC/Holland, de la banque active 72 items ni d'O*NET.
+
+## Jalon C — séparation PUBLIC / ACCOMPAGNEMENT — 2026-09-18
+- Le PIP sait désormais consommer quatre données d’affichage signées distinctes des identifiants techniques : prénom, nom, numéro d’action lisible et intitulé de l’action ; pendant la transition avec Gestion des Actions, leur absence reste rétrocompatible et déclenche des libellés neutres sans exposition d’ID.
+- L’écran bénéficiaire n’affiche plus `beneficiary_id` ni `action_id` ; il affiche uniquement le nom lisible du bénéficiaire et le libellé lisible de l’action.
+- Les identifiants techniques restent disponibles côté serveur pour sauvegarde, reprise et contrats Gestion des Actions, sans exposition à l’utilisateur.
+- Suppression complète de la question « Souhaitez-vous approfondir certains éléments avec votre accompagnateur ? ».
+- Le questionnaire de ressenti devient strictement neutre entre PUBLIC et ACCOMPAGNEMENT ; le mode est tracé dans l’enregistrement du ressenti.
+- Aucun mécanisme marketing/public n’est ajouté au parcours ACCOMPAGNEMENT.
+- Aucun changement du scoring RIASEC/Holland, de la banque active 72 items, du tableur maître V0.6, d’O*NET, du timeout ou de la reprise du Jalon B.
+
+
+## Jalon D — 18/09/2026
+- Consolidation de l'intégration officielle O*NET Interest Profiler Short Form 60 via Web Services API v2.
+- Validation stricte des 60 réponses 1–5 et envoi dans l'ordre officiel.
+- Résultats O*NET conservés sur leur échelle officielle et présentés par score décroissant.
+- Comparaison PIP/O*NET explicitement descriptive : aucun recalcul, aucune fusion, aucune moyenne des scores.
+- Chronologie PRE_PIP / POST_PIP_RESULTS conservée dans l'état O*NET.
+- Banque PIP, scoring PIP et tableur maître inchangés.
+
+## 2026-09-18 - Jalon E1
+- Séparation stricte des rapports PIP Clarté360 et O*NET.
+- Rapport PIP PIP-RPT-1.1 : explication autonome RIASEC/PIP, hexagone-radar, lecture des 6 dimensions, 30 facettes Clarté360 avec indicateurs descriptifs et précautions, usage en accompagnement.
+- Rapport O*NET ONET-RPT-1.0 autonome ; scores O*NET conservés sans conversion ni fusion avec PIP.
+- Si les deux outils sont réalisés, deux téléchargements PDF distincts.
+
+## Jalon E2 — interprétation PIP et rapport O*NET conforme (2026-09-18)
+- PIP : ajout d'un moteur déterministe d'interprétation en français, sans IA à l'exécution.
+- Lecture combinée du niveau absolu, du rang, des écarts et du relief du profil ; distinction explicite entre une première dimension basse et une dominante très élevée.
+- Les seuils PIP sont des repères descriptifs Clarté360 ancrés dans l'échelle de réponse, jamais des normes de population ni des seuils d'aptitude.
+- O*NET : passation maintenue sur les 60 activités anglaises fournies par O*NET Web Services, sans traduction ni reformulation.
+- Rapport O*NET autonome en français : résultats officiels conservés sans conversion ; commentaires français explicitement identifiés comme lecture Clarté360.
+- Ajout d'une section Source, droits et méthodologie et de l'attribution O*NET Web Services / USDOL-ETA.
+
+## Jalon E3 — 18/09/2026
+- Création du référentiel méthodologique autonome `REFERENTIEL_INTERPRETATION_PIP_RIASEC_CLARTE360_V1_0.xlsx`.
+- Les seuils, règles de relief, écarts de tête, scénarios de synthèse, garde-fous et cas de recette ne sont plus enfermés dans `interpretation.py`.
+- Nouveau runtime versionné `PIP-INT-1.0`, généré depuis le tableur par `scripts/build_interpretation_runtime.py`.
+- Le moteur d'interprétation lit ce runtime ; toute modification du tableur doit régénérer le JSON et passer les tests de synchronisation.
+- Rapport PIP : `PIP-RPT-1.3`. O*NET reste `ONET-RPT-1.1` et séparé de ces règles.
+
+## Jalon F — 18/09/2026
+- Activation du connecteur ROME/RIASEC à partir du référentiel projet daté juin 2026.
+- Ajout du runtime versionné `ROME-RIASEC-2026-06` généré depuis le tableur source.
+- Ajout des pistes ROME dans le rapport PIP, sur profil RIASEC à deux lettres non ambigu.
+- Sélection limitée, déterministe et diversifiée ; aucun score de compatibilité ni recommandation automatique.
+- Rapport PIP : `PIP-RPT-1.4`.
+
+## Jalon G - 18/09/2026
+- Contrat sortant Gestion des Actions version `PIP-GA-OUTBOUND-1.0`.
+- Outbox durable par événement avec idempotence de contenu, suivi des tentatives et retry sans perte.
+- Préparation HMAC SHA-256 pour transport serveur-à-serveur, secret hors URL/payload/logs.
+- PUBLIC : `CONTACT_EMAIL_VERIFIED` immédiatement après validation e-mail ; support `CONTACT_UPDATED` ; `CALLBACK_REQUESTED` sans résultats.
+- PUBLIC : intérêt `PIP-RIASEC` systématiquement présent dans l'événement CRM.
+- ACCOMPAGNEMENT : `TERMINE` déplacé après ressenti + génération/persistance des PDF.
+- ACCOMPAGNEMENT : synthèse finale versions/scores/rangs/ressenti + références PDF ; aucune réponse brute.
+- Étude PUBLIC v2 : pseudonyme aléatoire indépendant, suppression des clés `participant_id`/`passation_id` du dataset étude.
+- 170 tests automatisés réussis.
+
+## Jalon H - recette finale locale - 18/09/2026
+- Recette finale consolidée à partir du Jalon G officiel OneDrive.
+- Métadonnées de build : `JALON_ID=H`, `BUILD_INCREMENT=L1-H-RECETTE-FINALE`.
+- Rapport PIP `PIP-RPT-1.5` : ajout des mentions finales distinctes PUBLIC / ACCOMPAGNEMENT prévues par le CDC.
+- PUBLIC : rappel explicite qu'il s'agit d'un support d'exploration, ni diagnostic, ni prescription d'orientation, ni validation de compétences.
+- ACCOMPAGNEMENT : insertion de la mention méthodologique obligatoire du CDC sur la mise en perspective du profil dans le processus Clarté360.
+- 174 tests automatisés réussis ; synchronisation banque/interprétation/ROME et compilation contrôlées.
+- Contrôle visuel final des PDF PIP PUBLIC, PIP ACCOMPAGNEMENT et O*NET.
+- Aucun déploiement VPS effectué à ce stade : la recette VPS reste à exécuter après le push GitHub Desktop validé par l'utilisateur.
+
+## H1 - 2026-09-18 - Différenciation rapport PUBLIC / ACCOMPAGNEMENT
+- Rapport PUBLIC reconstruit en synthèse autonome de 5 pages.
+- Rapport ACCOMPAGNEMENT complet conservé à 9 pages.
+- PUBLIC : modèle RIASEC synthétique, profil global, interprétation niveau/relief, 3 dimensions principales, 6 facettes descriptives saillantes, 4 pistes ROME maximum et conclusion d'exploration.
+- Suppression du PUBLIC des 30 facettes exhaustives et des formulations propres à l'accompagnement.
+- Aucun changement du scoring, de la banque PIP, du référentiel d'interprétation, du moteur ROME ou du rapport O*NET.
+- Rapport PIP : PIP-RPT-1.6. Build : L1-H1-RAPPORT-PUBLIC-SYNTHESE.

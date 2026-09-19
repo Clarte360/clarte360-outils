@@ -22,7 +22,7 @@ def test_journey_anti_influence():
  assert results_allowed('PIP_PUIS_ONET60',True,True)
  assert next_after_pip('PIP_PUIS_ONET60')=='onet_pending'
 def test_feeling_is_closed_and_separate():
- assert len(QUESTIONS)==7
+ assert len(QUESTIONS)==6
  rec=build_feeling_record({'global':4},'PUBLIC'); assert rec['answers']['global']==4
 def test_snapshot_v1():
  d={'passation_id':'p1','journey':'PIP_SEUL','pip_state':{},'pip_scoring':{},'feeling':{}}

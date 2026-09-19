@@ -12,6 +12,17 @@ class OnetApiError(RuntimeError):
     pass
 
 
+ONET_INSTRUMENT = "O*NET Interest Profiler Short Form"
+ONET_QUESTION_COUNT = 60
+ONET_API_VERSION = "2.0"
+ONET_LANGUAGE = "en"
+
+
+def normalize_onet_results(results: list[dict]) -> list[dict]:
+    """Return the six O*NET RIASEC results sorted by descending official raw score."""
+    return sorted([dict(r) for r in (results or [])], key=lambda r: (-int(r.get("score", 0)), str(r.get("code", ""))))
+
+
 @dataclass(frozen=True)
 class OnetPort:
     settings: OnetSettings
@@ -43,7 +54,7 @@ class OnetPort:
 
     def score_interest_profiler(self, answers: dict[int | str, int]) -> dict:
         values = []
-        for idx in range(1, 61):
+        for idx in range(1, ONET_QUESTION_COUNT + 1):
             value = int(answers.get(idx, answers.get(str(idx), 0)))
             if value not in (1, 2, 3, 4, 5):
                 raise ValueError(f"Réponse O*NET manquante ou invalide à la question {idx}.")

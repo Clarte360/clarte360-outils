@@ -1,15 +1,14 @@
 from pathlib import Path
 
 
-def test_1_0_10_publishes_minimal_result_summary_only_on_termine():
+def test_1_0_10_result_summary_evolved_to_final_contract_without_raw_answers():
     src = Path("clarte360_pip/ui/pages.py").read_text(encoding="utf-8")
-    block = src[src.index("def _publish_if_accompanied"):src.index("DIMENSION_LABELS")]
-    assert "result_summary" in block
+    block = src[src.index("def _accompanied_final_payload"):src.index("def _save_if_accompanied")]
     assert "holland_code" in block
-    assert "indices" in block
-    assert "order" in block
-    assert "exact_ties" in block
-    assert "algorithm_version" in block
+    assert "scores" in block
+    assert "ranking" in block
+    assert "scoring_version" in block
+    assert "documents" in block
     assert "answers" not in block
 
 

@@ -116,17 +116,23 @@ def verify_public_code(code: str, state: dict[str, Any]) -> bool:
     return secrets.compare_digest(code_digest(code.strip()), str(state.get("digest", "")))
 
 
+def new_study_id() -> str:
+    """Independent pseudonym: never derived from CRM/contact/session identifiers."""
+    return secrets.token_hex(16)
+
+
 def pseudonym_for(participant_id: str) -> str:
+    """Legacy helper retained only for old snapshot compatibility; do not use for new study records."""
     return hashlib.sha256(("clarte360-pip-study:" + participant_id).encode("utf-8")).hexdigest()[:24]
 
 
 def save_public_study_record(session_state: dict[str, Any]) -> Path:
-    participant_id = str(session_state.get("public_participant_id") or session_state.get("passation_id"))
     pip_state = session_state.get("pip_state", {}) or {}
+    study_id = str(session_state.get("public_study_id") or "").strip() or new_study_id()
+    session_state["public_study_id"] = study_id
     payload = {
-        "schema": "clarte360.pip.public-study.v1",
-        "study_id": pseudonym_for(participant_id),
-        "passation_id": session_state.get("passation_id"),
+        "schema": "clarte360.pip.public-study.v2",
+        "study_id": study_id,
         "journey": session_state.get("journey", "PIP_SEUL"),
         "onet_selected_timing": session_state.get("onet_selected_timing"),
         "pip_bank_version": pip_state.get("bank_version"),

@@ -13,5 +13,6 @@ def test_gestion_actions_connector_requires_vps_signing_secret():
     from clarte360_pip.connectors.onet import OnetApiError
     with pytest.raises(OnetApiError):
         OnetPort(load_onet_settings({})).fetch_interest_profiler()
-    with pytest.raises(NotImplementedError):
-        RomePort(Path("rome.xlsx")).explore_equivalent_profiles("RIA")
+    rows = RomePort().explore_equivalent_profiles('RI', limit=3)
+    assert len(rows) == 3
+    assert all(r['riasec_profile'] == 'RI' for r in rows)
