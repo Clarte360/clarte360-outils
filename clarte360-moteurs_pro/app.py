@@ -9,6 +9,9 @@ from email.message import EmailMessage
 from io import BytesIO
 from pathlib import Path
 
+from validation import (decode_progress_bytes, validate_code, validate_email, validate_free_text, validate_name, validate_phone, validate_position, validate_short_text)
+from work_guard import fingerprint_guard_state
+
 import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
@@ -24,7 +27,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.8.0-socle-clarte360"
+APP_VERSION = "1.8.3-rapport-moteurs-enrichi-vps-hub-ready-garde-fou"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
@@ -37,6 +40,72 @@ DEFAULT_XLSX = BASE_DIR / "data" / "moteurs_professionnels_curseurs_v0_1.xlsx"
 LOGO_PATH = BASE_DIR / "assets" / "site_icon.png"
 FINAL_EMAIL_TO = "contact@clarte360.com"
 DEFAULT_SESSION_LIMIT_MINUTES = 15
+
+
+# Référentiel éditorial du rapport bénéficiaire — V1.8.3.
+# Ces contenus ne modifient ni le questionnaire, ni les calculs, ni le fichier Excel source.
+MOTEUR_REPORT_CONTENT = {
+    "MP1": {
+        "definition": "Accomplir, c’est être stimulé par le fait d’aboutir, d’obtenir un résultat concret et de pouvoir constater le chemin parcouru. Ce moteur trouve son énergie dans la réalisation : terminer ce qui a été entrepris, atteindre un objectif, relever un défi ou transformer un effort en résultat visible. Il ne signifie pas nécessairement rechercher la compétition ou la reconnaissance ; ce qui compte avant tout est la satisfaction de faire, d’avancer et d’arriver au bout.",
+        "basse": "La recherche de résultats ou d’objectifs à atteindre n’est pas une source majeure de motivation. La personne peut préférer accorder davantage d’importance au chemin parcouru, à la qualité de l’expérience ou à d’autres dimensions du travail.",
+        "moyenne": "Atteindre des objectifs et constater des résultats contribue à la motivation, sans être indispensable en permanence. La personne apprécie de voir son travail avancer et aboutir, tout en pouvant trouver son énergie dans d’autres sources.",
+        "haute": "La réalisation et l’atteinte d’objectifs constituent une source importante d’énergie. La personne est particulièrement stimulée lorsqu’elle peut avancer vers un résultat identifiable, mesurer sa progression et éprouver la satisfaction d’avoir mené quelque chose à son terme.",
+    },
+    "MP2": {
+        "definition": "Comprendre, c’est être stimulé par la découverte du pourquoi et du comment. Ce moteur nourrit l’envie d’analyser une situation, de rechercher des informations, de faire des liens, d’approfondir un sujet et de donner du sens à ce qui paraît complexe. Comprendre ne signifie pas nécessairement être très intellectuel ou théorique : il s’agit surtout du plaisir et du besoin de ne pas rester à la surface des choses.",
+        "basse": "Approfondir, analyser ou rechercher les mécanismes d’une situation n’est pas une source essentielle de motivation. La personne peut être davantage attirée par l’action, l’expérience ou le résultat directement observable.",
+        "moyenne": "Comprendre les situations et disposer d’explications suffisantes contribue au confort et à l’efficacité. La personne apprécie d’approfondir certains sujets lorsque cela lui paraît utile ou intéressant.",
+        "haute": "Explorer, analyser et comprendre en profondeur constitue une véritable source d’énergie. La personne aime rechercher les causes, établir des liens, apprendre et disposer d’une compréhension solide avant ou pendant l’action.",
+    },
+    "MP3": {
+        "definition": "Construire, c’est être motivé par le fait de donner une forme concrète à une idée, un projet ou une organisation. Ce moteur s’exprime dans le plaisir de partir d’éléments parfois dispersés pour créer quelque chose de cohérent, structuré et utilisable. Il peut concerner aussi bien un projet, une activité, une méthode, une équipe ou une organisation. Construire ne signifie donc pas seulement créer : c’est aussi assembler, organiser, structurer et faire exister durablement.",
+        "basse": "La construction ou la structuration de projets n’est pas une source prioritaire d’énergie. La personne peut préférer intervenir dans un cadre déjà établi ou contribuer à certaines étapes plutôt que bâtir l’ensemble.",
+        "moyenne": "Participer à la construction d’un projet ou structurer une activité peut être motivant lorsque le contexte s’y prête. La personne apprécie de contribuer à donner forme aux choses sans nécessairement avoir besoin d’être constamment dans cette dynamique.",
+        "haute": "Transformer une idée en réalisation structurée constitue une forte source de motivation. La personne aime bâtir, organiser, assembler les éléments et voir progressivement émerger quelque chose de cohérent et de concret.",
+    },
+    "MP4": {
+        "definition": "Transmettre, c’est trouver de l’énergie dans le fait de faire passer à d’autres ce que l’on sait, ce que l’on a compris ou ce que l’on a appris par l’expérience. Cela peut prendre la forme d’expliquer, former, montrer, partager une méthode, accompagner un apprentissage ou rendre une connaissance accessible. Ce moteur ne suppose pas d’être enseignant ou formateur : il traduit avant tout la satisfaction de voir quelque chose que l’on possède devenir utile à quelqu’un d’autre.",
+        "basse": "Partager ses connaissances ou aider d’autres personnes à apprendre n’est pas une source majeure de motivation. La personne peut préférer mobiliser directement son expertise dans ses propres activités.",
+        "moyenne": "Transmettre est apprécié dans certaines circonstances, notamment lorsque l’expérience ou l’expertise acquise peut être utile. Cela participe à la satisfaction professionnelle sans constituer nécessairement un besoin permanent.",
+        "haute": "Faire comprendre, partager son expérience et favoriser l’apprentissage d’autrui constitue une source importante d’énergie. La personne peut éprouver une réelle satisfaction à constater que ce qu’elle transmet permet à quelqu’un d’autre de progresser ou de devenir plus autonome.",
+    },
+    "MP5": {
+        "definition": "Être utile, c’est être stimulé par la perception que son action répond réellement à un besoin. La motivation vient du fait de servir à quelque chose, de faciliter une situation, d’apporter une solution ou d’aider concrètement une personne, une équipe ou une organisation. Ce moteur ne signifie pas nécessairement se dévouer aux autres : l’utilité peut être technique, organisationnelle, économique, humaine ou sociale. L’essentiel est de pouvoir percevoir à quoi et à qui son travail sert.",
+        "basse": "La perception immédiate de l’utilité de son travail n’est pas indispensable pour être motivé. D’autres dimensions de l’activité peuvent procurer davantage de satisfaction.",
+        "moyenne": "Savoir que son travail est utile renforce la motivation, particulièrement lorsque l’impact peut être identifié. Cette dimension compte sans devoir être présente dans toutes les activités.",
+        "haute": "Percevoir concrètement l’utilité de son action constitue une source essentielle de motivation. La personne a particulièrement besoin de sentir que ce qu’elle fait répond à un besoin réel et apporte quelque chose à quelqu’un ou à une organisation.",
+    },
+    "MP6": {
+        "definition": "Influencer, c’est être stimulé par la possibilité de faire évoluer une décision, une orientation, une idée ou une manière d’agir. Cela peut passer par l’argumentation, la conviction, la négociation, la mobilisation ou la capacité à entraîner d’autres personnes autour d’une proposition. Influencer ne signifie ni manipuler ni dominer : ce moteur traduit surtout l’envie de peser sur ce qui se décide et de contribuer activement à l’orientation des choses, plutôt que de rester simple spectateur.",
+        "basse": "Peser sur les décisions ou chercher à convaincre n’est pas une source importante de motivation. La personne peut parfaitement préférer contribuer sans avoir besoin d’orienter les choix des autres.",
+        "moyenne": "Pouvoir faire entendre son point de vue et participer aux décisions est appréciable, particulièrement sur les sujets jugés importants. L’influence est recherchée lorsqu’elle paraît utile plutôt que comme une finalité en soi.",
+        "haute": "Participer activement aux orientations, convaincre et faire évoluer les décisions constitue une source importante d’énergie. La personne apprécie particulièrement les situations dans lesquelles ses idées peuvent avoir du poids et produire un effet sur les choix ou les actions.",
+    },
+    "MP7": {
+        "definition": "Innover, c’est être stimulé par la possibilité de faire autrement, imaginer de nouvelles solutions et sortir des réponses déjà établies. Ce moteur peut s’exprimer par la créativité, l’expérimentation, l’amélioration d’un fonctionnement ou l’invention de nouvelles façons de faire. Il ne signifie pas rechercher systématiquement la nouveauté : il traduit surtout le plaisir de disposer d’un espace permettant d’explorer, d’essayer et de transformer l’existant.",
+        "basse": "La nouveauté et l’expérimentation ne sont pas des sources essentielles de motivation. La personne peut préférer s’appuyer sur des méthodes éprouvées et optimiser ce qui fonctionne déjà.",
+        "moyenne": "La nouveauté est stimulante lorsqu’elle répond à un besoin ou apporte une amélioration réelle. La personne peut apprécier l’innovation tout en conservant des repères et des méthodes déjà éprouvées.",
+        "haute": "Imaginer, expérimenter et inventer de nouvelles manières de faire constitue une forte source d’énergie. La personne apprécie particulièrement les environnements laissant de la place aux idées nouvelles et à la remise en question constructive de l’existant.",
+    },
+    "MP8": {
+        "definition": "Coopérer, c’est trouver de l’énergie dans le fait de faire avec les autres plutôt que simplement à côté d’eux. Ce moteur concerne le partage, l’entraide, la complémentarité, la circulation des idées et la construction collective. Il ne signifie pas nécessairement être très sociable ni rechercher constamment le contact : il traduit surtout la satisfaction de constater que la contribution de plusieurs personnes permet d’aller plus loin ou de faire mieux ensemble.",
+        "basse": "Le travail collectif n’est pas indispensable à la motivation. La personne peut apprécier une forte autonomie et trouver davantage d’énergie lorsqu’elle dispose de son propre espace d’action.",
+        "moyenne": "La coopération est appréciée lorsqu’elle facilite le travail ou enrichit le résultat. La personne peut alterner efficacement entre activités autonomes et travail collectif.",
+        "haute": "Échanger, partager les responsabilités et construire avec d’autres constitue une source importante d’énergie. La personne apprécie particulièrement les situations où les compétences se complètent et où le résultat naît véritablement d’une dynamique collective.",
+    },
+    "MP9": {
+        "definition": "Progresser, c’est être stimulé par le sentiment de ne pas rester au même point. Ce moteur se nourrit de l’apprentissage, du développement de nouvelles compétences, du dépassement d’une difficulté et de la perception de sa propre évolution. Il ne s’agit pas nécessairement de progresser hiérarchiquement : on peut progresser dans sa maîtrise, son autonomie, ses connaissances, ses responsabilités ou sa façon d’exercer son métier. Ce qui compte est de sentir que l’on continue à évoluer.",
+        "basse": "L’apprentissage permanent ou la recherche régulière de nouveaux défis n’est pas indispensable à la motivation. La maîtrise, la stabilité ou l’utilisation de compétences déjà acquises peuvent apporter davantage de satisfaction.",
+        "moyenne": "Continuer à apprendre et développer certaines compétences contribue à la motivation, notamment lorsque l’évolution répond à un objectif concret ou à une envie particulière.",
+        "haute": "Apprendre, développer ses capacités et constater sa propre évolution constitue une source majeure d’énergie. La sensation de stagnation peut être particulièrement démotivante lorsque les possibilités de développement deviennent trop faibles.",
+    },
+    "MP10": {
+        "definition": "Contribuer, c’est être stimulé par le sentiment de participer à quelque chose qui dépasse sa seule tâche ou son intérêt immédiat. Ce moteur apparaît lorsque l’on perçoit que son travail prend place dans un projet, une mission, une cause ou une ambition collective auxquels on souhaite prendre part. Il peut s’agir d’une contribution économique, sociale, environnementale, professionnelle ou simplement collective. Il ne suppose donc pas une vocation humanitaire : l’essentiel est de pouvoir relier son activité à une finalité plus large à laquelle on souhaite apporter sa part.",
+        "basse": "Relier son activité à une finalité collective ou plus large n’est pas indispensable à la motivation. La satisfaction peut davantage provenir du contenu du travail, de ses conditions ou de résultats personnels et immédiats.",
+        "moyenne": "Participer à un projet ou à une finalité que l’on juge intéressante renforce la motivation. Cette dimension devient particulièrement importante lorsque le sens du projet est clairement perceptible.",
+        "haute": "Sentir que son travail participe à une finalité plus large constitue une source importante d’énergie. La personne peut être particulièrement stimulée lorsqu’elle comprend à quoi elle contribue et qu’elle se reconnaît dans la direction ou la finalité poursuivie.",
+    },
+}
 
 ###############################################################################
 # CLARTE360
@@ -465,9 +534,11 @@ def start_new_session(active: pd.DataFrame, nom: str, prenom: str, email: str, c
     st.session_state.positions = {}
     st.session_state.current_index = 0
     st.session_state.started_at = now_iso()
-    st.session_state.beneficiaire = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip(), "consultant": consultant.strip()}
+    st.session_state.beneficiaire = {"nom": validate_name(nom, "Nom"), "prenom": validate_name(prenom, "Prénom"), "email": validate_email(email), "consultant": validate_short_text(consultant, "Consultant", 160, False)}
     st.session_state.test_started = True
     st.session_state.final_email_sent = False
+    st.session_state.json_downloaded = False
+    st.session_state.guard_saved_fingerprint = None
     st.session_state.session_history = []
     init_runtime_session("premiere_connexion")
 
@@ -478,7 +549,7 @@ def restore_from_progress(payload: dict):
     st.session_state.session_id = str(uuid.uuid4())
     st.session_state.passation_id = payload.get("passation_id", st.session_state.passation_root_id)
     st.session_state.cursor_order = payload.get("cursor_order_displayed", payload.get("cursor_order", []))
-    st.session_state.positions = {str(k): int(v) for k, v in payload.get("positions", {}).items()}
+    st.session_state.positions = {str(k): validate_position(v) for k, v in payload.get("positions", {}).items()}
     first_unanswered = None
     for i, cid in enumerate(st.session_state.cursor_order):
         if cid not in st.session_state.positions:
@@ -495,6 +566,9 @@ def restore_from_progress(payload: dict):
     st.session_state.access_history = payload.get("access_history", {})
     st.session_state.session_history = previous_sessions if isinstance(previous_sessions, list) else []
     init_runtime_session("reprise_depuis_json")
+    # Le JSON importé constitue le point de sauvegarde de référence.
+    st.session_state.guard_saved_fingerprint = persisted_business_fingerprint()
+    st.session_state.json_downloaded = True
 
 
 def reset_all():
@@ -644,6 +718,27 @@ def draw_pdf_footer(canvas, doc):
     canvas.restoreState()
 
 
+def report_content_for(code: str) -> dict:
+    return MOTEUR_REPORT_CONTENT.get(str(code).strip(), {"definition": "", "basse": "", "moyenne": "", "haute": ""})
+
+
+def append_pdf_moteur_details(story, scores_df: pd.DataFrame, h_style, normal):
+    story.append(Paragraph("Comprendre vos moteurs professionnels", h_style))
+    story.append(Paragraph("Les moteurs ci-dessous sont présentés du résultat le plus élevé au résultat le plus faible. Pour chacun, les trois niveaux de lecture sont volontairement affichés afin de situer le sens du moteur dans son ensemble.", normal))
+    story.append(Spacer(1, 0.15*cm))
+    for _, r in scores_df.sort_values("Pourcentage", ascending=False).iterrows():
+        content = report_content_for(r["Code"])
+        story.append(Paragraph(f"<b>{r['Moteur'].upper()} — {r['Pourcentage']:.1f} %</b>", h_style))
+        story.append(Paragraph(f"<b>Votre résultat :</b> {r['Lecture']}", normal))
+        story.append(Paragraph(f"<b>Ce que signifie ce moteur</b><br/>{content['definition']}", normal))
+        story.append(Spacer(1, 0.08*cm))
+        story.append(Paragraph("<b>Les trois niveaux de lecture</b>", normal))
+        story.append(Paragraph(f"<b>Lecture basse :</b> {content['basse']}", normal))
+        story.append(Paragraph(f"<b>Lecture moyenne :</b> {content['moyenne']}", normal))
+        story.append(Paragraph(f"<b>Lecture haute :</b> {content['haute']}", normal))
+        story.append(Spacer(1, 0.18*cm))
+
+
 def create_pdf(scores_df: pd.DataFrame, payload: dict) -> bytes:
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.2*cm, bottomMargin=1.8*cm)
@@ -678,6 +773,8 @@ def create_pdf(scores_df: pd.DataFrame, payload: dict) -> bytes:
     story.append(Paragraph("Première lecture", h_style))
     top_txt = ", ".join([f"{r['Moteur']} ({r['Pourcentage']:.0f} %)" for _, r in top.iterrows()])
     story.append(Paragraph(f"Les réponses font apparaître prioritairement les moteurs suivants : <b>{top_txt}</b>. Cette lecture doit être discutée et contextualisée pendant l’entretien.", normal))
+    story.append(Spacer(1, 0.25*cm))
+    append_pdf_moteur_details(story, scores_df, h_style, normal)
     story.append(Paragraph("Confidentialité", h_style))
     story.append(Paragraph("Le fichier JSON appartient exclusivement au bénéficiaire. Il peut être conservé, supprimé ou transmis à l'accompagnateur dans le cadre de l'accompagnement.", normal))
     doc.build(story, onFirstPage=draw_pdf_footer, onLaterPages=draw_pdf_footer)
@@ -788,9 +885,11 @@ def contact_form():
         )
         submitted = st.form_submit_button("📩 Envoyer mon message", type="primary")
     if submitted:
-        if not prenom.strip() or not nom.strip() or not email.strip() or "@" not in email or not objet.strip() or not message.strip():
-            st.error("Merci de renseigner les champs obligatoires : prénom, nom, e-mail, objet et message.")
-            return
+        try:
+            prenom = validate_name(prenom, "Prénom"); nom = validate_name(nom, "Nom"); email = validate_email(email)
+            telephone = validate_phone(telephone); objet = validate_short_text(objet, "Objet", 180, True); message = validate_free_text(message, "Message", 5000, True)
+        except ValueError as exc:
+            st.error(str(exc)); return
         if not consent:
             st.error("Le consentement est nécessaire pour transmettre votre demande à Clarté360.")
             return
@@ -893,7 +992,7 @@ def import_json_screen():
     up = st.file_uploader("Importer mon fichier JSON", type=["json"])
     if up is not None:
         try:
-            payload = json.load(up)
+            payload = decode_progress_bytes(up.getvalue(), active["ID"].astype(str).tolist())
             restore_from_progress(payload)
             st.success("JSON chargé. Votre progression a été reprise.")
             st.rerun()
@@ -1004,9 +1103,11 @@ def identification_screen(active, dims, params):
         consent = st.checkbox("J'ai lu et j'accepte les conditions RGPD de cette application Clarté360.")
         submitted = st.form_submit_button("Recevoir mon code d’accès", type="primary")
     if submitted:
-        if not prenom.strip() or not nom.strip() or not email.strip() or "@" not in email:
-            st.error("Merci de renseigner prénom, nom et une adresse email valide.")
-        elif not consent:
+        try:
+            prenom = validate_name(prenom, "Prénom"); nom = validate_name(nom, "Nom"); email = validate_email(email); consultant = validate_short_text(consultant, "Consultant", 160, False)
+        except ValueError as exc:
+            st.error(str(exc)); return
+        if not consent:
             st.error("Le consentement RGPD est obligatoire avant toute utilisation.")
         else:
             st.session_state.rgpd_acceptance = {"consentement": True, "date": datetime.now().strftime("%Y-%m-%d"), "heure": datetime.now().strftime("%H:%M:%S"), "version_texte": RGPD_TEXT_VERSION}
@@ -1021,7 +1122,12 @@ def identification_screen(active, dims, params):
                 exp = datetime.fromisoformat(st.session_state.get("code_expires_at"))
                 if datetime.now() > exp:
                     st.error("Le code a expiré. Merci de demander un nouveau code.")
-                elif code_in.strip() == st.session_state.get("access_code"):
+                else:
+                    try:
+                        code_checked = validate_code(code_in)
+                    except ValueError as exc:
+                        st.error(str(exc)); return
+                if code_checked == st.session_state.get("access_code"):
                     b = st.session_state.pending_beneficiaire
                     validation_now = now_iso()
                     st.session_state.code_verified_at = validation_now
@@ -1133,6 +1239,18 @@ def results_screen(active, dims, params):
     top = scores_df.sort_values("Pourcentage", ascending=False).head(3)
     st.markdown("### Synthèse courte")
     st.markdown("Vos réponses mettent principalement en avant : " + ", ".join([f"**{r['Moteur']}** ({r['Pourcentage']:.0f} %)" for _, r in top.iterrows()]) + ".")
+    st.markdown("### Comprendre vos moteurs professionnels")
+    st.caption("Les moteurs sont présentés du résultat le plus élevé au résultat le plus faible. Les trois niveaux de lecture sont affichés pour vous permettre de comprendre chaque moteur dans son ensemble.")
+    for _, r in scores_df.sort_values("Pourcentage", ascending=False).iterrows():
+        content = report_content_for(r["Code"])
+        with st.expander(f"{r['Moteur']} — {r['Pourcentage']:.1f} % — {r['Lecture']}"):
+            st.markdown(f"**Votre résultat : {r['Lecture']}**")
+            st.markdown("**Ce que signifie ce moteur**")
+            st.write(content["definition"])
+            st.markdown("**Les trois niveaux de lecture**")
+            st.markdown(f"**Lecture basse —** {content['basse']}")
+            st.markdown(f"**Lecture moyenne —** {content['moyenne']}")
+            st.markdown(f"**Lecture haute —** {content['haute']}")
     json_data = payload_bytes(payload)
     pdf_data = create_pdf(scores_df, payload)
     json_filename = make_filename("moteurs_professionnels", "json")
@@ -1169,28 +1287,84 @@ def expired_screen(active, dims, params):
     st.download_button("Télécharger mon JSON de reprise", data=payload_bytes(payload), file_name=make_filename("moteurs_reprise_timeout_inactivite", "json"), mime="application/json", type="primary", on_click=mark_json_downloaded)
 
 
+def persisted_business_fingerprint() -> str:
+    """Empreinte du travail effectivement présent dans le JSON de reprise.
+
+    Les traces techniques (timestamps, sessions, heartbeats, sauvegardes) sont
+    volontairement exclues afin de ne pas créer de fausses alertes.
+    """
+    return fingerprint_guard_state(
+        beneficiaire=st.session_state.get("beneficiaire", {}),
+        cursor_order=st.session_state.get("cursor_order", []),
+        positions=st.session_state.get("positions", {}),
+        rgpd_acceptance=st.session_state.get("rgpd_acceptance", {}),
+    )
+
+
+def current_business_fingerprint(active: pd.DataFrame) -> str:
+    """Empreinte du travail courant, y compris un curseur non encore validé."""
+    draft_slider = None
+    if st.session_state.get("test_started"):
+        order = st.session_state.get("cursor_order", []) or []
+        idx = int(st.session_state.get("current_index", 0) or 0)
+        if 0 <= idx < len(order):
+            cid = str(order[idx])
+            widget_key = f"slider_{cid}"
+            if widget_key in st.session_state:
+                current_value = int(st.session_state.get(widget_key))
+                positions = st.session_state.get("positions", {}) or {}
+                if cid in positions:
+                    baseline = int(positions[cid])
+                else:
+                    try:
+                        row = active.set_index("ID").loc[cid]
+                        baseline = int(row.get("Position défaut", 5))
+                    except Exception:
+                        baseline = 5
+                if current_value != baseline:
+                    draft_slider = {"id": cid, "position": current_value}
+    return fingerprint_guard_state(
+        beneficiaire=st.session_state.get("beneficiaire", {}),
+        cursor_order=st.session_state.get("cursor_order", []),
+        positions=st.session_state.get("positions", {}),
+        rgpd_acceptance=st.session_state.get("rgpd_acceptance", {}),
+        draft_slider=draft_slider,
+    )
+
+
 def mark_json_downloaded():
+    # Le JSON contient l'état métier validé, pas un curseur en cours de manipulation.
+    st.session_state.guard_saved_fingerprint = persisted_business_fingerprint()
     st.session_state.json_downloaded = True
 
 
-def install_beforeunload_warning():
-    """Alerte navigateur informative si l'utilisateur ferme sans passer par le JSON.
+def install_beforeunload_warning(active: pd.DataFrame):
+    """Protège contre F5/fermeture/navigation si le travail a changé depuis le JSON.
 
-    Les navigateurs ne permettent pas de bloquer définitivement la croix de fermeture.
-    Cette alerte est donc une sécurité complémentaire, pas une garantie absolue.
+    Un téléchargement sécurise uniquement l'état réellement contenu dans le JSON.
+    Toute nouvelle réponse validée, ou tout déplacement de curseur non encore
+    validé, réarme donc automatiquement la protection.
     """
-    if st.session_state.get("test_started") and not st.session_state.get("json_downloaded"):
+    saved = st.session_state.get("guard_saved_fingerprint")
+    current = current_business_fingerprint(active) if st.session_state.get("test_started") else None
+    should_warn = bool(st.session_state.get("test_started") and (not saved or current != saved))
+    if should_warn:
         components.html(
             """
             <script>
             window.parent.onbeforeunload = function (e) {
-                const message = "Avant de quitter, utilisez le bouton Clarté360 : Quitter et préparer mon JSON.";
+                const message = "Votre travail a changé depuis votre dernière sauvegarde JSON. Téléchargez un nouveau JSON avant de quitter.";
                 e.preventDefault();
                 e.returnValue = message;
                 return message;
             };
             </script>
             """,
+            height=0,
+        )
+    else:
+        components.html(
+            """<script>window.parent.onbeforeunload = null;</script>""",
             height=0,
         )
 
@@ -1208,7 +1382,7 @@ def main():
         st.stop()
     active = get_active_cursors(curseurs)
     sidebar_progress(active, dims, params)
-    install_beforeunload_warning()
+    install_beforeunload_warning(active)
     if st.session_state.get("show_contact_page"):
         contact_page()
         if not st.session_state.get("test_started") and st.button("Retour à l'application"):

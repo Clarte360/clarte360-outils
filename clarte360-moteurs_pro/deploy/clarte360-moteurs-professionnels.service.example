@@ -1,0 +1,16 @@
+[Unit]
+Description=Clarte360 Moteurs professionnels
+After=network.target
+
+[Service]
+Type=simple
+User=clarte360
+WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-moteurs-professionnels
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/clarte360/clarte360-outils/clarte360-moteurs-professionnels/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8506
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

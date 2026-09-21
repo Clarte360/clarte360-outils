@@ -16,3 +16,7 @@ Dépendances : voir `requirements.txt`.
 ## Secrets SMTP
 
 Configurer les secrets Streamlit selon `.streamlit/secrets.example.toml`.
+
+
+### Garde-fou de sortie — v1.8.2
+La version VPS-ready protège le travail bénéficiaire contre un rafraîchissement, une fermeture d'onglet ou une navigation tant que l'état métier a évolué depuis le dernier JSON téléchargé. Après téléchargement, la protection est levée uniquement pour cet état précis et se réactive dès une nouvelle modification.

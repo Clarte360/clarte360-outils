@@ -37,3 +37,30 @@
 - Timeout réel après 15 minutes sans activité.
 - Téléchargement JSON après timeout.
 - Génération d'un PDF complet depuis une passation réelle.
+
+## 1.8.1 — Validation saisies / VPS / Hub ready
+- validation métier renforcée et reprise JSON sécurisée ;
+- compatibilité explicite des JSON 1.8.0 Streamlit Cloud ;
+- préparation VPS et URL cible ;
+- contrat I9-H1 admin/intervenant vers bénéficiaire ;
+- questionnaire et algorithme de scoring inchangés.
+
+
+## 1.8.2 — Garde-fou sortie / rafraîchissement
+- remplacement du simple booléen de téléchargement par une empreinte de l'état métier ;
+- F5, fermeture d'onglet et navigation protégés si le travail a changé depuis le dernier JSON ;
+- téléchargement JSON = nouveau point de sauvegarde de référence ;
+- toute nouvelle réponse validée réarme automatiquement la protection ;
+- déplacement du curseur courant non encore validé détecté comme travail non sauvegardé ;
+- import d'un JSON = état de référence sauvegardé ;
+- traces techniques de session/heartbeat exclues de l'empreinte pour éviter les fausses alertes ;
+- questionnaire, scoring et interprétations inchangés.
+
+## V1.8.3 — Rapport moteurs enrichi
+
+- Base conservée : V1.8.2 VALIDATION-SAISIES-VPS-HUB-READY-GARDE-FOU.
+- Aucun changement du questionnaire, des curseurs, des calculs, du JSON métier ou du fichier Excel source.
+- Ajout, uniquement dans la restitution bénéficiaire à l'écran et dans le rapport PDF téléchargeable, d'une définition développée pour chacun des 10 moteurs.
+- Présentation des moteurs dans l'ordre décroissant des résultats.
+- Pour chaque moteur : verbe, pourcentage obtenu, lecture obtenue, définition enrichie, puis lectures basse, moyenne et haute.
+- Conservation de la précaution de lecture : outil déclaratif d'exploration, non psychométrique et non diagnostique.
