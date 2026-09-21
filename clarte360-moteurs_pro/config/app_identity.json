@@ -1,0 +1,17 @@
+{
+  "tool_id": "moteurs-professionnels",
+  "app_name": "Clarté360 – Moteurs professionnels",
+  "app_version": "1.8.3-rapport-moteurs-enrichi-vps-hub-ready-garde-fou",
+  "target_url": "https://moteurs-professionnels.clarte360.com",
+  "deployment_status": "planned",
+  "hub_compatible": true,
+  "hub_source": "GESTION_ACTIONS_I9",
+  "audience": [
+    "beneficiaire"
+  ],
+  "prescribers": [
+    "admin",
+    "intervenant"
+  ],
+  "service_name": "clarte360-moteurs-professionnels.service"
+}

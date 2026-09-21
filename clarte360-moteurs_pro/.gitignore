@@ -1,6 +1,2 @@
-__pycache__/
-*.pyc
-exports/
 *.json
-*.pdf
-.streamlit/secrets.toml
+!config/app_identity.json
