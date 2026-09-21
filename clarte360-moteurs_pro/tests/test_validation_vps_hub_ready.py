@@ -42,7 +42,7 @@ def test_bad_signature():
     now=int(time.time()); p={'tool_id':'moteurs-professionnels','hub_source':'GESTION_ACTIONS_I9','role':'admin','beneficiary_id':'B1','action_id':'A1','participant_id':'P1','prescription_id':'R1','iat':now,'exp':now+3600,'scopes':['MOTEURS_RUN']}
     with pytest.raises(ValueError): verify_launch_token(token(p,'x'),'secret',now)
 def test_identity_config():
-    cfg=json.load(open('config/app_identity.json',encoding='utf-8')); assert cfg['deployment_status']=='planned' and cfg['target_url'].startswith('https://')
+    cfg=json.load(open('config/app_identity.json',encoding='utf-8')); assert cfg['deployment_status']=='production' and cfg['target_url'].startswith('https://') and cfg['app_version'].startswith('1.8.4')
 
 
 from work_guard import fingerprint_guard_state, canonical_guard_state

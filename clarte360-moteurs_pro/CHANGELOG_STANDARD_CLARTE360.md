@@ -64,3 +64,14 @@
 - Présentation des moteurs dans l'ordre décroissant des résultats.
 - Pour chaque moteur : verbe, pourcentage obtenu, lecture obtenue, définition enrichie, puis lectures basse, moyenne et haute.
 - Conservation de la précaution de lecture : outil déclaratif d'exploration, non psychométrique et non diagnostique.
+
+## V1.8.4 — Correctif reprise JSON / continuité Streamlit Cloud → VPS
+
+- Base : V1.8.3 réellement présente dans GitHub au 21/09/2026.
+- Correction bloquante : `import_json_screen()` utilisait `active` sans le recevoir, provoquant `name 'active' is not defined`.
+- La fonction reçoit désormais explicitement `active` depuis `main()`.
+- Compatibilité maintenue avec les JSON V1.8.0 Streamlit Cloud : le JSON reste le support de continuité et évite une nouvelle validation de code lorsqu'il est valide.
+- Aucun changement du questionnaire, des 60 curseurs, du scoring ni des définitions enrichies du rapport.
+- Ajout de tests de non-régression sur l'import d'un JSON historique et sur le câblage de l'écran de reprise.
+- `app_identity.json` passe en V1.8.4 et statut `production`.
+- Exemple systemd corrigé pour refléter le déploiement VPS réel.

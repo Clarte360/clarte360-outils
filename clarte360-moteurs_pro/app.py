@@ -27,7 +27,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.8.3-rapport-moteurs-enrichi-vps-hub-ready-garde-fou"
+APP_VERSION = "1.8.4-reprise-json-compatible-vps-hub"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
@@ -985,7 +985,7 @@ def welcome_screen():
             st.rerun()
 
 
-def import_json_screen():
+def import_json_screen(active):
     display_header()
     st.subheader("Reprise d'une session")
     st.markdown("Importez le JSON conservé lors de votre dernière utilisation. Une nouvelle session de connexion sera créée et le compteur de temps de cette nouvelle session repartira à zéro.")
@@ -1408,7 +1408,7 @@ def main():
         return
     choice = st.session_state.get("welcome_choice")
     if choice == "import":
-        import_json_screen()
+        import_json_screen(active)
     elif choice == "new":
         identification_screen(active, dims, params)
     else:

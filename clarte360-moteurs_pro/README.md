@@ -2,21 +2,27 @@
 
 Application Streamlit propriétaire Clarté360 d'exploration des sources d'énergie professionnelle.
 
-Version livrée : **v1.8.0-socle-clarte360**  
+Version livrée : **v1.8.4-reprise-json-compatible-vps-hub**  
 Socle Clarté360 : **1.8**
 
-Cette version conserve intégralement la logique métier de Moteurs professionnels v1.7.0 et met à jour uniquement le socle commun : barre latérale, RGPD / traçabilité, retour application, sécurité du bouton de réinitialisation et charte PDF.
+Cette version repart intégralement de la version V1.8.3 effectivement présente dans le dépôt GitHub et déployée sur le VPS. Elle conserve le questionnaire, les curseurs, le scoring et le rapport enrichi.
 
-## Déploiement Streamlit Cloud
+## Correctif V1.8.4
 
-Fichier principal : `app.py`
+- correction de la reprise d'une session par JSON : l'écran d'import reçoit désormais explicitement le référentiel des curseurs actifs ;
+- maintien de la compatibilité avec les JSON V1.8.0 issus de Streamlit Cloud ;
+- un JSON valide portant la preuve d'un accès antérieur permet la reprise sans demander un nouveau code ;
+- conservation de l'historique de sessions, des réponses, des résultats et du consentement RGPD ;
+- ajout d'un test de non-régression dédié à la reprise JSON ;
+- fichier `config/app_identity.json` conservé et mis à jour ;
+- exemple systemd aligné sur le déploiement VPS réel (`ubuntu`, dossier `clarte360-moteurs_pro`, port 8506).
 
-Dépendances : voir `requirements.txt`.
+## Déploiement VPS
 
-## Secrets SMTP
+URL cible : `https://moteurs-professionnels.clarte360.com`  
+Service : `clarte360-moteurs-professionnels.service`  
+Port interne : `8506`
 
-Configurer les secrets Streamlit selon `.streamlit/secrets.example.toml`.
+## Secrets
 
-
-### Garde-fou de sortie — v1.8.2
-La version VPS-ready protège le travail bénéficiaire contre un rafraîchissement, une fermeture d'onglet ou une navigation tant que l'état métier a évolué depuis le dernier JSON téléchargé. Après téléchargement, la protection est levée uniquement pour cet état précis et se réactive dès une nouvelle modification.
+Les secrets ne sont jamais inclus dans le ZIP. Le VPS utilise le mécanisme centralisé Clarté360 via le lien `.streamlit/secrets.toml`.
