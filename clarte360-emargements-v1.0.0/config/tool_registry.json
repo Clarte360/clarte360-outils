@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-09-18",
+  "updated_at": "2026-09-21",
   "tools": [
     {
       "tool_code": "PIP_RIASEC_ONET",
@@ -64,9 +64,9 @@
       "name": "Moteurs professionnels",
       "category": "MOTEURS",
       "base_url": "https://moteurs-professionnels.clarte360.com",
-      "tool_version": "1.8.2",
-      "active": false,
-      "prescription_allowed": false,
+      "tool_version": "1.8.3-rapport-moteurs-enrichi-vps-hub-ready-garde-fou",
+      "active": true,
+      "prescription_allowed": true,
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
@@ -74,9 +74,21 @@
       "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
-      "connector_status": "NOT_CONFIGURED",
+      "connector_status": "LAUNCH_ONLY",
       "metadata": {
-        "deployment_status": "planned"
+        "source": "REGISTRE_I9",
+        "deployment_status": "production",
+        "hub_profile": {
+          "tool_id": "moteurs-professionnels",
+          "signature_mode": "raw_json_hmac",
+          "query_param": "hub_token",
+          "time_model": "iat_exp",
+          "role_field": "role",
+          "hub_source": "GESTION_ACTIONS_I9",
+          "scopes": [
+            "MOTEURS_RUN"
+          ]
+        }
       }
     },
     {
