@@ -355,6 +355,229 @@ PIP_LIAISON_F_SCHEMA = [
 )"""
 ]
 
+INTERVENANTS_J0_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS professional_persons (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL UNIQUE, trainer_id INTEGER UNIQUE,
+ principal_status TEXT NOT NULL DEFAULT 'CANDIDAT', candidate_work_status TEXT NOT NULL DEFAULT 'NOUVEAU',
+ active INTEGER NOT NULL DEFAULT 1, supplier_id TEXT, qualification_review_due_at TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ CHECK(principal_status IN ('CANDIDAT','INTERVENANT')),
+ CHECK(candidate_work_status IN ('NOUVEAU','INCOMPLET','EN_ETUDE','COMPLEMENT_DEMANDE','ENTRETIEN_A_PREVOIR','PRET_DECISION','REFUSE','ABANDONNE','VALIDE')),
+ FOREIGN KEY(trainer_id) REFERENCES trainers(id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS professional_person_status_history (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, old_principal_status TEXT, new_principal_status TEXT NOT NULL,
+ old_work_status TEXT, new_work_status TEXT, old_active INTEGER, new_active INTEGER, reason TEXT, actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)"""
+]
+
+
+INTERVENANTS_J1_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS service_catalog (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, service_code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+ family TEXT, description TEXT, delivery_scope TEXT NOT NULL DEFAULT 'MIXTE', action_types_json TEXT,
+ active INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT 'MANUEL', current_version INTEGER NOT NULL DEFAULT 1,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ CHECK(delivery_scope IN ('INDIVIDUEL','COLLECTIF','MIXTE')),
+ CHECK(source IN ('SITE_CLARTE360','MANUEL','IMPORT'))
+)""",
+"""CREATE TABLE IF NOT EXISTS service_versions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, service_id INTEGER NOT NULL, version_no INTEGER NOT NULL,
+ service_code TEXT NOT NULL, name TEXT NOT NULL, family TEXT, description TEXT, delivery_scope TEXT NOT NULL,
+ action_types_json TEXT, active INTEGER NOT NULL, source TEXT NOT NULL, change_reason TEXT, changed_by TEXT NOT NULL,
+ created_at TEXT NOT NULL, UNIQUE(service_id,version_no),
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS service_competency_criteria (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, service_id INTEGER NOT NULL, criterion_code TEXT NOT NULL,
+ category TEXT NOT NULL, label TEXT NOT NULL, description TEXT, required INTEGER NOT NULL DEFAULT 0,
+ weight REAL, minimum_level INTEGER NOT NULL DEFAULT 0, accepted_evidence_json TEXT, validity_months INTEGER,
+ active INTEGER NOT NULL DEFAULT 1, current_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(service_id,criterion_code),
+ CHECK(category IN ('METIER_TECHNIQUE','PEDAGOGIQUE','ACCOMPAGNEMENT_COACHING','COMPORTEMENTAL','REGLEMENTAIRE')),
+ CHECK(minimum_level BETWEEN 0 AND 4), CHECK(required IN (0,1)), CHECK(active IN (0,1)),
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS service_criterion_versions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, criterion_id INTEGER NOT NULL, service_id INTEGER NOT NULL, version_no INTEGER NOT NULL,
+ criterion_code TEXT NOT NULL, category TEXT NOT NULL, label TEXT NOT NULL, description TEXT, required INTEGER NOT NULL,
+ weight REAL, minimum_level INTEGER NOT NULL, accepted_evidence_json TEXT, validity_months INTEGER, active INTEGER NOT NULL,
+ change_reason TEXT, changed_by TEXT NOT NULL, created_at TEXT NOT NULL,
+ UNIQUE(criterion_id,version_no),
+ FOREIGN KEY(criterion_id) REFERENCES service_competency_criteria(id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT
+)"""
+]
+
+
+INTERVENANTS_J3_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS candidate_workflow_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, event_type TEXT NOT NULL,
+ old_work_status TEXT, new_work_status TEXT, comment TEXT, actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS candidate_requests (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, request_text TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'OUVERTE', requested_by TEXT NOT NULL, requested_at TEXT NOT NULL,
+ resolved_by TEXT, resolved_at TEXT, resolution_comment TEXT,
+ CHECK(status IN ('OUVERTE','RESOLUE','ANNULEE')),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS candidate_decisions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, decision TEXT NOT NULL,
+ reason TEXT, decided_by TEXT NOT NULL, decided_at TEXT NOT NULL,
+ CHECK(decision IN ('VALIDER','REFUSER','ABANDONNER')),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)"""
+]
+
+
+INTERVENANTS_J21_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS professional_regulatory_status (
+ professional_person_id TEXT PRIMARY KEY, ownership_mode TEXT NOT NULL DEFAULT 'PERSONAL_ACTIVITY',
+ nda_status TEXT NOT NULL DEFAULT 'NON_RENSEIGNE', nda_number TEXT, nda_region TEXT, nda_declared_at TEXT, nda_notes TEXT,
+ qualiopi_status TEXT NOT NULL DEFAULT 'NON_RENSEIGNE', qualiopi_certifier TEXT, qualiopi_certificate_ref TEXT,
+ qualiopi_valid_from TEXT, qualiopi_valid_until TEXT, qualiopi_scope_training INTEGER NOT NULL DEFAULT 0,
+ qualiopi_scope_bilan INTEGER NOT NULL DEFAULT 0, qualiopi_scope_vae INTEGER NOT NULL DEFAULT 0,
+ qualiopi_scope_apprentissage INTEGER NOT NULL DEFAULT 0, qualiopi_notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ CHECK(ownership_mode IN ('PERSONAL_ACTIVITY','SUPPLIER_PROJECTION')),
+ CHECK(nda_status IN ('NON_RENSEIGNE','OUI','NON')),
+ CHECK(qualiopi_status IN ('NON_RENSEIGNE','OUI','NON')),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)"""
+]
+
+INTERVENANTS_J2_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS professional_profiles (
+ professional_person_id TEXT PRIMARY KEY, title TEXT, summary TEXT, collaboration_type TEXT, origin TEXT NOT NULL DEFAULT 'ADMIN',
+ email TEXT, phone TEXT, address_line1 TEXT, address_line2 TEXT, postal_code TEXT, city TEXT, country TEXT,
+ website TEXT, linkedin_url TEXT, photo_stored_file_id INTEGER, notes_internal TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(photo_stored_file_id) REFERENCES stored_files(id) ON DELETE SET NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS professional_experiences (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, organization TEXT, role_title TEXT NOT NULL, description TEXT,
+ start_date TEXT, end_date TEXT, current_role INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS professional_education (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, diploma_title TEXT NOT NULL, institution TEXT, field TEXT,
+ obtained_date TEXT, description TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS professional_certifications (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, certification_type TEXT NOT NULL DEFAULT 'CERTIFICATION',
+ name TEXT NOT NULL, issuer TEXT, reference TEXT, obtained_date TEXT, valid_until TEXT, description TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ CHECK(certification_type IN ('CERTIFICATION','HABILITATION','ATTESTATION')),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS professional_languages (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, language TEXT NOT NULL, level TEXT, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(professional_person_id,language), FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS professional_specialties (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, specialty TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(professional_person_id,specialty), FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS professional_documents (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, stored_file_id INTEGER NOT NULL, category TEXT NOT NULL, display_name TEXT NOT NULL,
+ valid_from TEXT, valid_until TEXT, visibility TEXT NOT NULL DEFAULT 'INTERNE', notes TEXT, uploaded_by TEXT, created_at TEXT NOT NULL, archived_at TEXT,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(stored_file_id) REFERENCES stored_files(id) ON DELETE RESTRICT
+)"""
+]
+
+INTERVENANTS_J4_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS person_service_qualifications (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL,
+ human_value INTEGER, human_comment TEXT, human_validated_by TEXT, human_validated_at TEXT, human_locked INTEGER NOT NULL DEFAULT 1,
+ qualification_date TEXT, review_due_at TEXT, ai_value INTEGER, ai_confidence REAL, ai_evidence_json TEXT, ai_updated_at TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(professional_person_id,service_id),
+ CHECK(human_value IS NULL OR human_value BETWEEN 0 AND 4), CHECK(ai_value IS NULL OR ai_value BETWEEN 0 AND 4), CHECK(human_locked IN (0,1)),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS qualification_criterion_assessments (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL, criterion_id INTEGER NOT NULL,
+ human_value INTEGER, human_comment TEXT, human_validated_by TEXT, human_validated_at TEXT, human_locked INTEGER NOT NULL DEFAULT 1,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(professional_person_id,criterion_id),
+ CHECK(human_value IS NULL OR human_value BETWEEN 0 AND 4), CHECK(human_locked IN (0,1)),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT,
+ FOREIGN KEY(criterion_id) REFERENCES service_competency_criteria(id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS qualification_evidence (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL, criterion_id INTEGER,
+ professional_document_id INTEGER, evidence_type TEXT NOT NULL DEFAULT 'AUTRE', evidence_text TEXT, source_label TEXT,
+ verified_by TEXT, verified_at TEXT, created_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT,
+ FOREIGN KEY(criterion_id) REFERENCES service_competency_criteria(id) ON DELETE RESTRICT,
+ FOREIGN KEY(professional_document_id) REFERENCES professional_documents(id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS qualification_history (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL, criterion_id INTEGER,
+ event_type TEXT NOT NULL, old_human_value INTEGER, new_human_value INTEGER, comment TEXT, actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT,
+ FOREIGN KEY(criterion_id) REFERENCES service_competency_criteria(id) ON DELETE RESTRICT
+)"""
+]
+
+
+
+INTERVENANTS_J5_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS ai_analysis_runs (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL,
+ provider TEXT NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL, request_hash TEXT NOT NULL,
+ status TEXT NOT NULL, input_summary_json TEXT, output_json TEXT, error_text TEXT,
+ input_tokens INTEGER, output_tokens INTEGER, actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT
+)"""
+]
+
+INTERVENANTS_J11_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS action_service_requirements (
+ action_id INTEGER PRIMARY KEY, service_id INTEGER NOT NULL, minimum_human_level INTEGER NOT NULL DEFAULT 3,
+ require_required_complete INTEGER NOT NULL DEFAULT 0, configured_by TEXT NOT NULL, configured_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ CHECK(minimum_human_level BETWEEN 0 AND 4), CHECK(require_required_complete IN (0,1)),
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT
+)"""
+]
+
+INTERVENANTS_J10_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS professional_supplier_links (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, supplier_id TEXT NOT NULL,
+ relationship_type TEXT NOT NULL DEFAULT 'PROFESSIONAL', valid_from TEXT, valid_to TEXT, source_system TEXT NOT NULL DEFAULT 'GESTION_INTERVENANTS',
+ status TEXT NOT NULL DEFAULT 'ACTIVE', remote_link_id TEXT, last_sync_at TEXT, sync_status TEXT NOT NULL DEFAULT 'LOCAL', sync_error TEXT,
+ created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ CHECK(status IN ('ACTIVE','INACTIVE')), CHECK(sync_status IN ('LOCAL','SYNCHRONISE','ERREUR')),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)"""
+]
+
+INTERVENANTS_J8_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS professional_cv_generations (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, audience TEXT NOT NULL,
+ version_no INTEGER NOT NULL, file_name TEXT NOT NULL, sha256 TEXT NOT NULL, generated_by TEXT NOT NULL, generated_at TEXT NOT NULL,
+ CHECK(audience IN ('INTERNE','CLIENT')),
+ UNIQUE(professional_person_id,audience,version_no),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)"""
+]
+
+INTERVENANTS_J7_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS professional_maintenance_actions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, alert_key TEXT NOT NULL,
+ action_type TEXT NOT NULL, comment TEXT, snooze_until TEXT, actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ CHECK(action_type IN ('TRAITE','REPORTE','ROUVERT')),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)"""
+]
+
 I9J2_SCHEMA = [
 """CREATE TABLE IF NOT EXISTS quality_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE, organization_id INTEGER, agency_id INTEGER, action_id INTEGER, slot_id INTEGER, campaign_id INTEGER,
@@ -414,6 +637,28 @@ def init_db(engine: Engine):
         for sql in I9G_SCHEMA:
             c.execute(text(sql))
         for sql in CRM0_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J0_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J1_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J2_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J21_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J3_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J4_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J5_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J7_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J8_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J10_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J11_SCHEMA:
             c.execute(text(sql))
         for sql in I9J2_SCHEMA:
             c.execute(text(sql))
@@ -480,6 +725,7 @@ def init_db(engine: Engine):
             "ALTER TABLE trainers ADD COLUMN entra_last_verified_at TEXT",
             "ALTER TABLE trainers ADD COLUMN entra_creation_requested_at TEXT",
             "ALTER TABLE trainers ADD COLUMN entra_creation_requested_by TEXT",
+            "ALTER TABLE trainers ADD COLUMN professional_person_id TEXT",
             "ALTER TABLE participants ADD COLUMN beneficiary_id INTEGER",
             "ALTER TABLE beneficiary_portal_accounts ADD COLUMN pending_email TEXT",
             "ALTER TABLE actions ADD COLUMN client_admin_email TEXT",
@@ -508,6 +754,9 @@ def init_db(engine: Engine):
         for sql in migrations:
             try: c.execute(text(sql))
             except Exception: pass
+        # trainers may not exist yet on a fresh database because the historical schema
+        # creates it in the extra block below. The same additive column is therefore
+        # ensured again after CREATE TABLE, keeping upgrades and fresh installs equivalent.
         extra = [
         """CREATE TABLE IF NOT EXISTS trainers (
           id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL, email TEXT UNIQUE, phone TEXT,
@@ -536,6 +785,8 @@ def init_db(engine: Engine):
           FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE)"""
         ]
         for sql in extra: c.execute(text(sql))
+        try: c.execute(text("ALTER TABLE trainers ADD COLUMN professional_person_id TEXT"))
+        except Exception: pass
 
         # V3 I1 additive foundation. These structures coexist with the V2 columns
         # during the transition so existing actions and proofs remain readable.
@@ -725,6 +976,89 @@ def init_db(engine: Engine):
         for sql in post_migrations:
             try: c.execute(text(sql))
             except Exception: pass
+        for sql in [
+            "ALTER TABLE person_service_qualifications ADD COLUMN ai_rationale TEXT",
+            "ALTER TABLE person_service_qualifications ADD COLUMN ai_missing_json TEXT",
+            "ALTER TABLE person_service_qualifications ADD COLUMN ai_provider TEXT",
+            "ALTER TABLE person_service_qualifications ADD COLUMN ai_model TEXT",
+            "ALTER TABLE person_service_qualifications ADD COLUMN ai_prompt_version TEXT",
+            "ALTER TABLE person_service_qualifications ADD COLUMN ai_run_id INTEGER"
+        ]:
+            try: c.execute(text(sql))
+            except Exception: pass
+
+        # Intervenants J0: every historical trainer receives a stable professional person identity.
+        # This is an identity migration only: no qualification or competence is inferred.
+        trainer_rows = c.execute(text("SELECT id, professional_person_id, active, created_at, updated_at FROM trainers ORDER BY id")).mappings().all()
+        for tr in trainer_rows:
+            ppid = (tr.get("professional_person_id") or "").strip() or f"PP-{int(tr['id']):08d}"
+            c.execute(text("UPDATE trainers SET professional_person_id=:p WHERE id=:i AND (professional_person_id IS NULL OR professional_person_id='')"), {"p": ppid, "i": tr["id"]})
+            c.execute(text("""INSERT OR IGNORE INTO professional_persons(
+                professional_person_id,trainer_id,principal_status,candidate_work_status,active,created_at,updated_at)
+                VALUES(:p,:t,'INTERVENANT','VALIDE',:a,:c,:u)"""), {
+                "p": ppid, "t": tr["id"], "a": 1 if tr.get("active") else 0,
+                "c": tr.get("created_at") or utcnow_iso(), "u": tr.get("updated_at") or utcnow_iso()
+            })
+
+        # Intervenants J1R: catalogue V1 Clarte360, administrable et evolutif.
+        # Les univers visibles restent metier (Bilan, Formations, Coaching, Conseil, Accompagnements) :
+        # aucune etiquette Qualiopi n est affichee dans les listes de prestations.
+        initial_services = [
+            ('BILAN_COMPETENCES','Bilan de compétences','Bilan de compétences','INDIVIDUEL'),
+            ('FORMATION_POSTURE_DIRIGEANT_LEADERSHIP','Développer sa posture de dirigeant et son leadership','Formations','INDIVIDUEL'),
+            ('FORMATION_MANAGER_FAIRE_GRANDIR_EQUIPE','Manager et faire grandir ses équipes','Formations','MIXTE'),
+            ('FORMATION_COMMUNIQUER_IMPACT_INFLUENCE','Communiquer avec impact et développer son influence professionnelle','Formations','MIXTE'),
+            ('FORMATION_ACCOMPAGNER_CHANGEMENT','Accompagner le changement et mobiliser les équipes','Formations','MIXTE'),
+            ('FORMATION_PILOTER_PERFORMANCE_ECO_FIN','Piloter la performance économique et financière de son activité','Formations','INDIVIDUEL'),
+            ('FORMATION_DEVELOPPEMENT_COMMERCIAL','Développer son activité commerciale et fidéliser ses clients','Formations','MIXTE'),
+            ('FORMATION_CONCEVOIR_PILOTER_EVALUER','Concevoir, piloter et évaluer des actions de formation','Formations','MIXTE'),
+            ('FORMATION_QUALITE_CERTIFICATION','Piloter la qualité et préparer sa certification Qualiopi','Formations','MIXTE'),
+            ('FORMATION_REGLEMENTATION_OF','Maîtriser les obligations réglementaires d’un organisme de formation','Formations','MIXTE'),
+            ('FORMATION_GESTION_ADMIN_SOCIALE_FISCALE','Organiser la gestion administrative, sociale et fiscale de son entreprise','Formations','INDIVIDUEL'),
+            ('FORMATION_PILOTAGE_OF_CONSEIL_SERVICES','Structurer et piloter un organisme de formation, de conseil et de services','Formations','INDIVIDUEL'),
+            ('FORMATION_PREVENTION_RISQUES_SANTE_SECURITE','Prévenir les risques professionnels et développer la culture santé-sécurité','Formations','MIXTE'),
+            ('FORMATION_DEMARCHE_QHSE','Structurer et piloter une démarche QHSE','Formations','MIXTE'),
+            ('FORMATION_RSE_PERFORMANCE_DURABLE','Faire de la RSE un levier de performance durable','Formations','MIXTE'),
+            ('COACHING_PROFESSIONNEL_INDIVIDUEL','Coaching professionnel individuel','Coaching','INDIVIDUEL'),
+            ('COACHING_CARRIERE_TRANSITION','Coaching de carrière et transition professionnelle','Coaching','INDIVIDUEL'),
+            ('COACHING_DIRIGEANT_ENTREPRENEUR','Coaching de dirigeant et d’entrepreneur','Coaching','INDIVIDUEL'),
+            ('COACHING_MANAGERIAL_PRISE_FONCTION','Coaching managérial et prise de fonction','Coaching','INDIVIDUEL'),
+            ('COACHING_COLLECTIF_EQUIPE','Coaching collectif et coaching d’équipe','Coaching','COLLECTIF'),
+            ('CONSEIL_STRATEGIQUE_DECISION','Conseil stratégique et aide à la décision','Conseil','MIXTE'),
+            ('CONSEIL_STRUCTURATION_ORGANISATION_PILOTAGE','Conseil en structuration, organisation et pilotage','Conseil','MIXTE'),
+            ('CONSEIL_QHSE_SANTE_RSE','Conseil QHSE, santé au travail et RSE','Conseil','MIXTE'),
+            ('CONSEIL_INGENIERIE_QUALITE_FORMATION','Conseil en ingénierie, qualité et conformité de la formation professionnelle','Conseil','MIXTE'),
+            ('ACCOMPAGNEMENT_TRANSFORMATIONS_CHANGEMENT','Accompagnement des transformations et du changement','Accompagnements','MIXTE'),
+            ('ACCOMPAGNEMENT_COHESION_ALIGNEMENT','Cohésion, alignement et performance collective','Accompagnements','COLLECTIF'),
+        ]
+        # Nettoyage controle du tout premier seed J1 : il n a jamais vocation a rester la nomenclature metier.
+        legacy_j1_codes = (
+            'COACHING_PROFESSIONNEL','QHSE_LEADER_INFLUENCE','ENTREPRENEUR_CREATION_STRUCTURATION',
+            'SALARIE_PERFORMANCE_EVOLUTION','TRANSITION_CHANGEMENT_CAP','CONSEIL_STRATEGIQUE',
+            'COHESION_ALIGNEMENT','LEADERSHIP_COLLECTIF','ACCOMPAGNEMENT_CHANGEMENT',
+            'FORMATIONS_CIBLEES','FORMATIONS_COMPETENCES_TERRAIN','COACHING_COLLECTIF'
+        )
+        for legacy_code in legacy_j1_codes:
+            old = c.execute(text("SELECT id FROM service_catalog WHERE service_code=:c AND source='SITE_CLARTE360'"), {'c':legacy_code}).mappings().first()
+            if old:
+                oid=old['id']
+                c.execute(text("DELETE FROM service_criterion_versions WHERE criterion_id IN (SELECT id FROM service_competency_criteria WHERE service_id=:i)"), {'i':oid})
+                c.execute(text("DELETE FROM service_competency_criteria WHERE service_id=:i"), {'i':oid})
+                c.execute(text("DELETE FROM service_versions WHERE service_id=:i"), {'i':oid})
+                c.execute(text("DELETE FROM service_catalog WHERE id=:i"), {'i':oid})
+        j1_now=utcnow_iso()
+        for code,name,family,scope in initial_services:
+            c.execute(text("""INSERT OR IGNORE INTO service_catalog(
+                service_code,name,family,delivery_scope,active,source,current_version,created_at,updated_at)
+                VALUES(:c,:n,:f,:s,1,'SITE_CLARTE360',1,:d,:d)"""), {'c':code,'n':name,'f':family,'s':scope,'d':j1_now})
+            row=c.execute(text("SELECT * FROM service_catalog WHERE service_code=:c"),{'c':code}).mappings().first()
+            if row:
+                c.execute(text("""INSERT OR IGNORE INTO service_versions(
+                    service_id,version_no,service_code,name,family,description,delivery_scope,action_types_json,active,source,change_reason,changed_by,created_at)
+                    VALUES(:i,1,:c,:n,:f,:d,:s,:a,:x,:o,'Initialisation catalogue V1 J1R','migration-j1r',:t)"""),
+                    {'i':row['id'],'c':row['service_code'],'n':row['name'],'f':row.get('family'),'d':row.get('description'),
+                     's':row['delivery_scope'],'a':row.get('action_types_json'),'x':row['active'],'o':row['source'],'t':j1_now})
+
         indexes = [
             "CREATE INDEX IF NOT EXISTS ix_actions_status ON actions(status)",
             "CREATE INDEX IF NOT EXISTS ix_actions_org_agency ON actions(organization_id,agency_id)",
@@ -773,6 +1107,27 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_quality_events_status ON quality_events(status,severity,due_at)",
             "CREATE INDEX IF NOT EXISTS ix_quality_events_action ON quality_events(action_id,status,created_at)",
             "CREATE INDEX IF NOT EXISTS ix_quality_review_points_status ON quality_review_points(status,action_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_service_catalog_active_name ON service_catalog(active,name)",
+            "CREATE INDEX IF NOT EXISTS ix_service_catalog_family ON service_catalog(family,active)",
+            "CREATE INDEX IF NOT EXISTS ix_service_versions_service ON service_versions(service_id,version_no)",
+            "CREATE INDEX IF NOT EXISTS ix_service_criteria_service ON service_competency_criteria(service_id,active,category)",
+            "CREATE INDEX IF NOT EXISTS ix_service_criterion_versions_criterion ON service_criterion_versions(criterion_id,version_no)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_trainers_professional_person_id ON trainers(professional_person_id) WHERE professional_person_id IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS ix_professional_persons_status ON professional_persons(principal_status,active,candidate_work_status)",
+            "CREATE INDEX IF NOT EXISTS ix_professional_persons_supplier ON professional_persons(supplier_id)",
+            "CREATE INDEX IF NOT EXISTS ix_professional_status_history_person ON professional_person_status_history(professional_person_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_professional_experiences_person ON professional_experiences(professional_person_id,start_date)",
+            "CREATE INDEX IF NOT EXISTS ix_professional_education_person ON professional_education(professional_person_id,obtained_date)",
+            "CREATE INDEX IF NOT EXISTS ix_professional_certifications_person ON professional_certifications(professional_person_id,valid_until)",
+            "CREATE INDEX IF NOT EXISTS ix_professional_documents_person ON professional_documents(professional_person_id,category,valid_until)",
+            "CREATE INDEX IF NOT EXISTS ix_professional_regulatory_nda ON professional_regulatory_status(nda_status,nda_number)",
+            "CREATE INDEX IF NOT EXISTS ix_professional_regulatory_qualiopi ON professional_regulatory_status(qualiopi_status,qualiopi_valid_until)",
+            "CREATE INDEX IF NOT EXISTS ix_person_service_qual_person ON person_service_qualifications(professional_person_id,service_id)",
+            "CREATE INDEX IF NOT EXISTS ix_person_service_qual_review ON person_service_qualifications(review_due_at,human_value)",
+            "CREATE INDEX IF NOT EXISTS ix_qual_criterion_person ON qualification_criterion_assessments(professional_person_id,service_id,criterion_id)",
+            "CREATE INDEX IF NOT EXISTS ix_qualification_evidence_person ON qualification_evidence(professional_person_id,service_id,criterion_id)",
+            "CREATE INDEX IF NOT EXISTS ix_qualification_history_person ON qualification_history(professional_person_id,service_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_prof_maintenance_person_key ON professional_maintenance_actions(professional_person_id,alert_key,created_at)",
         ]
         for sql in indexes: c.execute(text(sql))
 

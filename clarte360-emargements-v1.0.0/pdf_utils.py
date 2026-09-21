@@ -217,3 +217,69 @@ def teams_evidence_pdf(engine, action_id, report_row_id=None, technical=False):
             story.append(Spacer(1,4*mm))
             story.append(Paragraph(f"<b>Références techniques Microsoft :</b><br/>Organisateur : {rep.get('organizer_upn') or '—'}<br/>OnlineMeeting ID : {rep.get('online_meeting_id') or '—'}<br/>AttendanceReport ID : {rep.get('report_id') or '—'}<br/>Récupéré sur le serveur : {rep.get('retrieved_at') or '—'}<br/>SHA-256 source Graph : {rep.get('raw_sha256') or 'non calculé (rapport historique)'}",ss['C360Small']))
     doc.build(story,onFirstPage=_footer_for(org),onLaterPages=_footer_for(org));return buf.getvalue()
+
+
+def professional_cv_pdf(engine, ppid, audience='CLIENT'):
+    """Generate a factual Clarte360 CV from the professional 360 dossier.
+
+    CLIENT intentionally excludes personal contact details and internal notes.
+    Only human-validated service qualifications are displayed.
+    """
+    from services import professional_cv_snapshot
+    import html
+    d=professional_cv_snapshot(engine,ppid,audience); audience=d['audience']
+    buf=io.BytesIO(); doc=SimpleDocTemplate(buf,pagesize=A4,leftMargin=17*mm,rightMargin=17*mm,topMargin=14*mm,bottomMargin=18*mm)
+    ss=_styles(); story=[]
+    logo=LOGO_PATH
+    if logo.exists(): story.append(Image(str(logo),width=18*mm,height=18*mm))
+    story.append(Paragraph('CV PROFESSIONNEL CLARTÉ360',ss['C360Title']))
+    story.append(Paragraph('<b>'+html.escape(d['full_name'])+'</b>',ParagraphStyle(name='CVName',parent=ss['C360Title'],fontSize=16,leading=19,spaceAfter=2)))
+    if d.get('professional_title'): story.append(Paragraph(html.escape(d['professional_title']),ss['C360Body']))
+    loc=' · '.join(x for x in [d.get('city'),d.get('country')] if x)
+    if loc: story.append(Paragraph(html.escape(loc),ss['C360Small']))
+    if audience=='INTERNE':
+        contacts=' · '.join(x for x in [d.get('email'),d.get('phone'),d.get('website'),d.get('linkedin_url')] if x)
+        if contacts: story.append(Paragraph(html.escape(contacts),ss['C360Small']))
+        story.append(Paragraph('Version interne - dossier professionnel Clarté360',ss['C360Small']))
+    else: story.append(Paragraph('Version client - coordonnées personnelles non diffusées',ss['C360Small']))
+    story.append(Spacer(1,4*mm))
+    def h(t): story.append(Paragraph(t,ss['C360H2']))
+    def body(t): story.append(Paragraph(html.escape(str(t)).replace('\n','<br/>'),ss['C360Body']))
+    if d.get('summary'): h('Profil professionnel'); body(d['summary'])
+    if d.get('specialties'):
+        h('Domaines de spécialité'); body(' • '.join(x['specialty'] for x in d['specialties']))
+    if d.get('qualifications'):
+        h('Prestations Clarté360 validées')
+        rows=[[Paragraph('<b>Prestation</b>',ss['C360Small']),Paragraph('<b>Niveau validé</b>',ss['C360Small'])]]
+        for x in d['qualifications']:
+            rows.append([Paragraph(html.escape(x['service_name']),ss['C360Body']),Paragraph(f"{x['human_value']} - {html.escape(x['human_label'])}",ss['C360Body'])])
+        t=Table(rows,colWidths=[108*mm,57*mm],repeatRows=1); t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),LIGHT),('TEXTCOLOR',(0,0),(-1,0),TEAL),('VALIGN',(0,0),(-1,-1),'MIDDLE'),('BOX',(0,0),(-1,-1),0.4,colors.HexColor('#D1D5DB')),('INNERGRID',(0,0),(-1,-1),0.25,colors.HexColor('#E5E7EB')),('LEFTPADDING',(0,0),(-1,-1),6),('RIGHTPADDING',(0,0),(-1,-1),6),('TOPPADDING',(0,0),(-1,-1),5),('BOTTOMPADDING',(0,0),(-1,-1),5)])); story.append(t)
+    if d.get('experiences'):
+        h('Expériences professionnelles')
+        for x in d['experiences']:
+            dates=' - '.join(y for y in [x.get('start_date'),('En cours' if x.get('current_role') else x.get('end_date'))] if y)
+            title=html.escape(x['role_title']) + (f" - {html.escape(x.get('organization') or '')}" if x.get('organization') else '')
+            story.append(KeepTogether([Paragraph('<b>'+title+'</b>'+(' <font color="#6B7280">('+html.escape(dates)+')</font>' if dates else ''),ss['C360Body']),Paragraph(html.escape(x.get('description') or '').replace('\n','<br/>'),ss['C360Small']) if x.get('description') else Spacer(1,1.5*mm)]))
+    if d.get('education'):
+        h('Diplômes et formations')
+        for x in d['education']:
+            txt=x['diploma_title'] + (f" - {x.get('institution')}" if x.get('institution') else '') + (f" ({x.get('obtained_date')})" if x.get('obtained_date') else '')
+            body(txt)
+    if d.get('certifications'):
+        h('Certifications et habilitations')
+        for x in d['certifications']:
+            txt=f"{x.get('certification_type','').title()} - {x['name']}" + (f" - {x.get('issuer')}" if x.get('issuer') else '') + (f" - valable jusqu'au {x.get('valid_until')}" if x.get('valid_until') else '')
+            body(txt)
+    if d.get('languages'):
+        h('Langues'); body(' • '.join(x['language']+(f" : {x.get('level')}" if x.get('level') else '') for x in d['languages']))
+    if audience=='INTERNE':
+        reg=d.get('regulatory_status') or {}
+        if reg:
+            h('Activité & conformité - interne')
+            vals=[]
+            if reg.get('nda_status'): vals.append('NDA : '+str(reg.get('nda_status'))+((' - '+str(reg.get('nda_number'))) if reg.get('nda_number') else ''))
+            if reg.get('qualiopi_status'): vals.append('Certification Qualiopi : '+str(reg.get('qualiopi_status')))
+            if vals: body(' | '.join(vals))
+        if d.get('notes_internal'): h('Notes internes'); body(d['notes_internal'])
+    story.append(Spacer(1,5*mm)); story.append(Paragraph('Document généré à partir du dossier professionnel Clarté360. Il restitue les informations enregistrées et les qualifications validées humainement ; il ne crée ni ne déduit de compétence.',ss['C360Small']))
+    doc.build(story,onFirstPage=_footer_for(None),onLaterPages=_footer_for(None)); return buf.getvalue()

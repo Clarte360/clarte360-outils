@@ -90,3 +90,11 @@ Résultat de référence de cette candidate : **75 tests réussis**.
 
 ### V3 I7 — Microsoft Teams / Graph
 Le module Teams est optionnel et indépendant de la modalité. Il utilise Microsoft Graph en app-only avec certificat VPS. Voir `INCREMENT_V3_I7_MICROSOFT_TEAMS_GRAPH.md` avant toute activation réelle. La recette Microsoft/Entra du tenant est obligatoire avant mise en production du module Teams.
+
+## J13 — Recette finale / version déployable VPS — 20/09/2026
+
+Le package J13 fige le module **Intervenants / Partenaires / Qualification IA** intégré à Gestion des Actions.
+Il s'agit d'une mise à jour de l'application existante `https://emargements.clarte360.com`, et non d'une nouvelle application VPS.
+
+Référence de non-régression J13 : **423 tests réussis, 0 échec** (221 + 202).
+Voir `PROCEDURE_DEPLOIEMENT_J13_RECETTE_FINALE_20260920.md` et `DEPLOIEMENT_VPS.md`.

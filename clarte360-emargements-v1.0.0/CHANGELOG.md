@@ -511,3 +511,9 @@ Voir `INCREMENT_V3_I9_H2_4_CONTRESIGNATURE_DOCUMENTS_ERGONOMIE.md`.
 - Rattachement automatique action + bénéficiaire + participant ; visibilité bénéficiaire et intervenant via les droits documentaires existants de l'action.
 - Téléchargement du PDF depuis la vue de résultat PIP administrateur ; les intervenants autorisés le retrouvent dans Documents de leur action.
 - Le transport PIP -> Gestion des Actions reste volontairement non figé avant le contrat d'intégration final du jalon H.
+
+## 2026-09-20 — INTERVENANTS J1 — Référentiel prestations
+- Référentiel administrable et versionné des prestations Clarté360.
+- Critères de compétence versionnés par prestation, niveaux 0–4 et preuves acceptables.
+- Interface `Paramètres > Intervenants & partenaires > Prestations`.
+- 369/369 tests automatisés réussis.
