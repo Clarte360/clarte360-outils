@@ -4149,6 +4149,90 @@ def register_pip_public_callback(engine, event_id, email, *, requested_at=None, 
             'notification':one(engine,'SELECT * FROM crm_callback_notifications WHERE external_event_id=:e',{'e':eid})}
 
 # ---------------------------------------------------------------------------
+# Intervenants J15 — Familles de prestations (donnée maîtresse)
+# ---------------------------------------------------------------------------
+def _family_snapshot(engine, family_id:int, actor:str, reason:str|None=None):
+    row=one(engine,'SELECT * FROM service_families WHERE id=:i',{'i':family_id})
+    if not row: raise ValueError('Famille de prestations introuvable.')
+    execute(engine,'''INSERT OR IGNORE INTO service_family_versions(
+      family_id,version_no,family_code,name,description,active,sort_order,change_reason,changed_by,created_at)
+      VALUES(:i,:v,:c,:n,:d,:a,:o,:r,:u,:t)''',{'i':row['id'],'v':row['current_version'],'c':row['family_code'],'n':row['name'],'d':row.get('description'),'a':row['active'],'o':row['sort_order'],'r':reason,'u':actor,'t':utcnow_iso()})
+
+
+def list_service_families(engine, active_only=False):
+    sql='SELECT f.*, (SELECT COUNT(*) FROM service_catalog s WHERE s.family_id=f.id) service_count FROM service_families f'
+    if active_only: sql+=' WHERE f.active=1'
+    sql+=' ORDER BY f.sort_order,f.name'
+    return q(engine,sql)
+
+
+def get_service_family(engine, family_id:int):
+    return one(engine,'SELECT * FROM service_families WHERE id=:i',{'i':family_id})
+
+
+def add_service_family(engine, code, name, description=None, sort_order=100, actor='system'):
+    code=validate_code(code,'Code famille',required=True,max_len=60).upper()
+    name=validate_short_text(name,'Nom de la famille',required=True,max_len=120)
+    description=validate_free_text(description,'Description',required=False,max_len=2000) if description else None
+    if one(engine,'SELECT id FROM service_families WHERE family_code=:c OR LOWER(name)=LOWER(:n)',{'c':code,'n':name}): raise ValueError('Cette famille existe déjà.')
+    now=utcnow_iso(); fid=execute(engine,'''INSERT INTO service_families(family_code,name,description,active,sort_order,current_version,created_at,updated_at)
+      VALUES(:c,:n,:d,1,:o,1,:t,:t)''',{'c':code,'n':name,'d':description,'o':int(sort_order or 100),'t':now})
+    _family_snapshot(engine,fid,actor,'Création famille')
+    audit(engine,'SERVICE_FAMILY_CREATED',actor=actor,entity_type='service_family',entity_id=fid,details={'family_code':code,'name':name})
+    return fid
+
+
+def update_service_family(engine, family_id:int, payload:dict, actor='system', reason='Mise à jour famille'):
+    row=get_service_family(engine,family_id)
+    if not row: raise ValueError('Famille de prestations introuvable.')
+    name=validate_short_text(payload.get('name',row['name']),'Nom de la famille',required=True,max_len=120)
+    description=validate_free_text(payload.get('description'),'Description',required=False,max_len=2000) if payload.get('description') else None
+    active=1 if payload.get('active',row['active']) else 0; order=int(payload.get('sort_order',row['sort_order']) or 100)
+    dup=one(engine,'SELECT id FROM service_families WHERE LOWER(name)=LOWER(:n) AND id<>:i',{'n':name,'i':family_id})
+    if dup: raise ValueError('Une autre famille porte déjà ce nom.')
+    ver=int(row['current_version'])+1; now=utcnow_iso()
+    execute(engine,'UPDATE service_families SET name=:n,description=:d,active=:a,sort_order=:o,current_version=:v,updated_at=:t WHERE id=:i',{'n':name,'d':description,'a':active,'o':order,'v':ver,'t':now,'i':family_id})
+    # Projection lisible conservée pour compatibilité avec les écrans et historiques existants.
+    execute(engine,'UPDATE service_catalog SET family=:n,updated_at=:t WHERE family_id=:i',{'n':name,'t':now,'i':family_id})
+    _family_snapshot(engine,family_id,actor,reason)
+    audit(engine,'SERVICE_FAMILY_UPDATED',actor=actor,entity_type='service_family',entity_id=family_id,details={'version':ver,'name':name,'active':bool(active)})
+    return family_id
+
+
+def reassign_services_to_family(engine, service_ids, target_family_id:int, actor='system', reason='Réaffectation de famille'):
+    fam=get_service_family(engine,target_family_id)
+    if not fam or not fam.get('active'): raise ValueError('Famille de destination active requise.')
+    ids=[]
+    for x in service_ids or []:
+        try: ids.append(int(x))
+        except Exception: pass
+    if not ids: raise ValueError('Sélectionnez au moins une prestation.')
+    for sid in ids:
+        svc=get_service(engine,sid)
+        if not svc: continue
+        update_service(engine,sid,{'family_id':target_family_id,'family':fam['name']},actor,reason)
+    audit(engine,'SERVICES_FAMILY_REASSIGNED',actor=actor,entity_type='service_family',entity_id=target_family_id,details={'service_ids':ids})
+    return len(ids)
+
+
+def delete_service_family(engine, family_id:int, actor='system', target_family_id=None):
+    fam=get_service_family(engine,family_id)
+    if not fam: raise ValueError('Famille de prestations introuvable.')
+    attached=q(engine,'SELECT id FROM service_catalog WHERE family_id=:i ORDER BY id',{'i':family_id})
+    if attached:
+        if not target_family_id: raise ValueError('Cette famille contient des prestations. Choisissez une famille de destination avant suppression.')
+        if int(target_family_id)==int(family_id): raise ValueError('La famille de destination doit être différente.')
+        reassign_services_to_family(engine,[x['id'] for x in attached],int(target_family_id),actor,f"Réaffectation avant suppression de {fam['name']}")
+    execute(engine,'DELETE FROM service_family_versions WHERE family_id=:i',{'i':family_id})
+    execute(engine,'DELETE FROM service_families WHERE id=:i',{'i':family_id})
+    audit(engine,'SERVICE_FAMILY_DELETED',actor=actor,entity_type='service_family',entity_id=family_id,details={'name':fam['name'],'reassigned_to':target_family_id})
+    return True
+
+
+def service_family_versions(engine, family_id:int):
+    return q(engine,'SELECT * FROM service_family_versions WHERE family_id=:i ORDER BY version_no DESC',{'i':family_id})
+
+# ---------------------------------------------------------------------------
 # Intervenants J1 — Référentiel de prestations Clarté360
 # ---------------------------------------------------------------------------
 SERVICE_CRITERION_CATEGORIES = {
@@ -4172,29 +4256,39 @@ def _service_snapshot(engine, service_id:int, actor:str, reason:str|None=None):
         'o':svc['source'],'r':reason,'u':actor,'t':utcnow_iso()})
 
 
-def list_services(engine, active_only=False):
-    sql='SELECT * FROM service_catalog'
-    if active_only: sql+=' WHERE active=1'
-    sql+=' ORDER BY family,name'
-    return q(engine,sql)
+def list_services(engine, active_only=False, family_id=None):
+    sql='SELECT s.*,f.family_code,f.name family_master_name FROM service_catalog s LEFT JOIN service_families f ON f.id=s.family_id'
+    wh=[]; params={}
+    if active_only: wh.append('s.active=1')
+    if family_id is not None: wh.append('s.family_id=:f'); params['f']=int(family_id)
+    if wh: sql+=' WHERE '+' AND '.join(wh)
+    sql+=' ORDER BY COALESCE(f.sort_order,999),COALESCE(f.name,s.family),s.name'
+    return q(engine,sql,params)
 
 
 def get_service(engine, service_id:int):
     return one(engine,'SELECT * FROM service_catalog WHERE id=:i',{'i':service_id})
 
 
-def add_service(engine, code, name, family=None, description=None, delivery_scope='MIXTE', action_types=None, actor='system', source='MANUEL'):
+def add_service(engine, code, name, family=None, description=None, delivery_scope='MIXTE', action_types=None, actor='system', source='MANUEL', family_id=None):
     code=validate_code(code,'Code prestation',required=True,max_len=80).upper()
     name=validate_short_text(name,'Nom de la prestation',required=True,max_len=180)
-    family=validate_short_text(family,'Famille',required=False,max_len=120) if family else None
+    if family_id is not None:
+        fam=get_service_family(engine,int(family_id))
+    elif family:
+        fam=one(engine,'SELECT * FROM service_families WHERE LOWER(name)=LOWER(:n) OR family_code=:c',{'n':str(family).strip(),'c':str(family).strip().upper()})
+    else:
+        fam=None
+    if not fam: raise ValueError('Sélectionnez une famille existante. Créez d’abord la famille si nécessaire.')
+    family_id=int(fam['id']); family=fam['name']
     description=validate_free_text(description,'Description',required=False,max_len=4000) if description else None
     delivery_scope=(delivery_scope or 'MIXTE').upper()
     if delivery_scope not in SERVICE_DELIVERY_SCOPES: raise ValueError('Portée de prestation invalide.')
     if source not in ('SITE_CLARTE360','MANUEL','IMPORT'): raise ValueError('Source de prestation invalide.')
     if one(engine,'SELECT id FROM service_catalog WHERE service_code=:c',{'c':code}): raise ValueError('Ce code prestation existe déjà.')
     now=utcnow_iso(); action_json=json.dumps(action_types or [],ensure_ascii=False)
-    sid=execute(engine,'''INSERT INTO service_catalog(service_code,name,family,description,delivery_scope,action_types_json,active,source,current_version,created_at,updated_at)
-      VALUES(:c,:n,:f,:d,:s,:a,1,:o,1,:t,:t)''',{'c':code,'n':name,'f':family,'d':description,'s':delivery_scope,'a':action_json,'o':source,'t':now})
+    sid=execute(engine,'''INSERT INTO service_catalog(service_code,name,family_id,family,description,delivery_scope,action_types_json,active,source,current_version,created_at,updated_at)
+      VALUES(:c,:n,:fi,:f,:d,:s,:a,1,:o,1,:t,:t)''',{'c':code,'fi':family_id,'n':name,'f':family,'d':description,'s':delivery_scope,'a':action_json,'o':source,'t':now})
     _service_snapshot(engine,sid,actor,'Création prestation')
     audit(engine,'SERVICE_CREATED',actor=actor,entity_type='service',entity_id=sid,details={'service_code':code,'name':name})
     return sid
@@ -4204,7 +4298,12 @@ def update_service(engine, service_id:int, payload:dict, actor='system', reason=
     svc=get_service(engine,service_id)
     if not svc: raise ValueError('Prestation introuvable.')
     name=validate_short_text(payload.get('name',svc['name']),'Nom de la prestation',required=True,max_len=180)
-    family=validate_short_text(payload.get('family'),'Famille',required=False,max_len=120) if payload.get('family') else None
+    target_family_id=payload.get('family_id',svc.get('family_id'))
+    fam=get_service_family(engine,int(target_family_id)) if target_family_id else None
+    if not fam and payload.get('family'):
+        fam=one(engine,'SELECT * FROM service_families WHERE LOWER(name)=LOWER(:n) OR family_code=:c',{'n':str(payload.get('family')).strip(),'c':str(payload.get('family')).strip().upper()})
+    if not fam: raise ValueError('Sélectionnez une famille existante.')
+    family_id=int(fam['id']); family=fam['name']
     description=validate_free_text(payload.get('description'),'Description',required=False,max_len=4000) if payload.get('description') else None
     scope=(payload.get('delivery_scope') or svc['delivery_scope']).upper()
     if scope not in SERVICE_DELIVERY_SCOPES: raise ValueError('Portée de prestation invalide.')
@@ -4212,8 +4311,8 @@ def update_service(engine, service_id:int, payload:dict, actor='system', reason=
     action_types=payload.get('action_types')
     action_json=json.dumps(action_types,ensure_ascii=False) if action_types is not None else svc.get('action_types_json')
     ver=int(svc['current_version'])+1; now=utcnow_iso()
-    execute(engine,'''UPDATE service_catalog SET name=:n,family=:f,description=:d,delivery_scope=:s,action_types_json=:a,
-      active=:x,current_version=:v,updated_at=:t WHERE id=:i''',{'n':name,'f':family,'d':description,'s':scope,'a':action_json,'x':active,'v':ver,'t':now,'i':service_id})
+    execute(engine,'''UPDATE service_catalog SET name=:n,family_id=:fi,family=:f,description=:d,delivery_scope=:s,action_types_json=:a,
+      active=:x,current_version=:v,updated_at=:t WHERE id=:i''',{'n':name,'fi':family_id,'f':family,'d':description,'s':scope,'a':action_json,'x':active,'v':ver,'t':now,'i':service_id})
     _service_snapshot(engine,service_id,actor,reason)
     audit(engine,'SERVICE_UPDATED',actor=actor,entity_type='service',entity_id=service_id,details={'version':ver,'active':bool(active),'reason':reason})
     return service_id
@@ -4274,11 +4373,11 @@ def _criterion_snapshot(engine, criterion_id:int, actor:str, reason:str|None=Non
     cr=one(engine,'SELECT * FROM service_competency_criteria WHERE id=:i',{'i':criterion_id})
     if not cr: raise ValueError('Critère introuvable.')
     execute(engine,'''INSERT OR IGNORE INTO service_criterion_versions(
-      criterion_id,service_id,version_no,criterion_code,category,label,description,required,weight,minimum_level,accepted_evidence_json,validity_months,active,change_reason,changed_by,created_at)
-      VALUES(:i,:s,:v,:c,:g,:l,:d,:r,:w,:m,:e,:vm,:a,:x,:u,:t)''',{
+      criterion_id,service_id,version_no,criterion_code,category,label,description,required,weight,minimum_level,accepted_evidence_json,validity_months,active,source_kind,source_reference,change_reason,changed_by,created_at)
+      VALUES(:i,:s,:v,:c,:g,:l,:d,:r,:w,:m,:e,:vm,:a,:sk,:sr,:x,:u,:t)''',{
         'i':cr['id'],'s':cr['service_id'],'v':cr['current_version'],'c':cr['criterion_code'],'g':cr['category'],'l':cr['label'],
         'd':cr.get('description'),'r':cr['required'],'w':cr.get('weight'),'m':cr['minimum_level'],'e':cr.get('accepted_evidence_json'),
-        'vm':cr.get('validity_months'),'a':cr['active'],'x':reason,'u':actor,'t':utcnow_iso()})
+        'vm':cr.get('validity_months'),'a':cr['active'],'sk':cr.get('source_kind'),'sr':cr.get('source_reference'),'x':reason,'u':actor,'t':utcnow_iso()})
 
 
 def list_service_criteria(engine, service_id:int, active_only=False):
@@ -4288,7 +4387,7 @@ def list_service_criteria(engine, service_id:int, active_only=False):
     return q(engine,sql,{'s':service_id})
 
 
-def add_service_criterion(engine, service_id:int, code, category, label, description=None, required=False, weight=None, minimum_level=0, accepted_evidence=None, validity_months=None, actor='system'):
+def add_service_criterion(engine, service_id:int, code, category, label, description=None, required=False, weight=None, minimum_level=0, accepted_evidence=None, validity_months=None, actor='system', source_kind='ADAPTATION_CLARTE360', source_reference=None):
     if not get_service(engine,service_id): raise ValueError('Prestation introuvable.')
     code=validate_code(code,'Code critère',required=True,max_len=80).upper()
     category=(category or '').upper()
@@ -4301,9 +4400,11 @@ def add_service_criterion(engine, service_id:int, code, category, label, descrip
     if validity_months is not None and int(validity_months)<=0: validity_months=None
     if one(engine,'SELECT id FROM service_competency_criteria WHERE service_id=:s AND criterion_code=:c',{'s':service_id,'c':code}): raise ValueError('Ce code critère existe déjà pour cette prestation.')
     now=utcnow_iso(); evidence_json=json.dumps(accepted_evidence or [],ensure_ascii=False)
-    cid=execute(engine,'''INSERT INTO service_competency_criteria(service_id,criterion_code,category,label,description,required,weight,minimum_level,accepted_evidence_json,validity_months,active,current_version,created_at,updated_at)
-      VALUES(:s,:c,:g,:l,:d,:r,:w,:m,:e,:v,1,1,:t,:t)''',{'s':service_id,'c':code,'g':category,'l':label,'d':description,'r':1 if required else 0,
-      'w':float(weight) if weight is not None else None,'m':minimum_level,'e':evidence_json,'v':int(validity_months) if validity_months else None,'t':now})
+    source_kind=validate_code(source_kind or 'ADAPTATION_CLARTE360','Origine du critère',required=True,max_len=60).upper()
+    source_reference=validate_short_text(source_reference,'Référence de source',required=False,max_len=500) if source_reference else None
+    cid=execute(engine,'''INSERT INTO service_competency_criteria(service_id,criterion_code,category,label,description,required,weight,minimum_level,accepted_evidence_json,validity_months,active,current_version,source_kind,source_reference,created_at,updated_at)
+      VALUES(:s,:c,:g,:l,:d,:r,:w,:m,:e,:v,1,1,:sk,:sr,:t,:t)''',{'s':service_id,'c':code,'g':category,'l':label,'d':description,'r':1 if required else 0,
+      'w':float(weight) if weight is not None else None,'m':minimum_level,'e':evidence_json,'v':int(validity_months) if validity_months else None,'sk':source_kind,'sr':source_reference,'t':now})
     _criterion_snapshot(engine,cid,actor,'Création critère')
     audit(engine,'SERVICE_CRITERION_CREATED',actor=actor,entity_type='service_criterion',entity_id=cid,details={'service_id':service_id,'criterion_code':code})
     return cid
@@ -4326,11 +4427,13 @@ def update_service_criterion(engine, criterion_id:int, payload:dict, actor='syst
     evidence_json=json.dumps(evidence,ensure_ascii=False) if evidence is not None else cr.get('accepted_evidence_json')
     active=1 if payload.get('active',cr['active']) else 0
     required=1 if payload.get('required',cr['required']) else 0
+    source_kind=validate_code(payload.get('source_kind',cr.get('source_kind') or 'ADAPTATION_CLARTE360'),'Origine du critère',required=True,max_len=60).upper()
+    source_reference=validate_short_text(payload.get('source_reference'),'Référence de source',required=False,max_len=500) if payload.get('source_reference') else cr.get('source_reference')
     ver=int(cr['current_version'])+1; now=utcnow_iso()
     execute(engine,'''UPDATE service_competency_criteria SET category=:g,label=:l,description=:d,required=:r,weight=:w,minimum_level=:m,
-      accepted_evidence_json=:e,validity_months=:v,active=:a,current_version=:cv,updated_at=:t WHERE id=:i''',{
+      accepted_evidence_json=:e,validity_months=:v,active=:a,source_kind=:sk,source_reference=:sr,current_version=:cv,updated_at=:t WHERE id=:i''',{
       'g':category,'l':label,'d':description,'r':required,'w':float(weight) if weight is not None else None,'m':minimum_level,'e':evidence_json,
-      'v':int(validity) if validity else None,'a':active,'cv':ver,'t':now,'i':criterion_id})
+      'v':int(validity) if validity else None,'a':active,'sk':source_kind,'sr':source_reference,'cv':ver,'t':now,'i':criterion_id})
     _criterion_snapshot(engine,criterion_id,actor,reason)
     audit(engine,'SERVICE_CRITERION_UPDATED',actor=actor,entity_type='service_criterion',entity_id=criterion_id,details={'version':ver,'active':bool(active),'reason':reason})
     return criterion_id
@@ -4704,6 +4807,8 @@ def set_human_service_qualification(engine, ppid, service_id, human_value, actor
         except Exception: raise ValueError('Date de révision invalide (AAAA-MM-JJ).')
     old=one(engine,'SELECT * FROM person_service_qualifications WHERE professional_person_id=:p AND service_id=:s',{'p':ppid,'s':service_id})
     now=utcnow_iso(); comment=validate_free_text(comment,'Commentaire de qualification',required=False,max_len=4000) if comment else None
+    if old and old.get('human_value') is not None and int(old.get('human_value'))==level and (old.get('human_comment') or None)==comment and bool(old.get('human_locked'))==bool(human_locked) and (old.get('review_due_at') or None)==(review_due_at or None):
+        return old['id']
     if old:
         execute(engine,"""UPDATE person_service_qualifications SET human_value=:v,human_comment=:c,human_validated_by=:a,human_validated_at=:n,
           human_locked=:l,qualification_date=COALESCE(qualification_date,:n),review_due_at=:r,updated_at=:n
@@ -4727,6 +4832,8 @@ def set_human_criterion_assessment(engine, ppid, criterion_id, human_value, acto
     if level not in QUALIFICATION_LEVEL_LABELS: raise ValueError('Niveau de compétence invalide : utilisez une valeur de 0 à 4.')
     old=one(engine,'SELECT * FROM qualification_criterion_assessments WHERE professional_person_id=:p AND criterion_id=:c',{'p':ppid,'c':criterion_id})
     now=utcnow_iso(); comment=validate_free_text(comment,'Commentaire du critère',required=False,max_len=2000) if comment else None
+    if old and old.get('human_value') is not None and int(old.get('human_value'))==level and (old.get('human_comment') or None)==comment and bool(old.get('human_locked'))==bool(human_locked):
+        return True
     if old:
         execute(engine,"""UPDATE qualification_criterion_assessments SET human_value=:v,human_comment=:x,human_validated_by=:a,human_validated_at=:n,human_locked=:l,updated_at=:n
           WHERE professional_person_id=:p AND criterion_id=:c""",{'v':level,'x':comment,'a':actor,'n':now,'l':1 if human_locked else 0,'p':ppid,'c':criterion_id})
@@ -4809,11 +4916,76 @@ def save_ai_qualification_proposal(engine, ppid, service_id, ai_result, actor, p
         execute(engine,"""UPDATE person_service_qualifications SET ai_value=:v,ai_confidence=:c,ai_evidence_json=:e,ai_rationale=:r,ai_missing_json=:mi,ai_provider=:pr,ai_model=:m,ai_prompt_version=:pv,ai_run_id=:run,ai_updated_at=:n,updated_at=:n WHERE professional_person_id=:p AND service_id=:s""",params)
     else:
         execute(engine,"""INSERT INTO person_service_qualifications(professional_person_id,service_id,human_locked,ai_value,ai_confidence,ai_evidence_json,ai_rationale,ai_missing_json,ai_provider,ai_model,ai_prompt_version,ai_run_id,ai_updated_at,created_at,updated_at) VALUES(:p,:s,1,:v,:c,:e,:r,:mi,:pr,:m,:pv,:run,:n,:n,:n)""",params)
+    _materialize_ai_qualification_proposals(engine,ppid,service_id,ai_result,run_id,actor)
     # Never mutate any human_* field. A locked human value remains the effective decision.
     execute(engine,"""INSERT INTO qualification_history(professional_person_id,service_id,event_type,comment,actor,created_at) VALUES(:p,:s,'AI_PROPOSAL',:c,:a,:n)""",{'p':ppid,'s':service_id,'c':f"Proposition IA niveau {level} - confiance {conf:.0%}",'a':actor,'n':now})
     audit(engine,'QUALIFICATION_AI_PROPOSED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'service_id':service_id,'ai_value':level,'ai_confidence':conf,'run_id':run_id,'human_locked':bool(existing.get('human_locked')) if existing else False})
     return run_id
 
+
+def _materialize_ai_qualification_proposals(engine, ppid, service_id, ai_result, run_id, actor):
+    """Materialise J16 IA suggestions separately from human-verified evidence/criteria."""
+    now=utcnow_iso()
+    criteria={int(c['id']):c for c in list_service_criteria(engine,service_id,active_only=True)}
+    docs={int(d['id']):d for d in get_professional_360(engine,ppid).get('documents',[])}
+    for cp in ai_result.get('criteria') or []:
+        cid=int(cp.get('criterion_id') or 0)
+        if cid not in criteria: continue
+        execute(engine,"""INSERT INTO ai_criterion_proposals(professional_person_id,service_id,criterion_id,ai_run_id,proposed_level,confidence,rationale,status,created_at)
+          VALUES(:p,:s,:c,:r,:v,:f,:x,'PROPOSEE',:n)""",{'p':ppid,'s':service_id,'c':cid,'r':run_id,'v':int(cp.get('proposed_level') or 0),'f':float(cp.get('confidence') or 0),'x':cp.get('rationale') or '', 'n':now})
+    for idx,ev in enumerate(ai_result.get('evidence') or []):
+        docid=ev.get('document_id'); docid=int(docid) if docid is not None and str(docid).isdigit() else None
+        if docid not in docs: docid=None
+        ids=[int(x) for x in (ev.get('criterion_ids') or []) if str(x).isdigit() and int(x) in criteria] or [None]
+        identity=(ev.get('identity_status') or 'A_VERIFIER').upper()
+        if identity not in ('COHERENT','A_VERIFIER','INCOHERENT'): identity='A_VERIFIER'
+        for cid in ids:
+            execute(engine,"""INSERT INTO ai_qualification_evidence_proposals(professional_person_id,service_id,criterion_id,professional_document_id,ai_run_id,evidence_index,evidence_text,source_label,supports_level,confidence,identity_status,status,created_at)
+              VALUES(:p,:s,:c,:d,:r,:i,:x,:l,:v,:f,:ids,'PROPOSEE',:n)""",{'p':ppid,'s':service_id,'c':cid,'d':docid,'r':run_id,'i':idx,'x':ev.get('fact') or '', 'l':ev.get('source') or None,'v':int(ev.get('supports_level') or 0),'f':None,'ids':identity,'n':now})
+
+
+def list_ai_criterion_proposals(engine, ppid, service_id, latest_only=True):
+    sql="""SELECT p.*,c.label criterion_label,c.required,c.minimum_level FROM ai_criterion_proposals p JOIN service_competency_criteria c ON c.id=p.criterion_id WHERE p.professional_person_id=:p AND p.service_id=:s"""
+    params={'p':ppid,'s':service_id}
+    if latest_only:
+        run=one(engine,'SELECT MAX(ai_run_id) run_id FROM ai_criterion_proposals WHERE professional_person_id=:p AND service_id=:s',params)
+        if not run or run.get('run_id') is None:return []
+        sql+=' AND p.ai_run_id=:r';params['r']=run['run_id']
+    return q(engine,sql+' ORDER BY c.category,c.label,p.id',params)
+
+
+def list_ai_evidence_proposals(engine, ppid, service_id, latest_only=True):
+    sql="""SELECT p.*,c.label criterion_label,d.display_name document_name FROM ai_qualification_evidence_proposals p LEFT JOIN service_competency_criteria c ON c.id=p.criterion_id LEFT JOIN professional_documents d ON d.id=p.professional_document_id WHERE p.professional_person_id=:p AND p.service_id=:s"""
+    params={'p':ppid,'s':service_id}
+    if latest_only:
+        run=one(engine,'SELECT MAX(ai_run_id) run_id FROM ai_qualification_evidence_proposals WHERE professional_person_id=:p AND service_id=:s',params)
+        if not run or run.get('run_id') is None:return []
+        sql+=' AND p.ai_run_id=:r';params['r']=run['run_id']
+    return q(engine,sql+' ORDER BY p.evidence_index,p.criterion_id,p.id',params)
+
+
+def decide_ai_evidence_proposal(engine, proposal_id, accept, actor, comment=None):
+    pr=one(engine,'SELECT * FROM ai_qualification_evidence_proposals WHERE id=:i',{'i':int(proposal_id)})
+    if not pr: raise ValueError('Proposition de preuve IA introuvable.')
+    if pr['status']!='PROPOSEE': return pr.get('accepted_evidence_id')
+    if accept and pr.get('identity_status')=='INCOHERENT': raise ValueError("Cette preuve comporte une incohérence d'identité : elle ne peut pas être validée sans correction du dossier.")
+    eid=None
+    if accept:
+        eid=add_qualification_evidence(engine,pr['professional_person_id'],pr['service_id'],actor,'DOCUMENT' if pr.get('professional_document_id') else 'AUTRE',pr.get('evidence_text'),pr.get('criterion_id'),pr.get('professional_document_id'),pr.get('source_label'))
+    now=utcnow_iso(); status='ACCEPTEE' if accept else 'REJETEE'
+    execute(engine,'UPDATE ai_qualification_evidence_proposals SET status=:s,decided_by=:a,decided_at=:n,decision_comment=:c,accepted_evidence_id=:e WHERE id=:i',{'s':status,'a':actor,'n':now,'c':comment,'e':eid,'i':proposal_id})
+    execute(engine,"INSERT INTO qualification_history(professional_person_id,service_id,criterion_id,event_type,comment,actor,created_at) VALUES(:p,:s,:c,:t,:x,:a,:n)",{'p':pr['professional_person_id'],'s':pr['service_id'],'c':pr.get('criterion_id'),'t':'AI_EVIDENCE_'+status,'x':comment or pr.get('evidence_text'),'a':actor,'n':now})
+    return eid
+
+
+def decide_ai_criterion_proposal(engine, proposal_id, accept, actor, comment=None):
+    pr=one(engine,'SELECT * FROM ai_criterion_proposals WHERE id=:i',{'i':int(proposal_id)})
+    if not pr: raise ValueError('Proposition de critère IA introuvable.')
+    if pr['status']!='PROPOSEE': return True
+    if accept: set_human_criterion_assessment(engine,pr['professional_person_id'],pr['criterion_id'],pr['proposed_level'],actor,comment or pr.get('rationale'),True)
+    now=utcnow_iso(); status='ACCEPTEE' if accept else 'REJETEE'
+    execute(engine,'UPDATE ai_criterion_proposals SET status=:s,decided_by=:a,decided_at=:n,decision_comment=:c WHERE id=:i',{'s':status,'a':actor,'n':now,'c':comment,'i':proposal_id})
+    return True
 
 def list_ai_analysis_runs(engine, ppid, service_id):
     return q(engine,'SELECT * FROM ai_analysis_runs WHERE professional_person_id=:p AND service_id=:s ORDER BY created_at DESC,id DESC',{'p':ppid,'s':service_id})
@@ -4910,6 +5082,45 @@ def action_professional_eligibility(engine, action_id, professional_person_id):
     if req.get('require_required_complete') and not summary['required_complete']:
         return {'eligible':False,'status':'CRITERES_INCOMPLETS','reason':'Les critères obligatoires de la prestation ne sont pas tous démontrés.','human_value':int(hv),'trainer_id':p['trainer_id'],'professional_person_id':professional_person_id,'requirement':req}
     return {'eligible':True,'status':'QUALIFIE','reason':f"Qualification humaine validée : niveau {int(hv)}/4.",'human_value':int(hv),'trainer_id':p['trainer_id'],'professional_person_id':professional_person_id,'requirement':req}
+
+
+def professional_person_for_trainer(engine, trainer_id):
+    return one(engine,"SELECT professional_person_id,principal_status,active FROM professional_persons WHERE trainer_id=:t",{'t':int(trainer_id)})
+
+
+def action_assigned_professional_statuses(engine, action_id):
+    """Qualification status for people already assigned to an action.
+
+    J17: the control must remain visible after assignment; it is not only a picker hint.
+    """
+    out=[]
+    for at in list_action_trainers(engine,action_id,active_only=True):
+        pp=professional_person_for_trainer(engine,at['trainer_id'])
+        if pp:
+            ev=action_professional_eligibility(engine,action_id,pp['professional_person_id'])
+            out.append({**at,'professional_person_id':pp['professional_person_id'],
+                        'eligibility_status':ev['status'],'eligibility_reason':ev['reason'],
+                        'eligible':ev['eligible'],'human_value':ev.get('human_value')})
+        else:
+            out.append({**at,'professional_person_id':None,'eligibility_status':'A_VERIFIER',
+                        'eligibility_reason':'Ancienne fiche intervenant sans dossier professionnel relié.',
+                        'eligible':False,'human_value':None})
+    return out
+
+
+def find_service_matches(engine, title, limit=8):
+    """Conservative catalogue suggestions for an action title; never auto-selects a service."""
+    text_value=(title or '').strip().lower()
+    if not text_value: return []
+    words=[w for w in ''.join(ch if ch.isalnum() else ' ' for ch in text_value).split() if len(w)>=4]
+    scored=[]
+    for svc in list_services(engine,active_only=True):
+        hay=f"{svc.get('name','')} {svc.get('service_code','')}".lower()
+        score=sum(1 for w in set(words) if w in hay)
+        if text_value==str(svc.get('name') or '').strip().lower(): score+=100
+        if score: scored.append((score,svc))
+    scored.sort(key=lambda x:(-x[0],x[1]['name'].lower()))
+    return [x[1] for x in scored[:max(1,int(limit))]]
 
 
 def action_intervenant_candidates(engine, action_id, include_unqualified=True):
@@ -5104,3 +5315,62 @@ def supplier_link_projection(engine, professional_person_id, gateway=None):
             except Exception:y['supplier']=None
         out.append(y)
     return out
+
+# ---------------------------------------------------------------------------
+# Intervenants J14 - dossier documentaire d'abord + analyse IA globale
+# ---------------------------------------------------------------------------
+def build_global_professional_ai_payload(engine, ppid, selected_document_ids=None):
+    prof=get_professional_360(engine,ppid)
+    if not prof: raise ValueError('Dossier professionnel introuvable.')
+    selected=set(int(x) for x in (selected_document_ids or []))
+    docs=[]
+    for d in prof.get('documents',[]):
+        if selected and int(d['id']) not in selected: continue
+        docs.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'valid_until':d.get('valid_until'),'storage_path':d.get('storage_path'),'extension':d.get('extension')})
+    services=[{'service_id':x['id'],'name':x['name'],'family':x.get('family') or ''} for x in list_services(engine,active_only=True)]
+    return {'person':{'professional_person_id':ppid,'declared_name':prof.get('full_name') or prof.get('title') or '', 'existing_title':prof.get('title'),'existing_summary':prof.get('summary')},'documents':docs,'service_catalog':services}
+
+
+def save_global_professional_ai_analysis(engine, ppid, result, actor, provider='openai', model='', prompt_version='', request_hash='', usage=None, selected_document_ids=None):
+    _require_professional(engine,ppid); now=utcnow_iso()
+    tin=int(getattr(usage,'input_tokens',0) or 0) if usage is not None else None; tout=int(getattr(usage,'output_tokens',0) or 0) if usage is not None else None
+    run_id=execute(engine,"""INSERT INTO professional_global_ai_runs(professional_person_id,provider,model,prompt_version,request_hash,status,selected_document_ids_json,output_json,input_tokens,output_tokens,actor,created_at)
+      VALUES(:p,:pr,:m,:pv,:h,'SUCCESS',:d,:o,:tin,:tout,:a,:n)""",{'p':ppid,'pr':provider,'m':model,'pv':prompt_version,'h':request_hash,'d':json.dumps(selected_document_ids or []),'o':json.dumps(result,ensure_ascii=False),'tin':tin,'tout':tout,'a':actor,'n':now})
+    def add(kind,payload,source=None):
+        execute(engine,"""INSERT INTO professional_ai_suggestions(professional_person_id,run_id,suggestion_type,payload_json,source_document_id,status,created_at)
+          VALUES(:p,:r,:t,:j,:d,'PROPOSE',:n)""",{'p':ppid,'r':run_id,'t':kind,'j':json.dumps(payload,ensure_ascii=False),'d':source,'n':now})
+    profile=result.get('profile') or {}
+    if profile.get('title') or profile.get('summary'): add('PROFILE',{'title':profile.get('title'),'summary':profile.get('summary')})
+    for x in profile.get('specialties') or []: add('SPECIALTY',{'specialty':x})
+    for kind,key in [('EXPERIENCE','experiences'),('EDUCATION','education'),('CERTIFICATION','certifications'),('LANGUAGE','languages'),('SERVICE_CANDIDATE','service_candidates')]:
+        for x in result.get(key) or []: add(kind,x,x.get('source_document_id') if isinstance(x,dict) else None)
+    for x in result.get('identity_alerts') or []: add('IDENTITY_ALERT',{'message':x})
+    for x in result.get('missing_points') or []: add('MISSING_POINT',{'message':x})
+    audit(engine,'PROFESSIONAL_GLOBAL_AI_ANALYZED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'run_id':run_id,'documents':selected_document_ids or [],'identity_alerts':len(result.get('identity_alerts') or [])})
+    return run_id
+
+
+def latest_global_professional_ai_run(engine, ppid):
+    row=one(engine,'SELECT * FROM professional_global_ai_runs WHERE professional_person_id=:p ORDER BY created_at DESC,id DESC LIMIT 1',{'p':ppid})
+    if not row:return None
+    row=dict(row); row['suggestions']=q(engine,'SELECT * FROM professional_ai_suggestions WHERE run_id=:r ORDER BY id',{'r':row['id']}); return row
+
+
+def review_professional_ai_suggestion(engine, suggestion_id, decision, actor):
+    sug=one(engine,'SELECT * FROM professional_ai_suggestions WHERE id=:i',{'i':int(suggestion_id)})
+    if not sug: raise ValueError('Proposition IA introuvable.')
+    dec=(decision or '').upper()
+    if dec not in ('ACCEPTE','REJETE'): raise ValueError('Décision invalide.')
+    if sug['status']!='PROPOSE': return False
+    payload=json.loads(sug['payload_json'] or '{}'); ppid=sug['professional_person_id']; typ=sug['suggestion_type']
+    if dec=='ACCEPTE':
+        if typ=='PROFILE':
+            prof=get_professional_360(engine,ppid); update_professional_profile(engine,ppid,{'title':payload.get('title') or prof.get('title'),'summary':payload.get('summary') or prof.get('summary'),'collaboration_type':prof.get('collaboration_type') or 'A_DEFINIR','email':prof.get('profile_email') or prof.get('trainer_email'),'phone':prof.get('profile_phone') or prof.get('trainer_phone'),'city':prof.get('city'),'country':prof.get('country'),'website':prof.get('website'),'linkedin_url':prof.get('linkedin_url'),'notes_internal':prof.get('notes_internal')},actor)
+        elif typ=='SPECIALTY': add_professional_specialty(engine,ppid,payload.get('specialty'),actor=actor)
+        elif typ=='EXPERIENCE': add_professional_experience(engine,ppid,payload.get('role_title'),payload.get('organization'),payload.get('start_date'),payload.get('end_date'),False,payload.get('description'),actor)
+        elif typ=='EDUCATION': add_professional_education(engine,ppid,payload.get('diploma_title'),payload.get('institution'),payload.get('field'),payload.get('obtained_date'),actor=actor)
+        elif typ=='CERTIFICATION': add_professional_certification(engine,ppid,payload.get('name'),payload.get('certification_type') or 'CERTIFICATION',payload.get('issuer'),payload.get('reference'),payload.get('obtained_date'),payload.get('valid_until'),actor=actor)
+        elif typ=='LANGUAGE': add_professional_language(engine,ppid,payload.get('language'),payload.get('level'),actor=actor)
+    execute(engine,'UPDATE professional_ai_suggestions SET status=:s,reviewed_by=:a,reviewed_at=:n WHERE id=:i',{'s':dec,'a':actor,'n':utcnow_iso(),'i':suggestion_id})
+    audit(engine,'PROFESSIONAL_AI_SUGGESTION_REVIEWED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'suggestion_id':suggestion_id,'type':typ,'decision':dec})
+    return True

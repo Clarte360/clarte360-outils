@@ -116,13 +116,15 @@ def test_v31_tool_compatibility_metadata_does_not_block_other_action_types():
     assert pr['status']=='A_FAIRE'
 
 
-def test_i9h22_registry_seeds_deployed_boussole_and_plans_future_tools_disabled():
+def test_i9h22_registry_seeds_deployed_tools_with_current_status():
     e=eng()
     b=one(e,"SELECT * FROM tool_catalog WHERE tool_code='BOUSSOLE_VALEURS'")
     assert b and b['active']==1 and b['prescription_allowed']==1
     assert b['base_url']=='https://boussole-valeurs.clarte360.com'
-    planned=one(e,"SELECT * FROM tool_catalog WHERE tool_code='MOTEURS_PROFESSIONNELS'")
-    assert planned and planned['active']==0 and planned['prescription_allowed']==0
+    moteurs=one(e,"SELECT * FROM tool_catalog WHERE tool_code='MOTEURS_PROFESSIONNELS'")
+    assert moteurs and moteurs['active']==1 and moteurs['prescription_allowed']==1
+    assert moteurs['base_url']=='https://moteurs-professionnels.clarte360.com'
+    assert moteurs['connector_status']=='LAUNCH_ONLY'
 
 
 def test_i9h22_generic_signed_launch_matches_boussole_contract():

@@ -411,6 +411,22 @@ INTERVENANTS_J1_SCHEMA = [
 ]
 
 
+INTERVENANTS_J15_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS service_families (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, family_code TEXT NOT NULL UNIQUE, name TEXT NOT NULL UNIQUE,
+ description TEXT, active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 100,
+ current_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ CHECK(active IN (0,1))
+)""",
+"""CREATE TABLE IF NOT EXISTS service_family_versions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, family_id INTEGER NOT NULL, version_no INTEGER NOT NULL,
+ family_code TEXT NOT NULL, name TEXT NOT NULL, description TEXT, active INTEGER NOT NULL,
+ sort_order INTEGER NOT NULL, change_reason TEXT, changed_by TEXT NOT NULL, created_at TEXT NOT NULL,
+ UNIQUE(family_id,version_no), FOREIGN KEY(family_id) REFERENCES service_families(id) ON DELETE RESTRICT
+)"""
+]
+
+
 INTERVENANTS_J3_SCHEMA = [
 """CREATE TABLE IF NOT EXISTS candidate_workflow_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, event_type TEXT NOT NULL,
@@ -522,6 +538,22 @@ INTERVENANTS_J4_SCHEMA = [
  FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
  FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT,
  FOREIGN KEY(criterion_id) REFERENCES service_competency_criteria(id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS ai_qualification_evidence_proposals (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL, criterion_id INTEGER, professional_document_id INTEGER,
+ ai_run_id INTEGER, evidence_index INTEGER, evidence_text TEXT NOT NULL, source_label TEXT, supports_level INTEGER, confidence REAL, identity_status TEXT NOT NULL DEFAULT 'A_VERIFIER',
+ status TEXT NOT NULL DEFAULT 'PROPOSEE', decided_by TEXT, decided_at TEXT, decision_comment TEXT, accepted_evidence_id INTEGER, created_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT,
+ FOREIGN KEY(criterion_id) REFERENCES service_competency_criteria(id) ON DELETE RESTRICT,
+ FOREIGN KEY(professional_document_id) REFERENCES professional_documents(id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS ai_criterion_proposals (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL, criterion_id INTEGER NOT NULL, ai_run_id INTEGER,
+ proposed_level INTEGER NOT NULL, confidence REAL, rationale TEXT, status TEXT NOT NULL DEFAULT 'PROPOSEE', decided_by TEXT, decided_at TEXT, decision_comment TEXT, created_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT,
+ FOREIGN KEY(criterion_id) REFERENCES service_competency_criteria(id) ON DELETE RESTRICT
 )"""
 ]
 
@@ -535,6 +567,22 @@ INTERVENANTS_J5_SCHEMA = [
  input_tokens INTEGER, output_tokens INTEGER, actor TEXT NOT NULL, created_at TEXT NOT NULL,
  FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
  FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT
+)"""
+]
+
+INTERVENANTS_J14_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS professional_global_ai_runs (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL, request_hash TEXT NOT NULL,
+ status TEXT NOT NULL, selected_document_ids_json TEXT, output_json TEXT, input_tokens INTEGER, output_tokens INTEGER, actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS professional_ai_suggestions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, run_id INTEGER NOT NULL, suggestion_type TEXT NOT NULL, payload_json TEXT NOT NULL, source_document_id INTEGER,
+ status TEXT NOT NULL DEFAULT 'PROPOSE', reviewed_by TEXT, reviewed_at TEXT, created_at TEXT NOT NULL,
+ CHECK(status IN ('PROPOSE','ACCEPTE','REJETE')),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(run_id) REFERENCES professional_global_ai_runs(id) ON DELETE RESTRICT,
+ FOREIGN KEY(source_document_id) REFERENCES professional_documents(id) ON DELETE RESTRICT
 )"""
 ]
 
@@ -659,6 +707,10 @@ def init_db(engine: Engine):
         for sql in INTERVENANTS_J10_SCHEMA:
             c.execute(text(sql))
         for sql in INTERVENANTS_J11_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J14_SCHEMA:
+            c.execute(text(sql))
+        for sql in INTERVENANTS_J15_SCHEMA:
             c.execute(text(sql))
         for sql in I9J2_SCHEMA:
             c.execute(text(sql))
@@ -987,6 +1039,17 @@ def init_db(engine: Engine):
             try: c.execute(text(sql))
             except Exception: pass
 
+        # Intervenants J15: families become master data and criteria carry their origin.
+        for sql in [
+            "ALTER TABLE service_catalog ADD COLUMN family_id INTEGER",
+            "ALTER TABLE service_competency_criteria ADD COLUMN source_kind TEXT",
+            "ALTER TABLE service_competency_criteria ADD COLUMN source_reference TEXT",
+            "ALTER TABLE service_criterion_versions ADD COLUMN source_kind TEXT",
+            "ALTER TABLE service_criterion_versions ADD COLUMN source_reference TEXT"
+        ]:
+            try: c.execute(text(sql))
+            except Exception: pass
+
         # Intervenants J0: every historical trainer receives a stable professional person identity.
         # This is an identity migration only: no qualification or competence is inferred.
         trainer_rows = c.execute(text("SELECT id, professional_person_id, active, created_at, updated_at FROM trainers ORDER BY id")).mappings().all()
@@ -1058,6 +1121,94 @@ def init_db(engine: Engine):
                     VALUES(:i,1,:c,:n,:f,:d,:s,:a,:x,:o,'Initialisation catalogue V1 J1R','migration-j1r',:t)"""),
                     {'i':row['id'],'c':row['service_code'],'n':row['name'],'f':row.get('family'),'d':row.get('description'),
                      's':row['delivery_scope'],'a':row.get('action_types_json'),'x':row['active'],'o':row['source'],'t':j1_now})
+
+        # Intervenants J15: referentiel maitre des familles. La famille n'est plus un texte libre.
+        j15_now=utcnow_iso()
+        family_seed = [
+            ('BILAN_COMPETENCES','Bilan de compétences','Dispositif Bilan de compétences',10),
+            ('FORMATIONS','Formations','Prestations de formation',20),
+            ('COACHING','Coaching','Prestations de coaching professionnel',30),
+            ('CONSEIL','Conseil','Prestations de conseil',40),
+            ('ACCOMPAGNEMENTS','Accompagnements','Prestations d’accompagnement collectif ou organisationnel',50),
+        ]
+        for fcode,fname,fdesc,forder in family_seed:
+            c.execute(text("""INSERT OR IGNORE INTO service_families(family_code,name,description,active,sort_order,current_version,created_at,updated_at)
+              VALUES(:c,:n,:d,1,:o,1,:t,:t)"""),{'c':fcode,'n':fname,'d':fdesc,'o':forder,'t':j15_now})
+            fr=c.execute(text('SELECT * FROM service_families WHERE family_code=:c'),{'c':fcode}).mappings().first()
+            if fr:
+                c.execute(text("""INSERT OR IGNORE INTO service_family_versions(family_id,version_no,family_code,name,description,active,sort_order,change_reason,changed_by,created_at)
+                  VALUES(:i,1,:c,:n,:d,1,:o,'Initialisation familles J15','migration-j15',:t)"""),{'i':fr['id'],'c':fcode,'n':fname,'d':fdesc,'o':forder,'t':j15_now})
+                c.execute(text("UPDATE service_catalog SET family_id=:i,family=:n WHERE LOWER(COALESCE(family,''))=LOWER(:n)"),{'i':fr['id'],'n':fname})
+
+        # Referentiel initial de criteres : adaptation metier Clarte360, administrable et versionnee.
+        # Il sert de grille d'instruction humaine ; il ne constitue ni un test ni une qualification automatique.
+        common_evidence=json.dumps(['CV','DIPLOME','CERTIFICATION','ATTESTATION','EXPERIENCE','MISSION','REFERENCE','ENTRETIEN','DOCUMENT'],ensure_ascii=False)
+        criteria_seed=[]
+        def addcrit(service_code, code, category, label, description, required=1, min_level=3, evidence=None, source='ADAPTATION_CLARTE360'):
+            criteria_seed.append((service_code,code,category,label,description,required,min_level,json.dumps(evidence or ['CV','EXPERIENCE','MISSION','REFERENCE','ENTRETIEN','DOCUMENT'],ensure_ascii=False),source))
+
+        # Bilan de competences : une seule prestation, grille d'instruction Clarte360.
+        addcrit('BILAN_COMPETENCES','BC_CADRE_FINALITE','REGLEMENTAIRE','Maîtriser le cadre, la finalité et les limites du bilan de compétences','Savoir expliquer le dispositif, son objectif, la confidentialité, les responsabilités et les limites de l’accompagnement.',1,3,['FORMATION','CERTIFICATION','ATTESTATION','EXPERIENCE','ENTRETIEN','DOCUMENT'])
+        addcrit('BILAN_COMPETENCES','BC_ANALYSE_DEMANDE','ACCOMPAGNEMENT_COACHING','Analyser la demande et clarifier les objectifs du bénéficiaire','Conduire l’analyse de la demande, reformuler les attentes et poser un cadre de travail individualisé.',1,3)
+        addcrit('BILAN_COMPETENCES','BC_CONDUITE_PHASES','METIER_TECHNIQUE','Conduire un bilan de compétences de manière structurée','Maîtriser un déroulé cohérent de l’accueil à la conclusion, avec investigation, synthèse et plan d’action.',1,3,['FORMATION','ATTESTATION','EXPERIENCE','MISSION','REFERENCE','ENTRETIEN','DOCUMENT'])
+        addcrit('BILAN_COMPETENCES','BC_EXPLORATION','ACCOMPAGNEMENT_COACHING','Explorer compétences, motivations, intérêts, valeurs et contraintes','Utiliser l’entretien et des outils adaptés sans enfermer la personne dans une typologie.',1,3)
+        addcrit('BILAN_COMPETENCES','BC_PROJET_VERIFICATION','METIER_TECHNIQUE','Accompagner l’élaboration et la vérification du projet professionnel','Aider à formuler des hypothèses, les confronter à la réalité et construire un plan d’action réaliste.',1,3)
+        addcrit('BILAN_COMPETENCES','BC_POSTURE_AUTONOMIE','COMPORTEMENTAL','Adopter une posture favorisant l’autonomie et la décision du bénéficiaire','Questionner, reformuler et faire réfléchir sans décider à la place de la personne.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+        addcrit('BILAN_COMPETENCES','BC_SYNTHESE','METIER_TECHNIQUE','Produire une synthèse utile, fidèle et exploitable','Structurer une synthèse qui reprend les éléments utiles au bénéficiaire et son plan d’action, sans inventer de conclusions.',1,3,['EXPERIENCE','MISSION','REFERENCE','DOCUMENT','ENTRETIEN'])
+        addcrit('BILAN_COMPETENCES','BC_CONFIDENTIALITE','REGLEMENTAIRE','Garantir confidentialité, consentement et traçabilité du dossier','Appliquer les règles internes de confidentialité, de consentement, de droits d’accès et de conservation des informations.',1,3,['FORMATION','ATTESTATION','EXPERIENCE','ENTRETIEN','DOCUMENT'])
+
+        formation_codes=[x[0] for x in initial_services if x[2]=='Formations']
+        for sc in formation_codes:
+            sname=next(x[1] for x in initial_services if x[0]==sc)
+            addcrit(sc,'FORM_EXPERTISE_DOMAINE','METIER_TECHNIQUE',f'Maîtriser le domaine : {sname}',f'Démontrer une maîtrise professionnelle suffisante du contenu et des situations de travail liées à « {sname} ».',1,3,['CV','DIPLOME','CERTIFICATION','ATTESTATION','EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'FORM_CONCEPTION','PEDAGOGIQUE','Concevoir une séquence cohérente avec les objectifs et le public','Définir objectifs, progression, méthodes, supports et activités adaptés au public et au contexte.',1,3,['CV','EXPERIENCE','MISSION','REFERENCE','ENTRETIEN','DOCUMENT'])
+            addcrit(sc,'FORM_ANIMATION','PEDAGOGIQUE','Animer et adapter la formation en situation','Créer les conditions d’apprentissage, expliquer clairement, faire pratiquer et ajuster l’animation aux besoins observés.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'FORM_EVALUATION','PEDAGOGIQUE','Évaluer les acquis et donner un retour utile','Mettre en œuvre des évaluations adaptées et exploiter les résultats pour faire progresser les participants.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN','DOCUMENT'])
+            addcrit(sc,'FORM_POSTURE','COMPORTEMENTAL','Adopter une posture professionnelle de formateur','Faire preuve de clarté, écoute, respect, adaptation et capacité à gérer un groupe ou une situation pédagogique.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'FORM_TRACABILITE','REGLEMENTAIRE','Respecter le cadre administratif, qualité et traçabilité de la formation','Renseigner les éléments nécessaires au suivi de la formation et appliquer les procédures Clarté360 liées à la preuve de réalisation.',1,2,['EXPERIENCE','MISSION','ATTESTATION','ENTRETIEN','DOCUMENT'])
+
+        coaching_codes=[x[0] for x in initial_services if x[2]=='Coaching']
+        for sc in coaching_codes:
+            sname=next(x[1] for x in initial_services if x[0]==sc)
+            addcrit(sc,'COACH_CADRE','ACCOMPAGNEMENT_COACHING','Poser et tenir le cadre de coaching','Contractualiser les objectifs, rôles, limites, confidentialité et modalités du coaching.',1,3,['CV','DIPLOME','CERTIFICATION','ATTESTATION','EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'COACH_ECOUTE_QUESTIONNEMENT','ACCOMPAGNEMENT_COACHING','Mobiliser écoute active, questionnement et reformulation','Favoriser prise de conscience et réflexion sans imposer de solution.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'COACH_PROCESSUS','ACCOMPAGNEMENT_COACHING','Conduire un processus orienté objectifs et passage à l’action','Structurer l’accompagnement, suivre les objectifs et soutenir la responsabilisation du client.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'COACH_AUTONOMIE','COMPORTEMENTAL','Préserver autonomie, consentement et absence de manipulation','Maintenir une posture respectueuse de la personne, de ses choix et de son rythme.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'COACH_CONTEXTE','METIER_TECHNIQUE',f'Être pertinent dans le contexte : {sname}',f'Disposer d’une expérience ou de repères suffisants pour accompagner de façon crédible dans le contexte « {sname} » sans se substituer à l’expertise du client.',1,2,['CV','EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'COACH_DEONTOLOGIE','REGLEMENTAIRE','Appliquer confidentialité, déontologie et limites d’intervention','Identifier les limites du coaching, les situations nécessitant orientation ou intervention d’un autre professionnel et protéger les informations confiées.',1,3,['FORMATION','CERTIFICATION','ATTESTATION','EXPERIENCE','ENTRETIEN','DOCUMENT'])
+
+        conseil_codes=[x[0] for x in initial_services if x[2]=='Conseil']
+        for sc in conseil_codes:
+            sname=next(x[1] for x in initial_services if x[0]==sc)
+            addcrit(sc,'CONS_EXPERTISE','METIER_TECHNIQUE',f'Maîtriser le domaine de conseil : {sname}',f'Démontrer une expertise professionnelle directement pertinente pour « {sname} ».',1,3,['CV','DIPLOME','CERTIFICATION','EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'CONS_DIAGNOSTIC','METIER_TECHNIQUE','Analyser la situation et poser un diagnostic argumenté','Recueillir les faits, identifier enjeux, écarts et contraintes et distinguer constats, hypothèses et recommandations.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN','DOCUMENT'])
+            addcrit(sc,'CONS_RECOMMANDATIONS','METIER_TECHNIQUE','Formuler des recommandations opérationnelles et proportionnées','Proposer des options explicites, argumentées, réalisables et adaptées au contexte du client.',1,3,['EXPERIENCE','MISSION','REFERENCE','DOCUMENT','ENTRETIEN'])
+            addcrit(sc,'CONS_ACCOMP_MEO','ACCOMPAGNEMENT_COACHING','Accompagner la mise en œuvre sans se substituer au décideur','Aider à prioriser, planifier et suivre les actions tout en laissant la décision au client.',0,2,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'CONS_CONFIDENTIALITE','COMPORTEMENTAL','Garantir confidentialité, indépendance et clarté de posture','Préserver les informations confiées, expliciter les limites et éviter les conflits de rôles.',1,3,['EXPERIENCE','REFERENCE','ENTRETIEN','DOCUMENT'])
+
+        accompagnement_codes=[x[0] for x in initial_services if x[2]=='Accompagnements']
+        for sc in accompagnement_codes:
+            sname=next(x[1] for x in initial_services if x[0]==sc)
+            addcrit(sc,'ACC_DIAGNOSTIC','METIER_TECHNIQUE',f'Comprendre les enjeux de l’accompagnement : {sname}',f'Analyser le contexte, les acteurs, les objectifs et les contraintes propres à « {sname} ».',1,3,['CV','EXPERIENCE','MISSION','REFERENCE','ENTRETIEN','DOCUMENT'])
+            addcrit(sc,'ACC_FACILITATION','ACCOMPAGNEMENT_COACHING','Faciliter les échanges et la construction collective','Créer un cadre de dialogue, faire émerger les contributions et soutenir une élaboration collective utile.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'ACC_MOBILISATION','ACCOMPAGNEMENT_COACHING','Mobiliser les acteurs et traiter les résistances avec discernement','Identifier adhésions, tensions et résistances, puis adapter l’intervention sans manipulation.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+            addcrit(sc,'ACC_ACTION_SUIVI','METIER_TECHNIQUE','Transformer les échanges en décisions et actions suivies','Formaliser priorités, responsabilités, jalons et modalités de suivi adaptées.',1,3,['EXPERIENCE','MISSION','REFERENCE','DOCUMENT','ENTRETIEN'])
+            addcrit(sc,'ACC_POSTURE','COMPORTEMENTAL','Tenir une posture neutre, claire et responsabilisante','Respecter les personnes, clarifier les rôles et favoriser leur autonomie dans les décisions.',1,3,['EXPERIENCE','MISSION','REFERENCE','ENTRETIEN'])
+
+        for sc,ccode,cat,label,desc,required,minlevel,evidence_json,source_kind in criteria_seed:
+            sr=c.execute(text('SELECT id FROM service_catalog WHERE service_code=:c'),{'c':sc}).mappings().first()
+            if not sr: continue
+            sid=sr['id']
+            c.execute(text("""INSERT OR IGNORE INTO service_competency_criteria(
+              service_id,criterion_code,category,label,description,required,minimum_level,accepted_evidence_json,active,current_version,source_kind,source_reference,created_at,updated_at)
+              VALUES(:s,:c,:g,:l,:d,:r,:m,:e,1,1,:sk,'CDC correctif V1.1 / adaptation métier Clarté360 J15',:t,:t)"""),
+              {'s':sid,'c':ccode,'g':cat,'l':label,'d':desc,'r':required,'m':minlevel,'e':evidence_json,'sk':source_kind,'t':j15_now})
+            cr=c.execute(text('SELECT * FROM service_competency_criteria WHERE service_id=:s AND criterion_code=:c'),{'s':sid,'c':ccode}).mappings().first()
+            if cr:
+                c.execute(text("""INSERT OR IGNORE INTO service_criterion_versions(
+                  criterion_id,service_id,version_no,criterion_code,category,label,description,required,weight,minimum_level,accepted_evidence_json,validity_months,active,source_kind,source_reference,change_reason,changed_by,created_at)
+                  VALUES(:i,:s,1,:c,:g,:l,:d,:r,:w,:m,:e,:vm,1,:sk,:sr,'Initialisation critères J15','migration-j15',:t)"""),
+                  {'i':cr['id'],'s':sid,'c':cr['criterion_code'],'g':cr['category'],'l':cr['label'],'d':cr.get('description'),'r':cr['required'],'w':cr.get('weight'),'m':cr['minimum_level'],'e':cr.get('accepted_evidence_json'),'vm':cr.get('validity_months'),'sk':cr.get('source_kind'),'sr':cr.get('source_reference'),'t':j15_now})
 
         indexes = [
             "CREATE INDEX IF NOT EXISTS ix_actions_status ON actions(status)",

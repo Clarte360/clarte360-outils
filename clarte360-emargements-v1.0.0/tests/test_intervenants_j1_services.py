@@ -5,6 +5,7 @@ from services import (
     list_services, add_service, update_service, service_versions,
     add_service_criterion, update_service_criterion, list_service_criteria,
     criterion_versions, delete_service, delete_service_criterion,
+    add_service_family, list_service_families,
 )
 
 
@@ -33,7 +34,8 @@ def test_j1_seeded_catalog_is_idempotent_and_administrable():
 
 def test_j1_manual_service_is_immediately_in_catalog_and_versioned():
     e=_engine()
-    sid=add_service(e,'AUDIT_QHSE','Audit QHSE','QHSE','Audit de système','MIXTE',actor='admin')
+    fid=add_service_family(e,'QHSE','QHSE','Famille de test',actor='admin')
+    sid=add_service(e,'AUDIT_QHSE','Audit QHSE',description='Audit de système',delivery_scope='MIXTE',actor='admin',family_id=fid)
     svc=next(x for x in list_services(e) if x['id']==sid)
     assert svc['active'] == 1
     assert svc['current_version'] == 1
@@ -64,13 +66,17 @@ def test_j1_criterion_supports_categories_levels_evidence_and_history():
     assert json.loads(versions[0]['accepted_evidence_json'])[-1]=='référence mission'
 
 
-def test_j1_no_qualification_is_inferred_from_seed_or_criteria():
+def test_j15_seeded_criteria_do_not_create_any_human_qualification():
     e=_engine()
     with e.connect() as c:
-        tables={r[0] for r in c.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
         criteria_count=c.execute(text('SELECT COUNT(*) FROM service_competency_criteria')).scalar_one()
-    assert criteria_count == 0
-    assert 'professional_qualifications' not in tables
+        qualification_count=c.execute(text('SELECT COUNT(*) FROM person_service_qualifications')).scalar_one()
+    assert criteria_count >= 100
+    assert qualification_count == 0
+    bc=next(x for x in list_services(e) if x['service_code']=='BILAN_COMPETENCES')
+    criteria=list_service_criteria(e,bc['id'])
+    assert len(criteria) >= 8
+    assert all((x.get('source_kind') or '')=='ADAPTATION_CLARTE360' for x in criteria)
 
 
 def test_j1_service_and_criterion_can_be_deleted_before_dependency():

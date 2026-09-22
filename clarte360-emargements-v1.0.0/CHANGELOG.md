@@ -517,3 +517,18 @@ Voir `INCREMENT_V3_I9_H2_4_CONTRESIGNATURE_DOCUMENTS_ERGONOMIE.md`.
 - Critères de compétence versionnés par prestation, niveaux 0–4 et preuves acceptables.
 - Interface `Paramètres > Intervenants & partenaires > Prestations`.
 - 369/369 tests automatisés réussis.
+
+## Intervenants J15 — 2026-09-21
+- Référentiel maître et versionné des familles de prestations.
+- Familles non libres dans la gestion des prestations.
+- Réaffectation/fusion de familles et réaffectation en masse des prestations.
+- Filtres du catalogue de prestations.
+- Référentiel initial de 152 critères de compétences pour 26 prestations.
+- Origine des critères explicitée et administrable.
+- Grille de critères à cocher pour validation humaine dans l’adéquation.
+
+## J18.1 - 2026-09-21 - Synchronisation registre outils
+- Synchronisation de `config/tool_registry.json` avec la version courante utilisée dans GitHub.
+- Activation de MOTEURS_PROFESSIONNELS en production/prescriptible avec son profil HUB actuel.
+- Mise à jour des tests du registre afin qu'ils contrôlent l'état courant du référentiel et non l'ancien état planifié.
+- Aucun changement métier Intervenants hors synchronisation du registre outils.

@@ -5,7 +5,7 @@ from services import (
     list_services, add_service_criterion, set_human_service_qualification,
     set_human_criterion_assessment, add_qualification_evidence,
     get_person_service_qualification, list_person_service_qualifications,
-    qualification_adequacy_summary, delete_service
+    qualification_adequacy_summary, delete_service, add_service_family, add_service
 )
 
 
@@ -39,7 +39,7 @@ def test_human_validation_is_locked_and_historized():
 
 
 def test_criterion_assessment_computes_required_adequacy():
-    e=eng(); s=service(e); p=create_professional_intervenant(e,'Sam Exemple',actor='admin@test')
+    e=eng(); fid=add_service_family(e,'TESTQ','Test qualification',actor='admin@test'); sid=add_service(e,'TEST_QUALIF','Prestation test',family_id=fid,actor='admin@test'); s={'id':sid}; p=create_professional_intervenant(e,'Sam Exemple',actor='admin@test')
     c1=add_service_criterion(e,s['id'],'METIER','METIER_TECHNIQUE','Maîtriser le domaine',required=True,minimum_level=3,actor='admin@test')
     c2=add_service_criterion(e,s['id'],'PEDA','PEDAGOGIQUE','Structurer une intervention',required=True,minimum_level=2,actor='admin@test')
     set_human_criterion_assessment(e,p,c1,3,'admin@test','Démontré',True)

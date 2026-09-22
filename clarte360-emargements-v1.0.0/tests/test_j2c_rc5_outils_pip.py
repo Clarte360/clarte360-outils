@@ -36,9 +36,9 @@ def test_roue_valeurs_is_deployed_active_and_prescriptible():
 def test_registry_is_source_of_truth_for_global_deployment_state():
     e=eng()
     roue=one(e,"SELECT active,prescription_allowed FROM tool_catalog WHERE tool_code='ROUE_VALEURS'")
-    planned=one(e,"SELECT active,prescription_allowed FROM tool_catalog WHERE tool_code='MOTEURS_PROFESSIONNELS'")
+    moteurs=one(e,"SELECT active,prescription_allowed FROM tool_catalog WHERE tool_code='MOTEURS_PROFESSIONNELS'")
     assert roue['active']==1 and roue['prescription_allowed']==1
-    assert planned['active']==0 and planned['prescription_allowed']==0
+    assert moteurs['active']==1 and moteurs['prescription_allowed']==1
 
 
 def test_action_can_add_and_remove_tools_freely():
