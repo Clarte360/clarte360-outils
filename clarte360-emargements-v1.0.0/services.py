@@ -1389,6 +1389,67 @@ def set_agency_active(engine, agency_id, active, actor):
     execute(engine,'UPDATE agencies SET active=:a,updated_at=:u WHERE id=:i',{'a':int(bool(active)),'u':utcnow_iso(),'i':agency_id})
     audit(engine,'AGENCY_ACTIVATION_CHANGED',actor=actor,entity_type='agency',entity_id=agency_id,details={'active':bool(active)})
 
+
+def organization_delete_dependencies(engine, organization_id):
+    checks=[
+      ('actions','SELECT COUNT(*) n FROM actions WHERE organization_id=:i'),
+      ('quality_events','SELECT COUNT(*) n FROM quality_events WHERE organization_id=:i'),
+      ('questionnaire_templates','SELECT COUNT(*) n FROM questionnaire_templates WHERE organization_id=:i'),
+      ('quality_contacts','SELECT COUNT(*) n FROM quality_contacts WHERE organization_id=:i'),
+      ('external_quality_contacts','SELECT COUNT(*) n FROM external_quality_contacts WHERE organization_id=:i')
+    ]
+    out=[]
+    for label,sql in checks:
+        try:
+            n=int((one(engine,sql,{'i':organization_id}) or {}).get('n') or 0)
+        except Exception:
+            n=0
+        if n: out.append({'kind':label,'count':n})
+    return out
+
+
+def delete_organization_if_unused(engine, organization_id, actor):
+    org=one(engine,'SELECT * FROM organizations WHERE id=:i',{'i':organization_id})
+    if not org: raise ValueError('Organisme introuvable.')
+    deps=organization_delete_dependencies(engine,organization_id)
+    if deps:
+        raise ValueError("Suppression impossible : cet organisme est déjà utilisé. Inactivez-le pour préserver l'historique.")
+    agencies=int((one(engine,'SELECT COUNT(*) n FROM agencies WHERE organization_id=:i',{'i':organization_id}) or {}).get('n') or 0)
+    profiles=int((one(engine,'SELECT COUNT(*) n FROM organization_import_profiles WHERE organization_id=:i',{'i':organization_id}) or {}).get('n') or 0)
+    execute(engine,'DELETE FROM organizations WHERE id=:i',{'i':organization_id})
+    audit(engine,'ORGANIZATION_DELETED',actor=actor,entity_type='organization',entity_id=organization_id,details={'name':org.get('name'),'agencies_deleted':agencies,'import_profiles_deleted':profiles})
+    return True
+
+
+def agency_delete_dependencies(engine, agency_id):
+    out=[]
+    for label,sql in [
+      ('actions','SELECT COUNT(*) n FROM actions WHERE agency_id=:i'),
+      ('quality_events','SELECT COUNT(*) n FROM quality_events WHERE agency_id=:i')
+    ]:
+        try: n=int((one(engine,sql,{'i':agency_id}) or {}).get('n') or 0)
+        except Exception: n=0
+        if n: out.append({'kind':label,'count':n})
+    return out
+
+
+def delete_agency_if_unused(engine, agency_id, actor):
+    ag=one(engine,'SELECT * FROM agencies WHERE id=:i',{'i':agency_id})
+    if not ag: raise ValueError('Agence introuvable.')
+    if agency_delete_dependencies(engine,agency_id):
+        raise ValueError("Suppression impossible : cette agence est déjà utilisée. Inactivez-la pour préserver l'historique.")
+    execute(engine,'DELETE FROM agencies WHERE id=:i',{'i':agency_id})
+    audit(engine,'AGENCY_DELETED',actor=actor,entity_type='agency',entity_id=agency_id,details={'name':ag.get('name')})
+    return True
+
+
+def delete_import_profile(engine, profile_id, actor):
+    row=one(engine,'SELECT * FROM organization_import_profiles WHERE id=:i',{'i':profile_id})
+    if not row: raise ValueError("Profil d'import introuvable.")
+    execute(engine,'DELETE FROM organization_import_profiles WHERE id=:i',{'i':profile_id})
+    audit(engine,'IMPORT_PROFILE_DELETED',actor=actor,entity_type='import_profile',entity_id=profile_id,details={'organization_id':row.get('organization_id'),'code':row.get('code'),'name':row.get('name')})
+    return True
+
 def unarchive_action(engine, aid, actor):
     a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':aid})
     if not a:return False,'Action introuvable.'
@@ -1777,9 +1838,32 @@ def update_quality_issue(engine, issue_id, status, owner=None, actor='system'):
 def create_improvement_action(engine, action_id, title, description='', owner=None, due_at=None, issue_id=None, actor='system'):
     iid=execute(engine,"INSERT INTO improvement_actions(issue_id,action_id,title,description,owner,due_at,status,created_at) VALUES(:i,:a,:t,:d,:o,:due,'A_FAIRE',:c)",{'i':issue_id,'a':action_id,'t':title,'d':description or None,'o':owner or None,'due':due_at or None,'c':utcnow_iso()});audit(engine,'IMPROVEMENT_ACTION_CREATED',action_id,actor,'improvement_action',iid,{});return iid
 
-def update_improvement_action(engine, improvement_id, status, actor='system'):
-    x=one(engine,'SELECT * FROM improvement_actions WHERE id=:i',{'i':improvement_id}); done=utcnow_iso() if status=='TERMINEE' else None
-    execute(engine,'UPDATE improvement_actions SET status=:s,completed_at=:d WHERE id=:i',{'s':status,'d':done,'i':improvement_id});audit(engine,'IMPROVEMENT_ACTION_UPDATED',x.get('action_id') if x else None,actor,'improvement_action',improvement_id,{'status':status})
+def update_improvement_action(engine, improvement_id, status, actor='system', title=None, description=None, owner=None, due_at=None):
+    x=one(engine,'SELECT * FROM improvement_actions WHERE id=:i',{'i':improvement_id})
+    if not x: raise ValueError("Action d'amélioration introuvable.")
+    allowed={'A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE'}
+    status=(status or x.get('status') or 'A_FAIRE').upper()
+    if status not in allowed: raise ValueError("Statut d'action d'amélioration invalide.")
+    done=utcnow_iso() if status=='TERMINEE' else None
+    vals={
+      's':status,'d':done,'t':validate_short_text(title if title is not None else x.get('title'),"Action d'amélioration",required=True,max_len=300),
+      'x':validate_free_text(description if description is not None else x.get('description'),"Description",required=False,max_len=5000) if (description if description is not None else x.get('description')) else None,
+      'o':validate_short_text(owner if owner is not None else x.get('owner'),"Responsable",required=False,max_len=200) if (owner if owner is not None else x.get('owner')) else None,
+      'due':due_at if due_at is not None else x.get('due_at'),'i':improvement_id
+    }
+    if vals['due']:
+        try: datetime.fromisoformat(str(vals['due'])[:10])
+        except Exception: raise ValueError("Échéance invalide (AAAA-MM-JJ).")
+    execute(engine,'UPDATE improvement_actions SET title=:t,description=:x,owner=:o,due_at=:due,status=:s,completed_at=:d WHERE id=:i',vals)
+    audit(engine,'IMPROVEMENT_ACTION_UPDATED',x.get('action_id'),actor,'improvement_action',improvement_id,{'status':status,'title':vals['t'],'owner':vals['o'],'due_at':vals['due']})
+
+
+def delete_improvement_action(engine, improvement_id, actor='system'):
+    x=one(engine,'SELECT * FROM improvement_actions WHERE id=:i',{'i':improvement_id})
+    if not x: raise ValueError("Action d'amélioration introuvable.")
+    execute(engine,'DELETE FROM improvement_actions WHERE id=:i',{'i':improvement_id})
+    audit(engine,'IMPROVEMENT_ACTION_DELETED',x.get('action_id'),actor,'improvement_action',improvement_id,{'title':x.get('title'),'issue_id':x.get('issue_id')})
+    return True
 
 # --- I9-B: journal universel des communications + contresignature automatique ---
 def queue_communication(engine, action_id, communication_type, recipient_email, *, participant_id=None, trainer_id=None, slot_id=None, trigger_mode='AUTO', due_at=None, metadata=None, idempotency_key=None):
