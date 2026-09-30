@@ -1833,9 +1833,17 @@ def dashboard():
     for c,n,l in [(c1,total,'Actions'),(c2,open_n,'Actives'),(c3,signed,'Signatures'),(c4,pending,'Envois / relances prévus')]: c.markdown(f"<div class='c360-kpi'><div class='n'>{n}</div><div class='l'>{l}</div></div>",unsafe_allow_html=True)
     st.subheader('Actions récentes')
     rows=[]
-    for a in acts[:20]:
+    recent=acts[:20]
+    for a in recent:
         pr=action_progress(ENGINE,a['id']);rows.append({'Action':a['action_no'],'Intitulé':a['title'],'Mode':a['mode'],'Participants':pr['participants'],'Créneaux':pr['slots'],'Signatures':f"{pr['signed']}/{pr['expected']}",'Avancement':f"{pr['percent']}%"})
-    st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+    if rows:
+        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+        amap={f"{a['action_no']} — {a['title']}":a for a in recent}
+        alab=st.selectbox('Action du tableau à ouvrir',list(amap),key='dashboard_recent_action_manage')
+        if st.button('OUVRIR / GÉRER CETTE ACTION',key='dashboard_recent_action_open'):
+            st.session_state.selected_action=amap[alab]['id']; st.session_state['_next_nav']='Actions'; rerun()
+    else:
+        st.info('Aucune action enregistrée.')
     st.caption("Le pilotage qualité est centralisé dans l’onglet Qualité.")
     footer()
 
@@ -2073,6 +2081,12 @@ def action_tools_tab(a):
                     upsert_tool_catalog(ENGINE,{'tool_code':selected_tool['tool_code'],'name':selected_tool['name'],'category':selected_tool.get('category') or 'OUTIL','base_url':selected_tool.get('base_url'),'active':active,'prescription_allowed':presc,'allowed_publics':['BENEFICIAIRE']},st.session_state.admin_email)
                     st.success('Catalogue mis à jour automatiquement.'); rerun()
                 except ValueError as ex: st.error(str(ex))
+            with st.expander('Supprimer cet outil du catalogue'):
+                st.caption("La suppression physique n'est possible que si l'outil n'a jamais été prescrit ni autorisé sur une action. Sinon, désactivez-le.")
+                tconfirm=st.text_input('Saisissez SUPPRIMER',key=f'tool_delete_confirm_{selected_tool["id"]}')
+                if st.button('Supprimer définitivement cet outil',key=f'tool_delete_{selected_tool["id"]}',disabled=tconfirm!='SUPPRIMER'):
+                    try: delete_tool_catalog_if_unused(ENGINE,selected_tool['id'],st.session_state.admin_email);st.success('Outil supprimé du catalogue.');rerun()
+                    except ValueError as ex: st.error(str(ex))
         else:
             with st.form(f'tool_catalog_add_{a["id"]}'):
                 c1,c2=st.columns(2)
@@ -2115,12 +2129,14 @@ def teams_tab(a):
     occ=teams_occurrences(ENGINE,a['id'])
     if occ:
         st.markdown('#### Séances gérées par Teams')
+        st.caption("Vue de restitution issue du calendrier. Les séances se modifient dans l'onglet Calendrier.")
         st.dataframe(pd.DataFrame([{'Séance':f"{x['slot_date']} — {x['start_time']}–{x['end_time']}",
             'Statut':'Présence récupérée' if x.get('attendance_report_id') else ('Planifiée' if x.get('status')=='PLANNED' else x.get('status') or '—')} for x in occ]),use_container_width=True,hide_index=True)
 
     roles=teams_roles(ENGINE,a['id'])
     if roles:
         st.markdown('#### Intervenants Teams')
+        st.caption("Vue dérivée des affectations. Les intervenants et leurs rôles se gèrent dans l'onglet Intervenants.")
         slots_by_id={x['id']:x for x in q(ENGINE,'SELECT * FROM slots WHERE action_id=:a',{'a':a['id']})}
         role_rows=[]
         for x in roles:
@@ -2711,6 +2727,7 @@ def dispatch_tab(a):
             sent_local=local_dt(e['sent_at'],tzname).strftime('%d/%m/%Y %H:%M') if e.get('sent_at') else ''
             evrows.append({'Nom':e['last_name'],'Prénom':e['first_name'],'Email':e.get('email') or '','Date séance':datetime.fromisoformat(e['slot_date']).strftime('%d/%m/%Y'),'Début':e['start_time'],'Fin':e['end_time'],'Type':e['event_type'],'Échéance (heure locale)':due,'Statut':e['status'],'Envoyé le':sent_local,'Dernière anomalie':friendly_mail_error(e.get('last_error'))})
         st.dataframe(pd.DataFrame(evrows),use_container_width=True,hide_index=True)
+        st.caption("Historique technique des événements d'envoi : non supprimable pour conserver la traçabilité. Les relances se pilotent ci-dessous.")
     st.markdown('### Envoi / relance manuelle')
     smtp_enabled=bool(mail_cfg().get('enabled'))
     if smtp_enabled and active_status:
@@ -2741,6 +2758,7 @@ def dispatch_tab(a):
             slot_label=(f"{e.get('slot_date')} {e.get('start_time')}–{e.get('end_time')}" if e.get('slot_date') else '')
             rows.append({'Type':e['communication_type'],'Destinataire':who.strip() or e.get('recipient_email') or '','Email':e.get('recipient_email') or '','Créneau':slot_label,'Déclenchement':'Automatique' if e.get('trigger_mode')=='AUTO' else 'Manuel','Statut':status_labels.get(e.get('status'),e.get('status')),'Prévu':e.get('due_at') or '','Envoyé':e.get('sent_at') or '','Anomalie':friendly_mail_error(e.get('last_error'))})
         st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+        st.caption("Journal de traçabilité : les lignes envoyées ou annulées ne sont pas supprimées. Les nouvelles relances se gèrent dans les commandes de l'écran.")
     else:
         st.caption('Aucune communication I9 enregistrée pour cette action.')
 
@@ -2881,7 +2899,32 @@ def quality_tab(a):
             tt=st.text_input('Action d’amélioration'); dd=st.text_area('Description de l’action'); oo=st.text_input('Responsable action'); due=st.date_input('Échéance',value=None); addi=st.form_submit_button('Ajouter l’action d’amélioration')
         if addi and tt.strip(): create_improvement_action(ENGINE,a['id'],tt.strip(),dd,oo,due.isoformat() if due else None,ii['id'],st.session_state.admin_email);rerun()
     imps=q(ENGINE,'SELECT * FROM improvement_actions WHERE action_id=:a ORDER BY id DESC',{'a':a['id']})
-    if imps: st.dataframe(pd.DataFrame(imps)[['id','title','owner','due_at','status','completed_at']],use_container_width=True,hide_index=True)
+    if imps:
+        st.markdown("### Plan d'amélioration de l'action")
+        st.dataframe(pd.DataFrame(imps)[['id','title','owner','due_at','status','completed_at']],use_container_width=True,hide_index=True)
+        impmap={f"#{x['id']} — {x['title']} — {x['status']}":x for x in imps}
+        implab=st.selectbox("Action d'amélioration à gérer",list(impmap),key=f"imp_manage_{a['id']}")
+        imp=impmap[implab]
+        with st.expander("Modifier / supprimer l'action d'amélioration"):
+            statuses=['A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE']
+            with st.form(f"imp_edit_{imp['id']}"):
+                ititle=st.text_input('Action',value=imp.get('title') or '')
+                idesc=st.text_area('Description',value=imp.get('description') or '',height=80)
+                iowner=st.text_input('Responsable',value=imp.get('owner') or '')
+                try: idue_default=date.fromisoformat(str(imp.get('due_at') or '')[:10]) if imp.get('due_at') else None
+                except Exception: idue_default=None
+                idue=st.date_input('Échéance',value=idue_default)
+                istatus=st.selectbox('Statut',statuses,index=statuses.index(imp.get('status')) if imp.get('status') in statuses else 0)
+                isave=st.form_submit_button('Enregistrer les modifications')
+            if isave:
+                try:
+                    update_improvement_action(ENGINE,imp['id'],istatus,st.session_state.admin_email,ititle,idesc or None,iowner or None,idue.isoformat() if idue else None)
+                    st.success("Action d'amélioration mise à jour.");rerun()
+                except ValueError as ex: st.error(str(ex))
+            iconfirm=st.checkbox("Je confirme la suppression de cette action d'amélioration saisie par erreur",key=f"imp_delete_confirm_{imp['id']}")
+            if st.button("Supprimer cette action d'amélioration",key=f"imp_delete_{imp['id']}",disabled=not iconfirm):
+                try: delete_improvement_action(ENGINE,imp['id'],st.session_state.admin_email);st.success("Action d'amélioration supprimée avec trace d'audit.");rerun()
+                except ValueError as ex: st.error(str(ex))
     if issues:
         st.markdown('### Difficultés / aléas / réclamations détectés')
         st.dataframe(pd.DataFrame(issues),use_container_width=True,hide_index=True)
@@ -2889,10 +2932,25 @@ def quality_tab(a):
     br_reports=beneficiary_reports(ENGINE,action_id=a['id'])
     if tr_reports or br_reports:
         st.markdown('### Signalements liés à cette action')
-        rr=[]
-        for x in tr_reports: rr.append({'Date':x['created_at'][:16].replace('T',' '),'Source':'Intervenant','Personne':x.get('source_name') or '','Objet':x['subject'],'Statut':x['status'],'Réponse administration':x.get('admin_response') or ''})
-        for x in br_reports: rr.append({'Date':x['created_at'][:16].replace('T',' '),'Source':'Bénéficiaire','Personne':f"{x.get('beneficiary_first_name') or ''} {x.get('beneficiary_last_name') or ''}".strip(),'Objet':x['subject'],'Statut':x['status'],'Réponse administration':x.get('admin_response') or ''})
+        rr=[]; report_map={}
+        for x in tr_reports:
+            row={'Date':x['created_at'][:16].replace('T',' '),'Source':'Intervenant','Personne':x.get('source_name') or '','Objet':x['subject'],'Statut':x['status'],'Réponse administration':x.get('admin_response') or ''}
+            rr.append(row); report_map[f"Intervenant — {row['Personne']} — {row['Objet']} — #{x['id']}"]=('TRAINER',x)
+        for x in br_reports:
+            row={'Date':x['created_at'][:16].replace('T',' '),'Source':'Bénéficiaire','Personne':f"{x.get('beneficiary_first_name') or ''} {x.get('beneficiary_last_name') or ''}".strip(),'Objet':x['subject'],'Statut':x['status'],'Réponse administration':x.get('admin_response') or ''}
+            rr.append(row); report_map[f"Bénéficiaire — {row['Personne']} — {row['Objet']} — #{x['id']}"]=('BENEFICIARY',x)
         st.dataframe(pd.DataFrame(rr),use_container_width=True,hide_index=True)
+        rlabel=st.selectbox('Signalement à traiter',list(report_map),key=f"quality_action_report_{a['id']}")
+        rkind,report=report_map[rlabel]
+        st.caption(report.get('description') or 'Aucune description.')
+        r1,r2=st.columns([1,2])
+        statuses=['NOUVEAU','EN_COURS','TRAITE','CLOTURE']
+        rstatus=r1.selectbox('Statut',statuses,index=statuses.index(report.get('status')) if report.get('status') in statuses else 0,key=f"quality_action_report_status_{rkind}_{report['id']}")
+        rresponse=r2.text_area("Réponse / traitement de l'administration",value=report.get('admin_response') or '',key=f"quality_action_report_response_{rkind}_{report['id']}")
+        if st.button('ENREGISTRER LE TRAITEMENT DU SIGNALEMENT',key=f"quality_action_report_save_{rkind}_{report['id']}"):
+            ok,msg=update_user_report(ENGINE,rkind,report['id'],rstatus,rresponse,st.session_state.admin_email)
+            if ok: st.success('Signalement mis à jour.');rerun()
+            else: st.warning(msg)
 
 def documents_tab(a):
     st.subheader('Documents et archivage')
@@ -2926,6 +2984,7 @@ def documents_tab(a):
     if transmissions:
         st.markdown('### Journal des transmissions client')
         st.dataframe(pd.DataFrame(transmissions),use_container_width=True,hide_index=True)
+        st.caption("Historique de preuve des transmissions : lecture seule volontaire. Les destinataires futurs se modifient dans « Destinataires client ».")
     completed_quality=[c for c in list_quality_campaigns(ENGINE,a['id']) if c.get('status')=='COMPLETED']
     if completed_quality:
         st.markdown('### Évaluations qualité PDF')
@@ -3191,11 +3250,12 @@ def quality_management_screen():
         aids={x['id'] for x in q(ENGINE,'SELECT id FROM actions WHERE organization_id=:o',{'o':om[ol]})};issues=[x for x in issues if x.get('action_id') in aids]
     if issues:
         with st.expander('Éléments historiques encore ouverts (migration)',expanded=False):
-            st.caption("Ces fiches historiques restent visibles jusqu'à leur reprise ou clôture. Elles ne sont pas perdues et alimentent les compteurs Qualité.")
+            st.caption("Ces fiches historiques sont conservées en lecture seule. Toute nouvelle correction ou décision doit passer par une fiche Qualité active afin de préserver la traçabilité.")
             st.dataframe(pd.DataFrame([{'Action':x.get('action_no') or x.get('action_id'),'Nature':x.get('issue_type') or '','Objet':x.get('title') or '','Description':x.get('description') or '','Statut':x.get('status') or '','Responsable':x.get('owner') or '','Créée':x.get('created_at') or ''} for x in issues]),use_container_width=True,hide_index=True)
     st.markdown("### Suivi du plan d'action général")
     plan=quality_general_action_plan(ENGINE,action_id=action_id)
     if plan:
+        st.caption("Vue consolidée du plan d'action. Les actions se modifient dans la fiche Qualité/CAPA correspondante ci-dessus ; la consolidation elle-même reste une restitution.")
         st.dataframe(pd.DataFrame([{'N°':x['id'],'Événement':x['event_ref'],'Origine':x.get('origin') or '','Date':x.get('detected_at') or '','Action':x.get('action_no') or '—','Intitulé':x.get('action_title') or '—','Personne':x.get('source_name') or '—','Type':x.get('event_type') or '','Point':x.get('subject') or '','Action décidée':x.get('action_title_capa') or '','Responsable':x.get('owner_name') or '','Échéance':x.get('due_at') or '','Statut':x.get('status') or '','Efficacité':x.get('effectiveness_result') or ''} for x in plan]),use_container_width=True,hide_index=True)
     else: st.info("Aucune action qualité consolidée dans le plan d'action général.")
     footer()
@@ -3244,7 +3304,9 @@ def studies_screen():
     if st.session_state.get('_study_export_xlsx'): st.download_button('Télécharger XLSX',st.session_state['_study_export_xlsx'],'clarte360_etude_pip_onet_pseudonymisee.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     st.markdown('### Journal des exports')
     hist=q(ENGINE,'SELECT actor,purpose,format,record_count,schema_version,exported_at FROM study_export_events ORDER BY id DESC LIMIT 50')
-    if hist: st.dataframe(pd.DataFrame(hist),use_container_width=True,hide_index=True)
+    if hist:
+        st.dataframe(pd.DataFrame(hist),use_container_width=True,hide_index=True)
+        st.caption("Journal des exports : lecture seule volontaire pour préserver la traçabilité des extractions pseudonymisées.")
     footer()
 
 
@@ -3499,6 +3561,18 @@ def settings_screen():
                     st.success('Organisme enregistré.');rerun()
                 except ValueError as ex: st.error(str(ex))
                 except Exception as ex: _ui_incident('parametres_organisme',ex,subject='L’enregistrement des paramètres')
+        if oid:
+            with st.expander('Supprimer cet organisme'):
+                deps=organization_delete_dependencies(ENGINE,oid)
+                if deps:
+                    st.info("Cet organisme possède des dépendances métier : la suppression physique est bloquée. Utilisez la case « Organisme actif » pour l'inactiver.")
+                    st.caption('Dépendances : '+', '.join(f"{x['kind']}={x['count']}" for x in deps))
+                else:
+                    st.warning("Suppression physique réservée aux organismes créés par erreur et encore inutilisés. Les agences et profils d'import de configuration associés seront également supprimés.")
+                    oconfirm=st.text_input('Saisissez SUPPRIMER',key=f'org_delete_confirm_{oid}')
+                    if st.button("Supprimer définitivement l'organisme",key=f'org_delete_{oid}',disabled=oconfirm!='SUPPRIMER'):
+                        try: delete_organization_if_unused(ENGINE,oid,st.session_state.admin_email);st.success('Organisme supprimé.');rerun()
+                        except ValueError as ex: st.error(str(ex))
     with tabag:
         st.subheader('Agences / établissements')
         org=get_organization(ENGINE)
@@ -3521,6 +3595,16 @@ def settings_screen():
                 if esave:
                     try: update_agency(ENGINE,ag['id'],{'name':ename.strip(),'address':eaddress.strip() or None,'postal_code':epostal.strip() or None,'city':ecity.strip() or None,'country':ecountry.strip() or None,'siret':esiret.strip() or None,'nda':enda.strip() or None,'email':eemail.strip() or None,'phone':ephone.strip() or None,'active':int(eactive)},st.session_state.admin_email);rerun()
                     except ValueError as ex: st.error(str(ex))
+                with st.expander('Supprimer cette agence / cet établissement'):
+                    adeps=agency_delete_dependencies(ENGINE,ag['id'])
+                    if adeps:
+                        st.info("Suppression physique bloquée car cette agence est utilisée. Décochez « Agence active » pour l'archiver fonctionnellement.")
+                        st.caption('Dépendances : '+', '.join(f"{x['kind']}={x['count']}" for x in adeps))
+                    else:
+                        aconfirm=st.text_input('Saisissez SUPPRIMER',key=f'agency_delete_confirm_{ag["id"]}')
+                        if st.button("Supprimer définitivement l'agence",key=f'agency_delete_{ag["id"]}',disabled=aconfirm!='SUPPRIMER'):
+                            try: delete_agency_if_unused(ENGINE,ag['id'],st.session_state.admin_email);st.success('Agence supprimée.');rerun()
+                            except ValueError as ex: st.error(str(ex))
     with tabi:
         st.subheader("Profils d’import par organisme")
         st.caption("La source et son mapping appartiennent à l’organisme. Le cœur de l’application ne dépend plus d’un nom de base Clarté360 ou ADCA.")
@@ -3561,6 +3645,12 @@ def settings_screen():
                 if st.button('Actualiser la copie depuis le chemin serveur',disabled=not bool(info.get('external_path')),key=f'refresh_profile_{pid}'):
                     try: refresh_from_external(store_key); st.success('Copie de travail actualisée.')
                     except Exception as ex: _ui_incident('operation_interface',ex)
+                with st.expander("Supprimer ce profil d'import"):
+                    st.caption("La suppression retire uniquement la configuration du profil dans l'application ; elle ne supprime jamais le fichier source externe.")
+                    pconfirm=st.text_input('Saisissez SUPPRIMER',key=f'import_profile_delete_confirm_{pid}')
+                    if st.button("Supprimer définitivement ce profil d'import",key=f'import_profile_delete_{pid}',disabled=pconfirm!='SUPPRIMER'):
+                        try: delete_import_profile(ENGINE,pid,st.session_state.admin_email);st.success("Profil d'import supprimé.");rerun()
+                        except ValueError as ex: st.error(str(ex))
 
     with taba:
         st.subheader('Administrateurs autorisés')
