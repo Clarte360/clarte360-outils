@@ -3998,7 +3998,7 @@ def quality_event_actions(engine,event_id): return q(engine,'SELECT * FROM quali
 def update_quality_event_action(engine, action_id, actor, status=None, owner_name=None, due_at=None, evidence_ref=None, effectiveness_result=None):
     row=one(engine,'SELECT qa.*,qe.action_id parent_action_id FROM quality_event_actions qa JOIN quality_events qe ON qe.id=qa.quality_event_id WHERE qa.id=:i',{'i':action_id})
     if not row: raise ValueError('Action CAPA introuvable.')
-    allowed={'A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE'}
+    allowed={'A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE'}
     ns=status or row['status']
     if ns not in allowed: raise ValueError('Statut CAPA invalide.')
     now=utcnow_iso()
