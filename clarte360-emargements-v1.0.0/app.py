@@ -4134,10 +4134,7 @@ def settings_screen():
                             if st.button('Archiver le document',key=f'j7_archive_btn_{ppid}',disabled=not aconfirm):
                                 try:archive_professional_document(ENGINE,ppid,amap[alab],st.session_state.admin_email);st.success('Document archivé.');rerun()
                                 except ValueError as ex:st.error(str(ex))
-            st.markdown('### Remontées des intervenants')
-            reports=q(ENGINE,"""SELECT r.*,t.full_name trainer_name,a.action_no,a.title action_title FROM trainer_reports r JOIN trainers t ON t.id=r.trainer_id JOIN actions a ON a.id=r.action_id ORDER BY r.created_at DESC LIMIT 100""")
-            if not reports: st.info('Aucune remontée intervenant.')
-            else: st.dataframe(pd.DataFrame([{'Date':r['created_at'][:16].replace('T',' '),'Action':r['action_no'],'Intervenant':r['trainer_name'],'Nature':r['report_type'],'Objet':r['subject'],'Statut':r['status']} for r in reports]),use_container_width=True,hide_index=True)
+            st.caption("Les signalements et remontées des intervenants sont traités dans l'écran Qualité, qui constitue le point de gestion unique de ces événements.")
         with sub_candidates:
             st.subheader('Candidats')
             st.caption('Vue de pilotage des candidatures. La décision de transformer un candidat en intervenant reste humaine et se réalise dans son dossier professionnel.')
