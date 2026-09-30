@@ -106,3 +106,21 @@ def test_transversal_management_ui_is_present():
         'Supprimer définitivement cet outil'
     ]:
         assert text in src
+
+
+def test_capa_can_be_cancelled_without_deleting_history(tmp_path):
+    from services import create_quality_event, add_quality_event_action, update_quality_event_action
+    e=eng(tmp_path)
+    oid=upsert_organization(e,None,org_payload(),'admin')
+    action_id=execute(e,"""INSERT INTO actions(action_no,title,nature,mode,planned_hours,status,organization_id,created_at,updated_at)
+        VALUES('A3','Action','FORMATION','INTRA',1,'BROUILLON',:o,'2026-09-30','2026-09-30')""",{'o':oid})
+    event_id=create_quality_event(e,'AMELIORATION','OBSERVATION','Test','Saisie test','admin',action_id=action_id)
+    capa_id=add_quality_event_action(e,event_id,'Action saisie par erreur','admin')
+    update_quality_event_action(e,capa_id,'admin',status='ANNULEE')
+    row=one(e,'SELECT * FROM quality_event_actions WHERE id=:i',{'i':capa_id})
+    assert row['status']=='ANNULEE'
+
+
+def test_rc21_version_tests_are_aligned():
+    import branding
+    assert branding.APP_VERSION=='3.0.0-INTERVENANTS-RC2-1'
