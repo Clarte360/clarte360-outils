@@ -120,24 +120,148 @@ GLOBAL_DOSSIER_SCHEMA = {
 GLOBAL_INSTRUCTIONS = """Tu assistes un administrateur Clarte360 pour analyser GLOBALLEMENT un dossier professionnel.
 L'IA propose uniquement : l'humain reste decideur. Utilise exclusivement les faits fournis. N'invente rien.
 Repere les incoherences d'identite entre la personne et les documents et place-les dans identity_alerts. Une piece avec une identite incoherente ne doit jamais etre consideree comme preuve valide.
-Propose les informations professionnelles extractibles et les prestations du catalogue plausiblement rapprochees. Pour chaque prestation retenue, produis DES CETTE ANALYSE GLOBALE le niveau indicatif, les critères proposés et les preuves documentaires correspondantes afin qu'ils soient immédiatement disponibles dans l'onglet Qualifications/Adéquation, sans second appel IA. Les pourcentages sont des indices de confiance, jamais des notes ou qualifications.
+L'analyse du catalogue est EXHAUSTIVE : chaque prestation active transmise doit recevoir un resultat, y compris lorsqu'aucun rapprochement n'est trouve. Une prestation sans element probant reste visible avec service_level=0, evidence=[], des criteres proposes a 0 et une justification explicite "Aucun rapprochement factuel dans le dossier".
+Pour chaque prestation, evalue chaque critere fourni exactement une fois. Ne confonds jamais le niveau attendu du critere avec le niveau demontre par le dossier.
+Pour chaque prestation, produis le niveau indicatif, la confiance, les criteres proposes, les preuves documentaires et les points a verifier afin qu'ils soient immediatement disponibles dans l'onglet Qualifications/Adequation, sans second declenchement IA par l'utilisateur.
+Les pourcentages sont des indices de confiance dans l'analyse, jamais des notes, des certifications ou des validations.
 Les dates inconnues restent nulles. Pour chaque element documentaire, conserve source_document_id lorsque la source est identifiable. Reponds en francais clair selon le schema JSON impose."""
 
+GLOBAL_PROFILE_SCHEMA = {
+    'type':'object','additionalProperties':False,
+    'properties':{k:v for k,v in GLOBAL_DOSSIER_SCHEMA['properties'].items() if k!='service_candidates'},
+    'required':[k for k in GLOBAL_DOSSIER_SCHEMA['required'] if k!='service_candidates']
+}
+GLOBAL_SERVICE_BATCH_SCHEMA = {
+    'type':'object','additionalProperties':False,
+    'properties':{'service_candidates':GLOBAL_DOSSIER_SCHEMA['properties']['service_candidates']},
+    'required':['service_candidates']
+}
+
+GLOBAL_PROFILE_INSTRUCTIONS = """Analyse les documents et construis un dossier professionnel factuel aussi complet que possible.
+N'evalue aucune prestation dans cette etape. Extrais profil, specialites, experiences, diplomes/formations, certifications/habilitations, langues, alertes d'identite et points factuels manquants.
+Conserve source_document_id pour chaque element lorsque la source est identifiable. N'invente jamais une information absente."""
+
+GLOBAL_SERVICE_INSTRUCTIONS = """Evalue EXHAUSTIVEMENT le sous-ensemble de prestations transmis a partir du dossier professionnel structure fourni.
+Tu dois retourner exactement une entree service_candidates par service_id fourni, meme si aucun rapprochement n'existe.
+Pour une prestation sans preuve : service_level=0, evidence=[], et une justification explicite. Chaque critere fourni doit apparaitre exactement une fois dans criteria, avec proposed_level=0 lorsqu'il n'est pas demontre.
+L'IA propose uniquement ; l'humain decide. Utilise uniquement les faits fournis. Ne deduis pas une competence d'un simple intitule lorsqu'aucune experience, formation, certification ou autre preuve ne la soutient.
+confidence exprime la confiance dans l'analyse, pas une note de la personne. Les preuves doivent reutiliser les document_id/source_document_id du dossier structure lorsqu'ils sont identifiables."""
+
 class GlobalDossierAIGateway(QualificationAIGateway):
-    def analyze(self, payload:dict):
-        request_hash=hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
+    def __init__(self, api_key:str, model:str, timeout:float=90.0, client=None, batch_size:int=5):
+        super().__init__(api_key,model,timeout,client)
+        try:self.batch_size=max(1,min(int(batch_size),8))
+        except Exception:self.batch_size=5
+
+    def _response_json(self, instructions:str, payload:dict, schema:dict, name:str, max_output_tokens:int=5000, images=None):
         client=self._client_obj()
-        clean_payload=dict(payload)
-        images=clean_payload.pop('document_images',[]) or []
-        content=[{'type':'input_text','text':json.dumps(clean_payload,ensure_ascii=False)}]
-        for img in images:
+        content=[{'type':'input_text','text':json.dumps(payload,ensure_ascii=False)}]
+        for img in (images or []):
             if img.get('data_url'):
                 content.append({'type':'input_image','image_url':img['data_url']})
                 content.append({'type':'input_text','text':f"Image document_id={img.get('document_id')} nom={img.get('name')} categorie={img.get('category')}"})
-        response=client.responses.create(model=self.model,instructions=GLOBAL_INSTRUCTIONS,input=[{'role':'user','content':content}],store=False,max_output_tokens=7500,
-            text={'format':{'type':'json_schema','name':'dossier_professionnel_global','strict':True,'schema':GLOBAL_DOSSIER_SCHEMA}})
+        response=client.responses.create(
+            model=self.model,instructions=instructions,input=[{'role':'user','content':content}],store=False,
+            max_output_tokens=max_output_tokens,
+            text={'format':{'type':'json_schema','name':name,'strict':True,'schema':schema}}
+        )
         if getattr(response,'status',None) not in (None,'completed'):
             raise RuntimeError(f"Reponse IA incomplete : {getattr(response,'status',None)}")
         txt=getattr(response,'output_text','')
         if not txt: raise RuntimeError('Reponse IA vide.')
-        return {'result':json.loads(txt),'request_hash':request_hash,'usage':getattr(response,'usage',None),'model':self.model,'prompt_version':GLOBAL_PROMPT_VERSION,'provider':'openai'}
+        return json.loads(txt),getattr(response,'usage',None)
+
+    @staticmethod
+    def _empty_service_result(service, reason):
+        return {
+            'service_id':int(service['service_id']),'service_level':0,'confidence':0.0,
+            'rationale':reason,'source_document_ids':[],'missing_points':[reason],
+            'evidence':[],
+            'criteria':[{
+                'criterion_id':int(c['criterion_id']),'proposed_level':0,'confidence':0.0,
+                'rationale':'Aucun element factuel exploitable ne permet de demontrer ce critere lors de ce passage.',
+                'evidence_indexes':[]
+            } for c in (service.get('criteria') or [])]
+        }
+
+    @staticmethod
+    def _normalize_service_result(service, result):
+        out=dict(result or {})
+        out['service_id']=int(service['service_id'])
+        out['service_level']=max(0,min(4,int(out.get('service_level') or 0)))
+        try:out['confidence']=max(0.0,min(1.0,float(out.get('confidence') or 0)))
+        except Exception:out['confidence']=0.0
+        out['rationale']=out.get('rationale') or ('Aucun rapprochement factuel dans le dossier.' if out['service_level']==0 else 'Proposition issue de l analyse globale.')
+        out['source_document_ids']=[int(x) for x in (out.get('source_document_ids') or []) if str(x).isdigit()]
+        out['missing_points']=list(out.get('missing_points') or [])
+        out['evidence']=list(out.get('evidence') or [])
+        by_criterion={}
+        for cp in (out.get('criteria') or []):
+            try:cid=int(cp.get('criterion_id'))
+            except Exception:continue
+            by_criterion[cid]=cp
+        criteria=[]
+        for c in (service.get('criteria') or []):
+            cid=int(c['criterion_id']); cp=dict(by_criterion.get(cid) or {})
+            cp['criterion_id']=cid
+            cp['proposed_level']=max(0,min(4,int(cp.get('proposed_level') or 0)))
+            try:cp['confidence']=max(0.0,min(1.0,float(cp.get('confidence') or 0)))
+            except Exception:cp['confidence']=0.0
+            cp['rationale']=cp.get('rationale') or ('Aucun element factuel ne demontre ce critere.' if cp['proposed_level']==0 else 'Proposition IA a verifier.')
+            cp['evidence_indexes']=[int(x) for x in (cp.get('evidence_indexes') or []) if str(x).isdigit()]
+            criteria.append(cp)
+        out['criteria']=criteria
+        return out
+
+    def analyze(self, payload:dict):
+        request_hash=hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
+        clean=dict(payload)
+        images=clean.pop('document_images',[]) or []
+        catalog=list(clean.pop('service_catalog',[]) or [])
+
+        profile_payload={k:v for k,v in clean.items() if k!='service_catalog'}
+        profile_result,profile_usage=self._response_json(
+            GLOBAL_PROFILE_INSTRUCTIONS,profile_payload,GLOBAL_PROFILE_SCHEMA,
+            'dossier_professionnel_global_profil',5000,images
+        )
+
+        results={}
+        service_usage=[]
+        for pos in range(0,len(catalog),self.batch_size):
+            batch=catalog[pos:pos+self.batch_size]
+            batch_payload={
+                'person':clean.get('person') or {},
+                'dossier_professionnel_extrait':profile_result,
+                'service_catalog':batch
+            }
+            batch_result,usage=self._response_json(
+                GLOBAL_SERVICE_INSTRUCTIONS,batch_payload,GLOBAL_SERVICE_BATCH_SCHEMA,
+                'dossier_professionnel_services_batch',4500,None
+            )
+            service_usage.append(usage)
+            allowed={int(s['service_id']):s for s in batch}
+            for sc in (batch_result.get('service_candidates') or []):
+                try:sid=int(sc.get('service_id'))
+                except Exception:continue
+                if sid in allowed and sid not in results:
+                    results[sid]=self._normalize_service_result(allowed[sid],sc)
+
+        ordered=[]
+        for service in catalog:
+            sid=int(service['service_id'])
+            if sid in results:
+                ordered.append(results[sid])
+            else:
+                ordered.append(self._empty_service_result(service,'Analyse IA incomplète pour cette prestation : aucun résultat n’a été retourné par le modèle. Une vérification humaine est nécessaire.'))
+
+        final=dict(profile_result)
+        final['service_candidates']=ordered
+        class Usage:
+            input_tokens=sum(int(getattr(x,'input_tokens',0) or 0) for x in [profile_usage,*service_usage] if x is not None)
+            output_tokens=sum(int(getattr(x,'output_tokens',0) or 0) for x in [profile_usage,*service_usage] if x is not None)
+        return {
+            'result':final,'request_hash':request_hash,'usage':Usage(),
+            'model':self.model,'prompt_version':GLOBAL_PROMPT_VERSION,'provider':'openai',
+            'batch_count':(len(catalog)+self.batch_size-1)//self.batch_size
+        }
+
