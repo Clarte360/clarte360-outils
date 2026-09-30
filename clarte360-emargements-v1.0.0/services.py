@@ -4771,9 +4771,11 @@ def list_person_service_qualifications(engine, ppid, active_services_only=True):
     where='WHERE s.active=1' if active_services_only else ''
     sql="""SELECT s.id service_id,s.service_code,s.name service_name,s.family,s.active service_active,
       ql.id qualification_id,ql.human_value,ql.human_comment,ql.human_validated_by,ql.human_validated_at,ql.human_locked,
-      ql.qualification_date,ql.review_due_at,ql.ai_value,ql.ai_confidence,ql.ai_updated_at,
+      ql.qualification_date,ql.review_due_at,ql.ai_value,ql.ai_confidence,ql.ai_updated_at,ql.ai_run_id,ql.ai_rationale,ql.ai_missing_json,
       (SELECT COUNT(*) FROM service_competency_criteria c WHERE c.service_id=s.id AND c.active=1) criteria_count,
-      (SELECT COUNT(*) FROM qualification_evidence e WHERE e.professional_person_id=:p AND e.service_id=s.id) evidence_count
+      (SELECT COUNT(*) FROM qualification_evidence e WHERE e.professional_person_id=:p AND e.service_id=s.id) evidence_count,
+      (SELECT COUNT(*) FROM ai_criterion_proposals cp WHERE cp.professional_person_id=:p AND cp.service_id=s.id AND cp.ai_run_id=ql.ai_run_id) ai_criteria_count,
+      (SELECT COUNT(*) FROM ai_qualification_evidence_proposals ep WHERE ep.professional_person_id=:p AND ep.service_id=s.id AND ep.ai_run_id=ql.ai_run_id) ai_evidence_count
       FROM service_catalog s LEFT JOIN person_service_qualifications ql
         ON ql.service_id=s.id AND ql.professional_person_id=:p
       %s ORDER BY s.family,s.name""" % where
@@ -4867,6 +4869,46 @@ def add_qualification_evidence(engine, ppid, service_id, actor, evidence_type='A
       VALUES(:p,:s,:c,'EVIDENCE_ADDED',:x,:a,:n)""",{'p':ppid,'s':service_id,'c':criterion_id or None,'x':txt or source_label or 'Document professionnel','a':actor,'n':now})
     audit(engine,'QUALIFICATION_EVIDENCE_ADDED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'service_id':service_id,'criterion_id':criterion_id,'evidence_id':eid,'evidence_type':typ})
     return eid
+
+
+
+def update_qualification_evidence(engine, evidence_id, actor, evidence_type=None, evidence_text=None, criterion_id=None, professional_document_id=None, source_label=None):
+    ev=one(engine,'SELECT * FROM qualification_evidence WHERE id=:i',{'i':int(evidence_id)})
+    if not ev: raise ValueError('Preuve de qualification introuvable.')
+    typ=(evidence_type or ev.get('evidence_type') or 'AUTRE').upper()
+    if typ not in QUALIFICATION_EVIDENCE_TYPES: raise ValueError('Type de preuve invalide.')
+    cid=criterion_id if criterion_id not in ('',0,'0') else None
+    did=professional_document_id if professional_document_id not in ('',0,'0') else None
+    if cid:
+        cr=one(engine,'SELECT * FROM service_competency_criteria WHERE id=:c AND service_id=:s',{'c':int(cid),'s':ev['service_id']})
+        if not cr: raise ValueError('Le critère ne correspond pas à cette prestation.')
+    if did:
+        doc=one(engine,'SELECT * FROM professional_documents WHERE id=:d AND professional_person_id=:p AND archived_at IS NULL',{'d':int(did),'p':ev['professional_person_id']})
+        if not doc: raise ValueError('Document professionnel introuvable pour cette personne.')
+    txt=validate_free_text(evidence_text,'Description de la preuve',required=False,max_len=3000) if evidence_text else None
+    if not txt and not did: raise ValueError('Ajoutez un document ou décrivez la preuve.')
+    before={'evidence_type':ev.get('evidence_type'),'criterion_id':ev.get('criterion_id'),'professional_document_id':ev.get('professional_document_id'),'evidence_text':ev.get('evidence_text'),'source_label':ev.get('source_label')}
+    after={'evidence_type':typ,'criterion_id':int(cid) if cid else None,'professional_document_id':int(did) if did else None,'evidence_text':txt,'source_label':source_label or None}
+    if before==after: return True
+    execute(engine,"""UPDATE qualification_evidence SET evidence_type=:t,criterion_id=:c,professional_document_id=:d,evidence_text=:x,source_label=:l,verified_by=:a,verified_at=:n WHERE id=:i""",
+      {'t':typ,'c':after['criterion_id'],'d':after['professional_document_id'],'x':txt,'l':after['source_label'],'a':actor,'n':utcnow_iso(),'i':int(evidence_id)})
+    execute(engine,"""INSERT INTO qualification_history(professional_person_id,service_id,criterion_id,event_type,comment,actor,created_at)
+      VALUES(:p,:s,:c,'EVIDENCE_UPDATED',:x,:a,:n)""",{'p':ev['professional_person_id'],'s':ev['service_id'],'c':after['criterion_id'],'x':json.dumps({'before':before,'after':after},ensure_ascii=False),'a':actor,'n':utcnow_iso()})
+    audit(engine,'QUALIFICATION_EVIDENCE_UPDATED',actor=actor,entity_type='professional_person',entity_id=ev['professional_person_id'],details={'service_id':ev['service_id'],'evidence_id':int(evidence_id)})
+    return True
+
+
+def delete_qualification_evidence(engine, evidence_id, actor):
+    ev=one(engine,'SELECT * FROM qualification_evidence WHERE id=:i',{'i':int(evidence_id)})
+    if not ev: raise ValueError('Preuve de qualification introuvable.')
+    linked=one(engine,'SELECT COUNT(*) n FROM ai_qualification_evidence_proposals WHERE accepted_evidence_id=:i',{'i':int(evidence_id)})
+    if linked and int(linked.get('n') or 0)>0:
+        execute(engine,'UPDATE ai_qualification_evidence_proposals SET accepted_evidence_id=NULL WHERE accepted_evidence_id=:i',{'i':int(evidence_id)})
+    execute(engine,'DELETE FROM qualification_evidence WHERE id=:i',{'i':int(evidence_id)})
+    execute(engine,"""INSERT INTO qualification_history(professional_person_id,service_id,criterion_id,event_type,comment,actor,created_at)
+      VALUES(:p,:s,:c,'EVIDENCE_REMOVED',:x,:a,:n)""",{'p':ev['professional_person_id'],'s':ev['service_id'],'c':ev.get('criterion_id'),'x':json.dumps({'evidence_id':int(evidence_id),'type':ev.get('evidence_type'),'document_id':ev.get('professional_document_id'),'text':ev.get('evidence_text')},ensure_ascii=False),'a':actor,'n':utcnow_iso()})
+    audit(engine,'QUALIFICATION_EVIDENCE_REMOVED',actor=actor,entity_type='professional_person',entity_id=ev['professional_person_id'],details={'service_id':ev['service_id'],'evidence_id':int(evidence_id)})
+    return True
 
 
 def qualification_adequacy_summary(engine, ppid, service_id):
