@@ -79,7 +79,8 @@ def test_all_application_tables_are_actionable_or_explicitly_read_only():
     )
     interactive_tokens=(
         'st.selectbox(','st.button(','st.form(','st.checkbox(','st.multiselect(','st.radio(',
-        'st.text_input(','st.date_input(','st.data_editor(','st.download_button(','st.link_button('
+        'st.text_input(','st.date_input(','st.data_editor(','st.download_button(','st.link_button(',
+        'st.form_submit_button('
     )
     for i,line in enumerate(src):
         if 'st.dataframe(' not in line and 'st.data_editor(' not in line and 'st.table(' not in line:
