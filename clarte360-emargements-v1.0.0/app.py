@@ -3831,8 +3831,13 @@ def settings_screen():
                     if matrix:
                         st.dataframe(pd.DataFrame([{
                             'Prestation':x['service_name'],'Univers':x.get('family') or '',
+                            'Lecture IA':('Rapprochement fort' if (x.get('ai_value') or 0)>=3 else ('Rapprochement partiel' if (x.get('ai_value') or 0)>0 else ('Aucun rapprochement' if x.get('ai_value') is not None else 'Non analysé'))),
+                            'Proposition IA':(f"{x['ai_value']} — {QUALIFICATION_LEVEL_LABELS.get(x.get('ai_value'),'')}" if x.get('ai_value') is not None else '—'),
+                            'Confiance IA':(f"{float(x.get('ai_confidence') or 0):.0%}" if x.get('ai_value') is not None else '—'),
+                            'Critères IA':(f"{x.get('ai_criteria_count') or 0}/{x.get('criteria_count') or 0}" if x.get('ai_value') is not None else '—'),
+                            'Preuves IA':x.get('ai_evidence_count') or 0,
                             'Niveau humain':QUALIFICATION_LEVEL_LABELS.get(x.get('human_value'),'Non évalué') if x.get('human_value') is not None else 'Non évalué',
-                            'Critères':x.get('criteria_count') or 0,'Preuves':x.get('evidence_count') or 0,
+                            'Preuves validées':x.get('evidence_count') or 0,
                             'Révision':x.get('review_due_at') or '',
                             'Verrou humain':'Oui' if x.get('human_locked') else ('Non' if x.get('qualification_id') else '')
                         } for x in matrix]),use_container_width=True,hide_index=True)
@@ -3886,6 +3891,17 @@ def settings_screen():
                                 for x in ai_missing: st.write('• '+str(x))
                             if qcurrent.get('human_value') is not None and qcurrent.get('human_locked'):
                                 st.info("Une validation humaine est verrouillée : cette proposition IA est conservée pour comparaison mais ne peut pas la remplacer automatiquement.")
+                            pending_criteria=[x for x in list_ai_criterion_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True) if x.get('status')=='PROPOSEE']
+                            pending_evidence=[x for x in list_ai_evidence_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True) if x.get('status')=='PROPOSEE' and x.get('identity_status')!='INCOHERENT']
+                            if pending_criteria or pending_evidence:
+                                st.caption(f"Pré-instruction IA disponible : {len(pending_criteria)} critère(s) et {len(pending_evidence)} preuve(s) à décider.")
+                                if st.button('Accepter les propositions IA de cette prestation',key=f'rc21_accept_all_{ppid}_{qrow["service_id"]}'):
+                                    for pev in pending_evidence:
+                                        decide_ai_evidence_proposal(ENGINE,pev['id'],True,st.session_state.admin_email)
+                                    for pr in pending_criteria:
+                                        decide_ai_criterion_proposal(ENGINE,pr['id'],True,st.session_state.admin_email)
+                                    st.success("Les critères et preuves proposés par l’IA ont été acceptés humainement. Le niveau global reste à valider ci-dessous.")
+                                    rerun()
 
                         st.markdown('##### Critères de compétence')
                         if qdetail['criteria']:
@@ -3937,13 +3953,41 @@ def settings_screen():
                         st.markdown('##### Preuves de qualification')
                         if qdetail['evidence']:
                             st.dataframe(pd.DataFrame([{'Date':e['created_at'][:10],'Type':e['evidence_type'],'Critère':next((c['label'] for c in qdetail['criteria'] if c['id']==e.get('criterion_id')),''),'Document':e.get('document_name') or '','Preuve':e.get('evidence_text') or e.get('source_label') or ''} for e in qdetail['evidence']]),use_container_width=True,hide_index=True)
-                        with st.expander('Ajouter une preuve'):
-                            with st.form(f'j4_evidence_{ppid}_{qrow["service_id"]}'):
-                                et=st.selectbox('Type de preuve',QUALIFICATION_EVIDENCE_TYPES)
-                                criteria_options=[('Preuve générale',None)]+[(c['label'],c['id']) for c in qdetail['criteria']]
-                                ecl=st.selectbox('Rattacher à un critère',[x[0] for x in criteria_options]); ecid=dict(criteria_options)[ecl]
+                            emap={f"#{e['id']} — {e.get('document_name') or e.get('evidence_text') or e.get('source_label') or e['evidence_type']}":e for e in qdetail['evidence']}
+                            elab=st.selectbox('Preuve à gérer',list(emap),key=f'rc21_evidence_manage_{ppid}_{qrow["service_id"]}'); ee=emap[elab]
+                            with st.expander('Modifier / retirer la preuve'):
+                                criteria_options=[('Preuve générale',None)]+[(cr['label'],cr['id']) for cr in qdetail['criteria']]
                                 docs=prof.get('documents') or []; doc_options={'Aucun document':None}; doc_options.update({f"{d['display_name']} — {d['category']}":d['id'] for d in docs})
-                                edoclab=st.selectbox('Document du dossier',list(doc_options)); edoc=doc_options[edoclab]
+                                criterion_labels=[x[0] for x in criteria_options]; current_criterion=next((x[0] for x in criteria_options if x[1]==ee.get('criterion_id')),'Preuve générale')
+                                doc_labels=list(doc_options); current_doc=next((lab for lab,val in doc_options.items() if val==ee.get('professional_document_id')),'Aucun document')
+                                with st.form(f'rc21_evidence_edit_{ee["id"]}'):
+                                    etype=st.selectbox('Type',QUALIFICATION_EVIDENCE_TYPES,index=QUALIFICATION_EVIDENCE_TYPES.index(ee.get('evidence_type')) if ee.get('evidence_type') in QUALIFICATION_EVIDENCE_TYPES else 0)
+                                    ecrit=st.selectbox('Critère',criterion_labels,index=criterion_labels.index(current_criterion))
+                                    edoclab2=st.selectbox('Document',doc_labels,index=doc_labels.index(current_doc))
+                                    etxt2=st.text_area('Description / preuve',value=ee.get('evidence_text') or '',height=80)
+                                    esource2=st.text_input('Source / libellé',value=ee.get('source_label') or '')
+                                    esave=st.form_submit_button('Enregistrer les modifications')
+                                if esave:
+                                    try:
+                                        update_qualification_evidence(ENGINE,ee['id'],st.session_state.admin_email,etype,etxt2 or None,dict(criteria_options)[ecrit],doc_options[edoclab2],esource2 or None)
+                                        st.success('Preuve modifiée.');rerun()
+                                    except ValueError as ex: st.error(str(ex))
+                                confirm_remove=st.checkbox('Je confirme le retrait de cette preuve de la qualification',key=f'rc21_evidence_remove_confirm_{ee["id"]}')
+                                if st.button('Retirer / supprimer cette preuve',key=f'rc21_evidence_remove_{ee["id"]}',disabled=not confirm_remove):
+                                    try: delete_qualification_evidence(ENGINE,ee['id'],st.session_state.admin_email);st.success('Preuve retirée avec traçabilité.');rerun()
+                                    except ValueError as ex: st.error(str(ex))
+                        with st.expander('Ajouter une preuve'):
+                            docs=prof.get('documents') or []; doc_options={'Aucun document':None}; doc_options.update({f"{d['display_name']} — {d['category']}":d['id'] for d in docs})
+                            edoclab=st.selectbox('Document du dossier',list(doc_options),key=f'rc21_add_evidence_doc_{ppid}_{qrow["service_id"]}'); edoc=doc_options[edoclab]
+                            selected_doc=next((d for d in docs if d['id']==edoc),None)
+                            inferred=(selected_doc.get('category') if selected_doc else 'AUTRE') or 'AUTRE'
+                            inferred=inferred.upper()
+                            if inferred not in QUALIFICATION_EVIDENCE_TYPES:
+                                inferred='DOCUMENT' if edoc else 'AUTRE'
+                            with st.form(f'j4_evidence_{ppid}_{qrow["service_id"]}'):
+                                et=st.selectbox('Type de preuve',QUALIFICATION_EVIDENCE_TYPES,index=QUALIFICATION_EVIDENCE_TYPES.index(inferred) if inferred in QUALIFICATION_EVIDENCE_TYPES else 0)
+                                criteria_options=[('Preuve générale',None)]+[(cr['label'],cr['id']) for cr in qdetail['criteria']]
+                                ecl=st.selectbox('Rattacher à un critère',[x[0] for x in criteria_options]); ecid=dict(criteria_options)[ecl]
                                 etxt=st.text_area('Description / autre preuve',height=80); ego=st.form_submit_button('Ajouter la preuve')
                             if ego:
                                 try:add_qualification_evidence(ENGINE,ppid,qrow['service_id'],st.session_state.admin_email,et,etxt or None,ecid,edoc);st.success('Preuve ajoutée.');rerun()
@@ -4029,9 +4073,14 @@ def settings_screen():
                                         safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':extract_document_text(d.get('storage_path') or '',d.get('extension') or '',18000)})
                                 payload['document_contents']=safe; payload['document_images']=images; payload['documents']=[{k:v for k,v in d.items() if k!='storage_path'} for d in payload['documents']]
                                 res=j14_gateway.analyze(payload); save_global_professional_ai_analysis(ENGINE,ppid,res['result'],st.session_state.admin_email,res['provider'],res['model'],res['prompt_version'],res['request_hash'],res.get('usage'),[x['document_id'] for x in safe])
-                                st.success("Analyse globale enregistrée. Les propositions restent à valider humainement.");rerun()
-                            except Exception as ex: st.error(f"L'analyse globale n'a pas pu aboutir. Les documents restent conservés. Détail : {ex}")
+                                st.session_state.pop(f'rc21_ai_failed_{ppid}',None)
+                                st.success("Analyse globale exhaustive enregistrée : toutes les prestations actives ont été étudiées. Les propositions restent à valider humainement.");rerun()
+                            except Exception as ex:
+                                st.session_state[f'rc21_ai_failed_{ppid}']=str(ex)
+                                st.error(f"L'analyse globale n'a pas pu aboutir. Aucun résultat partiel n'a été enregistré. Les documents restent conservés. Détail : {ex}")
                         grun=latest_global_professional_ai_run(ENGINE,ppid)
+                        if st.session_state.get(f'rc21_ai_failed_{ppid}') and grun:
+                            st.warning("La dernière tentative d'analyse a échoué. Les résultats affichés ci-dessous proviennent de la dernière analyse réussie et peuvent être antérieurs aux documents actuellement sélectionnés.")
                         if grun:
                             gout=json.loads(grun.get('output_json') or '{}'); alerts=gout.get('identity_alerts') or []
                             if alerts:
@@ -4040,10 +4089,40 @@ def settings_screen():
                             pending=[x for x in grun.get('suggestions',[]) if x.get('status')=='PROPOSE']
                             if pending:
                                 labels={'PROFILE':'Profil','SPECIALTY':'Spécialité','EXPERIENCE':'Expérience','EDUCATION':'Diplôme / formation','CERTIFICATION':'Certification / habilitation','LANGUAGE':'Langue','SERVICE_CANDIDATE':'Prestation potentielle','IDENTITY_ALERT':'Alerte identité','MISSING_POINT':'Point à vérifier'}
-                                for sug in pending:
+                                svc_pending=[s for s in pending if s.get('suggestion_type')=='SERVICE_CANDIDATE']
+                                if svc_pending:
+                                    svc_names={int(s['id']):s['name'] for s in list_services(ENGINE,active_only=True)}
+                                    svc_rows=[]
+                                    svc_map={}
+                                    for sug in svc_pending:
+                                        data=json.loads(sug.get('payload_json') or '{}'); sid=int(data.get('service_id') or 0)
+                                        name=svc_names.get(sid,f'Prestation #{sid}')
+                                        label=f"{name} — niveau IA {data.get('service_level',0)}/4 — confiance {float(data.get('confidence') or 0):.0%}"
+                                        svc_map[label]=sug
+                                        svc_rows.append({
+                                            'Prestation':name,
+                                            'Lecture IA':'Aucun rapprochement' if int(data.get('service_level') or 0)==0 else ('Rapprochement partiel' if int(data.get('service_level') or 0)<3 else 'Rapprochement fort'),
+                                            'Niveau IA':f"{data.get('service_level',0)}/4",
+                                            'Confiance':f"{float(data.get('confidence') or 0):.0%}",
+                                            'Preuves repérées':len(data.get('evidence') or []),
+                                            'Critères étudiés':len(data.get('criteria') or []),
+                                            'Points à vérifier':len(data.get('missing_points') or [])
+                                        })
+                                    st.markdown('##### Résultat IA sur l’ensemble des prestations')
+                                    st.caption("Toutes les prestations actives sont affichées, y compris celles pour lesquelles l’IA ne trouve aucun rapprochement.")
+                                    st.dataframe(pd.DataFrame(svc_rows),use_container_width=True,hide_index=True)
+                                    slabel=st.selectbox('Prestation IA à classer / retenir',list(svc_map),key=f'rc21_service_suggestion_{ppid}')
+                                    ssug=svc_map[slabel]; sdata=json.loads(ssug.get('payload_json') or '{}')
+                                    st.write(sdata.get('rationale') or '')
+                                    sc1,sc2=st.columns(2)
+                                    if sc1.button('Retenir pour instruction',key=f"rc21_service_accept_{ssug['id']}"):
+                                        review_professional_ai_suggestion(ENGINE,ssug['id'],'ACCEPTE',st.session_state.admin_email);st.success("Prestation retenue. Son analyse est disponible dans l'onglet Qualifications.");rerun()
+                                    if sc2.button('Rejeter / classer',key=f"rc21_service_reject_{ssug['id']}"):
+                                        review_professional_ai_suggestion(ENGINE,ssug['id'],'REJETE',st.session_state.admin_email);rerun()
+                                for sug in [s for s in pending if s.get('suggestion_type')!='SERVICE_CANDIDATE']:
                                     data=json.loads(sug.get('payload_json') or '{}'); st.markdown(f"**{labels.get(sug['suggestion_type'],sug['suggestion_type'])}** — {json.dumps(data,ensure_ascii=False)}")
                                     cacc,crej=st.columns(2)
-                                    if cacc.button('Accepter',key=f"j14_acc_{sug['id']}",disabled=sug['suggestion_type'] in ('IDENTITY_ALERT','MISSING_POINT','SERVICE_CANDIDATE')):
+                                    if cacc.button('Accepter',key=f"j14_acc_{sug['id']}",disabled=sug['suggestion_type'] in ('IDENTITY_ALERT','MISSING_POINT')):
                                         review_professional_ai_suggestion(ENGINE,sug['id'],'ACCEPTE',st.session_state.admin_email);rerun()
                                     if crej.button('Rejeter / classer',key=f"j14_rej_{sug['id']}"):
                                         review_professional_ai_suggestion(ENGINE,sug['id'],'REJETE',st.session_state.admin_email);rerun()
