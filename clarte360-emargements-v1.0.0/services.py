@@ -2897,6 +2897,19 @@ def upsert_tool_catalog(engine, data, actor='admin'):
     return row
 
 
+
+def delete_tool_catalog_if_unused(engine, tool_id, actor='admin'):
+    row=one(engine,'SELECT * FROM tool_catalog WHERE id=:i',{'i':tool_id})
+    if not row: raise ValueError('Outil introuvable.')
+    pcount=int((one(engine,'SELECT COUNT(*) n FROM tool_prescriptions WHERE tool_id=:i',{'i':tool_id}) or {}).get('n') or 0)
+    permcount=int((one(engine,'SELECT COUNT(*) n FROM action_tool_permissions WHERE tool_id=:i',{'i':tool_id}) or {}).get('n') or 0)
+    if pcount or permcount:
+        raise ValueError("Suppression impossible : cet outil est déjà référencé. Désactivez-le pour préserver l'historique.")
+    execute(engine,'DELETE FROM tool_catalog WHERE id=:i',{'i':tool_id})
+    audit(engine,'TOOL_CATALOG_DELETED',actor=actor,entity_type='tool_catalog',entity_id=tool_id,details={'tool_code':row.get('tool_code'),'name':row.get('name')})
+    return True
+
+
 def trainer_can_prescribe_tools(engine, trainer_id, action_id):
     row=one(engine,"SELECT can_prescribe_tools FROM action_trainers WHERE action_id=:a AND trainer_id=:t AND active=1",{'a':action_id,'t':trainer_id})
     return bool(row and row.get('can_prescribe_tools'))
