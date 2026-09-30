@@ -27,9 +27,9 @@ def test_structured_row_update_and_delete(tmp_path):
     delete_professional_structured_row(e,'professional_experiences',rid,p,'admin')
     assert one(e,'SELECT id FROM professional_experiences WHERE id=:i',{'i':rid}) is None
 
-def test_rc2_provisional_version_and_live_table_ui():
+def test_rc21_version_and_live_table_ui():
     import branding
-    assert branding.APP_VERSION=='3.0.0-INTERVENANTS-RC2-PROVISOIRE'
+    assert branding.APP_VERSION=='3.0.0-INTERVENANTS-RC2-1'
     src=open('app.py',encoding='utf-8').read()
     assert 'Gérer un dossier de la liste' in src
     assert 'Ouvrir / étudier' in src
