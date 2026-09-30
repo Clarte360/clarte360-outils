@@ -5327,7 +5327,11 @@ def build_global_professional_ai_payload(engine, ppid, selected_document_ids=Non
     for d in prof.get('documents',[]):
         if selected and int(d['id']) not in selected: continue
         docs.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'valid_until':d.get('valid_until'),'storage_path':d.get('storage_path'),'extension':d.get('extension')})
-    services=[{'service_id':x['id'],'name':x['name'],'family':x.get('family') or ''} for x in list_services(engine,active_only=True)]
+    services=[]
+    for x in list_services(engine,active_only=True):
+        criteria=list_service_criteria(engine,x['id'],active_only=True)
+        services.append({'service_id':x['id'],'name':x['name'],'family':x.get('family') or '',
+          'criteria':[{'criterion_id':c['id'],'label':c['label'],'category':c.get('category'),'required':bool(c.get('required')),'minimum_level':c.get('minimum_level'),'accepted_evidence':c.get('accepted_evidence')} for c in criteria]})
     return {'person':{'professional_person_id':ppid,'declared_name':prof.get('full_name') or prof.get('title') or '', 'existing_title':prof.get('title'),'existing_summary':prof.get('summary')},'documents':docs,'service_catalog':services}
 
 
@@ -5346,7 +5350,18 @@ def save_global_professional_ai_analysis(engine, ppid, result, actor, provider='
         for x in result.get(key) or []: add(kind,x,x.get('source_document_id') if isinstance(x,dict) else None)
     for x in result.get('identity_alerts') or []: add('IDENTITY_ALERT',{'message':x})
     for x in result.get('missing_points') or []: add('MISSING_POINT',{'message':x})
-    audit(engine,'PROFESSIONAL_GLOBAL_AI_ANALYZED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'run_id':run_id,'documents':selected_document_ids or [],'identity_alerts':len(result.get('identity_alerts') or [])})
+    # RC2_PROVISOIRE: une seule analyse IA alimente aussi directement Qualifications/Adéquation.
+    # Aucun second appel API n'est nécessaire : on matérialise les propositions prestation par prestation
+    # à partir du résultat de l'analyse globale, sans toucher aux validations humaines existantes.
+    for sc in result.get('service_candidates') or []:
+        sid=int(sc.get('service_id') or 0)
+        if not sid: continue
+        qa={'service_level':int(sc.get('service_level') or 0),'confidence':float(sc.get('confidence') or 0),
+            'rationale':sc.get('rationale') or 'Proposition issue de l’analyse globale du dossier.',
+            'evidence':sc.get('evidence') or [],'missing_points':sc.get('missing_points') or [],'criteria':sc.get('criteria') or []}
+        save_ai_qualification_proposal(engine,ppid,sid,qa,actor,provider,model,prompt_version,
+            f"{request_hash}:service:{sid}",None,{'source':'GLOBAL_DOSSIER','global_run_id':run_id,'documents':selected_document_ids or []})
+    audit(engine,'PROFESSIONAL_GLOBAL_AI_ANALYZED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'run_id':run_id,'documents':selected_document_ids or [],'identity_alerts':len(result.get('identity_alerts') or []),'qualification_services':len(result.get('service_candidates') or [])})
     return run_id
 
 
@@ -5373,4 +5388,92 @@ def review_professional_ai_suggestion(engine, suggestion_id, decision, actor):
         elif typ=='LANGUAGE': add_professional_language(engine,ppid,payload.get('language'),payload.get('level'),actor=actor)
     execute(engine,'UPDATE professional_ai_suggestions SET status=:s,reviewed_by=:a,reviewed_at=:n WHERE id=:i',{'s':dec,'a':actor,'n':utcnow_iso(),'i':suggestion_id})
     audit(engine,'PROFESSIONAL_AI_SUGGESTION_REVIEWED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'suggestion_id':suggestion_id,'type':typ,'decision':dec})
+    return True
+
+# --- RC2 PROVISOIRE : gestion vivante des tableaux professionnels ---
+def set_professional_active(engine, ppid, active, actor='system', reason=None):
+    person=_require_professional(engine,ppid); new=1 if active else 0
+    if int(person.get('active') or 0)==new: return False
+    now=utcnow_iso()
+    execute(engine,'UPDATE professional_persons SET active=:a,updated_at=:n WHERE professional_person_id=:p',{'a':new,'n':now,'p':ppid})
+    if person.get('trainer_id'):
+        execute(engine,'UPDATE trainers SET active=:a,updated_at=:n WHERE id=:t',{'a':new,'n':now,'t':person['trainer_id']})
+    execute(engine,'''INSERT INTO professional_person_status_history(professional_person_id,old_principal_status,new_principal_status,old_work_status,new_work_status,old_active,new_active,reason,actor,created_at)
+      VALUES(:p,:ps,:ps,:ws,:ws,:oa,:na,:r,:ac,:n)''',{'p':ppid,'ps':person['principal_status'],'ws':person['candidate_work_status'],'oa':person['active'],'na':new,'r':reason or ('Réactivation' if new else 'Inactivation'),'ac':actor,'n':now})
+    audit(engine,'PROFESSIONAL_REACTIVATED' if new else 'PROFESSIONAL_INACTIVATED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'reason':reason})
+    return True
+
+def professional_delete_dependencies(engine, ppid):
+    person=_require_professional(engine,ppid); tid=person.get('trainer_id'); deps=[]
+    checks=[
+      ('person_service_qualifications','professional_person_id','qualification'),('qualification_evidence','professional_person_id','preuve de qualification'),
+      ('professional_documents','professional_person_id','document'),('professional_experiences','professional_person_id','expérience'),
+      ('professional_education','professional_person_id','diplôme/formation'),('professional_certifications','professional_person_id','certification'),
+      ('professional_languages','professional_person_id','langue'),('professional_specialties','professional_person_id','spécialité'),
+      ('professional_supplier_links','professional_person_id','liaison fournisseur'),('professional_cv_generations','professional_person_id','CV généré'),
+      ('professional_global_ai_runs','professional_person_id','analyse IA')]
+    for table,col,label in checks:
+        try:
+            c=one(engine,f'SELECT COUNT(*) c FROM {table} WHERE {col}=:p',{'p':ppid})
+            if c and int(c['c'] or 0): deps.append(f"{int(c['c'])} {label}(s)")
+        except Exception: pass
+    if tid:
+        for table,col,label in [('action_trainers','trainer_id','affectation action'),('slot_trainers','trainer_id','affectation planning'),('trainer_reports','trainer_id','remontée'),('trainer_assignment_history','trainer_id','historique affectation')]:
+            try:
+                c=one(engine,f'SELECT COUNT(*) c FROM {table} WHERE {col}=:t',{'t':tid})
+                if c and int(c['c'] or 0): deps.append(f"{int(c['c'])} {label}(s)")
+            except Exception: pass
+    return deps
+
+def delete_professional_if_unused(engine, ppid, actor='system'):
+    person=_require_professional(engine,ppid); deps=professional_delete_dependencies(engine,ppid)
+    if deps: raise ValueError('Suppression physique impossible : '+', '.join(deps)+'. Utilisez l’inactivation / archivage.')
+    tid=person.get('trainer_id')
+    # Tables de workflow/audit local qui ne constituent pas une utilisation métier sont nettoyées avec le dossier vierge.
+    for table in ('candidate_requests','candidate_decisions','candidate_workflow_events','professional_person_status_history','professional_regulatory_status','professional_profiles'):
+        try: execute(engine,f'DELETE FROM {table} WHERE professional_person_id=:p',{'p':ppid})
+        except Exception: pass
+    execute(engine,'DELETE FROM professional_persons WHERE professional_person_id=:p',{'p':ppid})
+    if tid:
+        try: execute(engine,'DELETE FROM trainers WHERE id=:t',{'t':tid})
+        except Exception: pass
+    audit(engine,'PROFESSIONAL_PHYSICAL_DELETE',actor=actor,entity_type='professional_person',entity_id=ppid,details={'status':person['principal_status']})
+    return True
+
+def update_professional_structured_row(engine, table, row_id, ppid, values, actor='system'):
+    allowed={
+      'professional_experiences':('organization','role_title','description','start_date','end_date','current_role'),
+      'professional_education':('diploma_title','institution','field','obtained_date','description'),
+      'professional_certifications':('certification_type','name','issuer','reference','obtained_date','valid_until','description'),
+      'professional_languages':('language','level','evidence'),
+      'professional_specialties':('specialty','notes')}
+    if table not in allowed: raise ValueError('Table non administrable.')
+    current=one(engine,f'SELECT * FROM {table} WHERE id=:i AND professional_person_id=:p',{'i':row_id,'p':ppid})
+    if not current: raise ValueError('Ligne introuvable.')
+    fields=[]; params={'i':row_id,'p':ppid,'n':utcnow_iso()}
+    for k in allowed[table]:
+        if k in values:
+            fields.append(f'{k}=:{k}'); params[k]=values[k]
+    if not fields: return False
+    if 'updated_at' in current: fields.append('updated_at=:n')
+    execute(engine,f"UPDATE {table} SET {','.join(fields)} WHERE id=:i AND professional_person_id=:p",params)
+    audit(engine,'PROFESSIONAL_STRUCTURED_ROW_UPDATED',actor=actor,entity_type=table,entity_id=row_id,details={'professional_person_id':ppid})
+    return True
+
+def delete_professional_structured_row(engine, table, row_id, ppid, actor='system'):
+    allowed=('professional_experiences','professional_education','professional_certifications','professional_languages','professional_specialties')
+    if table not in allowed: raise ValueError('Table non administrable.')
+    current=one(engine,f'SELECT id FROM {table} WHERE id=:i AND professional_person_id=:p',{'i':row_id,'p':ppid})
+    if not current: raise ValueError('Ligne introuvable.')
+    execute(engine,f'DELETE FROM {table} WHERE id=:i AND professional_person_id=:p',{'i':row_id,'p':ppid})
+    audit(engine,'PROFESSIONAL_STRUCTURED_ROW_DELETED',actor=actor,entity_type=table,entity_id=row_id,details={'professional_person_id':ppid})
+    return True
+
+def update_professional_document_metadata(engine, ppid, document_id, display_name, category, valid_until=None, notes=None, actor='system'):
+    d=one(engine,'SELECT * FROM professional_documents WHERE id=:i AND professional_person_id=:p AND archived_at IS NULL',{'i':document_id,'p':ppid})
+    if not d: raise ValueError('Document actif introuvable.')
+    if category not in PROFESSIONAL_DOCUMENT_CATEGORIES: raise ValueError('Catégorie de document invalide.')
+    execute(engine,'''UPDATE professional_documents SET display_name=:n,category=:c,valid_until=:v,notes=:x WHERE id=:i AND professional_person_id=:p''',
+            {'n':validate_short_text(display_name,'Nom du document',required=True,max_len=220),'c':category,'v':valid_until or None,'x':notes or None,'i':document_id,'p':ppid})
+    audit(engine,'PROFESSIONAL_DOCUMENT_METADATA_UPDATED',actor=actor,entity_type='professional_document',entity_id=document_id,details={'professional_person_id':ppid})
     return True

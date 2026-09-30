@@ -104,21 +104,37 @@ GLOBAL_DOSSIER_SCHEMA = {
   'languages':{'type':'array','items':{'type':'object','additionalProperties':False,'properties':{'language':{'type':'string'},'level':{'type':['string','null']},'source_document_id':{'type':['integer','null']}},'required':['language','level','source_document_id']}},
   'identity_alerts':{'type':'array','items':{'type':'string'}},
   'missing_points':{'type':'array','items':{'type':'string'}},
-  'service_candidates':{'type':'array','items':{'type':'object','additionalProperties':False,'properties':{'service_id':{'type':'integer'},'confidence':{'type':'number','minimum':0,'maximum':1},'rationale':{'type':'string'},'source_document_ids':{'type':'array','items':{'type':'integer'}}},'required':['service_id','confidence','rationale','source_document_ids']}}
+  'service_candidates':{'type':'array','items':{'type':'object','additionalProperties':False,'properties':{
+    'service_id':{'type':'integer'},'service_level':{'type':'integer','minimum':0,'maximum':4},'confidence':{'type':'number','minimum':0,'maximum':1},'rationale':{'type':'string'},'source_document_ids':{'type':'array','items':{'type':'integer'}},
+    'missing_points':{'type':'array','items':{'type':'string'}},
+    'evidence':{'type':'array','items':{'type':'object','additionalProperties':False,'properties':{
+      'source':{'type':'string'},'fact':{'type':'string'},'supports_level':{'type':'integer','minimum':0,'maximum':4},'document_id':{'type':['integer','null']},'criterion_ids':{'type':'array','items':{'type':'integer'}},'identity_status':{'type':'string','enum':['COHERENT','A_VERIFIER','INCOHERENT']}
+    },'required':['source','fact','supports_level','document_id','criterion_ids','identity_status']}},
+    'criteria':{'type':'array','items':{'type':'object','additionalProperties':False,'properties':{
+      'criterion_id':{'type':'integer'},'proposed_level':{'type':'integer','minimum':0,'maximum':4},'confidence':{'type':'number','minimum':0,'maximum':1},'rationale':{'type':'string'},'evidence_indexes':{'type':'array','items':{'type':'integer'}}
+    },'required':['criterion_id','proposed_level','confidence','rationale','evidence_indexes']}}
+  },'required':['service_id','service_level','confidence','rationale','source_document_ids','missing_points','evidence','criteria']}}
  },
  'required':['profile','experiences','education','certifications','languages','identity_alerts','missing_points','service_candidates']
 }
 GLOBAL_INSTRUCTIONS = """Tu assistes un administrateur Clarte360 pour analyser GLOBALLEMENT un dossier professionnel.
 L'IA propose uniquement : l'humain reste decideur. Utilise exclusivement les faits fournis. N'invente rien.
 Repere les incoherences d'identite entre la personne et les documents et place-les dans identity_alerts. Une piece avec une identite incoherente ne doit jamais etre consideree comme preuve valide.
-Propose les informations professionnelles extractibles et les prestations du catalogue plausiblement rapprochees. Les pourcentages sont des indices de confiance, jamais des notes ou qualifications.
+Propose les informations professionnelles extractibles et les prestations du catalogue plausiblement rapprochees. Pour chaque prestation retenue, produis DES CETTE ANALYSE GLOBALE le niveau indicatif, les critères proposés et les preuves documentaires correspondantes afin qu'ils soient immédiatement disponibles dans l'onglet Qualifications/Adéquation, sans second appel IA. Les pourcentages sont des indices de confiance, jamais des notes ou qualifications.
 Les dates inconnues restent nulles. Pour chaque element documentaire, conserve source_document_id lorsque la source est identifiable. Reponds en francais clair selon le schema JSON impose."""
 
 class GlobalDossierAIGateway(QualificationAIGateway):
     def analyze(self, payload:dict):
         request_hash=hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
         client=self._client_obj()
-        response=client.responses.create(model=self.model,instructions=GLOBAL_INSTRUCTIONS,input=json.dumps(payload,ensure_ascii=False),store=False,max_output_tokens=5000,
+        clean_payload=dict(payload)
+        images=clean_payload.pop('document_images',[]) or []
+        content=[{'type':'input_text','text':json.dumps(clean_payload,ensure_ascii=False)}]
+        for img in images:
+            if img.get('data_url'):
+                content.append({'type':'input_image','image_url':img['data_url']})
+                content.append({'type':'input_text','text':f"Image document_id={img.get('document_id')} nom={img.get('name')} categorie={img.get('category')}"})
+        response=client.responses.create(model=self.model,instructions=GLOBAL_INSTRUCTIONS,input=[{'role':'user','content':content}],store=False,max_output_tokens=7500,
             text={'format':{'type':'json_schema','name':'dossier_professionnel_global','strict':True,'schema':GLOBAL_DOSSIER_SCHEMA}})
         if getattr(response,'status',None) not in (None,'completed'):
             raise RuntimeError(f"Reponse IA incomplete : {getattr(response,'status',None)}")

@@ -61,6 +61,26 @@ _PIN_KEY=secret('security','participant_pin_key',secret('app','setup_key',''))
 if _PIN_KEY: os.environ['CLARTE360_PIN_KEY']=str(_PIN_KEY)
 TRAINER_REPORT_DIR=Path(__file__).resolve().parent/'data'/'trainer_reports'; TRAINER_REPORT_DIR.mkdir(parents=True,exist_ok=True)
 
+
+def _rc2p_manage_structured_rows(ppid, table, rows, label_field, editable_fields, key_prefix):
+    """RC2 provisoire: chaque tableau métier devient actionnable (modifier/supprimer)."""
+    if not rows: return
+    labels={f"{r.get(label_field) or 'Ligne'} — #{r['id']}":r for r in rows}
+    with st.expander('Modifier ou supprimer une ligne du tableau'):
+        lab=st.selectbox('Ligne à gérer',list(labels),key=f'{key_prefix}_row'); row=labels[lab]
+        with st.form(f'{key_prefix}_edit_{row["id"]}'):
+            vals={}
+            for field,label,kind in editable_fields:
+                if kind=='bool': vals[field]=st.checkbox(label,value=bool(row.get(field)))
+                elif kind=='long': vals[field]=st.text_area(label,value=str(row.get(field) or ''),height=80)
+                else: vals[field]=st.text_input(label,value=str(row.get(field) or ''))
+            save=st.form_submit_button('Enregistrer les modifications')
+        if save:
+            update_professional_structured_row(ENGINE,table,row['id'],ppid,vals,st.session_state.admin_email);st.success('Ligne modifiée.');rerun()
+        confirm=st.checkbox('Je confirme la suppression de cette ligne',key=f'{key_prefix}_del_confirm_{row["id"]}')
+        if st.button('Supprimer la ligne',key=f'{key_prefix}_del_{row["id"]}',disabled=not confirm):
+            delete_professional_structured_row(ENGINE,table,row['id'],ppid,st.session_state.admin_email);st.success('Ligne supprimée.');rerun()
+
 def request_technical_context():
     try:
         h=st.context.headers
@@ -3604,6 +3624,25 @@ def settings_screen():
             if people:
                 df=pd.DataFrame([{'Nom':x['display_name'],'Statut':x['principal_status'].title(),'État':'Actif' if x['active'] else 'Inactif','Qualifications':x['qualification_count'],'Alertes':x['alert_count'],'Email':x.get('profile_email') or x.get('trainer_email') or '','Ville':x.get('city') or ''} for x in people])
                 st.dataframe(df,use_container_width=True,hide_index=True)
+                st.markdown('#### Gérer un dossier de la liste')
+                amap={f"{x['display_name']} — {x['principal_status']} — {'Actif' if x['active'] else 'Inactif'}":x for x in people}
+                alab=st.selectbox('Sélectionner une ligne',list(amap),key='rc2p_people_action'); ap=amap[alab]
+                a1,a2,a3=st.columns(3)
+                if a1.button('Ouvrir / modifier',key='rc2p_open_person'):
+                    st.session_state['_j2_open_ppid']=ap['professional_person_id'];rerun()
+                if ap.get('active'):
+                    if a2.button('Inactiver',key='rc2p_inactivate_person'):
+                        set_professional_active(ENGINE,ap['professional_person_id'],False,st.session_state.admin_email,'Inactivation depuis la liste');st.success('Dossier inactivé.');rerun()
+                else:
+                    if a2.button('Réactiver',key='rc2p_reactivate_person'):
+                        set_professional_active(ENGINE,ap['professional_person_id'],True,st.session_state.admin_email,'Réactivation depuis la liste');st.success('Dossier réactivé.');rerun()
+                deps=professional_delete_dependencies(ENGINE,ap['professional_person_id'])
+                with a3:
+                    if deps: st.caption('Suppression physique indisponible : dossier déjà utilisé.')
+                    else:
+                        confirm=st.checkbox('Confirmer suppression',key='rc2p_delete_confirm')
+                        if st.button('Supprimer définitivement',key='rc2p_delete_person',disabled=not confirm):
+                            delete_professional_if_unused(ENGINE,ap['professional_person_id'],st.session_state.admin_email);st.success('Dossier supprimé.');rerun()
             else: st.info('Aucun dossier ne correspond aux filtres.')
             st.caption('Deux portes d’entrée administratives vers le même dossier professionnel : candidature à étudier ou intervenant déjà retenu.')
             ccreate1,ccreate2=st.columns(2)
@@ -3745,31 +3784,41 @@ def settings_screen():
                         except ValueError as ex:st.error(str(ex))
                     st.info('Les justificatifs se déposent dans l’onglet Documents avec les catégories « NDA justificatif » ou « Certificat Qualiopi ».')
                 with pex:
-                    if prof['experiences']:st.dataframe(pd.DataFrame(prof['experiences'])[['role_title','organization','start_date','end_date','current_role']],use_container_width=True,hide_index=True)
+                    if prof['experiences']:
+                        st.dataframe(pd.DataFrame(prof['experiences'])[['role_title','organization','start_date','end_date','current_role']],use_container_width=True,hide_index=True)
+                        _rc2p_manage_structured_rows(ppid,'professional_experiences',prof['experiences'],'role_title',[('role_title','Fonction','text'),('organization','Organisation','text'),('start_date','Début','text'),('end_date','Fin','text'),('current_role','Poste actuel','bool'),('description','Description','long')],f'rc2p_exp_{ppid}')
                     with st.expander('Ajouter une expérience'):
                         with st.form(f'j2_exp_{ppid}'):
                             c1,c2=st.columns(2); role=c1.text_input('Fonction *');org=c2.text_input('Organisation');desc=st.text_area('Description');expadd=st.form_submit_button('Ajouter')
                         if expadd:
                             try:add_professional_experience(ENGINE,ppid,role,org,description=desc,actor=st.session_state.admin_email);rerun()
                             except ValueError as ex:st.error(str(ex))
-                    if prof['specialties']:st.write('**Spécialités :** '+', '.join(x['specialty'] for x in prof['specialties']))
+                    if prof['specialties']:
+                        st.dataframe(pd.DataFrame([{'Spécialité':x['specialty'],'Notes':x.get('notes') or ''} for x in prof['specialties']]),use_container_width=True,hide_index=True)
+                        _rc2p_manage_structured_rows(ppid,'professional_specialties',prof['specialties'],'specialty',[('specialty','Spécialité','text'),('notes','Notes','long')],f'rc2p_spec_{ppid}')
                     with st.form(f'j2_spec_{ppid}'):
                         sp=st.text_input('Ajouter une spécialité');spa=st.form_submit_button('Ajouter la spécialité')
                     if spa and sp.strip():add_professional_specialty(ENGINE,ppid,sp,actor=st.session_state.admin_email);rerun()
                 with ped:
-                    if prof['education']:st.dataframe(pd.DataFrame(prof['education'])[['diploma_title','institution','field','obtained_date']],use_container_width=True,hide_index=True)
+                    if prof['education']:
+                        st.dataframe(pd.DataFrame(prof['education'])[['diploma_title','institution','field','obtained_date']],use_container_width=True,hide_index=True)
+                        _rc2p_manage_structured_rows(ppid,'professional_education',prof['education'],'diploma_title',[('diploma_title','Diplôme / formation','text'),('institution','Établissement','text'),('field','Domaine','text'),('obtained_date','Date obtenue','text'),('description','Description','long')],f'rc2p_edu_{ppid}')
                     with st.expander('Ajouter un diplôme / une formation'):
                         with st.form(f'j2_edu_{ppid}'):
                             c1,c2=st.columns(2); dip=c1.text_input('Diplôme / formation *');inst=c2.text_input('Établissement');field=st.text_input('Domaine');eduadd=st.form_submit_button('Ajouter')
                         if eduadd:
                             try:add_professional_education(ENGINE,ppid,dip,inst,field,actor=st.session_state.admin_email);rerun()
                             except ValueError as ex:st.error(str(ex))
-                    if prof['languages']:st.dataframe(pd.DataFrame(prof['languages'])[['language','level','evidence']],use_container_width=True,hide_index=True)
+                    if prof['languages']:
+                        st.dataframe(pd.DataFrame(prof['languages'])[['language','level','evidence']],use_container_width=True,hide_index=True)
+                        _rc2p_manage_structured_rows(ppid,'professional_languages',prof['languages'],'language',[('language','Langue','text'),('level','Niveau','text'),('evidence','Preuve / précision','text')],f'rc2p_lang_{ppid}')
                     with st.form(f'j2_lang_{ppid}'):
                         c1,c2=st.columns(2);lang=c1.text_input('Langue');lvl=c2.text_input('Niveau');ev=st.text_input('Preuve / précision');la=st.form_submit_button('Ajouter / mettre à jour la langue')
                     if la and lang.strip():add_professional_language(ENGINE,ppid,lang,lvl,ev,st.session_state.admin_email);rerun()
                 with pcert:
-                    if prof['certifications']:st.dataframe(pd.DataFrame(prof['certifications'])[['certification_type','name','issuer','reference','valid_until']],use_container_width=True,hide_index=True)
+                    if prof['certifications']:
+                        st.dataframe(pd.DataFrame(prof['certifications'])[['certification_type','name','issuer','reference','valid_until']],use_container_width=True,hide_index=True)
+                        _rc2p_manage_structured_rows(ppid,'professional_certifications',prof['certifications'],'name',[('certification_type','Type','text'),('name','Nom','text'),('issuer','Organisme émetteur','text'),('reference','Référence','text'),('obtained_date','Date obtenue','text'),('valid_until','Valide jusqu’au','text'),('description','Description','long')],f'rc2p_cert_{ppid}')
                     with st.form(f'j2_cert_{ppid}'):
                         c1,c2=st.columns(2);ctype=c1.selectbox('Type',['CERTIFICATION','HABILITATION','ATTESTATION']);cname=c2.text_input('Nom *');issuer=st.text_input('Organisme émetteur');ref=st.text_input('Référence');ca=st.form_submit_button('Ajouter')
                     if ca:
@@ -3803,32 +3852,7 @@ def settings_screen():
                         c4.metric('Niveau final',qcurrent.get('human_value') if qcurrent.get('human_value') is not None else '—')
 
                         st.markdown('##### Analyse IA assistée')
-                        st.caption("L’IA analyse uniquement les éléments que vous choisissez et formule une proposition. Elle ne valide jamais la qualification et ne modifie jamais une valeur humaine verrouillée.")
-                        ai_model=str(secret('openai','model','gpt-5-mini') or 'gpt-5-mini')
-                        ai_key=str(secret('openai','api_key',os.environ.get('OPENAI_API_KEY','')) or '')
-                        ai_gateway=QualificationAIGateway(ai_key,ai_model)
-                        ai_docs=prof.get('documents') or []
-                        ai_doc_map={f"{d['display_name']} — {d['category']}":d for d in ai_docs if (d.get('extension') or '').lower().lstrip('.') in ('pdf','docx','txt','md','csv')}
-                        defaults=[k for k,d in ai_doc_map.items() if d.get('category') in ('CV','DIPLOME','CERTIFICATION','HABILITATION','ATTESTATION')]
-                        selected_ai_docs=st.multiselect('Documents à inclure dans l’analyse IA',list(ai_doc_map),default=defaults,key=f'j5_docs_{ppid}_{qrow["service_id"]}') if ai_doc_map else []
-                        ai_consent=st.checkbox("Je confirme que cette analyse IA est autorisée et que les documents sélectionnés peuvent être transmis pour cette analyse.",key=f'j5_consent_{ppid}_{qrow["service_id"]}')
-                        if not ai_gateway.ready:
-                            st.warning("IA indisponible : la clé OpenAI n’est pas configurée dans les secrets. La qualification manuelle reste entièrement disponible.")
-                        if st.button('Analyser cette prestation avec l’IA',key=f'j5_analyze_{ppid}_{qrow["service_id"]}',disabled=not(ai_gateway.ready and ai_consent)):
-                            try:
-                                payload=build_ai_qualification_payload(ENGINE,ppid,qrow['service_id'],[ai_doc_map[x]['id'] for x in selected_ai_docs])
-                                safe_docs=[]
-                                for label in selected_ai_docs:
-                                    d=ai_doc_map[label]; txt=extract_document_text(d.get('storage_path') or '',d.get('extension') or '',18000)
-                                    safe_docs.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':txt})
-                                payload['document_contents']=safe_docs
-                                # Never send storage paths or local server details to the model.
-                                payload['documents']=[{k:v for k,v in d.items() if k not in ('storage_path',)} for d in payload.get('documents',[])]
-                                res=ai_gateway.analyze(payload)
-                                save_ai_qualification_proposal(ENGINE,ppid,qrow['service_id'],res['result'],st.session_state.admin_email,res['provider'],res['model'],res['prompt_version'],res['request_hash'],res.get('usage'),{'documents':[x['name'] for x in safe_docs],'criteria_count':len(payload.get('criteria',[]))})
-                                st.success("Analyse IA enregistrée comme proposition. Aucune validation humaine n’a été modifiée.");rerun()
-                            except Exception as ex:
-                                st.error(f"L’analyse IA n’a pas pu aboutir. Le dossier et les validations humaines sont conservés. Détail : {ex}")
+                        st.caption("Cette zone exploite directement la dernière analyse globale lancée depuis l’onglet Documents. Il n’est plus nécessaire de refaire tourner l’IA prestation par prestation : critères, preuves et niveau proposé sont matérialisés ici à partir du même passage IA. Pour réanalyser après ajout de nouvelles pièces, relancez simplement l’analyse globale dans Documents.")
                         if qcurrent.get('ai_value') is not None:
                             ai_evidence=[]; ai_missing=[]
                             try: ai_evidence=json.loads(qcurrent.get('ai_evidence_json') or '[]')
@@ -3965,6 +3989,16 @@ def settings_screen():
                 with pdocs:
                     if prof['documents']:
                         st.dataframe(pd.DataFrame([{'Document':x['display_name'],'Catégorie':x['category'],'Valide jusqu’au':x.get('valid_until') or '','Ajouté le':x['created_at'][:10]} for x in prof['documents']]),use_container_width=True,hide_index=True)
+                        with st.expander('Ouvrir / modifier un document du tableau'):
+                            dmap={f"{d['display_name']} — {d['category']}":d for d in prof['documents']}; dlab=st.selectbox('Document à gérer',list(dmap),key=f'rc2p_doc_manage_{ppid}'); dm=dmap[dlab]
+                            try:
+                                with open(dm['storage_path'],'rb') as fh: st.download_button('Ouvrir / télécharger le document',fh.read(),file_name=dm['display_name'],mime=dm.get('mime_type') or 'application/octet-stream',key=f'rc2p_doc_open_{ppid}_{dm["id"]}')
+                            except Exception: st.caption('Le fichier physique n’est pas accessible depuis cette session.')
+                            with st.form(f'rc2p_doc_edit_{ppid}_{dm["id"]}'):
+                                dn=st.text_input('Nom affiché',value=dm['display_name']); dc=st.selectbox('Catégorie',PROFESSIONAL_DOCUMENT_CATEGORIES,index=PROFESSIONAL_DOCUMENT_CATEGORIES.index(dm['category'])); dv=st.text_input('Valide jusqu’au',value=dm.get('valid_until') or ''); dx=st.text_area('Notes',value=dm.get('notes') or '')
+                                dsave=st.form_submit_button('Enregistrer les modifications')
+                            if dsave:
+                                update_professional_document_metadata(ENGINE,ppid,dm['id'],dn,dc,dv or None,dx,st.session_state.admin_email);st.success('Document modifié.');rerun()
                     with st.form(f'j2_doc_{ppid}'):
                         up=st.file_uploader('Ajouter un document',type=['pdf','doc','docx','jpg','jpeg','png','webp']);cat=st.selectbox('Catégorie',PROFESSIONAL_DOCUMENT_CATEGORIES);valid=st.text_input('Valide jusqu’au (AAAA-MM-JJ, si applicable)');da=st.form_submit_button('Ajouter le document',type='primary')
                     if da and up:
@@ -3975,15 +4009,25 @@ def settings_screen():
                         st.caption("Analyse de l'ensemble des pièces disponibles pour préparer le dossier professionnel et repérer les prestations pertinentes. L'IA propose ; vous validez ou rejetez chaque proposition.")
                         j14_model=str(secret('openai','model','gpt-5-mini') or 'gpt-5-mini'); j14_key=str(secret('openai','api_key',os.environ.get('OPENAI_API_KEY','')) or '')
                         j14_gateway=GlobalDossierAIGateway(j14_key,j14_model)
-                        j14_doc_map={f"{d['display_name']} — {d['category']}":d for d in prof['documents'] if (d.get('extension') or '').lower().lstrip('.') in ('pdf','docx','txt','md','csv')}
+                        j14_doc_map={f"{d['display_name']} — {d['category']}":d for d in prof['documents'] if (d.get('extension') or '').lower().lstrip('.') in ('pdf','docx','txt','md','csv','jpg','jpeg','png','webp')}
                         j14_sel=st.multiselect('Documents à analyser globalement',list(j14_doc_map),default=list(j14_doc_map),key=f'j14_global_docs_{ppid}')
                         j14_consent=st.checkbox("Je confirme que cette analyse IA est autorisée et que les documents sélectionnés peuvent être transmis pour préparer le dossier.",key=f'j14_global_consent_{ppid}')
                         if st.button('Analyser globalement le dossier',type='primary',key=f'j14_global_analyze_{ppid}',disabled=not(j14_gateway.ready and j14_consent and j14_sel)):
                             try:
-                                payload=build_global_professional_ai_payload(ENGINE,ppid,[j14_doc_map[x]['id'] for x in j14_sel]); safe=[]
+                                payload=build_global_professional_ai_payload(ENGINE,ppid,[j14_doc_map[x]['id'] for x in j14_sel]); safe=[]; images=[]
                                 for label in j14_sel:
-                                    d=j14_doc_map[label]; safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':extract_document_text(d.get('storage_path') or '',d.get('extension') or '',18000)})
-                                payload['document_contents']=safe; payload['documents']=[{k:v for k,v in d.items() if k!='storage_path'} for d in payload['documents']]
+                                    d=j14_doc_map[label]; ext=(d.get('extension') or '').lower().lstrip('.')
+                                    if ext in ('jpg','jpeg','png','webp'):
+                                        try:
+                                            raw=open(d.get('storage_path') or '','rb').read()
+                                            mime={'jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','webp':'image/webp'}[ext]
+                                            images.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'data_url':f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"})
+                                            safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':'[IMAGE TRANSMISE AU MODELE]'} )
+                                        except Exception:
+                                            safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':'[IMAGE NON LISIBLE - A VERIFIER]'} )
+                                    else:
+                                        safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':extract_document_text(d.get('storage_path') or '',d.get('extension') or '',18000)})
+                                payload['document_contents']=safe; payload['document_images']=images; payload['documents']=[{k:v for k,v in d.items() if k!='storage_path'} for d in payload['documents']]
                                 res=j14_gateway.analyze(payload); save_global_professional_ai_analysis(ENGINE,ppid,res['result'],st.session_state.admin_email,res['provider'],res['model'],res['prompt_version'],res['request_hash'],res.get('usage'),[x['document_id'] for x in safe])
                                 st.success("Analyse globale enregistrée. Les propositions restent à valider humainement.");rerun()
                             except Exception as ex: st.error(f"L'analyse globale n'a pas pu aboutir. Les documents restent conservés. Détail : {ex}")
@@ -4028,7 +4072,18 @@ def settings_screen():
                 shown.append(x)
             if shown:
                 st.dataframe(pd.DataFrame([{'Candidat':x['display_name'],'État':x['candidate_work_status'].replace('_',' ').title(),'Complétude':f"{x.get('completion_percent') or 0} %",'Documents':x['document_count'],'Alertes':x['alert_count'],'Email':x.get('profile_email') or x.get('trainer_email') or ''} for x in shown]),use_container_width=True,hide_index=True)
-                st.info("Pour étudier ou décider une candidature, ouvrez le dossier correspondant dans l’onglet Intervenants puis l’onglet Candidature du dossier.")
+                cmap={f"{x['display_name']} — {x['candidate_work_status'].replace('_',' ')}":x for x in shown}; clab=st.selectbox('Candidat à gérer',list(cmap),key='rc2p_candidate_action'); cp=cmap[clab]
+                ca1,ca2,ca3=st.columns(3)
+                if ca1.button('Ouvrir / étudier',key='rc2p_candidate_open'):
+                    st.session_state['_j2_open_ppid']=cp['professional_person_id'];st.session_state['_rc2p_focus_candidate']=cp['professional_person_id'];st.session_state['j9_status_filter']='Tous';rerun()
+                if cp.get('active') and ca2.button('Inactiver',key='rc2p_candidate_inactivate'):
+                    set_professional_active(ENGINE,cp['professional_person_id'],False,st.session_state.admin_email,'Inactivation candidat depuis la liste');rerun()
+                deps=professional_delete_dependencies(ENGINE,cp['professional_person_id'])
+                with ca3:
+                    if not deps:
+                        cdel=st.checkbox('Confirmer suppression',key='rc2p_candidate_del_confirm')
+                        if st.button('Supprimer définitivement',key='rc2p_candidate_delete',disabled=not cdel): delete_professional_if_unused(ENGINE,cp['professional_person_id'],st.session_state.admin_email);rerun()
+                    else: st.caption('Suppression physique indisponible : dossier déjà utilisé. Inactivation/archivage uniquement.')
             else: st.info('Aucun candidat ne correspond aux filtres.')
 
         with sub_matrix:

@@ -8,7 +8,7 @@ def eng():
     e=make_engine('sqlite:///:memory:'); init_db(e); return e
 
 def result():
-    return {'profile':{'title':'Consultant','summary':'Experience documentee','specialties':['QSE']},'experiences':[{'role_title':'Responsable QSE','organization':'ACME','description':'Pilotage','start_date':None,'end_date':None,'source_document_id':None}],'education':[],'certifications':[],'languages':[],'identity_alerts':['Le certificat porte un autre nom.'],'missing_points':['Verifier identite du certificat.'],'service_candidates':[{'service_id':1,'confidence':.7,'rationale':'Experience proche','source_document_ids':[]}]}
+    return {'profile':{'title':'Consultant','summary':'Experience documentee','specialties':['QSE']},'experiences':[{'role_title':'Responsable QSE','organization':'ACME','description':'Pilotage','start_date':None,'end_date':None,'source_document_id':None}],'education':[],'certifications':[],'languages':[],'identity_alerts':['Le certificat porte un autre nom.'],'missing_points':['Verifier identite du certificat.'],'service_candidates':[{'service_id':1,'service_level':2,'confidence':.7,'rationale':'Experience proche','source_document_ids':[],'missing_points':['Verifier pratique'], 'evidence':[], 'criteria':[] }]}
 
 def test_global_gateway_structured_and_human_first():
     class R:
@@ -34,3 +34,26 @@ def test_documents_are_persistent_and_linked_to_dossier():
     e=eng(); p=create_professional_candidate(e,'Doc Test',actor='admin@test')
     did=store_professional_document(e,p,b'%PDF-1.4 test','cv.pdf','CV','admin@test')
     prof=get_professional_360(e,p); assert any(x['id']==did and x['display_name']=='cv.pdf' for x in prof['documents'])
+
+def test_global_analysis_materializes_qualification_without_second_ai_call():
+    from services import get_person_service_qualification, list_ai_analysis_runs
+    e=eng(); p=create_professional_candidate(e,'Dominique Laurent',actor='admin@test')
+    rid=save_global_professional_ai_analysis(e,p,result(),'admin@test','openai','gpt-test',GLOBAL_PROMPT_VERSION,'hash')
+    detail=get_person_service_qualification(e,p,1)
+    qual=detail.get('qualification') or {}
+    assert qual.get('ai_value')==2
+    assert round(float(qual.get('ai_confidence') or 0),1)==0.7
+    runs=list_ai_analysis_runs(e,p,1)
+    assert len(runs)==1
+    assert json.loads(runs[0]['input_summary_json'])['source']=='GLOBAL_DOSSIER'
+
+def test_global_gateway_accepts_image_content_in_same_analysis():
+    class R:
+        def create(self,**kwargs):
+            content=kwargs['input'][0]['content']
+            assert any(x.get('type')=='input_image' for x in content)
+            return SimpleNamespace(status='completed',output_text=json.dumps(result()),usage=None)
+    g=GlobalDossierAIGateway('', 'gpt-test', client=SimpleNamespace(responses=R()))
+    out=g.analyze({'person':{'declared_name':'Dominique Laurent'},'documents':[],'service_catalog':[],
+                   'document_images':[{'document_id':4,'name':'diplome.jpg','category':'DIPLOME','data_url':'data:image/jpeg;base64,AA=='}]})
+    assert out['result']['service_candidates'][0]['service_level']==2
