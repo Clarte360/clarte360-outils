@@ -16,6 +16,11 @@ INTERNAL_PORT = 8515
 SERVICE_NAME = "clarte360-ipip-neo120.service"
 STABLE_PATH = "/opt/clarte360/clarte360-outils/clarte360-ipip-neo120/"
 
+# Charte visuelle Clarte360 utilisee par framework.branding
+OFFICIAL_TEAL = "#008080"
+LIGHT_TEAL = "#f2fbfb"
+DARK_TEXT = "#203333"
+
 def public_runtime_metadata():
     return {"app_version": APP_VERSION, "framework_reference": FRAMEWORK_REFERENCE, "framework_version": FRAMEWORK_VERSION, "framework_vps_version": FRAMEWORK_VPS_VERSION}
 
