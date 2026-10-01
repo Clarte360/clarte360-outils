@@ -1,0 +1,19 @@
+{
+  "tool_id": "ipip-neo120",
+  "app_name": "Clarte360 - Profil de fonctionnement professionnel (base IPIP)",
+  "app_version": "0.6.0-jalon-f",
+  "production_url": "https://ipip-neo120.clarte360.com",
+  "deployment_status": "reserved_not_deployed",
+  "hub_compatible": true,
+  "hub_source": "GESTION_ACTIONS_I9_H1",
+  "launch_modes": [
+    "ACCOMPAGNEMENT"
+  ],
+  "service_name": "clarte360-ipip-neo120.service",
+  "internal_port": 8515,
+  "internal_port_status": "reserved_verify_on_vps_before_deployment",
+  "stable_path": "/opt/clarte360/clarte360-outils/clarte360-ipip-neo120/",
+  "persistent_data_path": "/var/lib/clarte360/ipip-neo120/",
+  "framework_reference": "PIP RIASEC / O*NET Clarte360 V1.0.10 ACCOMPAGNEMENT",
+  "connector_contract": "IPIP-GA-OUTBOUND-1.0"
+}
