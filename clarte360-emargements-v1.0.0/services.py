@@ -3296,13 +3296,8 @@ def build_pip_prescription_launch(engine, prescription_id, signing_key, valid_se
     if not row or row.get('tool_code')!='PIP_RIASEC_ONET': raise ValueError('Prescription PIP introuvable.')
     if row.get('status')=='ANNULE': raise ValueError('Prescription PIP annulée.')
     now=datetime.now(ZoneInfo('UTC'))
-    if row.get('expires_at'):
-        try:
-            exp=datetime.fromisoformat(row['expires_at'])
-            if exp.tzinfo is None: exp=exp.replace(tzinfo=ZoneInfo('UTC'))
-            if exp < now: raise ValueError('Accès PIP expiré.')
-        except ValueError: raise
-        except Exception: pass
+    if str(row.get('status') or '').upper()=='TERMINE':
+        raise ValueError('Cette passation PIP RIASEC / O*NET est terminée.')
     tok=build_pip_launch_token(beneficiary_id=row['beneficiary_id'],action_id=row['action_id'],participant_id=row.get('participant_id'),
       prescription_id=row['prescription_id'],signing_key=signing_key,rights=['PIP_RUN','PIP_RESUME','PIP_STATUS','PIP_RESULT_READ'],valid_seconds=valid_seconds,
       beneficiary_first_name=row.get('beneficiary_first_name'),beneficiary_last_name=row.get('beneficiary_last_name'),
