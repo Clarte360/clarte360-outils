@@ -57,6 +57,11 @@ try:
     refresh_pip_connector_runtime_status(ENGINE,secret('pip_connector','launch_signing_key',''),secret('pip_connector','outbox_path',''),'system')
 except Exception:
     pass
+try:
+    _ipip_sec=st.secrets.get('IPIP_CONNECTOR',{})
+    refresh_ipip_connector_runtime_status(ENGINE,_ipip_sec.get('LAUNCH_SIGNING_KEY',''),_ipip_sec.get('OUTBOX_PENDING_DIR',''),'system')
+except Exception:
+    pass
 _PIN_KEY=secret('security','participant_pin_key',secret('app','setup_key',''))
 if _PIN_KEY: os.environ['CLARTE360_PIN_KEY']=str(_PIN_KEY)
 TRAINER_REPORT_DIR=Path(__file__).resolve().parent/'data'/'trainer_reports'; TRAINER_REPORT_DIR.mkdir(parents=True,exist_ok=True)
@@ -1096,6 +1101,9 @@ def beneficiary_portal_page():
                     if pr.get('tool_code')=='PIP_RIASEC_ONET':
                         key=secret('pip_connector','launch_signing_key','')
                         launch_url=build_pip_prescription_launch(ENGINE,pr['prescription_id'],key,valid_seconds=3600)
+                    elif pr.get('tool_code')=='IPIP_NEO120':
+                        key=secret('IPIP_CONNECTOR','LAUNCH_SIGNING_KEY','')
+                        launch_url=build_ipip_prescription_launch(ENGINE,pr['prescription_id'],key,valid_seconds=3600)
                     else:
                         launch_url=(pr.get('base_url') or '').strip()
                         if not launch_url:
@@ -4526,6 +4534,14 @@ def tool_launch_page(token):
                 st.link_button("OUVRIR LE PIP RIASEC / O*NET",url,type='primary')
             except Exception as ex:
                 _ui_incident('pip_prescription_launch',ex,action_id=ctx.get('action_id'),entity_type='tool_prescription',entity_id=ctx.get('prescription_id'),subject='Le lancement PIP est temporairement indisponible',level='warning')
+        elif ctx.get('tool_code')=='IPIP_NEO120':
+            try:
+                key=secret('IPIP_CONNECTOR','LAUNCH_SIGNING_KEY','')
+                url=build_ipip_prescription_launch(ENGINE,ctx['prescription_id'],key,valid_seconds=900)
+                st.info("Votre accès sécurisé Clarté360 au profil de fonctionnement professionnel est prêt.")
+                st.link_button("OUVRIR LE PROFIL DE FONCTIONNEMENT",url,type='primary')
+            except Exception as ex:
+                _ui_incident('ipip_prescription_launch',ex,action_id=ctx.get('action_id'),entity_type='tool_prescription',entity_id=ctx.get('prescription_id'),subject='Le lancement IPIP est temporairement indisponible',level='warning')
         elif ctx.get('base_url'):
             # Les autres applications Clarté360 restent autonomes : Gestion des Actions
             # autorise la prescription et le passage depuis l'espace bénéficiaire, puis
