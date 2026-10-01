@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-09-21",
+  "updated_at": "2026-10-01",
   "tools": [
     {
       "tool_code": "PIP_RIASEC_ONET",
@@ -249,6 +249,39 @@
       "connector_status": "NOT_CONFIGURED",
       "metadata": {
         "deployment_status": "planned"
+      }
+    },
+    {
+      "tool_code": "IPIP_NEO120",
+      "name": "Profil de fonctionnement professionnel — IPIP-NEO-120",
+      "category": "FONCTIONNEMENT_PROFESSIONNEL",
+      "base_url": "https://ipip-neo120.clarte360.com",
+      "tool_version": "0.7.0-rc1",
+      "active": true,
+      "prescription_allowed": true,
+      "allowed_publics": [
+        "BENEFICIAIRE"
+      ],
+      "compatible_prestations": [],
+      "launch_type": "EXTERNAL_SIGNED",
+      "access_validity_hours": 168,
+      "connector_code": "IPIP_RC1",
+      "connector_status": "NOT_CONFIGURED",
+      "metadata": {
+        "source": "REGISTRE_I9",
+        "connector": "ipip_specialized",
+        "deployment_status": "rc1_recipe",
+        "hub_profile": {
+          "tool_id": "ipip-neo120",
+          "query_param": "launch",
+          "hub_source": "GESTION_ACTIONS_I9_H1",
+          "scopes": [
+            "IPIP_RUN",
+            "IPIP_RESUME",
+            "IPIP_STATUS",
+            "IPIP_RESULT_READ"
+          ]
+        }
       }
     }
   ]
