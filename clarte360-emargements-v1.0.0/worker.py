@@ -3,7 +3,7 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report, refresh_countersign_communications, delivery_mode_label, trainer_microsoft_identity, mark_trainer_entra_identity, mark_trainer_entra_not_found, consume_pip_outbox, refresh_pip_connector_runtime_status
+from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report, refresh_countersign_communications, delivery_mode_label, trainer_microsoft_identity, mark_trainer_entra_identity, mark_trainer_entra_not_found, consume_pip_outbox, refresh_pip_connector_runtime_status, consume_ipip_outbox, refresh_ipip_connector_runtime_status
 from mailer import send_mail, resolve_mail_config
 from graph_client import GraphClient, graph_config_from_mapping, graph_config_missing
 
@@ -394,10 +394,21 @@ def run_once():
             pip_changed=consume_pip_outbox(eng,outbox_path,actor='worker').get('processed',0)
         except Exception as ex:
             audit(eng,'PIP_CONNECTOR_FAILED',actor='worker',entity_type='connector',details={'error':str(ex)[:500]})
+    ipip_cfg=cfg.get('IPIP_CONNECTOR') or cfg.get('ipip_connector') or {}
+    ipip_pending=(ipip_cfg.get('OUTBOX_PENDING_DIR') or ipip_cfg.get('outbox_pending_dir') or '').strip()
+    ipip_root=(ipip_cfg.get('DATA_ROOT') or ipip_cfg.get('data_root') or '/var/lib/clarte360/ipip-neo120').strip()
+    ipip_key=ipip_cfg.get('LAUNCH_SIGNING_KEY') or ipip_cfg.get('launch_signing_key') or ''
+    refresh_ipip_connector_runtime_status(eng,ipip_key,ipip_pending,'worker')
+    ipip_changed=0
+    if ipip_pending:
+        try:
+            ipip_changed=consume_ipip_outbox(eng,ipip_pending,ipip_root,actor='worker').get('processed',0)
+        except Exception as ex:
+            audit(eng,'IPIP_CONNECTOR_FAILED',actor='worker',entity_type='connector',details={'error':str(ex)[:500]})
     # I9-H2.4: keep countersignature requests alive until the trainer signs.
     # Refresh before SMTP processing so end-of-slot requests are actually queued.
     refresh_countersign_communications(eng)
-    if not smtp.get('enabled'): return teams_changed + pip_changed
+    if not smtp.get('enabled'): return teams_changed + pip_changed + ipip_changed
     _process_portal_retention(eng,smtp,base)
     now=datetime.now(timezone.utc).isoformat()
     # Ne pas filtrer les candidats sur due_at avant le garde-fou métier :
@@ -447,7 +458,7 @@ def run_once():
     sent += _run_quality_events(eng,smtp,base)
     sent += _run_client_transmissions(eng,smtp)
     sent += _run_communication_events(eng,smtp,base)
-    return sent + teams_changed + pip_changed
+    return sent + teams_changed + pip_changed + ipip_changed
 
 if __name__=='__main__':
     print('Clarté360 worker démarré')
