@@ -3136,6 +3136,147 @@ def build_generic_tool_launch(engine, prescription_id, signing_key, valid_second
     return _append_query_param(row.get('base_url'),profile.get('query_param','hub_token'),token)
 
 
+# ---- IPIP-NEO-120 RC1 : contrat Hub dédié ---------------------------------
+def ipip_connector_configured(signing_key):
+    return bool(signing_key and len(str(signing_key).strip()) >= 24)
+
+
+def build_ipip_prescription_launch(engine, prescription_id, signing_key, valid_seconds=900):
+    """Build the signed IPIP launch URL without civil identity in the token."""
+    if not ipip_connector_configured(signing_key):
+        raise ValueError('Secret IPIP Clarté360 non configuré.')
+    row=one(engine,"""SELECT tp.*,tc.base_url,tc.launch_type,tc.connector_code,tc.connector_status
+      FROM tool_prescriptions tp JOIN tool_catalog tc ON tc.id=tp.tool_id
+      WHERE tp.prescription_id=:p""",{'p':prescription_id})
+    if not row or row.get('tool_code')!='IPIP_NEO120':
+        raise ValueError('Prescription IPIP-NEO-120 introuvable.')
+    if row.get('status')=='ANNULE':
+        raise ValueError('Prescription IPIP-NEO-120 annulée.')
+    now=int(time.time()); ttl=max(60,min(int(valid_seconds or 900),3600))
+    payload={
+      'v':1,'iat':now,'exp':now+ttl,
+      'beneficiary_id':str(row['beneficiary_id']),
+      'action_id':str(row['action_id']),
+      'prescription_id':str(row['prescription_id']),
+      'tool_id':'ipip-neo120',
+      'hub_source':'GESTION_ACTIONS_I9_H1',
+      'scopes':['IPIP_RUN','IPIP_RESUME','IPIP_STATUS','IPIP_RESULT_READ'],
+    }
+    if row.get('participant_id') is not None:
+        payload['participant_id']=str(row.get('participant_id'))
+    raw=json.dumps(payload,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode('utf-8')
+    pp=_b64url(raw)
+    sig=hmac.new(str(signing_key).encode(),pp.encode('ascii'),hashlib.sha256).digest()
+    token=pp+'.'+_b64url(sig)
+    url=_append_query_param(row.get('base_url'),'mode','accompagnement')
+    return _append_query_param(url,'launch',token)
+
+
+def archive_ipip_report_pdf(engine, prescription_id, data: bytes, *, display_name=None, source_event_id=None, source_reference=None, actor='ipip_connector'):
+    pr=one(engine,"SELECT * FROM tool_prescriptions WHERE prescription_id=:p AND tool_code='IPIP_NEO120'",{'p':prescription_id})
+    if not pr: raise ValueError('Prescription IPIP inconnue dans le Hub.')
+    kind='IPIP_REPORT'
+    existing=one(engine,"""SELECT pd.*,dr.display_name,sf.sha256,sf.storage_path FROM prescription_documents pd
+      JOIN document_references dr ON dr.id=pd.document_reference_id JOIN stored_files sf ON sf.id=dr.stored_file_id
+      WHERE pd.prescription_id=:p AND pd.document_kind=:k""",{'p':prescription_id,'k':kind})
+    digest=hashlib.sha256(data or b'').hexdigest() if data else None
+    if existing:
+        if digest and existing.get('sha256')==digest: return existing['document_reference_id'],digest,True
+        raise ValueError('Un rapport IPIP différent est déjà archivé pour cette prescription.')
+    name=(display_name or f"Rapport_IPIP_NEO120_{prescription_id}.pdf").strip()
+    if not name.lower().endswith('.pdf'): raise ValueError('Le rapport IPIP doit être un PDF.')
+    rid,digest,dedup=store_document(engine,data,name,'IPIP_NEO120',actor,action_id=pr['action_id'],beneficiary_id=pr['beneficiary_id'],participant_id=pr.get('participant_id'),audience='ACTION_BENEFICIARIES',visible_to_beneficiary=True,allowed_extensions={'.pdf'})
+    try:
+        execute(engine,"""INSERT INTO prescription_documents(prescription_id,document_reference_id,document_kind,source_event_id,source_reference,created_at)
+          VALUES(:p,:d,:k,:e,:r,:c)""",{'p':prescription_id,'d':rid,'k':kind,'e':source_event_id,'r':str(source_reference)[:500] if source_reference else None,'c':utcnow_iso()})
+    except Exception:
+        linked=one(engine,"SELECT document_reference_id FROM prescription_documents WHERE prescription_id=:p AND document_kind=:k",{'p':prescription_id,'k':kind})
+        if linked: return linked['document_reference_id'],digest,True
+        raise
+    audit(engine,'IPIP_REPORT_ARCHIVED',pr['action_id'],actor,'tool_prescription',pr['id'],{'prescription_id':prescription_id,'document_reference_id':rid,'sha256':digest,'source_event_id':source_event_id})
+    return rid,digest,dedup
+
+
+IPIP_ACCOMP_EVENT_TYPES={'CONSULTE','EN_COURS','TERMINE','ERREUR'}
+
+
+def process_ipip_accompaniment_event(engine, event, data_root, *, actor='ipip_connector'):
+    if not isinstance(event,dict) or event.get('event_type') not in IPIP_ACCOMP_EVENT_TYPES:
+        raise ValueError('Événement IPIP ACCOMPAGNEMENT non reconnu.')
+    if str(event.get('tool_id') or '')!='ipip-neo120':
+        raise ValueError('Événement destiné à un autre outil.')
+    payload=event.get('payload') or {}; eid=str(event.get('event_id') or '').strip()
+    if not eid: raise ValueError('event_id IPIP manquant.')
+    pr=one(engine,"SELECT * FROM tool_prescriptions WHERE prescription_id=:p AND tool_code='IPIP_NEO120'",{'p':payload.get('prescription_id')})
+    if not pr: raise ValueError('Prescription IPIP inconnue dans le Hub.')
+    if str(pr.get('beneficiary_id'))!=str(payload.get('beneficiary_id')) or str(pr.get('action_id'))!=str(payload.get('action_id')):
+        raise ValueError('Identifiants IPIP incohérents avec la prescription.')
+    if payload.get('participant_id') is not None and str(pr.get('participant_id'))!=str(payload.get('participant_id')):
+        raise ValueError('Participant IPIP incohérent avec la prescription.')
+    if one(engine,'SELECT id FROM prescription_events WHERE event_id=:e',{'e':eid}):
+        return {'replayed':True,'event_id':eid}
+    typ=event['event_type']
+    details={'source':'IPIP_RC1','created_at':event.get('created_at'),'passation_id':payload.get('passation_id'),'app_version':payload.get('app_version')}
+    if typ=='ERREUR':
+        execute(engine,"INSERT INTO prescription_events(prescription_id,event_type,old_status,new_status,actor,details_json,event_id,created_at) VALUES(:p,'IPIP_ERROR',:o,:o,:a,:d,:e,:c)",
+          {'p':pr['prescription_id'],'o':pr.get('status'),'a':actor,'d':json.dumps(details,ensure_ascii=False),'e':eid,'c':utcnow_iso()})
+        audit(engine,'IPIP_EVENT_ERROR',pr.get('action_id'),actor,'tool_prescription',pr.get('id'),details)
+        return {'replayed':False,'event_id':eid}
+    if typ=='TERMINE':
+        docs=payload.get('documents') or []
+        if not docs: raise ValueError('Rapport IPIP absent de l’événement TERMINE.')
+        doc=docs[0]
+        root=Path(str(data_root or '')).resolve()
+        ref=str(doc.get('storage_ref') or '').strip()
+        if not ref: raise ValueError('Référence rapport IPIP absente.')
+        p=(root/ref).resolve()
+        if root not in p.parents and p!=root: raise ValueError('Référence rapport IPIP hors racine autorisée.')
+        if not p.is_file(): raise ValueError('Rapport IPIP introuvable sur le stockage persistant.')
+        data=p.read_bytes(); digest=hashlib.sha256(data).hexdigest()
+        if str(doc.get('sha256') or '').lower()!=digest.lower(): raise ValueError('SHA-256 du rapport IPIP incohérent.')
+        if int(doc.get('size_bytes') or len(data))!=len(data): raise ValueError('Taille du rapport IPIP incohérente.')
+        archive_ipip_report_pdf(engine,pr['prescription_id'],data,display_name=doc.get('file_name'),source_event_id=eid,source_reference=ref,actor=actor)
+    update_tool_prescription_status(engine,pr['prescription_id'],typ,actor,details,event_id=eid)
+    refs=_json_load(pr.get('result_refs_json'),[])
+    ref={'source':'IPIP_RC1','passation_id':payload.get('passation_id'),'app_version':payload.get('app_version')}
+    if ref not in refs and (ref['passation_id'] or ref['app_version']):
+        refs.append(ref)
+        execute(engine,'UPDATE tool_prescriptions SET result_refs_json=:r,updated_at=:u WHERE prescription_id=:p',
+          {'r':json.dumps(refs,ensure_ascii=False),'u':utcnow_iso(),'p':pr['prescription_id']})
+    return {'replayed':False,'event_id':eid}
+
+
+def consume_ipip_outbox(engine, pending_dir, data_root, limit=200, actor='worker'):
+    folder=Path(str(pending_dir or '')).expanduser()
+    if not folder.is_dir(): return {'processed':0,'ignored':0,'errors':0}
+    delivered=folder.parent/'delivered'; delivered.mkdir(parents=True,exist_ok=True)
+    processed=ignored=errors=0
+    for p in sorted(folder.glob('*.json'))[:max(0,int(limit))]:
+        try:
+            event=json.loads(p.read_text(encoding='utf-8'))
+            result=process_ipip_accompaniment_event(engine,event,data_root,actor=actor)
+            if result.get('replayed'): ignored+=1
+            else: processed+=1
+            target=delivered/p.name
+            if target.exists(): p.unlink(missing_ok=True)
+            else: p.replace(target)
+        except Exception as exc:
+            errors+=1
+            audit(engine,'IPIP_OUTBOX_EVENT_REJECTED',actor=actor,entity_type='connector',details={'file':p.name,'error':str(exc)[:500]})
+            break
+    return {'processed':processed,'ignored':ignored,'errors':errors}
+
+
+def refresh_ipip_connector_runtime_status(engine, signing_key=None, pending_dir=None, actor='system'):
+    key_ok=ipip_connector_configured(signing_key); outbox_ok=bool(str(pending_dir or '').strip())
+    status='CONNECTED' if key_ok and outbox_ok else ('LAUNCH_ONLY' if key_ok else 'NOT_CONFIGURED')
+    row=one(engine,"SELECT id,connector_status FROM tool_catalog WHERE tool_code='IPIP_NEO120'")
+    if row and row.get('connector_status')!=status:
+        execute(engine,"UPDATE tool_catalog SET connector_status=:s,updated_at=:u WHERE id=:i",{'s':status,'u':utcnow_iso(),'i':row['id']})
+        audit(engine,'IPIP_CONNECTOR_STATUS_CHANGED',actor=actor,entity_type='tool_catalog',entity_id=row['id'],details={'status':status})
+    return status
+
+
 # ---- V3 I9-E: adaptateur PIP RC5 ------------------------------------------
 def pip_connector_configured(signing_key):
     return bool(signing_key and len(str(signing_key).strip()) >= 24)
