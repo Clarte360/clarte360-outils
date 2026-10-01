@@ -1,7 +1,7 @@
 {
   "tool_id": "ipip-neo120",
   "app_name": "Clarte360 - Profil de fonctionnement professionnel (base IPIP)",
-  "app_version": "0.6.0-jalon-f",
+  "app_version": "0.7.0-rc1",
   "production_url": "https://ipip-neo120.clarte360.com",
   "deployment_status": "reserved_not_deployed",
   "hub_compatible": true,
