@@ -33,3 +33,12 @@ def test_download_and_ga_document_use_human_filename():
     src=(BASE/'app.py').read_text(encoding='utf-8')
     assert src.count('beneficiary_report_filename(') >= 3
     assert 'display_file_name=report_name' in src
+
+
+def test_feedback_over_under_use_domains_only():
+    src=(BASE/'app.py').read_text(encoding='utf-8')
+    assert "domain_choices=['']+[x['display_fr'] for x in interp['domains']]" in src
+    assert "facet_choices=" not in src
+    assert 'Une grande dimension vous paraît-elle plus marquée que dans votre ressenti ? (facultatif)' in src
+    assert 'Une grande dimension vous paraît-elle moins marquée que dans votre ressenti ? (facultatif)' in src
+    assert "format_func=lambda x:'Aucun' if x=='' else x" in src
