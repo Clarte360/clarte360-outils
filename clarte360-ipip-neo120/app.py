@@ -205,7 +205,7 @@ if st.session_state.stage=='feedback':
             fb={'global':global_r,'dominants':dominant,'nuances':nuances,'useful':useful,'over':over,'under':under,'dialogue':dialogue,'free':free}
             save_feedback(PERSISTENT_DATA_DIR,st.session_state.run_id,fb)
             report=PERSISTENT_DATA_DIR/'reports'/f'{st.session_state.run_id}_v1.pdf'
-            sha=generate_report(report,interpretation=interp,feedback=fb,app_version=APP_VERSION,reference_version=q.version,interpretation_version=iref.version,beneficiary_identity={'first_name': c.beneficiary_first_name, 'last_name': c.beneficiary_last_name},logo_path=LOGO_PATH)
+            sha=generate_report(report,interpretation=interp,feedback=fb,app_version=APP_VERSION,reference_version=q.version,interpretation_version=iref.version,beneficiary_identity={'first_name': c.beneficiary_first_name, 'last_name': c.beneficiary_last_name},action_context={'number': c.action_number, 'title': c.action_title},logo_path=LOGO_PATH)
             mark_completed(PERSISTENT_DATA_DIR,st.session_state.run_id,report_path=str(report),report_sha256=sha,report_version=APP_VERSION)
             report_name=beneficiary_report_filename(c.beneficiary_first_name,c.beneficiary_last_name)
             doc=report_document_ref(PERSISTENT_DATA_DIR,st.session_state.run_id,prescription_id=c.prescription_id,display_file_name=report_name)
