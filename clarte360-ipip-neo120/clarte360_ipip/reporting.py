@@ -80,7 +80,7 @@ def beneficiary_report_filename(first_name: str | None, last_name: str | None) -
     identity = f"{initial}_{last}" if last else initial
     return f"{identity}_IPIP_NEO120_Profil_fonctionnement_professionnel.pdf"
 
-def generate_report(path:Path, *, interpretation:dict[str,Any], feedback:dict[str,Any], app_version:str, reference_version:str, interpretation_version:str, beneficiary_identity:dict[str,Any]|None=None, report_date:str|None=None, logo_path:Path|None=None)->str:
+def generate_report(path:Path, *, interpretation:dict[str,Any], feedback:dict[str,Any], app_version:str, reference_version:str, interpretation_version:str, beneficiary_identity:dict[str,Any]|None=None, action_context:dict[str,Any]|None=None, report_date:str|None=None, logo_path:Path|None=None)->str:
     """Generate the final Clarté360 beneficiary report.
 
     Identity is optional and must only be supplied by the authorised ACCOMPAGNEMENT
@@ -90,6 +90,8 @@ def generate_report(path:Path, *, interpretation:dict[str,Any], feedback:dict[st
     path.parent.mkdir(parents=True,exist_ok=True)
     report_date=report_date or datetime.now(timezone.utc).date().isoformat()
     identity=_safe_identity(beneficiary_identity)
+    action_number=str((action_context or {}).get('number') or '').strip()
+    action_title=str((action_context or {}).get('title') or '').strip()
     styles=getSampleStyleSheet()
     styles.add(ParagraphStyle(name='TitleC',parent=styles['Title'],fontName='Helvetica-Bold',fontSize=23,leading=27,textColor=TEAL,alignment=TA_CENTER,spaceAfter=8))
     styles.add(ParagraphStyle(name='H1C',parent=styles['Heading1'],fontName='Helvetica-Bold',fontSize=15,leading=18,textColor=TEAL,spaceBefore=10,spaceAfter=7))
@@ -107,6 +109,9 @@ def generate_report(path:Path, *, interpretation:dict[str,Any], feedback:dict[st
     story += [Paragraph('Clarté360',styles['TitleC']),Paragraph('Profil de fonctionnement professionnel',ParagraphStyle(name='Sub',parent=styles['BodyC'],fontSize=16,leading=20,alignment=TA_CENTER,textColor=DARK)),Spacer(1,.18*cm),Paragraph('Explorer mes tendances de fonctionnement',ParagraphStyle(name='Tag',parent=styles['SmallC'],fontSize=10,leading=13,alignment=TA_CENTER,textColor=TEAL)),Spacer(1,.38*cm)]
     meta=[]
     if identity: meta.append(f'<b>Bénéficiaire :</b> {_esc(identity)}')
+    if action_number or action_title:
+        action_label=' — '.join(x for x in (action_number,action_title) if x)
+        meta.append(f'<b>Action :</b> {_esc(action_label)}')
     meta += [f'<b>Date du rapport :</b> {_esc(report_date)}',f'<b>Version application :</b> {_esc(app_version)}',f'<b>Référentiel :</b> {_esc(reference_version)}']
     story += [Paragraph('<br/>'.join(meta),styles['CoverMeta']),Spacer(1,.45*cm)]
     notice=Table([[Paragraph('<b>Finalité et limites</b><br/>Cet outil explore des tendances de fonctionnement. Les résultats ne définissent pas la personne et ne constituent ni une évaluation clinique, ni un diagnostic psychologique ou psychiatrique. Ils doivent être mis en perspective avec l’expérience, les valeurs, les préférences, les motivations et le projet professionnel.',styles['BodyC'])]],colWidths=[17.2*cm])
