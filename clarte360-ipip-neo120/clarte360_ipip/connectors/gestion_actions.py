@@ -112,7 +112,7 @@ def prescription_status(root:Path,ctx:LaunchContext)->str:
     rid=validate_safe_id(d.get('run_id'),'run_id') or ''
     return 'TERMINE' if (root/'completed'/f'{rid}.json').exists() else 'EN_COURS'
 
-def report_document_ref(root:Path,run_id:str,*,prescription_id:str|None=None)->dict[str,Any]:
+def report_document_ref(root:Path,run_id:str,*,prescription_id:str|None=None,display_file_name:str|None=None)->dict[str,Any]:
     from clarte360_ipip.completion import load_completion
     rid=validate_safe_id(run_id,'run_id') or ''
     c=load_completion(root,rid)
@@ -130,7 +130,9 @@ def report_document_ref(root:Path,run_id:str,*,prescription_id:str|None=None)->d
         'report_id':hashlib.sha256((rid+':'+digest).encode()).hexdigest()[:32],
         'prescription_id':pid,
         'passation_id':rid,
-        'file_name':p.name,
+        'file_name':str(display_file_name or p.name),
+        'display_name':str(display_file_name or p.name),
+        'category_label':'IPIP NEO 120 — Profil de fonctionnement professionnel',
         'mime_type':'application/pdf',
         'sha256':digest,
         'size_bytes':len(content),

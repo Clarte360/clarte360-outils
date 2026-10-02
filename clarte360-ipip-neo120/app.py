@@ -9,7 +9,7 @@ from clarte360_ipip.questionnaire import load_progress, load_questionnaire, next
 from clarte360_ipip.scoring import score_questionnaire
 from clarte360_ipip.interpretation import load_interpretation, interpret_scoring
 from clarte360_ipip.feedback import SCALE, save_feedback, load_feedback
-from clarte360_ipip.reporting import generate_report
+from clarte360_ipip.reporting import generate_report, beneficiary_report_filename
 from clarte360_ipip.completion import is_completed, mark_completed, load_completion
 from clarte360_ipip.version import APP_VERSION
 from clarte360_ipip.connectors.gestion_actions import GestionActionsPort, LaunchTokenError, bind_prescription, prescription_status, report_document_ref, require_scope
@@ -26,7 +26,7 @@ st.set_page_config(page_title=APP_SHORT_NAME,page_icon=str(SITE_ICON_PATH) if SI
 apply_framework_css()
 q=load_questionnaire(RESOURCES_DIR/'ipip'/'REFERENTIEL_MAITRE_IPIP_NEO120_FR_V1_0.json')
 iref=load_interpretation(RESOURCES_DIR/'ipip'/'REFERENTIEL_INTERPRETATION_CLARTE360_IPIP_NEO120_V1_0.json')
-for k,v in {'run_id':uuid.uuid4().hex,'answers':{},'current_item':1,'started':False,'stage':'questionnaire','launch_ctx':None}.items(): st.session_state.setdefault(k,v)
+for k,v in {'run_id':uuid.uuid4().hex,'answers':{},'current_item':1,'started':False,'stage':'questionnaire','launch_ctx':None,'feedback_draft':{}}.items(): st.session_state.setdefault(k,v)
 initialize_session()
 
 # ACCOMPAGNEMENT: Gestion des Actions is the source of truth. The beneficiary never handles a JSON save.
@@ -120,7 +120,9 @@ if is_completed(PERSISTENT_DATA_DIR,st.session_state.run_id):
     require_scope(ctx,'IPIP_RESULT_READ')
     comp=load_completion(PERSISTENT_DATA_DIR,st.session_state.run_id); report=Path(comp['report_path'])
     st.success('Cette passation est terminée et verrouillée. Les réponses ne peuvent plus être modifiées.')
-    if report.exists(): st.download_button('Télécharger mon rapport PDF',report.read_bytes(),file_name='Clarte360_Profil_fonctionnement.pdf',mime='application/pdf',use_container_width=True)
+    if report.exists():
+        report_name=beneficiary_report_filename(ctx.beneficiary_first_name,ctx.beneficiary_last_name)
+        st.download_button('Télécharger mon rapport PDF',report.read_bytes(),file_name=report_name,mime='application/pdf',use_container_width=True)
     st.stop()
 
 if not st.session_state.started:
@@ -156,27 +158,42 @@ if st.session_state.stage=='questionnaire':
             else:
                 persist(); score_and_interpret(); st.session_state.stage='results'; st.rerun()
 
-if st.session_state.stage=='results':
+if st.session_state.stage in {'results','feedback_results'}:
     _,interp=load_result_files()
     if not interp:
         _,interp=score_and_interpret()
+    if st.session_state.stage=='feedback_results':
+        st.info('Vous consultez vos résultats pendant le questionnaire de ressenti. Vos réponses déjà saisies sont conservées.')
     render_results(interp)
-    if st.button('Continuer vers mon ressenti',type='primary',use_container_width=True): st.session_state.stage='feedback'; touch_activity('feedback'); st.rerun()
+    if st.session_state.stage=='feedback_results':
+        if st.button('← Retour à mon ressenti',type='primary',use_container_width=True):
+            st.session_state.stage='feedback'; touch_activity('feedback_return'); st.rerun()
+    elif st.button('Continuer vers mon ressenti',type='primary',use_container_width=True):
+        st.session_state.stage='feedback'; touch_activity('feedback'); st.rerun()
 
 if st.session_state.stage=='feedback':
     _,interp=load_result_files()
     st.header('Mon ressenti sur mes résultats')
     st.write('Ces réponses ne modifient **jamais** votre score. Elles servent à préparer le dialogue avec votre accompagnateur.')
+    draft=st.session_state.get('feedback_draft',{})
     opts=list(SCALE)
-    global_r=st.radio('Dans quelle mesure le profil présenté vous ressemble-t-il ?',opts,index=None,format_func=lambda x:SCALE[x])
-    dominant=st.radio('Les dimensions et facettes qui ressortent le plus correspondent-elles à votre perception de votre fonctionnement ?',opts,index=None,format_func=lambda x:SCALE[x])
-    nuances=st.radio('Le rapport rend-il suffisamment compte des nuances et contrastes de votre façon de fonctionner ?',opts,index=None,format_func=lambda x:SCALE[x])
-    useful=st.radio('Ces résultats vous aident-ils à mieux comprendre votre fonctionnement dans un contexte professionnel ?',opts,index=None,format_func=lambda x:SCALE[x])
+    def idx(key, choices):
+        value=draft.get(key)
+        return choices.index(value) if value in choices else None
+    global_r=st.radio('Dans quelle mesure le profil présenté vous ressemble-t-il ?',opts,index=idx('global',opts),format_func=lambda x:SCALE[x])
+    dominant=st.radio('Les dimensions et facettes qui ressortent le plus correspondent-elles à votre perception de votre fonctionnement ?',opts,index=idx('dominants',opts),format_func=lambda x:SCALE[x])
+    nuances=st.radio('Le rapport rend-il suffisamment compte des nuances et contrastes de votre façon de fonctionner ?',opts,index=idx('nuances',opts),format_func=lambda x:SCALE[x])
+    useful=st.radio('Ces résultats vous aident-ils à mieux comprendre votre fonctionnement dans un contexte professionnel ?',opts,index=idx('useful',opts),format_func=lambda x:SCALE[x])
     facet_choices=['']+[f"{x['code']} — {x['display_fr']}" for x in interp['facets']]
-    over=st.selectbox('Un domaine ou une facette vous paraît-il présenté comme plus marqué que dans votre ressenti ? (facultatif)',facet_choices)
-    under=st.selectbox('Un domaine ou une facette vous paraît-il présenté comme moins marqué que dans votre ressenti ? (facultatif)',facet_choices)
-    dialogue=st.radio('Souhaitez-vous approfondir certains éléments avec votre accompagnateur ?', ['oui','non'],index=None,format_func=lambda x:'Oui' if x=='oui' else 'Non')
-    free=st.text_area('Qu’aimeriez-vous retenir, nuancer ou approfondir à partir de ce profil ? (facultatif)',max_chars=4000)
+    over=st.selectbox('Un domaine ou une facette vous paraît-il présenté comme plus marqué que dans votre ressenti ? (facultatif)',facet_choices,index=facet_choices.index(draft.get('over','')) if draft.get('over','') in facet_choices else 0)
+    under=st.selectbox('Un domaine ou une facette vous paraît-il présenté comme moins marqué que dans votre ressenti ? (facultatif)',facet_choices,index=facet_choices.index(draft.get('under','')) if draft.get('under','') in facet_choices else 0)
+    dialogue_choices=['oui','non']
+    dialogue=st.radio('Souhaitez-vous approfondir certains éléments avec votre accompagnateur ?',dialogue_choices,index=idx('dialogue',dialogue_choices),format_func=lambda x:'Oui' if x=='oui' else 'Non')
+    free=st.text_area('Qu’aimeriez-vous retenir, nuancer ou approfondir à partir de ce profil ? (facultatif)',value=draft.get('free',''),max_chars=4000)
+    current_draft={'global':global_r,'dominants':dominant,'nuances':nuances,'useful':useful,'over':over,'under':under,'dialogue':dialogue,'free':free}
+    st.session_state.feedback_draft=current_draft
+    if st.button('Revoir mes résultats',use_container_width=True):
+        st.session_state.stage='feedback_results'; touch_activity('feedback_results'); st.rerun()
     if st.button('Valider mon ressenti et générer mon rapport',type='primary',use_container_width=True):
         if None in (global_r,dominant,nuances,useful,dialogue): st.error('Merci de répondre aux questions obligatoires avant de valider.')
         else:
@@ -190,7 +207,8 @@ if st.session_state.stage=='feedback':
             report=PERSISTENT_DATA_DIR/'reports'/f'{st.session_state.run_id}_v1.pdf'
             sha=generate_report(report,interpretation=interp,feedback=fb,app_version=APP_VERSION,reference_version=q.version,interpretation_version=iref.version,beneficiary_identity={'first_name': c.beneficiary_first_name, 'last_name': c.beneficiary_last_name},logo_path=LOGO_PATH)
             mark_completed(PERSISTENT_DATA_DIR,st.session_state.run_id,report_path=str(report),report_sha256=sha,report_version=APP_VERSION)
-            doc=report_document_ref(PERSISTENT_DATA_DIR,st.session_state.run_id,prescription_id=c.prescription_id)
+            report_name=beneficiary_report_filename(c.beneficiary_first_name,c.beneficiary_last_name)
+            doc=report_document_ref(PERSISTENT_DATA_DIR,st.session_state.run_id,prescription_id=c.prescription_id,display_file_name=report_name)
             require_scope(c,'IPIP_STATUS')
             ga.publish_event('TERMINE',{'beneficiary_id':c.beneficiary_id,'action_id':c.action_id,'prescription_id':c.prescription_id,'participant_id':c.participant_id,'passation_id':st.session_state.run_id,'status':'TERMINE','documents':[doc],'reference_version':q.version,'interpretation_version':iref.version,'app_version':APP_VERSION})
             st.session_state.stage='completed'; st.rerun()
@@ -200,4 +218,6 @@ if st.session_state.stage=='completed':
     comp=load_completion(PERSISTENT_DATA_DIR,st.session_state.run_id); report=Path(comp['report_path'])
     st.success('Votre passation est terminée. Elle est désormais verrouillée en écriture.')
     st.write('Vous pouvez consulter ou télécharger votre rapport. Pour effectuer une nouvelle passation en mode accompagnement, une nouvelle prescription devra être créée par votre accompagnateur.')
-    if report.exists(): st.download_button('Télécharger mon rapport PDF',report.read_bytes(),file_name='Clarte360_Profil_fonctionnement.pdf',mime='application/pdf',use_container_width=True)
+    if report.exists():
+        report_name=beneficiary_report_filename(ctx.beneficiary_first_name,ctx.beneficiary_last_name)
+        st.download_button('Télécharger mon rapport PDF',report.read_bytes(),file_name=report_name,mime='application/pdf',use_container_width=True)

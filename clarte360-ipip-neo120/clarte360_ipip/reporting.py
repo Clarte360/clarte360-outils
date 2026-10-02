@@ -1,5 +1,6 @@
 from __future__ import annotations
 import hashlib
+import re, unicodedata
 from pathlib import Path
 from typing import Any
 from reportlab.lib import colors
@@ -65,6 +66,19 @@ def _footer_factory(*,app_version:str,reference_version:str):
         c.drawRightString(A4[0]-1.5*cm,.75*cm,f'Page {doc.page}')
         c.restoreState()
     return footer
+
+
+def beneficiary_report_filename(first_name: str | None, last_name: str | None) -> str:
+    """Return a readable, filesystem-safe beneficiary PDF name."""
+    def clean(value: str) -> str:
+        value = unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode("ascii")
+        value = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_")
+        return value.upper()
+    first = clean(first_name or "")
+    last = clean(last_name or "")
+    initial = first[:1] or "BENEFICIAIRE"
+    identity = f"{initial}_{last}" if last else initial
+    return f"{identity}_IPIP_NEO120_Profil_fonctionnement_professionnel.pdf"
 
 def generate_report(path:Path, *, interpretation:dict[str,Any], feedback:dict[str,Any], app_version:str, reference_version:str, interpretation_version:str, beneficiary_identity:dict[str,Any]|None=None, report_date:str|None=None, logo_path:Path|None=None)->str:
     """Generate the final Clarté360 beneficiary report.

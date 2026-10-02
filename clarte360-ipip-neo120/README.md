@@ -44,3 +44,9 @@ Audit et renforcement du contrat ACCOMPAGNEMENT côté IPIP : scopes explicites,
 
 ## J7 — Audit final RC2
 Audit final CDC V1.6 / Framework V5 / Addendum V4.1, campagne intégrale et prévalidation des scopes de clôture avant toute mutation. La RC2 reste à soumettre à la recette utilisateur avant déploiement.
+
+## RC3 — recette finale (2026-10-02)
+- Le questionnaire de ressenti permet de revoir les résultats puis de revenir au ressenti sans perdre les saisies en cours.
+- Le téléchargement du rapport utilise un nom lisible : initiale du prénom + nom + IPIP NEO120 + intitulé du rapport.
+- La référence documentaire envoyée à Gestion des Actions conserve un `storage_ref` technique, mais expose un `file_name` / `display_name` humain et un libellé de catégorie lisible.
+- Aucun changement du référentiel IPIP, du scoring, des inversions, de l'interprétation ou de la décision O6.

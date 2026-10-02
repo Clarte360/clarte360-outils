@@ -15,7 +15,7 @@ def test_app_identity_matches_config():
     assert d["internal_port"] == INTERNAL_PORT
     assert d["production_url"] == PRODUCTION_URL
     assert d["service_name"] == SERVICE_NAME
-    assert d["deployment_status"] == "reserved_not_deployed"
+    assert d["deployment_status"] == "deployed_recipe"
 
 def test_no_secret_in_identity():
     t=Path("config/app_identity.json").read_text(encoding="utf-8").lower()

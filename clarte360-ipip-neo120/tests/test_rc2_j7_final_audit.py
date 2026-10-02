@@ -12,4 +12,4 @@ def test_completion_scopes_are_checked_before_feedback_and_completion_mutations(
 
 def test_j7_build_increment_is_declared():
     src = Path("clarte360_ipip/version.py").read_text(encoding="utf-8")
-    assert 'BUILD_INCREMENT = "RC2-J7"' in src
+    assert 'BUILD_INCREMENT = "RC3-RECETTE-FINALE"' in src

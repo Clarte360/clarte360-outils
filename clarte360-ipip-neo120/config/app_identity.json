@@ -1,9 +1,9 @@
 {
   "tool_id": "ipip-neo120",
   "app_name": "Clarté360 - Profil de fonctionnement professionnel",
-  "app_version": "0.8.0-rc2",
+  "app_version": "0.8.0-rc3",
   "production_url": "https://ipip-neo120.clarte360.com",
-  "deployment_status": "reserved_not_deployed",
+  "deployment_status": "deployed_recipe",
   "hub_compatible": true,
   "hub_source": "GESTION_ACTIONS_I9_H1",
   "launch_modes": ["ACCOMPAGNEMENT"],

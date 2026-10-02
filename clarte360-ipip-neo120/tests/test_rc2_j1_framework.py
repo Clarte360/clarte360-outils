@@ -30,7 +30,7 @@ def test_official_logo_and_icon_are_packaged():
 
 def test_identity_and_version_are_rc2_consistent():
     identity = load_app_identity()
-    assert APP_VERSION == "0.8.0-rc2"
+    assert APP_VERSION == "0.8.0-rc3"
     assert identity["app_version"] == APP_VERSION
     assert identity["tool_id"] == TOOL_ID == "ipip-neo120"
     assert identity["production_url"] == PRODUCTION_URL == "https://ipip-neo120.clarte360.com"

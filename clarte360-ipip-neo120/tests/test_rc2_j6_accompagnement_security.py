@@ -92,7 +92,7 @@ def test_app_enforces_resume_status_and_result_scopes():
     assert "require_scope(ctx,'IPIP_STATUS')" in src
     assert "require_scope(c,'IPIP_STATUS')" in src
     assert "require_scope(c,'IPIP_RESULT_READ')" in src
-    assert "report_document_ref(PERSISTENT_DATA_DIR,st.session_state.run_id,prescription_id=c.prescription_id)" in src
+    assert "report_document_ref(PERSISTENT_DATA_DIR,st.session_state.run_id,prescription_id=c.prescription_id,display_file_name=report_name)" in src
 
 def test_only_launch_token_is_read_from_query_string():
     src=Path('app.py').read_text(encoding='utf-8')
