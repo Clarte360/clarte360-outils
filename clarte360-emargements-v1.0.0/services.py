@@ -3158,7 +3158,7 @@ def ipip_connector_configured(signing_key):
 
 
 def build_ipip_prescription_launch(engine, prescription_id, signing_key, valid_seconds=900):
-    """Build the signed IPIP launch URL without civil identity in the token."""
+    """Build the signed IPIP launch URL with the beneficiary/action context required by the report."""
     if not ipip_connector_configured(signing_key):
         raise ValueError('Secret IPIP Clarté360 non configuré.')
     row=one(engine,"""SELECT tp.*,tc.base_url,tc.launch_type,tc.connector_code,tc.connector_status
@@ -3171,6 +3171,8 @@ def build_ipip_prescription_launch(engine, prescription_id, signing_key, valid_s
     if str(row.get('status') or '').upper()=='TERMINE':
         raise ValueError('Cette passation IPIP-NEO-120 est terminée.')
     now=int(time.time()); ttl=max(60,min(int(valid_seconds or 900),3600))
+    beneficiary=one(engine,"SELECT first_name,last_name FROM beneficiaries WHERE id=:b",{'b':row['beneficiary_id']}) or {}
+    action=one(engine,"SELECT action_no,title FROM actions WHERE id=:a",{'a':row['action_id']}) or {}
     payload={
       'v':1,'iat':now,'exp':now+ttl,
       'beneficiary_id':str(row['beneficiary_id']),
@@ -3179,6 +3181,10 @@ def build_ipip_prescription_launch(engine, prescription_id, signing_key, valid_s
       'tool_id':'ipip-neo120',
       'hub_source':'GESTION_ACTIONS_I9_H1',
       'scopes':['IPIP_RUN','IPIP_RESUME','IPIP_STATUS','IPIP_RESULT_READ'],
+      'beneficiary_first_name':str(beneficiary.get('first_name') or '').strip(),
+      'beneficiary_last_name':str(beneficiary.get('last_name') or '').strip(),
+      'action_number':str(action.get('action_no') or '').strip(),
+      'action_title':str(action.get('title') or '').strip(),
     }
     if row.get('participant_id') is not None:
         payload['participant_id']=str(row.get('participant_id'))
