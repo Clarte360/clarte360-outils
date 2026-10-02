@@ -25,8 +25,8 @@ def test_registry_contains_ipip_rc1():
     assert row["prescription_allowed"] is True
 
 
-def test_ipip_launch_token_contract_has_no_civil_identity(monkeypatch):
-    row = {
+def test_ipip_launch_token_contract_includes_report_identity_and_action_context(monkeypatch):
+    prescription = {
         "tool_code": "IPIP_NEO120",
         "status": "EN_COURS",
         "base_url": "https://ipip-neo120.clarte360.com",
@@ -35,7 +35,19 @@ def test_ipip_launch_token_contract_has_no_civil_identity(monkeypatch):
         "participant_id": 56,
         "prescription_id": "PR-IPIP-1",
     }
-    monkeypatch.setattr(services, "one", lambda *a, **k: row)
+    beneficiary = {"first_name": "Dominique", "last_name": "Briet"}
+    action = {"action_no": "CLA0003", "title": "Bilan de compétences ESSAI"}
+
+    def fake_one(engine, sql, params=None):
+        if "FROM tool_prescriptions" in sql:
+            return prescription
+        if "FROM beneficiaries" in sql:
+            return beneficiary
+        if "FROM actions" in sql:
+            return action
+        return None
+
+    monkeypatch.setattr(services, "one", fake_one)
     url = services.build_ipip_prescription_launch(None, "PR-IPIP-1", KEY, valid_seconds=900)
     parsed = urlparse(url)
     qs = parse_qs(parsed.query)
@@ -49,15 +61,15 @@ def test_ipip_launch_token_contract_has_no_civil_identity(monkeypatch):
     assert payload["action_id"] == "34"
     assert payload["participant_id"] == "56"
     assert payload["prescription_id"] == "PR-IPIP-1"
-    assert "beneficiary" not in payload
+    assert payload["beneficiary_first_name"] == "Dominique"
+    assert payload["beneficiary_last_name"] == "Briet"
+    assert payload["action_number"] == "CLA0003"
+    assert payload["action_title"] == "Bilan de compétences ESSAI"
     assert "email" not in json.dumps(payload).lower()
-    assert "first_name" not in payload
-    assert "last_name" not in payload
     pp, sp = token.split(".", 1)
     expected = hmac.new(KEY.encode(), pp.encode("ascii"), hashlib.sha256).digest()
     supplied = base64.urlsafe_b64decode(sp + "=" * (-len(sp) % 4))
     assert hmac.compare_digest(expected, supplied)
-
 
 def test_ipip_termine_requires_report(monkeypatch, tmp_path):
     pr = {
