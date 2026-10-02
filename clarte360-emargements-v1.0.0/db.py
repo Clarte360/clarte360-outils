@@ -1028,6 +1028,23 @@ def init_db(engine: Engine):
         for sql in post_migrations:
             try: c.execute(text(sql))
             except Exception: pass
+        # Intervenants RC2-2: identity is independent from the professional title.
+        for sql in [
+            "ALTER TABLE professional_persons ADD COLUMN first_name TEXT",
+            "ALTER TABLE professional_persons ADD COLUMN last_name TEXT",
+            "ALTER TABLE professional_persons ADD COLUMN display_name TEXT"
+        ]:
+            try: c.execute(text(sql))
+            except Exception: pass
+
+        # Backfill a neutral historical display name without guessing first/last name order.
+        c.execute(text("""UPDATE professional_persons SET display_name=(
+            SELECT t.full_name FROM trainers t WHERE t.id=professional_persons.trainer_id
+          ) WHERE (display_name IS NULL OR TRIM(display_name)='') AND trainer_id IS NOT NULL"""))
+        c.execute(text("""UPDATE professional_persons SET display_name=(
+            SELECT p.title FROM professional_profiles p WHERE p.professional_person_id=professional_persons.professional_person_id
+          ) WHERE (display_name IS NULL OR TRIM(display_name)='')"""))
+
         for sql in [
             "ALTER TABLE person_service_qualifications ADD COLUMN ai_rationale TEXT",
             "ALTER TABLE person_service_qualifications ADD COLUMN ai_missing_json TEXT",

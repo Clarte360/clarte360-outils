@@ -11,3 +11,7 @@ exports/*.pdf
 exports/*.zip
 *.log
 backups/
+data/professional_documents/
+data/trainer_reports/
+data/final_bundles/
+data/import_sources/

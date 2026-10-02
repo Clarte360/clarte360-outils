@@ -10,14 +10,12 @@ def test_unused_candidate_can_be_physically_deleted(tmp_path):
     assert delete_professional_if_unused(e,p,'admin') is True
     assert one(e,'SELECT * FROM professional_persons WHERE professional_person_id=:p',{'p':p}) is None
 
-def test_used_intervenant_is_inactivated_not_physically_deleted(tmp_path):
+def test_internal_dossier_data_do_not_block_physical_delete(tmp_path):
     e=eng(tmp_path); p=create_professional_intervenant(e,'Test Intervenant','intervenant@example.test',actor='admin')
     add_professional_experience(e,p,'Consultant',actor='admin')
-    assert professional_delete_dependencies(e,p)
-    try: delete_professional_if_unused(e,p,'admin'); assert False
-    except ValueError: pass
-    assert set_professional_active(e,p,False,'admin') is True
-    assert int(one(e,'SELECT active FROM professional_persons WHERE professional_person_id=:p',{'p':p})['active'])==0
+    assert professional_delete_dependencies(e,p)==[]
+    assert delete_professional_if_unused(e,p,'admin') is True
+    assert one(e,'SELECT * FROM professional_persons WHERE professional_person_id=:p',{'p':p}) is None
 
 def test_structured_row_update_and_delete(tmp_path):
     e=eng(tmp_path); p=create_professional_candidate(e,'Table Test','table@example.test',actor='admin')
@@ -29,7 +27,7 @@ def test_structured_row_update_and_delete(tmp_path):
 
 def test_rc21_version_and_live_table_ui():
     import branding
-    assert branding.APP_VERSION=='3.0.0-INTERVENANTS-RC2-1'
+    assert branding.APP_VERSION=='3.0.0-INTERVENANTS-RC2-2-1'
     src=open('app.py',encoding='utf-8').read()
     assert 'Gérer un dossier de la liste' in src
     assert 'Ouvrir / étudier' in src

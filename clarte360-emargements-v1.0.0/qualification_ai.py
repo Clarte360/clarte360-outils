@@ -85,7 +85,7 @@ def extract_document_text(path:str, extension:str='', max_chars:int=18000)->str:
     return ''
 
 
-GLOBAL_PROMPT_VERSION = 'dossier_professionnel_global_v2_1_20260930'
+GLOBAL_PROMPT_VERSION = 'dossier_professionnel_global_v2_2_20261001'
 
 DOSSIER_FACTS_SCHEMA = {
  'type':'object','additionalProperties':False,
@@ -143,7 +143,7 @@ GLOBAL_INSTRUCTIONS_FACTS = """Tu assistes un administrateur Clarté360 pour con
 Règles impératives :
 - L'IA propose uniquement ; l'humain décide.
 - Utilise exclusivement les faits présents dans les pièces. N'invente rien et ne déduis pas un diplôme, une compétence, une date, une habilitation ou une mission non démontrée.
-- Analyse aussi les images transmises (JPG/JPEG/PNG/WEBP) lorsqu'elles sont lisibles.
+- Analyse aussi les images transmises (JPG/JPEG/PNG/WEBP) et les PDF scannés transmis comme fichiers lorsqu'ils sont lisibles.
 - Conserve source_document_id dès qu'un fait provient d'une pièce identifiable.
 - Repère les incohérences d'identité entre la personne et les documents dans identity_alerts.
 - Une pièce à identité incohérente ne doit jamais devenir une preuve recevable.
@@ -158,6 +158,9 @@ Règles impératives :
 - Pour CHAQUE prestation, tu DOIS aussi retourner une proposition pour CHAQUE critère fourni. Un critère non démontré reste à proposed_level=0 avec une justification factuelle.
 - L'échelle est : 0 non démontré ; 1 sensibilisé/connaissances de base ; 2 capable avec accompagnement/expérience partielle ; 3 autonome ; 4 référent/expert capable d'accompagner d'autres intervenants.
 - Le niveau global reste prudent et cohérent avec les critères obligatoires et les preuves.
+- Un service_level=0 ne signifie PAS automatiquement « aucun rapprochement ». Si des preuves ou critères positifs existent mais qu'un critère obligatoire bloque le niveau global, explique explicitement « éléments repérés, niveau global bloqué » et indique le ou les critères bloquants dans missing_points.
+- Réserve la formulation « aucun élément / aucun rapprochement » aux cas où evidence est vide ET où tous les critères sont à proposed_level=0.
+- confidence mesure la confiance dans ton analyse et ta proposition, jamais un pourcentage d'adéquation de la personne à la prestation.
 - Utilise uniquement dossier_facts. N'invente aucun fait.
 - Pour chaque preuve, indique document_id si identifiable, criterion_ids concernés et identity_status.
 - Les pourcentages sont des indices de confiance dans la proposition, jamais une validation ni une note de valeur.
@@ -229,22 +232,66 @@ class GlobalDossierAIGateway(QualificationAIGateway):
         out['service_id']=int(service['service_id'])
         return out
 
+    @staticmethod
+    def _merge_facts(base, delta):
+        if not base: return delta
+        if not delta: return base
+        out={}
+        bp=base.get('profile') or {}; dp=delta.get('profile') or {}
+        out['profile']={
+          'title':dp.get('title') or bp.get('title'),
+          'summary':dp.get('summary') or bp.get('summary'),
+          'specialties':list(dict.fromkeys([*(bp.get('specialties') or []),*(dp.get('specialties') or [])]))
+        }
+        for key in ('experiences','education','certifications','languages'):
+            merged=[]; seen=set()
+            for item in [*(base.get(key) or []),*(delta.get(key) or [])]:
+                if not isinstance(item,dict): continue
+                identity={k:v for k,v in item.items() if k!='source_document_id'}
+                sig=json.dumps(identity,ensure_ascii=False,sort_keys=True,default=str).casefold()
+                if sig in seen:
+                    # Prefer the most recent source when the same logical fact is rediscovered.
+                    for i,old in enumerate(merged):
+                        oid={k:v for k,v in old.items() if k!='source_document_id'}
+                        if json.dumps(oid,ensure_ascii=False,sort_keys=True,default=str).casefold()==sig:
+                            merged[i]=item; break
+                    continue
+                seen.add(sig); merged.append(item)
+            out[key]=merged
+        for key in ('identity_alerts','missing_points'):
+            out[key]=list(dict.fromkeys([*(base.get(key) or []),*(delta.get(key) or [])]))
+        return out
+
     def analyze(self, payload:dict):
-        request_hash=hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
         clean_payload=dict(payload)
+        base_facts=clean_payload.pop('_base_facts',None)
+        request_hash=hashlib.sha256(json.dumps({'payload':clean_payload,'base_facts':base_facts},ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
         images=clean_payload.pop('document_images',[]) or []
+        files=clean_payload.pop('document_files',[]) or []
         services=list(clean_payload.pop('service_catalog',[]) or [])
         if not services:
             raise RuntimeError("Le catalogue des prestations est vide : l'analyse exhaustive ne peut pas être lancée.")
 
-        facts_payload=dict(clean_payload)
-        facts_content=[{'type':'input_text','text':json.dumps(facts_payload,ensure_ascii=False)}]
-        for img in images:
-            if img.get('data_url'):
-                facts_content.append({'type':'input_image','image_url':img['data_url']})
-                facts_content.append({'type':'input_text','text':f"Image document_id={img.get('document_id')} nom={img.get('name')} categorie={img.get('category')}"})
-        facts,usage=self._call_schema(GLOBAL_INSTRUCTIONS_FACTS,facts_content,'dossier_professionnel_faits',DOSSIER_FACTS_SCHEMA,6000)
-        usage_total=self._usage_add(None,usage)
+        # RC2-2 differential analysis: unchanged document fingerprints are not sent again.
+        has_delta=(base_facts is None) or bool(clean_payload.get('document_contents') or images or files or clean_payload.get('documents'))
+        usage_total=None
+        delta_facts=None
+        if has_delta:
+            facts_payload=dict(clean_payload)
+            facts_content=[{'type':'input_text','text':json.dumps(facts_payload,ensure_ascii=False)}]
+            for f in files:
+                if f.get('data_url'):
+                    facts_content.append({'type':'input_file','filename':f.get('name') or 'document.pdf','file_data':f['data_url'],'detail':'high'})
+                    facts_content.append({'type':'input_text','text':f"Fichier PDF document_id={f.get('document_id')} nom={f.get('name')} categorie={f.get('category')}"})
+            for img in images:
+                if img.get('data_url'):
+                    facts_content.append({'type':'input_image','image_url':img['data_url']})
+                    facts_content.append({'type':'input_text','text':f"Image document_id={img.get('document_id')} nom={img.get('name')} categorie={img.get('category')}"})
+            delta_facts,usage=self._call_schema(GLOBAL_INSTRUCTIONS_FACTS,facts_content,'dossier_professionnel_faits',DOSSIER_FACTS_SCHEMA,6000)
+            usage_total=self._usage_add(None,usage)
+        facts=self._merge_facts(base_facts,delta_facts)
+        if not facts:
+            raise RuntimeError("Aucune base factuelle n'est disponible pour cette analyse.")
 
         service_candidates=[]
         batch_size=5

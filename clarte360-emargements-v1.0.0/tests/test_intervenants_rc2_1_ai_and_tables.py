@@ -97,10 +97,11 @@ def test_qualification_evidence_is_editable_and_removable(tmp_path):
 
 def test_rc21_ui_exposes_ai_benefit_and_management_actions():
     import branding
-    assert branding.APP_VERSION=='3.0.0-INTERVENANTS-RC2-1'
+    assert branding.APP_VERSION=='3.0.0-INTERVENANTS-RC2-2-1'
     src=open('app.py',encoding='utf-8').read()
     assert 'Résultat IA sur l’ensemble des prestations' in src
-    assert 'Aucun rapprochement' in src
+    assert 'Aucun élément repéré' in src
+    assert 'Éléments repérés — niveau global bloqué' in src
     assert 'Accepter les propositions IA de cette prestation' in src
     assert 'Retirer / supprimer cette preuve' in src
     assert 'La dernière tentative d\'analyse a échoué' in src

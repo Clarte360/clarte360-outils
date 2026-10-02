@@ -1,3 +1,27 @@
+## 3.0.0-INTERVENANTS-RC2-2-1 — 2026-10-01
+- Fusion contrôlée de RC2-2 avec les évolutions GitHub/VPS capturées dans RC2-1_1.
+- Ajout du connecteur IPIP-NEO-120 : registre, lancement signé, app bénéficiaire, services, outbox worker et archivage du rapport PDF.
+- Correction PIP : suppression de l'expiration métier arbitraire de 168 h dans le lancement spécialisé ; `TERMINE` bloque la même prescription.
+- IPIP applique la même règle de fin de passation.
+- Une nouvelle prescription PIP/IPIP est autorisée après une prescription antérieure `TERMINE`.
+- Garde-fou `EXTERNAL_SIGNED` étendu explicitement à PIP et IPIP uniquement.
+- Test historique RC7 adapté, sans suppression du garde-fou de cohérence.
+- 475/475 tests automatisés verts ; compilation Python OK.
+- Aucun fichier runtime (documents professionnels, signatures, secrets, bases) de RC2-1_1 n'est intégré.
+
+## 3.0.0-INTERVENANTS-RC2-2 — 2026-10-01
+- Intervenants / Partenaires devient une entrée de menu de premier niveau, juste au-dessus de Paramètres.
+- Identité professionnelle séparée du titre professionnel : prénom et nom modifiables sans altérer le profil métier.
+- Réinitialisation sécurisée d’un dossier professionnel après confirmation explicite et mot de passe administrateur ; identité, statut, activité, documents et affectations conservés.
+- Réanalyse IA différentielle fondée sur SHA-256 : documents inchangés non retransmis ; même nom + empreinte différente traité comme nouvelle version.
+- Anti-doublon sémantique lors de l’acceptation des expériences, diplômes/formations et certifications.
+- PDF scannés sans couche texte transmis comme `input_file` au modèle pour lecture multimodale.
+- Suppression physique d’un dossier inutilisé autorisée même s’il contient des données internes ; seules les dépendances métier externes bloquent la suppression.
+- Suppression de l’étape « Retenir pour instruction » : toutes les prestations actives sont directement disponibles dans Qualifications.
+- Correction de la lecture 0/4 : un niveau global 0 n’est plus affiché comme absence de rapprochement lorsqu’il existe des preuves ou critères positifs.
+- La décision humaine devient prioritaire dans la matrice Qualifications ; la proposition IA reste secondaire et historique.
+- Renforcement du `.gitignore` pour exclure les documents professionnels, signatures, imports persistants et bundles générés.
+
 ## 3.0.0-I9-J2C-PIP-LIAISON-I-CRM0-RC2 — 2026-09-19
 - CRM-0 : fiche plus compacte avec onglets Fiche / Notes & tâches / Actions liées / Timeline.
 - Ajout d’actions directes Ouvrir/Modifier et Supprimer sur la liste des contacts.
