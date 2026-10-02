@@ -22,10 +22,10 @@ def test_results_ui_no_streamlit_progress_bars():
 
 def test_report_contains_framework_sections_logo_and_limits(tmp_path):
     q,r,interp,fb=sample(); out=tmp_path/'report.pdf'
-    sha=generate_report(out,interpretation=interp,feedback=fb,app_version=APP_VERSION,reference_version=q.version,interpretation_version=r.version,beneficiary_identity={'first_name':'Camille','last_name':'Exemple'})
+    sha=generate_report(out,interpretation=interp,feedback=fb,app_version=APP_VERSION,reference_version=q.version,interpretation_version=r.version,beneficiary_identity={'first_name':'Camille','last_name':'Exemple'},action_context={'number':'CLA0003','title':'Bilan de compétences ESSAI'})
     assert len(sha)==64 and out.stat().st_size>12000
     text='\n'.join((p.extract_text() or '') for p in PdfReader(str(out)).pages)
-    for expected in ['Profil de fonctionnement professionnel','Camille Exemple','Vue d’ensemble','Lecture détaillée','À mettre en perspective avec mon parcours','Mon ressenti','Johnson','Ouverture aux conventions','diagnostic psychologique ou psychiatrique']:
+    for expected in ['Profil de fonctionnement professionnel','Camille Exemple','CLA0003','Bilan de compétences ESSAI','Vue d’ensemble','Lecture détaillée','À mettre en perspective avec mon parcours','Mon ressenti','Johnson','Ouverture aux conventions','diagnostic psychologique ou psychiatrique']:
         assert expected in text
 
 def test_report_values_match_interpretation(tmp_path):
