@@ -184,9 +184,9 @@ if st.session_state.stage=='feedback':
     dominant=st.radio('Les dimensions et facettes qui ressortent le plus correspondent-elles à votre perception de votre fonctionnement ?',opts,index=idx('dominants',opts),format_func=lambda x:SCALE[x])
     nuances=st.radio('Le rapport rend-il suffisamment compte des nuances et contrastes de votre façon de fonctionner ?',opts,index=idx('nuances',opts),format_func=lambda x:SCALE[x])
     useful=st.radio('Ces résultats vous aident-ils à mieux comprendre votre fonctionnement dans un contexte professionnel ?',opts,index=idx('useful',opts),format_func=lambda x:SCALE[x])
-    facet_choices=['']+[f"{x['code']} — {x['display_fr']}" for x in interp['facets']]
-    over=st.selectbox('Un domaine ou une facette vous paraît-il présenté comme plus marqué que dans votre ressenti ? (facultatif)',facet_choices,index=facet_choices.index(draft.get('over','')) if draft.get('over','') in facet_choices else 0)
-    under=st.selectbox('Un domaine ou une facette vous paraît-il présenté comme moins marqué que dans votre ressenti ? (facultatif)',facet_choices,index=facet_choices.index(draft.get('under','')) if draft.get('under','') in facet_choices else 0)
+    domain_choices=['']+[x['display_fr'] for x in interp['domains']]
+    over=st.selectbox('Une grande dimension vous paraît-elle plus marquée que dans votre ressenti ? (facultatif)',domain_choices,index=domain_choices.index(draft.get('over','')) if draft.get('over','') in domain_choices else 0,format_func=lambda x:'Aucun' if x=='' else x)
+    under=st.selectbox('Une grande dimension vous paraît-elle moins marquée que dans votre ressenti ? (facultatif)',domain_choices,index=domain_choices.index(draft.get('under','')) if draft.get('under','') in domain_choices else 0,format_func=lambda x:'Aucun' if x=='' else x)
     dialogue_choices=['oui','non']
     dialogue=st.radio('Souhaitez-vous approfondir certains éléments avec votre accompagnateur ?',dialogue_choices,index=idx('dialogue',dialogue_choices),format_func=lambda x:'Oui' if x=='oui' else 'Non')
     free=st.text_area('Qu’aimeriez-vous retenir, nuancer ou approfondir à partir de ce profil ? (facultatif)',value=draft.get('free',''),max_chars=4000)
