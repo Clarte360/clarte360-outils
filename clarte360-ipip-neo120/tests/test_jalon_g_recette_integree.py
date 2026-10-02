@@ -59,7 +59,7 @@ def test_full_prescription_lifecycle_restart_and_lock(tmp_path):
     sha=generate_report(report,interpretation=interp,feedback=fb,app_version='0.7.0-rc1',reference_version=q.version,interpretation_version=iref.version)
     assert report.read_bytes().startswith(b'%PDF') and sha==hashlib.sha256(report.read_bytes()).hexdigest()
     mark_completed(tmp_path,run,report_path=str(report),report_sha256=sha)
-    doc=report_document_ref(tmp_path,run)
+    doc=report_document_ref(tmp_path,run,prescription_id=ctx.prescription_id)
     ga.publish_event('TERMINE',{'beneficiary_id':ctx.beneficiary_id,'action_id':ctx.action_id,'prescription_id':ctx.prescription_id,'participant_id':ctx.participant_id,'passation_id':run,'status':'TERMINE','documents':[doc]})
 
     assert is_completed(tmp_path,run) and prescription_status(tmp_path,ctx2)=='TERMINE'
@@ -98,7 +98,7 @@ def test_crossing_and_bad_tokens_are_rejected(tmp_path):
 
 def test_termine_event_contains_no_raw_answers(tmp_path):
     ga=GestionActionsPort(KEY,tmp_path)
-    payload_event={'beneficiary_id':'BEN','action_id':'ACT','prescription_id':'PRESC','participant_id':'PART','passation_id':'RUN','status':'TERMINE','documents':[{'report_id':'R','file_name':'r.pdf','mime_type':'application/pdf','sha256':'0'*64,'size_bytes':123,'storage_ref':'reports/r.pdf'}]}
+    payload_event={'beneficiary_id':'BEN','action_id':'ACT','prescription_id':'PRESC','participant_id':'PART','passation_id':'RUN','status':'TERMINE','documents':[{'report_id':'R','prescription_id':'PRESC','passation_id':'RUN','file_name':'r.pdf','mime_type':'application/pdf','sha256':'0'*64,'size_bytes':123,'version':'1','created_at':'2026-10-02T00:00:00+00:00','storage_ref':'reports/r.pdf'}]}
     path=ga.publish_event('TERMINE',payload_event)
     env=json.loads(path.read_text())
     text=json.dumps(env)

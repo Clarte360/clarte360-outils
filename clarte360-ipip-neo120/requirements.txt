@@ -2,3 +2,5 @@ streamlit>=1.40
 pytest>=8.3
 
 reportlab>=4.2
+
+pypdf>=5.0

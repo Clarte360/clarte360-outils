@@ -24,7 +24,7 @@ def test_report_ref_checks_sha(tmp_path):
  rp=tmp_path/'reports'/'r.pdf'; rp.parent.mkdir(); rp.write_bytes(b'%PDF-test'); import hashlib
  mark_completed(tmp_path,'RUN-1',report_path=str(rp),report_sha256=hashlib.sha256(b'%PDF-test').hexdigest()); ref=report_document_ref(tmp_path,'RUN-1'); assert ref['mime_type']=='application/pdf' and ref['size_bytes']==9 and len(ref['sha256'])==64
 def test_no_raw_answers_in_connector_source():
- src=Path('clarte360_ipip/connectors/gestion_actions.py').read_text(); assert "'answers'" not in src and 'LAUNCH_SIGNING_KEY = "<secret' not in src
+ src=Path('clarte360_ipip/connectors/gestion_actions.py').read_text(); assert '_contains_forbidden_raw_data' in src and 'LAUNCH_SIGNING_KEY = "<secret' not in src
 def test_app_requires_signed_launch_and_publishes_lifecycle():
     src=Path('app.py').read_text(encoding='utf-8')
     assert "st.query_params.get('launch'" in src

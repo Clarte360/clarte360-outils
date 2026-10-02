@@ -14,6 +14,13 @@ ALLOWED_EVENT_TYPES={'CONSULTE','EN_COURS','TERMINE','ERREUR'}
 
 class LaunchTokenError(ValueError): pass
 
+def require_scope(ctx:'LaunchContext', scope:str)->None:
+    if scope not in ALLOWED_SCOPES:
+        raise LaunchTokenError('Droit IPIP inconnu.')
+    if scope not in ctx.scopes:
+        raise LaunchTokenError(f'Le lien de lancement ne contient pas le droit requis : {scope}.')
+
+
 def _b64url_decode(v:str)->bytes:
     try: return base64.urlsafe_b64decode((v+'='*(-len(v)%4)).encode('ascii'))
     except Exception as exc: raise LaunchTokenError('Jeton de lancement illisible.') from exc
@@ -49,7 +56,7 @@ def verify_launch_token(token:str, signing_key:str, now_epoch:int|None=None)->La
         if tool!=TOOL_ID: raise ValidationError('Ce lien de lancement est destiné à un autre outil.')
         hub=str(payload.get('hub_source') or 'GESTION_ACTIONS_I9')
         if hub not in {'GESTION_ACTIONS_I9','GESTION_ACTIONS_I9_H1'}: raise ValidationError('Source Hub du jeton non reconnue.')
-        scopes=validate_string_list(payload.get('scopes',payload.get('rights',[])),'Droits/scopes',allowed=ALLOWED_SCOPES,max_items=10)
+        scopes=validate_string_list(payload.get('scopes'),'Droits/scopes',allowed=ALLOWED_SCOPES,max_items=10)
         if 'IPIP_RUN' not in scopes: raise ValidationError('Le jeton ne contient pas le droit IPIP_RUN.')
         return LaunchContext(
             validate_safe_id(payload.get('beneficiary_id'),'beneficiary_id') or '',
@@ -77,27 +84,87 @@ def _outbox_root(root:Path|None=None): return (root or PERSISTENT_DATA_DIR)/'con
 def bind_prescription(root:Path,ctx:LaunchContext,run_id:str)->str:
     rid=validate_safe_id(run_id,'run_id') or ''
     folder=root/'prescriptions'; folder.mkdir(parents=True,exist_ok=True); p=folder/f'{ctx.prescription_id}.json'
-    existing=json.loads(p.read_text(encoding='utf-8')) if p.exists() else None
-    if existing:
-        for k,v in [('beneficiary_id',ctx.beneficiary_id),('action_id',ctx.action_id),('participant_id',ctx.participant_id)]:
-            if existing.get(k)!=v: raise LaunchTokenError('Cette prescription est déjà liée à un autre contexte bénéficiaire/action.')
+    if p.exists():
+        try:
+            existing=json.loads(p.read_text(encoding='utf-8'))
+        except (OSError,json.JSONDecodeError) as exc:
+            raise LaunchTokenError('Liaison de prescription illisible.') from exc
+        _validate_bound_context(existing,ctx)
         return validate_safe_id(existing.get('run_id'),'run_id') or ''
     _atomic_json(p,{'schema':'clarte360.ipipneo.prescription.v1','prescription_id':ctx.prescription_id,'beneficiary_id':ctx.beneficiary_id,'action_id':ctx.action_id,'participant_id':ctx.participant_id,'run_id':rid,'created_at':_utcnow()})
     return rid
 
+def _validate_bound_context(binding:Mapping[str,Any],ctx:LaunchContext)->None:
+    if binding.get('schema')!='clarte360.ipipneo.prescription.v1':
+        raise LaunchTokenError('Liaison de prescription invalide.')
+    for k,v in [('beneficiary_id',ctx.beneficiary_id),('action_id',ctx.action_id),('participant_id',ctx.participant_id),('prescription_id',ctx.prescription_id)]:
+        if binding.get(k)!=v:
+            raise LaunchTokenError('Cette prescription est liée à un autre contexte bénéficiaire/action.')
+
 def prescription_status(root:Path,ctx:LaunchContext)->str:
     p=root/'prescriptions'/f'{ctx.prescription_id}.json'
     if not p.exists(): return 'NOUVEAU'
-    d=json.loads(p.read_text(encoding='utf-8')); rid=d['run_id']
+    try:
+        d=json.loads(p.read_text(encoding='utf-8'))
+    except (OSError,json.JSONDecodeError) as exc:
+        raise LaunchTokenError('Liaison de prescription illisible.') from exc
+    _validate_bound_context(d,ctx)
+    rid=validate_safe_id(d.get('run_id'),'run_id') or ''
     return 'TERMINE' if (root/'completed'/f'{rid}.json').exists() else 'EN_COURS'
 
-def report_document_ref(root:Path,run_id:str)->dict[str,Any]:
+def report_document_ref(root:Path,run_id:str,*,prescription_id:str|None=None)->dict[str,Any]:
     from clarte360_ipip.completion import load_completion
-    c=load_completion(root,run_id)
+    rid=validate_safe_id(run_id,'run_id') or ''
+    c=load_completion(root,rid)
     if not c: raise ValueError('Passation non terminée.')
-    p=Path(c['report_path']); content=p.read_bytes(); digest=hashlib.sha256(content).hexdigest()
+    p=Path(c['report_path']).resolve(); root_resolved=root.resolve()
+    try:
+        storage_ref=str(p.relative_to(root_resolved))
+    except ValueError as exc:
+        raise ValueError('Le rapport final est hors de la racine persistante autorisée.') from exc
+    if not p.is_file(): raise ValueError('Rapport final introuvable.')
+    content=p.read_bytes(); digest=hashlib.sha256(content).hexdigest()
     if digest!=c['report_sha256']: raise ValueError('Empreinte du rapport incohérente.')
-    return {'report_id':hashlib.sha256((run_id+':'+digest).encode()).hexdigest()[:32],'file_name':p.name,'mime_type':'application/pdf','sha256':digest,'size_bytes':len(content),'storage_ref':str(p.relative_to(root)) if p.is_relative_to(root) else str(p)}
+    pid=validate_safe_id(prescription_id,'prescription_id',required=False) if prescription_id else None
+    return {
+        'report_id':hashlib.sha256((rid+':'+digest).encode()).hexdigest()[:32],
+        'prescription_id':pid,
+        'passation_id':rid,
+        'file_name':p.name,
+        'mime_type':'application/pdf',
+        'sha256':digest,
+        'size_bytes':len(content),
+        'version':str(c.get('report_version') or '1'),
+        'created_at':str(c.get('completed_at') or ''),
+        'storage_ref':storage_ref,
+    }
+
+def _contains_forbidden_raw_data(value:Any)->bool:
+    forbidden={'answers','responses','raw_answers','raw_responses','item_responses','questionnaire_answers'}
+    if isinstance(value,Mapping):
+        return any(str(k).lower() in forbidden or _contains_forbidden_raw_data(v) for k,v in value.items())
+    if isinstance(value,(list,tuple)):
+        return any(_contains_forbidden_raw_data(v) for v in value)
+    return False
+
+def _validate_event_payload(event_type:str,payload:Mapping[str,Any])->None:
+    if _contains_forbidden_raw_data(payload):
+        raise ValueError('Les réponses brutes ne peuvent pas être publiées vers Gestion des Actions.')
+    for field in ('beneficiary_id','action_id','prescription_id','passation_id'):
+        validate_safe_id(payload.get(field),field)
+    if payload.get('participant_id') is not None:
+        validate_safe_id(payload.get('participant_id'),'participant_id',required=False)
+    if event_type=='TERMINE':
+        docs=payload.get('documents')
+        if not isinstance(docs,list) or len(docs)!=1 or not isinstance(docs[0],Mapping):
+            raise ValueError('TERMINE doit référencer exactement un rapport final.')
+        doc=docs[0]
+        if doc.get('mime_type')!='application/pdf': raise ValueError('Le rapport final doit être un PDF.')
+        sha=str(doc.get('sha256') or '')
+        if len(sha)!=64 or any(c not in '0123456789abcdef' for c in sha.lower()): raise ValueError('SHA-256 du rapport invalide.')
+        if int(doc.get('size_bytes') or 0)<=0: raise ValueError('Taille du rapport invalide.')
+        if doc.get('prescription_id')!=payload.get('prescription_id') or doc.get('passation_id')!=payload.get('passation_id'):
+            raise ValueError('Référence de rapport incohérente avec la prescription/passation.')
 
 @dataclass(frozen=True)
 class GestionActionsPort:
@@ -109,8 +176,7 @@ class GestionActionsPort:
         return verify_launch_token(token,self.signing_key or '')
     def publish_event(self,event_type:str,payload:dict[str,Any])->Path:
         if event_type not in ALLOWED_EVENT_TYPES: raise ValueError('Type événement IPIP non autorisé.')
-        for field in ('beneficiary_id','action_id','prescription_id','passation_id','participant_id'):
-            if payload.get(field) is not None: validate_safe_id(payload.get(field),field,required=False)
+        _validate_event_payload(event_type,payload)
         eid=_event_id(event_type,payload); root=_outbox_root(self.root); pending=root/'pending'/f'{eid}.json'; delivered=root/'delivered'/f'{eid}.json'
         if delivered.exists(): return delivered
         if pending.exists(): return pending
