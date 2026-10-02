@@ -42,3 +42,8 @@ def test_feedback_over_under_use_domains_only():
     assert 'Une grande dimension vous paraît-elle plus marquée que dans votre ressenti ? (facultatif)' in src
     assert 'Une grande dimension vous paraît-elle moins marquée que dans votre ressenti ? (facultatif)' in src
     assert "format_func=lambda x:'Aucun' if x=='' else x" in src
+
+
+def test_report_receives_action_context_from_launch():
+    src=(BASE/'app.py').read_text(encoding='utf-8')
+    assert "action_context={'number': c.action_number, 'title': c.action_title}" in src
