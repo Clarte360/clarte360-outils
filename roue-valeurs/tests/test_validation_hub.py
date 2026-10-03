@@ -1,5 +1,5 @@
 import base64, hashlib, hmac, json, time, pytest
-from validation import *
+from validation import *, json_snapshot_bytes
 from hub_contract import verify_launch_token, status_event
 
 def tok(payload, secret='secret'):
@@ -110,3 +110,17 @@ def test_guard_beneficiary_change_rearms():
     d = state(); saved = business_state_fingerprint(d)
     d['beneficiaire']['prenom'] = 'Élodie-Marie'
     assert business_state_fingerprint(d) != saved
+
+
+def test_json_snapshot_bytes_reflect_latest_state():
+    data={'beneficiaire':{'prenom':'Alice','nom':'Martin','email':'alice@example.fr'},'valeurs':[],'valeurs_energies':{'access_granted':False,'selected':[],'entries':{}}}
+    first=json_snapshot_bytes(data)
+    data['beneficiaire']['prenom']='Alicia'
+    second=json_snapshot_bytes(data)
+    assert first != second
+    assert json.loads(second.decode('utf-8'))['beneficiaire']['prenom']=='Alicia'
+
+def test_json_snapshot_round_trip_is_valid():
+    data={'beneficiaire':{},'valeurs':[],'valeurs_energies':{'access_granted':False,'selected':[],'entries':{}}}
+    raw=json_snapshot_bytes(data)
+    assert decode_json_bytes(raw)==data
