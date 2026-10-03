@@ -161,3 +161,9 @@ def decode_json_bytes(raw):
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ValidationError('Le fichier doit être un JSON UTF-8 valide.')
     return validate_state(data)
+
+
+def json_snapshot_bytes(data):
+    """Valide puis sérialise l'état courant en JSON UTF-8."""
+    validate_state(data)
+    return json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
