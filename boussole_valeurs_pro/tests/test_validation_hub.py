@@ -52,3 +52,17 @@ def test_hub_bad_sig():
     with pytest.raises(ValidationError): verify_launch_token(tok(base())+'x','secret')
 def test_status_minimal():
     e=status_event(base(),'completed','DOC-1'); assert e['document_ref']=='DOC-1' and 'valeurs' not in e
+
+
+def test_json_snapshot_bytes_reflect_latest_state():
+    data={'beneficiaire':{'prenom':'Alice','nom':'Martin','email':'alice@example.fr'},'valeurs':[],'valeurs_energies':{'access_granted':False,'selected':[],'entries':{}}}
+    first=json_snapshot_bytes(data)
+    data['beneficiaire']['prenom']='Alicia'
+    second=json_snapshot_bytes(data)
+    assert first != second
+    assert json.loads(second.decode('utf-8'))['beneficiaire']['prenom']=='Alicia'
+
+def test_json_snapshot_round_trip_is_valid():
+    data={'beneficiaire':{},'valeurs':[],'valeurs_energies':{'access_granted':False,'selected':[],'entries':{}}}
+    raw=json_snapshot_bytes(data)
+    assert decode_json_bytes(raw)==data
