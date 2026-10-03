@@ -3,7 +3,7 @@ from pathlib import Path
 SRC = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
 
 def test_version_guardrail():
-    assert '1.8.5-vps-mail-hub-registry' in SRC
+    assert '1.8.6-json-save-fix' in SRC
 
 def test_beforeunload_present():
     assert 'onbeforeunload' in SRC
@@ -18,7 +18,7 @@ def test_fingerprint_present():
 
 def test_json_download_marks_clean():
     assert 'def mark_json_downloaded' in SRC
-    assert 'mark_current_work_saved()' in SRC
+    assert 'mark_current_work_saved(export_fingerprint)' in SRC
 
 def test_json_exports_use_callback():
     assert SRC.count('on_click=mark_json_downloaded') >= 3
@@ -40,3 +40,18 @@ def test_v185_vps_mail_hub_production_wiring():
     assert ident['deployment_status']=='production' and ident['internal_port']==8505
     service=(root/'deploy'/'clarte360-boussole-valeurs.service.example').read_text(encoding='utf-8')
     assert 'User=ubuntu' in service and '--server.port 8505' in service and 'boussole_valeurs_pro' in service
+
+
+def test_sidebar_json_is_never_served_from_cached_bytes():
+    assert 'data=st.session_state.get("exit_json_bytes"' not in SRC
+    assert 'current_json_bytes = json_snapshot_bytes(current_data)' in SRC
+    assert 'for key in ("exit_json_bytes", "exit_json_filename", "exit_json_fingerprint")' in SRC
+
+def test_json_download_is_bound_to_rendered_fingerprint():
+    assert 'args=(current_json_fingerprint,)' in SRC
+    assert SRC.count('args=(current_work_fingerprint(data),)') >= 2
+    assert 'export_fingerprint != current_fingerprint' in SRC
+
+def test_all_json_outputs_use_single_serializer():
+    assert SRC.count('json_snapshot_bytes(data)') >= 3
+    assert 'st.session_state.exit_json_bytes = json.dumps' not in SRC
