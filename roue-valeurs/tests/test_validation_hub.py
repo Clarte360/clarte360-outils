@@ -1,5 +1,5 @@
 import base64, hashlib, hmac, json, time, pytest
-from validation import *, json_snapshot_bytes
+from validation import *
 from hub_contract import verify_launch_token, status_event
 
 def tok(payload, secret='secret'):
