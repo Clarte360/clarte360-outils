@@ -42,3 +42,14 @@ Logique métier non modifiée : valeurs, points d'appui, cotations, boussole, va
 - identité bénéficiaire préremplie depuis le contexte Hub signé lorsqu'elle est fournie ;
 - service VPS d'exemple aligné sur FRAMEWORK VPS V1.1 : dossier stable `boussole_valeurs_pro`, utilisateur `ubuntu`, port 8505 explicite ;
 - identité applicative passée en production sur `https://boussole-valeurs.clarte360.com`.
+
+
+## 1.8.6 — Fiabilisation sauvegarde JSON / anti-perte
+- suppression de la copie JSON figée conservée en session après « Préparer mon JSON » ;
+- reconstruction du JSON depuis l'état courant à chaque rendu du bouton de téléchargement ;
+- sérialisation JSON centralisée dans `validation.json_snapshot_bytes()` pour toutes les voies de sortie ;
+- association du téléchargement à l'empreinte métier exacte affichée au bénéficiaire ;
+- refus de marquer le travail comme sauvegardé si l'état a changé entre le rendu et le clic ;
+- conservation de la compatibilité des anciens JSON : schéma métier inchangé ;
+- ajout de tests de régression ciblant le scénario préparer → modifier → télécharger ;
+- aucune modification de la logique métier, des cotations, de la roue ou des Valeurs énergies.
