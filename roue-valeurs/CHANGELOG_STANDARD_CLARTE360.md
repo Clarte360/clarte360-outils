@@ -19,3 +19,13 @@
 - Correction du comportement de navigation depuis les pages institutionnelles Contact / RGPD.
 - Un clic sur une rubrique métier de la barre latérale ferme maintenant automatiquement Contact / RGPD et ramène l'utilisateur dans l'application, comme dans Boussole v1.8.2.
 - Ajout d'un bouton de retour bas de page sur Contact et RGPD, en complément du retour haut de page.
+
+
+## 2.8.2 — Fiabilisation sauvegarde JSON / anti-perte
+- suppression de la copie JSON figée après « Préparer mon JSON » ;
+- reconstruction du JSON sidebar depuis l'état courant ;
+- sérialisation centralisée via `json_snapshot_bytes()` ;
+- empreinte métier exacte liée aux téléchargements sidebar, page 4, page 6 et timeout ;
+- un état modifié après rendu n'est plus déclaré sauvegardé ;
+- schéma métier inchangé et anciens JSON compatibles ;
+- tests de régression du scénario préparer → modifier → télécharger.
