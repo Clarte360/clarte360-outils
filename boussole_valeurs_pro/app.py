@@ -6,7 +6,7 @@ import math
 import secrets
 import uuid
 import smtplib
-from validation import ValidationError, clean_text, name as validate_name, email as validate_email, phone as validate_phone, decode_json_bytes, validate_state
+from validation import ValidationError, clean_text, name as validate_name, email as validate_email, phone as validate_phone, decode_json_bytes, validate_state, json_snapshot_bytes
 from hub_contract import verify_launch_token
 import string
 from copy import deepcopy
@@ -28,7 +28,7 @@ except Exception:
     st_autorefresh = None
 
 APP_TITLE = "Clarté360 - Boussole des valeurs professionnelles"
-APP_VERSION = "1.8.5-vps-mail-hub-registry"
+APP_VERSION = "1.8.6-json-save-fix"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BRAND_COLOR = "#008080"
@@ -335,7 +335,7 @@ def timeout_screen():
     data["updated_at"] = now_iso()
     base = export_basename(data)
     validate_state(data)
-    json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    json_bytes = json_snapshot_bytes(data)
     header()
     st.error("Votre session est fermée après 15 minutes sans activité.")
     st.markdown("""
@@ -1461,11 +1461,19 @@ def current_work_fingerprint(data: dict | None = None) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def mark_current_work_saved():
-    """Mémorise l'état métier exact correspondant au dernier JSON sauvegardé/importé."""
-    if isinstance(st.session_state.get("data"), dict):
-        st.session_state.saved_work_fingerprint = current_work_fingerprint(st.session_state.data)
+def mark_current_work_saved(export_fingerprint: str | None = None):
+    """Mémorise uniquement l'état métier correspondant au JSON réellement proposé."""
+    if not isinstance(st.session_state.get("data"), dict):
+        return False
+    current_fingerprint = current_work_fingerprint(st.session_state.data)
+    if export_fingerprint and export_fingerprint != current_fingerprint:
+        st.session_state.json_downloaded = False
+        st.session_state.json_download_mismatch = True
+        return False
+    st.session_state.saved_work_fingerprint = export_fingerprint or current_fingerprint
     st.session_state.json_downloaded = True
+    st.session_state.json_download_mismatch = False
+    return True
 
 
 def ensure_saved_work_baseline():
@@ -1484,9 +1492,9 @@ def work_has_unsaved_changes() -> bool:
     return current_work_fingerprint(data) != baseline
 
 
-def mark_json_downloaded():
-    """Le JSON téléchargé devient le nouveau point de sauvegarde de référence."""
-    mark_current_work_saved()
+def mark_json_downloaded(export_fingerprint: str | None = None):
+    """Le JSON téléchargé devient le point de sauvegarde seulement s'il est à jour."""
+    mark_current_work_saved(export_fingerprint)
 
 
 def install_beforeunload_warning():
@@ -1528,6 +1536,7 @@ def install_beforeunload_warning():
         )
 
 def prepare_sidebar_json(close_session: bool = False, reason: str = "sauvegarde_manuelle_reprise"):
+    """Active le téléchargement sidebar sans conserver une ancienne copie du JSON."""
     data = st.session_state.get("data")
     if not isinstance(data, dict):
         return
@@ -1535,10 +1544,10 @@ def prepare_sidebar_json(close_session: bool = False, reason: str = "sauvegarde_
         mark_current_session_closed(reason)
     else:
         record_save_event(data, reason)
-    base = export_basename(data)
     validate_state(data)
-    st.session_state.exit_json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-    st.session_state.exit_json_filename = f"{base}.json"
+    # Correctif v1.8.6 : aucune copie binaire persistante entre deux reruns.
+    for key in ("exit_json_bytes", "exit_json_filename", "exit_json_fingerprint"):
+        st.session_state.pop(key, None)
     st.session_state.exit_json_ready = True
 
 
@@ -1585,14 +1594,22 @@ def sidebar():
             prepare_sidebar_json(True, "sortie_utilisateur_par_bouton")
             st.rerun()
         if st.session_state.get("exit_json_ready"):
+            # Le JSON est reconstruit depuis l'état courant à chaque rerun.
+            current_data = st.session_state.data
+            current_json_bytes = json_snapshot_bytes(current_data)
+            current_json_filename = f"{export_basename(current_data)}.json"
+            current_json_fingerprint = current_work_fingerprint(current_data)
             st.sidebar.download_button(
                 "⬇️ Télécharger le JSON préparé",
-                data=st.session_state.get("exit_json_bytes", b""),
-                file_name=st.session_state.get("exit_json_filename", "boussole_clarte360.json"),
+                data=current_json_bytes,
+                file_name=current_json_filename,
                 mime="application/json",
                 use_container_width=True,
                 on_click=mark_json_downloaded,
+                args=(current_json_fingerprint,),
             )
+            if st.session_state.get("json_download_mismatch"):
+                st.sidebar.warning("Le travail a changé juste avant le téléchargement. Le JSON a été recalculé : téléchargez-le à nouveau pour enregistrer le dernier état.")
             st.sidebar.caption("Conservez ce JSON : il est nécessaire pour reprendre votre travail et il contient le temps réellement enregistré.")
     else:
         st.sidebar.markdown("### Session")
@@ -1617,8 +1634,8 @@ def sidebar():
             for key in [
                 "data", "code_verified", "welcome_done", "welcome_choice", "code_sent",
                 "access_code", "pending_beneficiaire", "show_contact_page", "show_rgpd_page",
-                "exit_json_ready", "exit_json_bytes", "exit_json_filename",
-                "saved_work_fingerprint", "json_downloaded"
+                "exit_json_ready", "exit_json_bytes", "exit_json_filename", "exit_json_fingerprint",
+                "saved_work_fingerprint", "json_downloaded", "json_download_mismatch"
             ]:
                 st.session_state.pop(key, None)
             st.rerun()
@@ -1801,7 +1818,7 @@ def page_roue():
     data = st.session_state.data
     base = export_basename(data)
     validate_state(data)
-    json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    json_bytes = json_snapshot_bytes(data)
     rows = build_rows(data)
     csv_buf = io.StringIO()
     if rows:
@@ -1813,7 +1830,7 @@ def page_roue():
     st.info("Vous pouvez télécharger ici le rapport complet de la roue principale, le JSON modifiable et les fichiers utiles. Le travail sur les Valeurs énergies reste optionnel et produit ses propres sorties uniquement s'il est activé.")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.download_button("Télécharger le JSON modifiable", json_bytes, file_name=f"{base}.json", mime="application/json", on_click=mark_json_downloaded)
+        st.download_button("Télécharger le JSON modifiable", json_bytes, file_name=f"{base}.json", mime="application/json", on_click=mark_json_downloaded, args=(current_work_fingerprint(data),))
     with c2:
         st.download_button("Télécharger le rapport Boussole des valeurs professionnelles", data=create_pdf_bytes(data, include_values=True, include_energy=False), file_name=f"{base}_boussole_valeurs_professionnelles.pdf", mime="application/pdf")
     with c3:
@@ -1948,7 +1965,7 @@ def page_export():
     data = st.session_state.data
     base = export_basename(data)
     validate_state(data)
-    json_bytes = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    json_bytes = json_snapshot_bytes(data)
     rows = build_rows(data)
     csv_buf = io.StringIO()
     if rows:
@@ -1961,7 +1978,7 @@ def page_export():
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.download_button("JSON modifiable complet", json_bytes, file_name=f"{base}.json", mime="application/json", on_click=mark_json_downloaded)
+        st.download_button("JSON modifiable complet", json_bytes, file_name=f"{base}.json", mime="application/json", on_click=mark_json_downloaded, args=(current_work_fingerprint(data),))
     with c2:
         st.download_button("CSV boussole des valeurs professionnelles", csv_buf.getvalue().encode("utf-8-sig"), file_name=f"{base}.csv", mime="text/csv")
     with c3:
