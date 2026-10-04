@@ -27,7 +27,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.8.4-reprise-json-compatible-vps-hub"
+APP_VERSION = "1.8.5-json-save-fix-vps-hub"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
@@ -1004,15 +1004,19 @@ def import_json_screen(active):
 
 
 def prepare_sidebar_json(active, dims, params, reason: str, filename_prefix: str, close_session: bool = False):
+    """Prépare la sortie sans conserver de copie JSON figée en session."""
     if close_session:
         close_runtime_session(reason)
         st.session_state.exit_mode = "quit"
     else:
         record_save_event(reason)
         st.session_state.exit_mode = "save"
-    payload = build_payload(active, dims, params, completed=False)
-    st.session_state.exit_json_bytes = payload_bytes(payload)
-    st.session_state.exit_json_filename = make_filename(filename_prefix, "json")
+
+    # Correctif v1.8.5 : le JSON sera reconstruit depuis l'état courant
+    # au moment où le bouton de téléchargement est rendu.
+    for key in ("exit_json_bytes", "exit_json_filename", "exit_json_fingerprint"):
+        st.session_state.pop(key, None)
+    st.session_state.exit_json_prefix = filename_prefix
     st.session_state.exit_json_ready = True
 
 
@@ -1047,13 +1051,18 @@ def sidebar_progress(active, dims, params):
             prepare_sidebar_json(active, dims, params, "sortie_utilisateur_par_bouton", "moteurs_sortie", close_session=True)
             st.rerun()
         if st.session_state.get("exit_json_ready"):
+            current_payload = build_payload(active, dims, params, completed=False)
+            current_json_bytes = payload_bytes(current_payload)
+            current_json_fingerprint = persisted_business_fingerprint()
+            current_prefix = st.session_state.get("exit_json_prefix", "moteurs_sortie")
             st.sidebar.download_button(
                 "⬇️ Télécharger le JSON préparé",
-                data=st.session_state.get("exit_json_bytes", b""),
-                file_name=st.session_state.get("exit_json_filename", make_filename("moteurs_sortie", "json")),
+                data=current_json_bytes,
+                file_name=make_filename(current_prefix, "json"),
                 mime="application/json",
                 use_container_width=True,
                 on_click=mark_json_downloaded,
+                args=(current_json_fingerprint,),
             )
             st.sidebar.caption("Conservez ce JSON : il est nécessaire pour reprendre votre travail et il contient le temps réellement enregistré.")
     else:
@@ -1264,7 +1273,7 @@ def results_screen(active, dims, params):
             st.warning("Le JSON final n'a pas pu être envoyé automatiquement : " + msg)
     c1, c2 = st.columns(2)
     with c1:
-        st.download_button("Télécharger mon JSON", data=json_data, file_name=json_filename, mime="application/json", on_click=mark_json_downloaded)
+        st.download_button("Télécharger mon JSON", data=json_data, file_name=json_filename, mime="application/json", on_click=mark_json_downloaded, args=(persisted_business_fingerprint(),))
     with c2:
         st.download_button("Télécharger mon rapport PDF", data=pdf_data, file_name=pdf_filename, mime="application/pdf")
 
@@ -1284,7 +1293,7 @@ def expired_screen(active, dims, params):
         record_save_event("sauvegarde_automatique_expiration")
         st.session_state.expiration_json_saved = True
     payload = build_payload(active, dims, params, completed=False)
-    st.download_button("Télécharger mon JSON de reprise", data=payload_bytes(payload), file_name=make_filename("moteurs_reprise_timeout_inactivite", "json"), mime="application/json", type="primary", on_click=mark_json_downloaded)
+    st.download_button("Télécharger mon JSON de reprise", data=payload_bytes(payload), file_name=make_filename("moteurs_reprise_timeout_inactivite", "json"), mime="application/json", type="primary", on_click=mark_json_downloaded, args=(persisted_business_fingerprint(),))
 
 
 def persisted_business_fingerprint() -> str:
@@ -1332,9 +1341,9 @@ def current_business_fingerprint(active: pd.DataFrame) -> str:
     )
 
 
-def mark_json_downloaded():
-    # Le JSON contient l'état métier validé, pas un curseur en cours de manipulation.
-    st.session_state.guard_saved_fingerprint = persisted_business_fingerprint()
+def mark_json_downloaded(export_fingerprint: str | None = None):
+    """Le point de sauvegarde devient exactement l'état contenu dans le JSON rendu."""
+    st.session_state.guard_saved_fingerprint = export_fingerprint or persisted_business_fingerprint()
     st.session_state.json_downloaded = True
 
 
