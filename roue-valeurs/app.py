@@ -22,7 +22,7 @@ from validation import ValidationError, clean_text, decode_json_bytes, email as 
 from guard_state import business_state_fingerprint
 
 APP_TITLE = "Clarté360 - Roue des valeurs"
-APP_VERSION = "V2.8.2 - Fiabilisation sauvegardes JSON"
+APP_VERSION = "V2.8.3 - VPS MAIL / JSON save fix"
 SOCLE_CLARTE360_VERSION = "3.0 / alignement Boussole v1.8.2"
 BENEFICIARY_TIMEOUT_MINUTES = 15
 BRAND_COLOR = "#008080"
@@ -234,16 +234,61 @@ def get_energy_access_code() -> str:
         return ""
 
 
-def get_email_config() -> dict | None:
-    """Lit la configuration SMTP Streamlit Secrets au format déjà utilisé par Clarté360."""
+def _secret_section(*names):
     try:
-        cfg = st.secrets.get("email", {})
-        required = ["smtp_server", "smtp_port", "smtp_user", "smtp_password", "from_email", "to_email"]
-        if all(k in cfg and str(cfg[k]).strip() for k in required):
-            return {k: str(cfg[k]).strip() for k in required}
+        root = dict(st.secrets)
     except Exception:
-        pass
-    return None
+        return {}
+    for name in names:
+        section = root.get(name)
+        if section:
+            try:
+                return dict(section)
+            except Exception:
+                return section
+    return {}
+
+
+def _pick_ci(mapping, *names, default=None):
+    low = {str(k).lower(): v for k, v in dict(mapping or {}).items()}
+    for name in names:
+        value = low.get(str(name).lower())
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def get_email_config() -> dict | None:
+    """Configuration mail VPS/Cloud alignée sur la Boussole Clarté360."""
+    cfg = _secret_section("MAIL", "mail", "email", "EMAIL", "smtp", "SMTP")
+    if not cfg:
+        return None
+    server = _pick_ci(cfg, "SMTP_SERVER", "smtp_server", "host", "server", "smtp_host")
+    port = _pick_ci(cfg, "SMTP_PORT", "smtp_port", "port", default=465)
+    user = _pick_ci(cfg, "USER", "username", "smtp_user", "smtp_username", "login")
+    password = _pick_ci(cfg, "PASSWORD", "smtp_password", "pass")
+    from_email = _pick_ci(cfg, "SENDER_EMAIL", "from_email", "from_address", "sender", "email", default=user)
+    to_email = _pick_ci(cfg, "TO_EMAIL", "to_email", default=FINAL_EMAIL_TO)
+    use_tls = _pick_ci(cfg, "USE_TLS", "use_tls", "starttls", "tls", default=False)
+    use_ssl = _pick_ci(cfg, "USE_SSL", "use_ssl", "ssl", default=None)
+    if not server or not from_email or (user and not password):
+        return None
+    try:
+        port_i = int(port)
+    except Exception:
+        return None
+    if use_ssl is None:
+        use_ssl = (port_i == 465 and str(use_tls).lower() not in {"1","true","yes","on"})
+    return {
+        "smtp_server": str(server).strip(),
+        "smtp_port": port_i,
+        "smtp_user": str(user or "").strip(),
+        "smtp_password": str(password or ""),
+        "from_email": str(from_email).strip(),
+        "to_email": str(to_email or FINAL_EMAIL_TO).strip(),
+        "use_tls": str(use_tls).lower() in {"1","true","yes","on"},
+        "use_ssl": str(use_ssl).lower() in {"1","true","yes","on"},
+    }
 
 
 def send_email(to_email: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> tuple[bool, str]:
@@ -257,7 +302,7 @@ def send_email(to_email: str, subject: str, body: str, attachment: bytes | None 
         return False, str(exc)
     cfg = get_email_config()
     if not cfg:
-        return False, "SMTP non configuré. Aucun email n'a été envoyé."
+        return False, "Configuration MAIL du serveur indisponible. Aucun e-mail n'a été envoyé."
     try:
         msg = EmailMessage()
         msg["From"] = cfg["from_email"]
@@ -268,16 +313,19 @@ def send_email(to_email: str, subject: str, body: str, attachment: bytes | None 
             msg.add_attachment(attachment, maintype="application", subtype="json", filename=attachment_name)
         port = int(cfg["smtp_port"])
         server = cfg["smtp_server"]
-        user = cfg["smtp_user"]
-        password = cfg["smtp_password"]
-        if port == 465:
+        user = cfg.get("smtp_user", "")
+        password = cfg.get("smtp_password", "")
+        if cfg.get("use_ssl") or (port == 465 and not cfg.get("use_tls")):
             with smtplib.SMTP_SSL(server, port, timeout=20) as smtp:
-                smtp.login(user, password)
+                if user:
+                    smtp.login(user, password)
                 smtp.send_message(msg)
         else:
             with smtplib.SMTP(server, port, timeout=20) as smtp:
-                smtp.starttls()
-                smtp.login(user, password)
+                if cfg.get("use_tls") or port != 465:
+                    smtp.starttls()
+                if user:
+                    smtp.login(user, password)
                 smtp.send_message(msg)
         return True, "Email envoyé."
     except Exception as exc:
@@ -612,14 +660,14 @@ def access_gate() -> bool:
                     st.success("Un code d'accès vient d'être envoyé à l'adresse email indiquée.")
                     st.rerun()
                 else:
-                    st.session_state.test_access_code_visible = True
-                    st.warning("Le code n'a pas pu être envoyé par SMTP. Mode test : le code est affiché ci-dessous.")
-                    st.info(f"Code généré = {code}")
+                    st.session_state.test_access_code_visible = False
+                    st.session_state.code_sent = False
+                    st.error("Le code d'accès n'a pas pu être envoyé. Merci de réessayer dans quelques instants ou de contacter Clarté360.")
     else:
         b = st.session_state.get("pending_beneficiaire") or {}
         st.success(f"Code généré pour : {b.get('prenom','')} {b.get('nom','')} - {b.get('email','')}")
         if st.session_state.get("test_access_code_visible"):
-            st.info(f"Mode test : code généré = {st.session_state.get('access_code','')}")
+            st.error("Le code d'accès n'a pas été envoyé. Merci de recommencer la demande.")
         code_input = st.text_input("Saisir le code d'accès", max_chars=6, type="password")
         c1, c2 = st.columns([0.25, 0.75])
         with c1:
