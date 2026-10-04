@@ -75,3 +75,15 @@
 - Ajout de tests de non-régression sur l'import d'un JSON historique et sur le câblage de l'écran de reprise.
 - `app_identity.json` passe en V1.8.4 et statut `production`.
 - Exemple systemd corrigé pour refléter le déploiement VPS réel.
+
+
+## V1.8.5 — Fiabilisation sauvegardes JSON
+
+- suppression de la copie JSON figée `exit_json_bytes` comme source de téléchargement de la barre latérale ;
+- « Préparer mon JSON » et « Quitter et télécharger mon JSON » n'enregistrent plus une ancienne photographie binaire réutilisable ;
+- le JSON de la barre latérale est reconstruit depuis l'état courant à chaque rendu du bouton ;
+- le téléchargement est lié à l'empreinte métier exacte contenue dans le fichier rendu ;
+- les téléchargements JSON de résultats et de timeout utilisent le même principe d'empreinte ;
+- le garde-fou conserve la détection d'un curseur déplacé mais non validé ;
+- compatibilité des JSON historiques V1.8.0 à V1.8.4 conservée ;
+- questionnaire, 60 curseurs, scoring, définitions et rapports métier inchangés.
