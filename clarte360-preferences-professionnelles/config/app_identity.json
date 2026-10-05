@@ -1,9 +1,9 @@
 {
   "tool_id": "preferences-professionnelles",
   "app_name": "Clarté360 - Préférences professionnelles",
-  "app_version": "1.9.7-json-save-report-equivalence-vps-hub",
+  "app_version": "1.9.8-ux-navigation-retour",
   "target_url": "https://preferences-professionnelles.clarte360.com",
-  "deployment_status": "planned",
+  "deployment_status": "candidate",
   "audience": [
     "beneficiaire"
   ],

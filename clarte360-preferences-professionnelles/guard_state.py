@@ -21,11 +21,18 @@ def _stable(value: Any) -> Any:
 
 
 def business_state_payload(state: Mapping[str, Any]) -> dict[str, Any]:
-    pending_widgets = {
-        str(k): v
-        for k, v in state.items()
-        if str(k).startswith("radio_Q") and v not in (None, "")
-    }
+    answers = state.get("answers", {}) or {}
+    pending_widgets = {}
+    for k, v in state.items():
+        key = str(k)
+        if not key.startswith("radio_Q") or v in (None, ""):
+            continue
+        qid = key[len("radio_"):]
+        # Une réponse validée simplement préaffichée n'est pas une modification.
+        # Une sélection différente non encore validée doit en revanche réarmer le garde-fou.
+        if str(answers.get(qid, "")) == str(v):
+            continue
+        pending_widgets[key] = v
     return {
         "beneficiaire": state.get("beneficiaire", {}),
         "answers": state.get("answers", {}),

@@ -1,6 +1,6 @@
 # Clarté360 - Préférences professionnelles
 
-Version : **v1.9.7-json-save-report-equivalence-vps-hub**
+Version : **v1.9.8-ux-navigation-retour**
 
 Application bénéficiaire Clarté360 d'exploration des préférences professionnelles.
 
@@ -49,3 +49,13 @@ Voir `docs/` pour l'audit de validation, le contrat Hub et le rapport VPS.
 - dossier stable : `/opt/clarte360/clarte360-outils/clarte360-preferences-professionnelles/`
 
 Le registre central du Framework VPS prévaut sur toute ancienne valeur de port présente dans une archive ou une documentation historique.
+
+
+## Nouveautés 1.9.8
+- Ergonomie du questionnaire allégée : les blocs d'objectif, de confidentialité et de présentation des 10 dimensions ne sont plus répétés à chaque question.
+- Logo Clarté360 et repère de navigation ajoutés dans la barre latérale pendant la passation.
+- Écran question retravaillé : question mise en évidence, propositions plus lisibles et progression compacte.
+- Bouton **Question précédente** ajouté sans suppression des réponses déjà validées.
+- Lorsqu'une question déjà répondue est revisitée, la réponse validée est automatiquement présélectionnée et peut être conservée ou modifiée.
+- Le garde-fou distingue désormais une réponse simplement préaffichée d'une modification non encore validée.
+- Questionnaire, ordre aléatoire, cotations, scoring, rapport et logique JSON métier inchangés.

@@ -46,3 +46,11 @@ Le fichier `data/questions_preferences_professionnelles_v1.xlsx` n'a pas été m
 
 ## Limite avant mise en service
 Le runtime local d'audit ne contient pas Streamlit. Le démarrage réel de l'interface, le clic utilisateur et la recette Hub/VPS devront être vérifiés au Jalon 3 / déploiement. Cette limite n'affecte pas la compilation, les tests de logique ni la génération PDF contrôlée ici.
+
+## Complément V1.9.8 — UX / navigation — 05/10/2026
+
+- Compilation Python : **OK** (`app.py`, `guard_state.py`, `validation.py`, `hub_contract.py`).
+- Suite automatisée : **62 réussis / 62**.
+- 5 tests de régression UX/navigation ajoutés : logo/navigation latérale, non-répétition des blocs introductifs, retour à la question précédente sans suppression des réponses, présélection de la réponse validée, garde-fou réarmé uniquement si la sélection diffère de la réponse validée.
+- Banque de questions, cotations, scoring, calculs, graphiques et rapport : **inchangés**.
+- Recette visuelle finale à réaliser sur le VPS avant promotion de V1.9.8 en version fiable.

@@ -1,5 +1,15 @@
 # CHANGELOG STANDARD CLARTÉ360
 
+## v1.9.8-ux-navigation-retour - 05/10/2026
+
+- Barre latérale enrichie avec logo Clarté360 et navigation `Questionnaire : n / 60`.
+- Suppression de la répétition des blocs Objectif / Confidentialité / 10 préférences pendant chaque question ; ces contenus restent présents avant la passation.
+- Écran de question compacté et rendu plus lisible sans modifier le contenu des 60 questions.
+- Ajout du bouton `Question précédente` sans suppression des réponses validées.
+- Réponse déjà validée automatiquement présélectionnée lors d'un retour arrière ; modification possible puis nouvelle validation.
+- Garde-fou corrigé pour ne pas considérer comme modification une réponse préaffichée identique à la réponse déjà validée.
+- Ordre aléatoire, cotations, scoring, JSON, résultats et rapport inchangés.
+
 ## v1.9.4-socle-clarte360 - 05/07/2026
 
 - Alignement renforcé de l'écran d'accueil sur le socle Clarté360 : choix initial JSON / nouvelle session avant l'entrée dans le questionnaire.

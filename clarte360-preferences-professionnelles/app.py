@@ -1,5 +1,6 @@
 import json
 import hashlib
+from html import escape
 import random
 import re
 import secrets
@@ -23,7 +24,7 @@ from reportlab.platypus import Image, KeepTogether, Paragraph, SimpleDocTemplate
 from validation import (ValidationError, access_code as validate_access_code, clean_text, decode_json_bytes, email as validate_email, finite_number, name as validate_name, phone as validate_phone, validate_state)
 from guard_state import fingerprint as guard_fingerprint, persisted_fingerprint as guard_persisted_fingerprint, is_dirty as guard_is_dirty
 
-APP_VERSION = "1.9.7-json-save-report-equivalence-vps-hub"
+APP_VERSION = "1.9.8-ux-navigation-retour"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BENEFICIARY_TIMEOUT_MINUTES = 15
@@ -105,6 +106,45 @@ st.markdown(
         background: #ffffff;
         box-shadow: 0 1px 8px rgba(0, 128, 128, 0.08);
         margin-bottom: 1rem;
+    }}
+    .question-kicker {{
+        color: {OFFICIAL_TEAL};
+        font-size: 0.92rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin: 0.15rem 0 0.45rem 0;
+    }}
+    .question-card {{
+        border: 1px solid #cfe6e6;
+        border-left: 6px solid {OFFICIAL_TEAL};
+        border-radius: 0.9rem;
+        padding: 1rem 1.15rem;
+        background: #f8fbfb;
+        box-shadow: 0 1px 8px rgba(0, 128, 128, 0.06);
+        margin: 0.25rem 0 0.8rem 0;
+    }}
+    .question-text {{
+        color: {DARK_TEXT};
+        font-size: 1.18rem;
+        line-height: 1.48;
+        font-weight: 700;
+    }}
+    .question-meta {{
+        color: #607070;
+        font-size: 0.92rem;
+        margin-bottom: 0.45rem;
+    }}
+    div[role="radiogroup"] > label {{
+        border: 1px solid #d5e6e6;
+        border-radius: 0.8rem;
+        padding: 0.68rem 0.82rem;
+        margin: 0.22rem 0;
+        background: #ffffff;
+    }}
+    div[role="radiogroup"] > label:hover {{
+        border-color: {OFFICIAL_TEAL};
+        background: #f5fbfb;
     }}
     .small-muted {{ color: #666; font-size: 0.9rem; }}
     h1, h2, h3 {{ color: {OFFICIAL_TEAL}; }}
@@ -324,6 +364,24 @@ def reset_all():
     ]:
         st.session_state.pop(key, None)
     st.rerun()
+
+
+def answer_index_for_options(saved_answer: str | None, options: list[str]) -> int | None:
+    """Retourne l'index d'une réponse déjà validée dans l'ordre affiché."""
+    if not saved_answer:
+        return None
+    try:
+        return list(options).index(str(saved_answer))
+    except ValueError:
+        return None
+
+
+def previous_question_index(current_index: int) -> int:
+    """Retour à la question précédente sans modifier aucune réponse validée."""
+    try:
+        return max(0, int(current_index) - 1)
+    except Exception:
+        return 0
 
 
 def interpretation_level(pct: float) -> str:
@@ -1034,10 +1092,33 @@ def rgpd_page():
 
 def render_sidebar():
     with st.sidebar:
+        if LOGO_PATH.exists():
+            st.image(str(LOGO_PATH), width=88)
+        st.markdown("**Préférences professionnelles**")
+
+        in_app = bool(st.session_state.get("test_started"))
+        if in_app:
+            total = len(st.session_state.get("question_order", []))
+            idx = min(int(st.session_state.get("current_index", 0) or 0), total)
+            st.markdown("### Navigation")
+            if idx >= total:
+                st.markdown("**Résultats / rapport**")
+            else:
+                st.markdown(f"**Questionnaire : {idx + 1} / {total}**")
+            if total:
+                st.progress(min(max((idx + 1) / total, 0.0), 1.0))
+            if st.button("Revenir à l'application", use_container_width=True):
+                st.session_state.show_contact_page = False
+                st.session_state.show_rgpd_page = False
+                st.rerun()
+            st.markdown("---")
+
         st.markdown("### Session")
-        if st.session_state.get("test_started"):
+        if in_app:
             st.markdown("Votre progression est enregistrée dans votre fichier JSON.")
-            if len(st.session_state.get("answers", {})) < len(st.session_state.get("question_order", [])):
+            total = len(st.session_state.get("question_order", []))
+            idx = int(st.session_state.get("current_index", 0) or 0)
+            if idx < total:
                 if st.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
                     ensure_access_tracking(user_activity=False)
                     st.session_state.exit_json_ready = True
@@ -1055,8 +1136,6 @@ def render_sidebar():
                     st.session_state.exit_mode = "quit"
                     st.rerun()
             if st.session_state.get("exit_json_ready"):
-                # Le JSON est reconstruit à chaque rendu depuis l'état validé courant.
-                # Il ne peut donc jamais rester figé sur une préparation antérieure.
                 current_json_bytes = json_download_bytes(build_progress_json())
                 current_json_fingerprint = guard_persisted_fingerprint(st.session_state)
                 current_prefix = st.session_state.get("exit_json_prefix", "clarte360_preferences_sauvegarde")
@@ -1069,7 +1148,7 @@ def render_sidebar():
                     on_click=mark_current_state_saved,
                     args=(current_json_fingerprint,),
                 )
-        if (not st.session_state.get("test_started")) and st.session_state.get("welcome_choice") == "import":
+        if (not in_app) and st.session_state.get("welcome_choice") == "import":
             resume_file = st.file_uploader("Importer mon fichier JSON", type=["json"], key="resume_json")
             if resume_file is not None:
                 try:
@@ -1087,7 +1166,7 @@ def render_sidebar():
         if st.button("RGPD et mentions légales", use_container_width=True):
             st.session_state.show_rgpd_page = True; st.session_state.show_contact_page = False; st.rerun()
         st.caption(f"App v{APP_VERSION} · Socle {SOCLE_CLARTE360_VERSION} · Questionnaire Préférences")
-        if not st.session_state.get("test_started") and st.button("Réinitialiser la session", use_container_width=True):
+        if not in_app and st.button("Réinitialiser la session", use_container_width=True):
             reset_all()
 
 try:
@@ -1149,30 +1228,30 @@ if not st.session_state.get("test_started") and st.session_state.get("welcome_ch
         st.rerun()
     st.stop()
 
-st.markdown(
-    """
-    <div class="objectif-box">
-    <strong>Objectif de l'outil</strong><br>
-    Cet outil permet d’explorer votre manière préférée de travailler à partir de situations professionnelles concrètes.
-    Il ne s’agit pas d’analyser votre personnalité, mais de repérer vos préférences déclarées concernant l’autonomie,
-    l’organisation, les relations professionnelles, la décision, l’action, le changement, l’environnement de travail,
-    l’apprentissage, la contribution et les responsabilités. Les résultats servent de support d’échange avec votre consultant Clarté360.
-    </div>
-    <div class="clarte-box">
-    <strong>🔒 Confidentialité et maîtrise de vos données</strong><br>
-    Aucune réponse n'est enregistrée pendant la passation. En cas d'interruption, vous pouvez télécharger un JSON de sauvegarde
-    et le conserver pour reprendre votre questionnaire. Le JSON final et le rapport PDF sont générés uniquement à la fin.
-    Si l'envoi sécurisé est configuré, le JSON final est transmis à Clarté360 pour permettre l'analyse par le consultant.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+if not st.session_state.get("test_started"):
+    st.markdown(
+        """
+        <div class="objectif-box">
+        <strong>Objectif de l'outil</strong><br>
+        Cet outil permet d’explorer votre manière préférée de travailler à partir de situations professionnelles concrètes.
+        Il ne s’agit pas d’analyser votre personnalité, mais de repérer vos préférences déclarées concernant l’autonomie,
+        l’organisation, les relations professionnelles, la décision, l’action, le changement, l’environnement de travail,
+        l’apprentissage, la contribution et les responsabilités. Les résultats servent de support d’échange avec votre consultant Clarté360.
+        </div>
+        <div class="clarte-box">
+        <strong>🔒 Confidentialité et maîtrise de vos données</strong><br>
+        Aucune réponse n'est enregistrée pendant la passation. En cas d'interruption, vous pouvez télécharger un JSON de sauvegarde
+        et le conserver pour reprendre votre questionnaire. Le JSON final et le rapport PDF sont générés uniquement à la fin.
+        Si l'envoi sécurisé est configuré, le JSON final est transmis à Clarté360 pour permettre l'analyse par le consultant.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-with st.expander("Comprendre les 10 préférences explorées"):
-    st.write("Ces dimensions sont présentées pour vous aider à comprendre le cadre général de l'outil. Pendant le questionnaire, les questions ne sont pas classées par dimension afin de préserver la spontanéité des réponses.")
-    for label, description in DIMENSION_DESCRIPTIONS.items():
-        st.markdown(f"**{label}** - {description}")
-
+    with st.expander("Comprendre les 10 préférences explorées"):
+        st.write("Ces dimensions sont présentées pour vous aider à comprendre le cadre général de l'outil. Pendant le questionnaire, les questions ne sont pas classées par dimension afin de préserver la spontanéité des réponses.")
+        for label, description in DIMENSION_DESCRIPTIONS.items():
+            st.markdown(f"**{label}** - {description}")
 if not st.session_state.get("test_started"):
     st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>1. Identification du bénéficiaire</h2>", unsafe_allow_html=True)
     st.write(
@@ -1272,18 +1351,26 @@ if beneficiary_has_timed_out():
     st.download_button("Télécharger mon JSON de reprise", data=json_download_bytes(timeout_payload), file_name=f"clarte360_preferences_timeout_{current_name_part()}_{timestamp_part()}.json", mime="application/json", on_click=mark_current_state_saved, args=(timeout_fingerprint,))
     st.stop()
 beneficiaire = st.session_state.get("beneficiaire", {})
-st.markdown(f"**Bénéficiaire :** {beneficiaire.get('prenom','')} {beneficiaire.get('nom','')}")
 answered = len(st.session_state.answers)
 total = len(st.session_state.question_order)
 progress = answered / total if total else 0
-st.progress(progress)
-st.write(f"{answered} réponse(s) enregistrée(s) sur {total}")
 
 if answered < total:
-    idx = st.session_state.current_index
+    idx = int(st.session_state.current_index)
     qid = st.session_state.question_order[idx]
     qrow = active_questions.set_index("ID").loc[qid]
-    st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Question {idx + 1} / {total}</h2>", unsafe_allow_html=True)
+
+    st.markdown("<div class='question-kicker'>Préférences professionnelles</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='question-meta'>Bénéficiaire : <strong>{escape(beneficiaire.get('prenom',''))} {escape(beneficiaire.get('nom',''))}</strong> · {answered} réponse(s) enregistrée(s) sur {total}</div>",
+        unsafe_allow_html=True,
+    )
+    st.progress(progress)
+    st.markdown(f"<div class='question-kicker'>Question {idx + 1} / {total}</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='question-card'><div class='question-text'>{escape(str(qrow['Question']))}</div></div>",
+        unsafe_allow_html=True,
+    )
 
     options = st.session_state.option_orders[qid]
     labels = {opt: str(qrow[f"Reponse {opt}"]) for opt in options}
@@ -1291,21 +1378,26 @@ if answered < total:
     speech_text = build_speech_text(idx + 1, total, str(qrow["Question"]), displayed_labels)
     render_speech_button(speech_text)
 
-    st.write(str(qrow["Question"]))
-    selected_label = st.radio(
+    saved_opt = st.session_state.answers.get(qid)
+    selected_opt = st.radio(
         "Choisissez la proposition qui vous correspond le mieux :",
-        options=displayed_labels,
-        index=None,
+        options=options,
+        index=answer_index_for_options(saved_opt, options),
+        format_func=lambda opt: labels[opt],
         key=f"radio_{qid}",
     )
-    if st.button("Valider la réponse", type="primary", disabled=selected_label is None):
-        selected_opt = next(opt for opt, label in labels.items() if label == selected_label)
-        st.session_state.answers[qid] = selected_opt
-        if st.session_state.current_index < total - 1:
-            st.session_state.current_index += 1
-        else:
-            st.session_state.current_index = total
-        st.rerun()
+
+    col_prev, col_validate = st.columns([1, 2])
+    with col_prev:
+        if st.button("← Question précédente", disabled=idx <= 0, use_container_width=True):
+            st.session_state.current_index = previous_question_index(idx)
+            st.rerun()
+    with col_validate:
+        if st.button("Valider et continuer →", type="primary", disabled=selected_opt is None, use_container_width=True):
+            st.session_state.answers[qid] = selected_opt
+            st.session_state.current_index = min(idx + 1, total)
+            st.rerun()
+
 else:
     st.success("Questionnaire terminé.")
     results, score_details = compute_results(active_questions, st.session_state.answers)
