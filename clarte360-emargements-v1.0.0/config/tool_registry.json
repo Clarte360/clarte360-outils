@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "updated_at": "2026-10-01",
+  "updated_at": "2026-10-05",
   "tools": [
     {
       "tool_code": "PIP_RIASEC_ONET",
@@ -96,9 +96,9 @@
       "name": "Préférences professionnelles",
       "category": "ORIENTATION_PROFESSIONNELLE",
       "base_url": "https://preferences-professionnelles.clarte360.com",
-      "tool_version": "1.9.6",
-      "active": false,
-      "prescription_allowed": false,
+      "tool_version": "1.9.7-json-save-report-equivalence-vps-hub",
+      "active": true,
+      "prescription_allowed": true,
       "allowed_publics": [
         "BENEFICIAIRE"
       ],
@@ -106,9 +106,12 @@
       "launch_type": "HUB_REDIRECT",
       "access_validity_hours": 168,
       "connector_code": "HUB_GENERIC",
-      "connector_status": "NOT_CONFIGURED",
+      "connector_status": "LAUNCH_ONLY",
       "metadata": {
-        "deployment_status": "planned"
+        "source": "REGISTRE_I9",
+        "deployment_status": "production",
+        "runtime_version": "1.9.7-json-save-report-equivalence-vps-hub",
+        "compatibility_policy": "ALL_ACTION_TYPES"
       }
     },
     {
