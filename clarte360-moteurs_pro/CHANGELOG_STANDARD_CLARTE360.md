@@ -87,3 +87,12 @@
 - le garde-fou conserve la détection d'un curseur déplacé mais non validé ;
 - compatibilité des JSON historiques V1.8.0 à V1.8.4 conservée ;
 - questionnaire, 60 curseurs, scoring, définitions et rapports métier inchangés.
+
+## V1.8.6 — UX navigation / retour / audio — 05/10/2026
+- Ajout du logo Clarté360 dans la barre latérale pendant la passation.
+- Écran questionnaire compacté et hiérarchisé : progression, situation, propositions, curseur, navigation.
+- Lecture vocale conservée et rendue plus compacte sans rerun Streamlit.
+- Ajout du bouton `Question précédente` sans suppression des réponses validées.
+- Une réponse déjà validée est retrouvée lors du retour sur la question et peut être modifiée puis revalidée.
+- Le garde-fou tient compte des curseurs non validés déjà affichés même après navigation arrière.
+- Aucun changement des 60 curseurs, du scoring, des restitutions, du JSON métier ou du rapport.

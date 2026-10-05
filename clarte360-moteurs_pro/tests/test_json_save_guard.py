@@ -21,5 +21,5 @@ def test_downloads_are_bound_to_rendered_business_fingerprint():
     assert 'st.session_state.guard_saved_fingerprint = export_fingerprint or persisted_business_fingerprint()' in SRC
 
 
-def test_version_bumped_for_json_fix():
-    assert 'APP_VERSION = "1.8.5-json-save-fix-vps-hub"' in SRC
+def test_json_fix_remains_present_in_current_release():
+    assert 'APP_VERSION = "1.8.6-ux-navigation-retour-audio"' in SRC

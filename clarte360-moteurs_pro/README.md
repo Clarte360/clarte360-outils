@@ -26,3 +26,6 @@ Port interne : `8506`
 ## Secrets
 
 Les secrets ne sont jamais inclus dans le ZIP. Le VPS utilise le mécanisme centralisé Clarté360 via le lien `.streamlit/secrets.toml`.
+
+## Navigation V1.8.6
+Pendant la passation, le bénéficiaire peut revenir aux questions précédentes. Les réponses validées ne sont jamais supprimées par la navigation. Une réponse antérieure peut être modifiée puis revalidée ; les autres réponses restent conservées. La lecture vocale de la situation et des deux propositions reste disponible via des contrôles compacts Écouter / Arrêter.

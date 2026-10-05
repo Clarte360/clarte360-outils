@@ -27,7 +27,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.8.5-json-save-fix-vps-hub"
+APP_VERSION = "1.8.6-ux-navigation-retour-audio"
 SOCLE_CLARTE360_VERSION = "1.8"
 APP_NAME = "Moteurs professionnels"
 APP_FULL_NAME = "Clarté360 – Moteurs professionnels"
@@ -144,8 +144,11 @@ div.stButton > button[kind="primary"]:hover {{ background-color: #006f6f; border
 .clarte-box {{ border-left: 6px solid {OFFICIAL_TEAL}; background: {LIGHT_TEAL}; padding: 1rem 1.1rem; border-radius: .55rem; margin: 1rem 0; color: {DARK_TEXT}; }}
 .objectif-box {{ border: 1px solid #cfe6e6; background: #f8fbfb; padding: 1.2rem 1.4rem; border-radius: .9rem; margin: 1rem 0 1.4rem 0; color: {DARK_TEXT}; }}
 .clarte-card {{ border: 1px solid #d9eeee; border-radius: .8rem; padding: 1rem; background: #fff; box-shadow: 0 1px 8px rgba(0,128,128,.08); margin-bottom: 1rem; }}
-.question-title {{ color: {OFFICIAL_TEAL}; font-size: 2rem; font-weight: 750; margin: 1rem 0 .8rem 0; }}
-.slider-instruction {{ color: {DARK_TEXT}; font-weight: 600; font-size: 1rem; margin: .8rem 0 .4rem 0; }}
+.question-title {{ color: {OFFICIAL_TEAL}; font-size: 1.75rem; font-weight: 750; margin: .35rem 0 .65rem 0; }}
+.question-app-title {{ color: {OFFICIAL_TEAL}; font-size: 1.2rem; font-weight: 750; margin: 0 0 .1rem 0; }}
+.question-meta {{ color: #667575; font-size: .92rem; margin: 0 0 .7rem 0; }}
+.slider-instruction {{ color: {DARK_TEXT}; font-weight: 600; font-size: .98rem; margin: .65rem 0 .5rem 0; }}
+.proposition-hint {{ color:#667575; font-size:.86rem; margin-top:.2rem; }}
 .positioning-row {{ margin-top: .6rem; margin-bottom: 1.2rem; }}
 .slider-card-left, .slider-card-right {{
     border-left: 7px solid {OFFICIAL_TEAL}; padding: 1.15rem 1.25rem; background: #f8fbfb;
@@ -532,6 +535,7 @@ def start_new_session(active: pd.DataFrame, nom: str, prenom: str, email: str, c
     random.shuffle(ids)
     st.session_state.cursor_order = ids
     st.session_state.positions = {}
+    st.session_state.slider_drafts = {}
     st.session_state.current_index = 0
     st.session_state.started_at = now_iso()
     st.session_state.beneficiaire = {"nom": validate_name(nom, "Nom"), "prenom": validate_name(prenom, "Prénom"), "email": validate_email(email), "consultant": validate_short_text(consultant, "Consultant", 160, False)}
@@ -550,6 +554,7 @@ def restore_from_progress(payload: dict):
     st.session_state.passation_id = payload.get("passation_id", st.session_state.passation_root_id)
     st.session_state.cursor_order = payload.get("cursor_order_displayed", payload.get("cursor_order", []))
     st.session_state.positions = {str(k): validate_position(v) for k, v in payload.get("positions", {}).items()}
+    st.session_state.slider_drafts = {}
     first_unanswered = None
     for i, cid in enumerate(st.session_state.cursor_order):
         if cid not in st.session_state.positions:
@@ -783,20 +788,21 @@ def create_pdf(scores_df: pd.DataFrame, payload: dict) -> bytes:
 
 
 def speak_button(text: str, key: str):
-    escaped = json.dumps(text)
-    if st.button("🔊 Écouter", key=key):
-        components.html(f"""
-        <script>
-        const text = {escaped};
+    """Lecture vocale compacte sans rerun Streamlit."""
+    escaped = json.dumps(text, ensure_ascii=False)
+    dom_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(key))
+    components.html(f"""
+    <div style="margin:.2rem 0 .55rem 0;display:flex;gap:.45rem;align-items:center;flex-wrap:wrap;">
+      <button id="listen_{dom_id}" onclick="(function(){{
         window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(text);
+        const u = new SpeechSynthesisUtterance({escaped});
         u.lang = 'fr-FR';
         u.rate = 0.95;
         window.speechSynthesis.speak(u);
-        </script>
-        """, height=0)
-    if st.button("⏹ Arrêter", key=key+"_stop"):
-        components.html("<script>window.speechSynthesis.cancel();</script>", height=0)
+      }})()" style="background:#008080;color:white;border:0;border-radius:8px;padding:.52rem .8rem;cursor:pointer;font-size:14px;">🔊 Écouter la question</button>
+      <button onclick="window.speechSynthesis.cancel()" style="background:#eef3f3;color:#203636;border:1px solid #cbdada;border-radius:8px;padding:.52rem .8rem;cursor:pointer;font-size:14px;">■ Arrêter</button>
+    </div>
+    """, height=48)
 
 
 def display_header():
@@ -1028,6 +1034,10 @@ def sidebar_progress(active, dims, params):
     """
     in_app = bool(st.session_state.get("test_started"))
 
+    if LOGO_PATH.exists():
+        st.sidebar.image(str(LOGO_PATH), width=72)
+    st.sidebar.markdown("**Clarté360 · Moteurs professionnels**")
+
     if in_app:
         st.sidebar.markdown("### Navigation")
         total = len(st.session_state.get("cursor_order", [])) or len(active)
@@ -1197,35 +1207,103 @@ def issue_access_code(email: str, prenom: str, is_regeneration: bool):
 
 
 def questionnaire_screen(active, dims, params):
-    display_header()
     total = len(st.session_state.cursor_order)
-    idx = st.session_state.current_index
+    idx = int(st.session_state.current_index)
     if idx >= total:
         results_screen(active, dims, params)
         return
+
     cid = st.session_state.cursor_order[idx]
     row = active.set_index("ID").loc[cid]
-    st.progress(idx / total)
+    positions = st.session_state.get("positions", {}) or {}
+    drafts = st.session_state.setdefault("slider_drafts", {})
+    answered = len(positions)
+    progress = answered / total if total else 0
+    beneficiaire = st.session_state.get("beneficiaire", {}) or {}
+    full_name = " ".join(x for x in [beneficiaire.get("prenom", ""), beneficiaire.get("nom", "")] if x).strip()
+
+    st.markdown("<div class='question-app-title'>Moteurs professionnels</div>", unsafe_allow_html=True)
+    meta = f"{answered} réponse(s) enregistrée(s) sur {total}"
+    if full_name:
+        meta = f"{full_name} · {meta}"
+    st.markdown(f"<div class='question-meta'>{meta}</div>", unsafe_allow_html=True)
+    st.progress(progress)
     st.markdown(f"<div class='question-title'>Question {idx + 1} / {total}</div>", unsafe_allow_html=True)
+
     situation = str(row["Situation / consigne"])
     left = str(row["Proposition gauche"])
     right = str(row["Proposition droite"])
     st.markdown(f"<div class='clarte-card'><h3>{situation}</h3></div>", unsafe_allow_html=True)
-    speak_text = f"Question {idx+1} sur {total}. {situation}. Proposition à gauche : {left}. Proposition à droite : {right}. Positionnez le curseur au plus près de la proposition qui vous ressemble le plus aujourd'hui. Si les deux propositions vous correspondent autant l'une que l'autre, laissez-le naturellement au milieu."
+
+    speak_text = (
+        f"Question {idx+1} sur {total}. {situation}. "
+        f"Proposition à gauche : {left}. Proposition à droite : {right}. "
+        "Positionnez le curseur au plus près de la proposition qui vous ressemble le plus aujourd'hui. "
+        "Si les deux propositions vous correspondent autant l'une que l'autre, laissez-le naturellement au milieu."
+    )
     speak_button(speak_text, f"speak_{cid}")
-    st.markdown("<div class='slider-instruction'>Positionnez le curseur au plus près de la proposition qui vous ressemble le plus aujourd'hui. Si les deux propositions vous correspondent autant l'une que l'autre, laissez-le naturellement au milieu.</div>", unsafe_allow_html=True)
-    default_pos = int(st.session_state.positions.get(cid, int(row.get("Position défaut", 5))))
-    col1, col_slider, col2 = st.columns([3.2, 4.8, 3.2], vertical_alignment="center")
+
+    st.markdown(
+        "<div class='slider-instruction'>Placez le curseur vers la proposition qui vous correspond le plus aujourd’hui. "
+        "Le milieu signifie que les deux propositions vous correspondent autant.</div>",
+        unsafe_allow_html=True,
+    )
+
+    col1, col2 = st.columns(2, gap="medium")
     with col1:
         st.markdown(f"<div class='slider-card-left'><b>{left}</b></div>", unsafe_allow_html=True)
-    with col_slider:
-        st.markdown("<div class='connector-label'>Votre position</div>", unsafe_allow_html=True)
-        pos = st.slider("Positionnement", min_value=0, max_value=10, value=default_pos, step=1, key=f"slider_{cid}", label_visibility="collapsed")
+        st.markdown("<div class='proposition-hint'>← Proposition de gauche</div>", unsafe_allow_html=True)
     with col2:
         st.markdown(f"<div class='slider-card-right'><b>{right}</b></div>", unsafe_allow_html=True)
-    if st.button("Valider et passer à la suite", type="primary", use_container_width=True):
+        st.markdown("<div class='proposition-hint' style='text-align:right'>Proposition de droite →</div>", unsafe_allow_html=True)
+
+    baseline_pos = int(positions.get(cid, int(row.get("Position défaut", 5))))
+    default_pos = int(drafts.get(cid, baseline_pos))
+    st.markdown("<div class='connector-label'>Votre position</div>", unsafe_allow_html=True)
+    pos = st.slider(
+        "Positionnement",
+        min_value=0,
+        max_value=10,
+        value=default_pos,
+        step=1,
+        key=f"slider_{cid}",
+        label_visibility="collapsed",
+    )
+    # Les widgets Streamlit peuvent être nettoyés lorsqu'ils ne sont plus rendus.
+    # Le brouillon courant est donc copié dans un état métier temporaire séparé,
+    # afin qu'un retour arrière ne perde pas une position déplacée mais non validée.
+    if int(pos) != baseline_pos:
+        drafts[cid] = int(pos)
+    else:
+        drafts.pop(cid, None)
+    st.session_state.slider_drafts = drafts
+
+    back_col, next_col = st.columns([1, 2])
+    with back_col:
+        previous_clicked = st.button(
+            "← Question précédente",
+            use_container_width=True,
+            disabled=idx <= 0,
+            key=f"previous_{cid}",
+        )
+    with next_col:
+        validate_clicked = st.button(
+            "Valider et continuer →",
+            type="primary",
+            use_container_width=True,
+            key=f"validate_{cid}",
+        )
+
+    if previous_clicked:
+        # La navigation ne supprime aucune réponse validée. Un éventuel déplacement
+        # non validé est conservé dans slider_drafts et sera retrouvé au retour.
+        st.session_state.current_index = max(0, idx - 1)
+        st.rerun()
+
+    if validate_clicked:
         st.session_state.positions[cid] = int(pos)
-        st.session_state.current_index += 1
+        st.session_state.slider_drafts.pop(cid, None)
+        st.session_state.current_index = min(total, idx + 1)
         record_save_event("validation_question")
         st.session_state.exit_json_ready = False
         st.session_state.json_downloaded = False
@@ -1311,33 +1389,24 @@ def persisted_business_fingerprint() -> str:
 
 
 def current_business_fingerprint(active: pd.DataFrame) -> str:
-    """Empreinte du travail courant, y compris un curseur non encore validé."""
-    draft_slider = None
-    if st.session_state.get("test_started"):
-        order = st.session_state.get("cursor_order", []) or []
-        idx = int(st.session_state.get("current_index", 0) or 0)
-        if 0 <= idx < len(order):
-            cid = str(order[idx])
-            widget_key = f"slider_{cid}"
-            if widget_key in st.session_state:
-                current_value = int(st.session_state.get(widget_key))
-                positions = st.session_state.get("positions", {}) or {}
-                if cid in positions:
-                    baseline = int(positions[cid])
-                else:
-                    try:
-                        row = active.set_index("ID").loc[cid]
-                        baseline = int(row.get("Position défaut", 5))
-                    except Exception:
-                        baseline = 5
-                if current_value != baseline:
-                    draft_slider = {"id": cid, "position": current_value}
+    """Empreinte du travail courant, y compris les curseurs déplacés non validés.
+
+    Les brouillons sont conservés dans `slider_drafts`, séparément des widgets
+    Streamlit, afin qu'une navigation arrière ne puisse pas masquer une
+    modification non validée. Ils ne sont pas intégrés au JSON métier tant
+    qu'ils n'ont pas été validés.
+    """
+    drafts = st.session_state.get("slider_drafts", {}) or {}
+    draft_sliders = [
+        {"id": str(cid), "position": int(value)}
+        for cid, value in sorted(drafts.items(), key=lambda item: str(item[0]))
+    ]
     return fingerprint_guard_state(
         beneficiaire=st.session_state.get("beneficiaire", {}),
         cursor_order=st.session_state.get("cursor_order", []),
         positions=st.session_state.get("positions", {}),
         rgpd_acceptance=st.session_state.get("rgpd_acceptance", {}),
-        draft_slider=draft_slider,
+        draft_slider=draft_sliders or None,
     )
 
 
