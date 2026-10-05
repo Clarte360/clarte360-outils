@@ -1,3 +1,24 @@
+## 3.0.0-INTERVENANTS-RC2-2-2-P2 — 2026-10-02
+- P2 IA réalisé depuis le checkpoint P1 validé.
+- Faux 0/4 corrigé : 0 signifie désormais absence réelle de tout élément positif ; la complétude des critères obligatoires est séparée.
+- Couverture des critères obligatoires calculée séparément (`required_criteria_*`).
+- PDF hybrides détectés page par page sans OCR : texte extrait conservé et fichier PDF multimodal transmis lorsque des pages restent visuelles.
+- Observabilité IA globale : durée, appels API réels, retries, tokens entrée/sortie/total et coût estimatif si tarifs configurés.
+- Retry OpenAI rendu observable : 1 retry applicatif maximum, client SDK configuré sans retry caché.
+- Nouveaux points à vérifier IA matérialisés directement en objets structurés actionnables.
+- Tableau IA recentré sur critères/preuves/points ouverts ; niveau IA relégué en indicateur secondaire.
+- 6 nouveaux tests P2 ; suite complète répartie par lots : 490/490 tests verts.
+
+## 3.0.0-INTERVENANTS-RC2-2-2-P1 — 2026-10-02
+- P1 Données RC2-2-2 réalisé depuis la base officielle RC2-2-1.
+- Ajout additif des objets `professional_collaboration_history`, `qualification_review_points`, `professional_fact_sources` et `qualification_evidence_links`.
+- Type de collaboration cible : A_DEFINIR, SALARIE, STAGIAIRE, SOUS_TRAITANT, MANDATAIRE_ASSOCIE ; migration tracée des anciennes valeurs, avec reclassement humain pour INDEPENDANT/PARTENAIRE.
+- Protection automatique : une proposition IA seule n'est plus verrouillée ; toute décision humaine existante est protégée en backend.
+- Migration des anciens points IA textuels vers des points structurés décisionnables sans suppression de l'historique.
+- Provenance explicite HUMAN / AI_ACCEPTED / IMPORT / MIGRATION / OTHER pour les faits professionnels ; réutilisation d'un fait/document dans plusieurs critères/prestations sans duplication.
+- Opérations de reset/suppression alignées avec les nouveaux objets et prévention des références génériques pendantes.
+- 9 nouveaux tests P1 ; campagne exhaustive par lots : 484 tests réussis, 0 échec ; compilation Python OK.
+
 ## 3.0.0-INTERVENANTS-RC2-2-1 — 2026-10-01
 - Fusion contrôlée de RC2-2 avec les évolutions GitHub/VPS capturées dans RC2-1_1.
 - Ajout du connecteur IPIP-NEO-120 : registre, lancement signé, app bénéficiaire, services, outbox worker et archivage du rapport PDF.
@@ -556,3 +577,10 @@ Voir `INCREMENT_V3_I9_H2_4_CONTRESIGNATURE_DOCUMENTS_ERGONOMIE.md`.
 - Activation de MOTEURS_PROFESSIONNELS en production/prescriptible avec son profil HUB actuel.
 - Mise à jour des tests du registre afin qu'ils contrôlent l'état courant du référentiel et non l'ancien état planifié.
 - Aucun changement métier Intervenants hors synchronisation du registre outils.
+
+## 3.0.0-INTERVENANTS-RC2-2-2-RC1 — 2026-10-02
+- Correctif de finition avant recette RC2-2-2.
+- Version applicative réalignée sur RC1 et tests historiques de version mis à jour.
+- Parcours Action -> Qualification -> retour Action extrait dans `workflow_navigation.py` pour être testable sans navigateur.
+- Couverture C5 renforcée : personne/prestation exactes, validation humaine, recalcul réel, retour Action, succès/alerte selon éligibilité.
+- Package nettoyé : aucune sauvegarde runtime, aucun document/signature de test, aucun `__pycache__`, `.pyc` ou cache pytest.

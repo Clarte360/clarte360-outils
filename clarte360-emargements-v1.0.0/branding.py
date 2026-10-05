@@ -1,7 +1,7 @@
 from pathlib import Path
 
 APP_NAME = "Clarté360 — Gestion des actions"
-APP_VERSION = '3.0.0-INTERVENANTS-RC2-2-1'
+APP_VERSION = '3.0.0-INTERVENANTS-RC2-2-2-RC2'
 BRAND = "#008080"
 BRAND_LIGHT = "#F1F8F8"
 TEXT = "#1F2937"

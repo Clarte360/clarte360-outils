@@ -17,7 +17,7 @@ def test_j16_materializes_ai_without_human_validation(tmp_path):
     assert list_ai_evidence_proposals(e,p,s['id'])[0]['status']=='PROPOSEE'
     assert list_ai_criterion_proposals(e,p,s['id'])[0]['status']=='PROPOSEE'
 
-def test_j16_human_acceptance_materializes_evidence_and_criterion(tmp_path):
+def test_j16_ai_acceptance_materializes_evidence_but_not_human_criterion(tmp_path):
     e,p,s=setup(tmp_path); cr=list_service_criteria(e,s['id'])[0]
     result={'service_level':3,'confidence':.8,'rationale':'proposition','evidence':[{'source':'CV','fact':'experience','supports_level':3,'document_id':None,'criterion_ids':[cr['id']],'identity_status':'COHERENT'}],'missing_points':[],'criteria':[{'criterion_id':cr['id'],'proposed_level':3,'confidence':.75,'rationale':'preuve','evidence_indexes':[0]}]}
     save_ai_qualification_proposal(e,p,s['id'],result,'admin','openai','test','j16','hash')
@@ -25,7 +25,9 @@ def test_j16_human_acceptance_materializes_evidence_and_criterion(tmp_path):
     decide_ai_evidence_proposal(e,ep['id'],True,'admin'); decide_ai_criterion_proposal(e,cp['id'],True,'admin')
     d=get_person_service_qualification(e,p,s['id'])
     assert len(d['evidence'])==1
-    c=next(x for x in d['criteria'] if x['id']==cr['id']); assert c['assessment_value']==3
+    c=next(x for x in d['criteria'] if x['id']==cr['id']); assert c['assessment_value'] is None
+    set_human_criterion_assessment(e,p,cr['id'],3,'admin','Décision humaine')
+    c=next(x for x in get_person_service_qualification(e,p,s['id'])['criteria'] if x['id']==cr['id']); assert c['assessment_value']==3
 
 def test_j16_identity_mismatch_cannot_be_accepted(tmp_path):
     e,p,s=setup(tmp_path); cr=list_service_criteria(e,s['id'])[0]

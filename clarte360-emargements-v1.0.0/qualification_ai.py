@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, hashlib, os
+import json, hashlib, os, time
 from pathlib import Path
 
 PROMPT_VERSION = 'qualification_intervenant_v1_20260920'
@@ -50,7 +50,7 @@ class QualificationAIGateway:
             from openai import OpenAI
         except Exception as exc:
             raise RuntimeError("Le client OpenAI n'est pas installé.") from exc
-        return OpenAI(api_key=self.api_key, timeout=self.timeout, max_retries=1)
+        return OpenAI(api_key=self.api_key, timeout=self.timeout, max_retries=0)
     def analyze(self, payload:dict):
         request_hash=hashlib.sha256(json.dumps(payload,ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
         client=self._client_obj()
@@ -85,7 +85,38 @@ def extract_document_text(path:str, extension:str='', max_chars:int=18000)->str:
     return ''
 
 
-GLOBAL_PROMPT_VERSION = 'dossier_professionnel_global_v2_2_20261001'
+def inspect_pdf_for_ai(path:str, max_chars:int=18000, min_text_chars_per_page:int=30)->dict:
+    """Inspect a PDF page by page without OCR.
+
+    Returns extracted text plus whether the PDF should also be sent as a multimodal
+    input_file (fully scanned or hybrid with image-only pages).
+    """
+    p=Path(path)
+    result={'text':'','page_count':0,'text_pages':0,'visual_pages':0,'is_hybrid':False,'needs_multimodal':False}
+    if not p.exists():
+        return result
+    try:
+        from pypdf import PdfReader
+        parts=[]
+        pages=PdfReader(str(p)).pages
+        result['page_count']=len(pages)
+        for page in pages:
+            txt=(page.extract_text() or '').strip()
+            if len(txt)>=min_text_chars_per_page:
+                result['text_pages']+=1
+                if sum(len(x) for x in parts)<max_chars:
+                    parts.append(txt)
+            else:
+                result['visual_pages']+=1
+        result['text']='\n'.join(parts)[:max_chars]
+        result['is_hybrid']=bool(result['text_pages'] and result['visual_pages'])
+        result['needs_multimodal']=bool(result['visual_pages'])
+    except Exception:
+        result['needs_multimodal']=True
+    return result
+
+
+GLOBAL_PROMPT_VERSION = 'dossier_professionnel_global_v2_2_2_p2_20261002'
 
 DOSSIER_FACTS_SCHEMA = {
  'type':'object','additionalProperties':False,
@@ -174,20 +205,31 @@ class GlobalDossierAIGateway(QualificationAIGateway):
     """
     def _call_schema(self, instructions, content, schema_name, schema, max_output_tokens):
         client=self._client_obj()
-        response=client.responses.create(
-            model=self.model,
-            instructions=instructions,
-            input=[{'role':'user','content':content}],
-            store=False,
-            max_output_tokens=max_output_tokens,
-            text={'format':{'type':'json_schema','name':schema_name,'strict':True,'schema':schema}}
-        )
-        if getattr(response,'status',None) not in (None,'completed'):
-            raise RuntimeError(f"Réponse IA incomplète : {getattr(response,'status',None)}")
-        txt=getattr(response,'output_text','')
-        if not txt:
-            raise RuntimeError('Réponse IA vide.')
-        return json.loads(txt), getattr(response,'usage',None)
+        last_exc=None
+        for attempt in range(2):
+            self._api_call_count += 1
+            try:
+                response=client.responses.create(
+                    model=self.model,
+                    instructions=instructions,
+                    input=[{'role':'user','content':content}],
+                    store=False,
+                    max_output_tokens=max_output_tokens,
+                    text={'format':{'type':'json_schema','name':schema_name,'strict':True,'schema':schema}}
+                )
+                if getattr(response,'status',None) not in (None,'completed'):
+                    raise RuntimeError(f"Réponse IA incomplète : {getattr(response,'status',None)}")
+                txt=getattr(response,'output_text','')
+                if not txt:
+                    raise RuntimeError('Réponse IA vide.')
+                return json.loads(txt), getattr(response,'usage',None)
+            except Exception as exc:
+                last_exc=exc
+                if attempt == 0:
+                    self._retry_count += 1
+                    continue
+                raise
+        raise last_exc
 
     @staticmethod
     def _usage_add(total, usage):
@@ -209,27 +251,60 @@ class GlobalDossierAIGateway(QualificationAIGateway):
     @staticmethod
     def _normalize_candidate(candidate, service):
         out=dict(candidate)
-        expected=[int(c['criterion_id']) for c in (service.get('criteria') or [])]
         present={int(c.get('criterion_id') or 0):c for c in (out.get('criteria') or [])}
         missing=[]
         normalized=[]
+        required_total=0
+        required_positive=0
+        required_below_min=[]
         for criterion in service.get('criteria') or []:
             cid=int(criterion['criterion_id'])
             if cid in present:
-                normalized.append(present[cid])
+                row=dict(present[cid])
             else:
                 missing.append(cid)
-                normalized.append({
+                row={
                     'criterion_id':cid,'proposed_level':0,'confidence':0.0,
                     'rationale':"Critère non retourné par l'IA : contrôle humain requis.",
                     'evidence_indexes':[]
-                })
+                }
+            normalized.append(row)
+            if bool(criterion.get('required')):
+                required_total += 1
+                level=int(row.get('proposed_level') or 0)
+                minimum=int(criterion.get('minimum_level') or 0)
+                if level > 0:
+                    required_positive += 1
+                if level < minimum:
+                    required_below_min.append({
+                        'criterion_id':cid,
+                        'label':criterion.get('label') or f'Critère #{cid}',
+                        'proposed_level':level,
+                        'minimum_level':minimum,
+                    })
+        mp=list(out.get('missing_points') or [])
         if missing:
-            mp=list(out.get('missing_points') or [])
             mp.append("Certains critères n'ont pas été retournés par l'IA et ont été positionnés à 0 par sécurité : "+", ".join(str(x) for x in missing))
-            out['missing_points']=mp
         out['criteria']=normalized
+        out['missing_points']=list(dict.fromkeys(str(x) for x in mp if str(x).strip()))
         out['service_id']=int(service['service_id'])
+
+        # RC2-2-2 P2: 0 means strictly no positive evidence. Mandatory-criterion
+        # completeness is a separate indicator and must never zero-out positive facts.
+        positive_levels=[int(c.get('proposed_level') or 0) for c in normalized if int(c.get('proposed_level') or 0)>0]
+        positive_levels += [int(e.get('supports_level') or 0) for e in (out.get('evidence') or []) if int(e.get('supports_level') or 0)>0]
+        raw_level=int(out.get('service_level') or 0)
+        if raw_level == 0 and positive_levels:
+            out['service_level']=1
+            out['service_level_adjusted']=True
+            out['service_level_adjustment_reason']="Niveau IA global relevé de 0 à 1 car des éléments positifs existent ; la complétude des critères obligatoires est affichée séparément."
+        else:
+            out['service_level']=raw_level
+            out['service_level_adjusted']=False
+            out['service_level_adjustment_reason']=None
+        out['required_criteria_total']=required_total
+        out['required_criteria_positive']=required_positive
+        out['required_criteria_below_min']=required_below_min
         return out
 
     @staticmethod
@@ -263,6 +338,9 @@ class GlobalDossierAIGateway(QualificationAIGateway):
         return out
 
     def analyze(self, payload:dict):
+        started=time.monotonic()
+        self._api_call_count=0
+        self._retry_count=0
         clean_payload=dict(payload)
         base_facts=clean_payload.pop('_base_facts',None)
         request_hash=hashlib.sha256(json.dumps({'payload':clean_payload,'base_facts':base_facts},ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
@@ -313,7 +391,26 @@ class GlobalDossierAIGateway(QualificationAIGateway):
         result['service_candidates']=service_candidates
         if len(service_candidates)!=len(services):
             raise RuntimeError("Analyse IA incomplète : toutes les prestations actives n'ont pas été étudiées.")
+        usage_obj=self._usage_obj(usage_total)
+        input_tokens=int(getattr(usage_obj,'input_tokens',0) or 0) if usage_obj is not None else 0
+        output_tokens=int(getattr(usage_obj,'output_tokens',0) or 0) if usage_obj is not None else 0
+        input_rate=os.environ.get('CLARTE360_OPENAI_INPUT_USD_PER_MILLION','').strip()
+        output_rate=os.environ.get('CLARTE360_OPENAI_OUTPUT_USD_PER_MILLION','').strip()
+        estimated_cost=None
+        try:
+            if input_rate and output_rate:
+                estimated_cost=(input_tokens*float(input_rate)+output_tokens*float(output_rate))/1_000_000.0
+        except Exception:
+            estimated_cost=None
         return {
-            'result':result,'request_hash':request_hash,'usage':self._usage_obj(usage_total),
-            'model':self.model,'prompt_version':GLOBAL_PROMPT_VERSION,'provider':'openai'
+            'result':result,'request_hash':request_hash,'usage':usage_obj,
+            'model':self.model,'prompt_version':GLOBAL_PROMPT_VERSION,'provider':'openai',
+            'run_metrics':{
+                'duration_seconds':round(time.monotonic()-started,3),
+                'api_call_count':int(self._api_call_count),
+                'retry_count':int(self._retry_count),
+                'input_tokens':input_tokens,'output_tokens':output_tokens,
+                'total_tokens':input_tokens+output_tokens,
+                'estimated_cost':estimated_cost,
+            }
         }

@@ -10,7 +10,7 @@ def eng():
 
 
 def complete(e,ppid,email='candidate@example.test'):
-    update_professional_profile(e,ppid,{'title':'Camille Exemple','email':email,'collaboration_type':'INDEPENDANT'},'admin@test')
+    update_professional_profile(e,ppid,{'title':'Camille Exemple','email':email,'collaboration_type':'SOUS_TRAITANT'},'admin@test')
     store_professional_document(e,ppid,b'%PDF-1.4 test','cv.pdf','CV','admin@test')
 
 

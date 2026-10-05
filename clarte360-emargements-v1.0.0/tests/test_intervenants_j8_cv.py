@@ -8,7 +8,7 @@ def eng():
     e=make_engine('sqlite:///:memory:');init_db(e);return e
 
 def rich(e):
-    p=create_professional_intervenant(e,'Alice Martin','alice@example.test','0600000000','INDEPENDANT','admin')
+    p=create_professional_intervenant(e,'Alice Martin','alice@example.test','0600000000','SOUS_TRAITANT','admin')
     update_professional_profile(e,p,{'title':'Consultante QSE','summary':'Accompagnement et formation.','email':'alice@example.test','phone':'0600000000','city':'Paris','country':'France','linkedin_url':'https://example.test/alice','notes_internal':'Note confidentielle'},'admin')
     add_professional_experience(e,p,'Responsable QSE','Entreprise X','2020-01-01',None,True,'Pilotage QSE','admin')
     add_professional_education(e,p,'Master QSE','Université','QSE','2019-06-01',None,'admin')

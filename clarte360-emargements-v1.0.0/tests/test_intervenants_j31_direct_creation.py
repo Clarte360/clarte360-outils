@@ -9,7 +9,7 @@ def eng():
 
 def test_direct_intervenant_creation_skips_candidate_workflow_and_keeps_one_person():
     e=eng()
-    p=create_professional_intervenant(e,'Alex Exemple','alex@example.test','0600000000','INDEPENDANT','admin@test')
+    p=create_professional_intervenant(e,'Alex Exemple','alex@example.test','0600000000','SOUS_TRAITANT','admin@test')
     pp=one(e,'SELECT * FROM professional_persons WHERE professional_person_id=:p',{'p':p})
     tr=one(e,'SELECT * FROM trainers WHERE id=:i',{'i':pp['trainer_id']})
     prof=one(e,'SELECT * FROM professional_profiles WHERE professional_person_id=:p',{'p':p})

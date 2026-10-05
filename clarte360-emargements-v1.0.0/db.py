@@ -507,7 +507,7 @@ INTERVENANTS_J2_SCHEMA = [
 INTERVENANTS_J4_SCHEMA = [
 """CREATE TABLE IF NOT EXISTS person_service_qualifications (
  id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL,
- human_value INTEGER, human_comment TEXT, human_validated_by TEXT, human_validated_at TEXT, human_locked INTEGER NOT NULL DEFAULT 1,
+ human_value INTEGER, human_comment TEXT, human_validated_by TEXT, human_validated_at TEXT, human_locked INTEGER NOT NULL DEFAULT 0,
  qualification_date TEXT, review_due_at TEXT, ai_value INTEGER, ai_confidence REAL, ai_evidence_json TEXT, ai_updated_at TEXT,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(professional_person_id,service_id),
  CHECK(human_value IS NULL OR human_value BETWEEN 0 AND 4), CHECK(ai_value IS NULL OR ai_value BETWEEN 0 AND 4), CHECK(human_locked IN (0,1)),
@@ -516,7 +516,7 @@ INTERVENANTS_J4_SCHEMA = [
 )""",
 """CREATE TABLE IF NOT EXISTS qualification_criterion_assessments (
  id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL, criterion_id INTEGER NOT NULL,
- human_value INTEGER, human_comment TEXT, human_validated_by TEXT, human_validated_at TEXT, human_locked INTEGER NOT NULL DEFAULT 1,
+ human_value INTEGER, human_comment TEXT, human_validated_by TEXT, human_validated_at TEXT, human_locked INTEGER NOT NULL DEFAULT 0,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(professional_person_id,criterion_id),
  CHECK(human_value IS NULL OR human_value BETWEEN 0 AND 4), CHECK(human_locked IN (0,1)),
  FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
@@ -573,7 +573,8 @@ INTERVENANTS_J5_SCHEMA = [
 INTERVENANTS_J14_SCHEMA = [
 """CREATE TABLE IF NOT EXISTS professional_global_ai_runs (
  id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL, request_hash TEXT NOT NULL,
- status TEXT NOT NULL, selected_document_ids_json TEXT, output_json TEXT, input_tokens INTEGER, output_tokens INTEGER, actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ status TEXT NOT NULL, selected_document_ids_json TEXT, output_json TEXT, input_tokens INTEGER, output_tokens INTEGER,
+ duration_seconds REAL, api_call_count INTEGER, retry_count INTEGER, total_tokens INTEGER, estimated_cost REAL, actor TEXT NOT NULL, created_at TEXT NOT NULL,
  FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
 )""",
 """CREATE TABLE IF NOT EXISTS professional_ai_suggestions (
@@ -583,6 +584,58 @@ INTERVENANTS_J14_SCHEMA = [
  FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
  FOREIGN KEY(run_id) REFERENCES professional_global_ai_runs(id) ON DELETE RESTRICT,
  FOREIGN KEY(source_document_id) REFERENCES professional_documents(id) ON DELETE RESTRICT
+)"""
+]
+
+# RC2-2-2 P1 - additive data layer for collaboration migration, review points,
+# reusable fact provenance and criterion relevance links. No destructive rewrite.
+INTERVENANTS_RC222_P1_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS professional_collaboration_history (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL,
+ old_type TEXT, new_type TEXT NOT NULL, reason TEXT NOT NULL, event_key TEXT NOT NULL UNIQUE,
+ reclassification_required INTEGER NOT NULL DEFAULT 0,
+ status TEXT NOT NULL DEFAULT 'CLOTURE', resolved_type TEXT, resolved_by TEXT, resolved_at TEXT,
+ actor TEXT NOT NULL, created_at TEXT NOT NULL,
+ CHECK(reclassification_required IN (0,1)), CHECK(status IN ('OUVERT','CLOTURE')),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS qualification_review_points (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL,
+ criterion_id INTEGER, professional_document_id INTEGER, qualification_evidence_id INTEGER, ai_run_id INTEGER,
+ source TEXT NOT NULL DEFAULT 'IA', source_key TEXT NOT NULL, label TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'OUVERT', resolution_comment TEXT,
+ created_by TEXT NOT NULL, created_at TEXT NOT NULL, resolved_by TEXT, resolved_at TEXT, updated_at TEXT NOT NULL,
+ CHECK(source IN ('IA','HUMAIN','MIGRATION')), CHECK(status IN ('OUVERT','LEVE','CONFIRME','NON_PERTINENT')),
+ UNIQUE(professional_person_id,service_id,source_key),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT,
+ FOREIGN KEY(criterion_id) REFERENCES service_competency_criteria(id) ON DELETE RESTRICT,
+ FOREIGN KEY(professional_document_id) REFERENCES professional_documents(id) ON DELETE RESTRICT,
+ FOREIGN KEY(qualification_evidence_id) REFERENCES qualification_evidence(id) ON DELETE SET NULL,
+ FOREIGN KEY(ai_run_id) REFERENCES ai_analysis_runs(id) ON DELETE SET NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS professional_fact_sources (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL,
+ fact_type TEXT NOT NULL, fact_ref_id TEXT NOT NULL,
+ professional_document_id INTEGER, ai_suggestion_id INTEGER,
+ source_kind TEXT NOT NULL DEFAULT 'HUMAN', source_label TEXT,
+ validated_by TEXT, validated_at TEXT, created_at TEXT NOT NULL,
+ CHECK(source_kind IN ('HUMAN','AI_ACCEPTED','IMPORT','MIGRATION','OTHER')),
+ UNIQUE(professional_person_id,fact_type,fact_ref_id,professional_document_id,ai_suggestion_id,source_kind),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(professional_document_id) REFERENCES professional_documents(id) ON DELETE RESTRICT,
+ FOREIGN KEY(ai_suggestion_id) REFERENCES professional_ai_suggestions(id) ON DELETE SET NULL
+)""",
+"""CREATE TABLE IF NOT EXISTS qualification_evidence_links (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, professional_person_id TEXT NOT NULL, service_id INTEGER NOT NULL, criterion_id INTEGER,
+ fact_type TEXT, fact_ref_id TEXT, professional_document_id INTEGER,
+ relevance_comment TEXT, validated_by TEXT NOT NULL, validated_at TEXT NOT NULL, created_at TEXT NOT NULL,
+ CHECK((fact_type IS NOT NULL AND fact_ref_id IS NOT NULL) OR professional_document_id IS NOT NULL),
+ UNIQUE(professional_person_id,service_id,criterion_id,fact_type,fact_ref_id,professional_document_id),
+ FOREIGN KEY(professional_person_id) REFERENCES professional_persons(professional_person_id) ON DELETE RESTRICT,
+ FOREIGN KEY(service_id) REFERENCES service_catalog(id) ON DELETE RESTRICT,
+ FOREIGN KEY(criterion_id) REFERENCES service_competency_criteria(id) ON DELETE RESTRICT,
+ FOREIGN KEY(professional_document_id) REFERENCES professional_documents(id) ON DELETE RESTRICT
 )"""
 ]
 
@@ -712,6 +765,8 @@ def init_db(engine: Engine):
             c.execute(text(sql))
         for sql in INTERVENANTS_J15_SCHEMA:
             c.execute(text(sql))
+        for sql in INTERVENANTS_RC222_P1_SCHEMA:
+            c.execute(text(sql))
         for sql in I9J2_SCHEMA:
             c.execute(text(sql))
         for sql in PIP_LIAISON_B_SCHEMA:
@@ -802,6 +857,7 @@ def init_db(engine: Engine):
             "ALTER TABLE action_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE slot_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE action_trainers ADD COLUMN can_prescribe_tools INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE professional_cv_generations ADD COLUMN source_sha256 TEXT",
         ]
         for sql in migrations:
             try: c.execute(text(sql))
@@ -1067,6 +1123,69 @@ def init_db(engine: Engine):
             try: c.execute(text(sql))
             except Exception: pass
 
+        # RC2-2-2 P2: observability columns for global AI runs. Additive upgrade only.
+        for sql in [
+            "ALTER TABLE professional_global_ai_runs ADD COLUMN duration_seconds REAL",
+            "ALTER TABLE professional_global_ai_runs ADD COLUMN api_call_count INTEGER",
+            "ALTER TABLE professional_global_ai_runs ADD COLUMN retry_count INTEGER",
+            "ALTER TABLE professional_global_ai_runs ADD COLUMN total_tokens INTEGER",
+            "ALTER TABLE professional_global_ai_runs ADD COLUMN estimated_cost REAL",
+        ]:
+            try: c.execute(text(sql))
+            except Exception: pass
+
+        # RC2-2-2 P1: protection humaine automatique, migration collaboration et
+        # structuration des anciens points IA. Migrations idempotentes et additives.
+        c.execute(text("UPDATE person_service_qualifications SET human_locked=0 WHERE human_value IS NULL AND COALESCE(human_locked,0)<>0"))
+        c.execute(text("UPDATE person_service_qualifications SET human_locked=1 WHERE human_value IS NOT NULL AND COALESCE(human_locked,0)<>1"))
+        c.execute(text("UPDATE qualification_criterion_assessments SET human_locked=0 WHERE human_value IS NULL AND COALESCE(human_locked,0)<>0"))
+        c.execute(text("UPDATE qualification_criterion_assessments SET human_locked=1 WHERE human_value IS NOT NULL AND COALESCE(human_locked,0)<>1"))
+
+        now_rc222 = utcnow_iso()
+        collaboration_migrations = {
+            'SALARIE_INTERNE': ('SALARIE', 0, 'Migration RC2-2-2 : SALARIE_INTERNE vers SALARIE'),
+            'INDEPENDANT': ('A_DEFINIR', 1, 'Migration RC2-2-2 : ancien type INDEPENDANT a reclasser'),
+            'PARTENAIRE': ('A_DEFINIR', 1, 'Migration RC2-2-2 : ancien type PARTENAIRE a reclasser'),
+        }
+        for old_type, (new_type, needs_review, reason) in collaboration_migrations.items():
+            rows = c.execute(text("SELECT professional_person_id FROM professional_profiles WHERE collaboration_type=:o"), {'o': old_type}).mappings().all()
+            for row in rows:
+                ppid = row['professional_person_id']
+                status = 'OUVERT' if needs_review else 'CLOTURE'
+                c.execute(text("""INSERT OR IGNORE INTO professional_collaboration_history(
+                    professional_person_id,old_type,new_type,reason,event_key,reclassification_required,status,actor,created_at)
+                    VALUES(:p,:o,:n,:r,:ek,:rr,:s,'migration-rc2-2-2-p1',:t)"""),
+                    {'p':ppid,'o':old_type,'n':new_type,'r':reason,'ek':f'migration:{ppid}:{old_type}:{new_type}','rr':needs_review,'s':status,'t':now_rc222})
+                c.execute(text("UPDATE professional_profiles SET collaboration_type=:n,updated_at=:t WHERE professional_person_id=:p"),
+                          {'n':new_type,'t':now_rc222,'p':ppid})
+                details=json.dumps({'old_type':old_type,'new_type':new_type,'reclassification_required':bool(needs_review)},ensure_ascii=False)
+                c.execute(text("""INSERT INTO audit_log(actor,event_type,entity_type,entity_id,details_json,created_at)
+                    SELECT 'migration-rc2-2-2-p1','PROFESSIONAL_COLLABORATION_MIGRATED','professional_person',:p,:d,:t
+                    WHERE NOT EXISTS (SELECT 1 FROM audit_log WHERE event_type='PROFESSIONAL_COLLABORATION_MIGRATED' AND entity_id=:p AND details_json=:d)"""),
+                    {'p':ppid,'d':details,'t':now_rc222})
+
+        # Legacy ai_missing_json becomes actionable review points. The source_key makes
+        # the backfill idempotent and preserves the original text for history.
+        qrows = c.execute(text("""SELECT id,professional_person_id,service_id,ai_run_id,ai_missing_json
+            FROM person_service_qualifications WHERE ai_missing_json IS NOT NULL AND TRIM(ai_missing_json)<>''""")).mappings().all()
+        for qr in qrows:
+            try:
+                missing = json.loads(qr.get('ai_missing_json') or '[]')
+            except Exception:
+                missing = []
+            if not isinstance(missing,list):
+                missing=[]
+            run_key = qr.get('ai_run_id') if qr.get('ai_run_id') is not None else f"qualification-{qr['id']}"
+            for idx, item in enumerate(missing):
+                label = str(item or '').strip()
+                if not label:
+                    continue
+                source_key=f"legacy-ai-missing:{run_key}:{idx}"
+                c.execute(text("""INSERT OR IGNORE INTO qualification_review_points(
+                    professional_person_id,service_id,ai_run_id,source,source_key,label,status,created_by,created_at,updated_at)
+                    VALUES(:p,:s,:r,'MIGRATION',:k,:l,'OUVERT','migration-rc2-2-2-p1',:n,:n)"""),
+                    {'p':qr['professional_person_id'],'s':qr['service_id'],'r':qr.get('ai_run_id'),'k':source_key,'l':label,'n':now_rc222})
+
         # Intervenants J0: every historical trainer receives a stable professional person identity.
         # This is an identity migration only: no qualification or competence is inferred.
         trainer_rows = c.execute(text("SELECT id, professional_person_id, active, created_at, updated_at FROM trainers ORDER BY id")).mappings().all()
@@ -1079,6 +1198,37 @@ def init_db(engine: Engine):
                 "p": ppid, "t": tr["id"], "a": 1 if tr.get("active") else 0,
                 "c": tr.get("created_at") or utcnow_iso(), "u": tr.get("updated_at") or utcnow_iso()
             })
+
+        # RC2-2-2 P1: every structured fact that predates the new provenance model
+        # receives an explicit MIGRATION origin. Do not infer a document source that is not known.
+        fact_tables = [
+            ('professional_experiences','EXPERIENCE'),
+            ('professional_education','EDUCATION'),
+            ('professional_certifications','CERTIFICATION'),
+            ('professional_languages','LANGUAGE'),
+            ('professional_specialties','SPECIALTY'),
+        ]
+        for table_name, fact_type in fact_tables:
+            rows = c.execute(text(f"SELECT professional_person_id,id FROM {table_name}")).mappings().all()
+            for row in rows:
+                fact_ref=str(row['id'])
+                c.execute(text("""INSERT INTO professional_fact_sources(
+                    professional_person_id,fact_type,fact_ref_id,source_kind,source_label,validated_by,validated_at,created_at)
+                    SELECT :p,:t,:r,'MIGRATION','Donnée antérieure à RC2-2-2 P1','migration-rc2-2-2-p1',:n,:n
+                    WHERE NOT EXISTS (SELECT 1 FROM professional_fact_sources
+                      WHERE professional_person_id=:p AND fact_type=:t AND fact_ref_id=:r)"""),
+                    {'p':row['professional_person_id'],'t':fact_type,'r':fact_ref,'n':now_rc222})
+        profiles = c.execute(text("SELECT professional_person_id,title,summary FROM professional_profiles")).mappings().all()
+        for row in profiles:
+            for fact_type, value in (('PROFILE_TITLE',row.get('title')),('PROFILE_SUMMARY',row.get('summary'))):
+                if not str(value or '').strip():
+                    continue
+                c.execute(text("""INSERT INTO professional_fact_sources(
+                    professional_person_id,fact_type,fact_ref_id,source_kind,source_label,validated_by,validated_at,created_at)
+                    SELECT :p,:t,:p,'MIGRATION','Donnée antérieure à RC2-2-2 P1','migration-rc2-2-2-p1',:n,:n
+                    WHERE NOT EXISTS (SELECT 1 FROM professional_fact_sources
+                      WHERE professional_person_id=:p AND fact_type=:t AND fact_ref_id=:p)"""),
+                    {'p':row['professional_person_id'],'t':fact_type,'n':now_rc222})
 
         # Intervenants J1R: catalogue V1 Clarte360, administrable et evolutif.
         # Les univers visibles restent metier (Bilan, Formations, Coaching, Conseil, Accompagnements) :

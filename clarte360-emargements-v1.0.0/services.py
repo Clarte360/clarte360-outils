@@ -3158,7 +3158,7 @@ def ipip_connector_configured(signing_key):
 
 
 def build_ipip_prescription_launch(engine, prescription_id, signing_key, valid_seconds=900):
-    """Build the signed IPIP launch URL with the beneficiary/action context required by the report."""
+    """Build the signed IPIP launch URL without civil identity in the token."""
     if not ipip_connector_configured(signing_key):
         raise ValueError('Secret IPIP Clarté360 non configuré.')
     row=one(engine,"""SELECT tp.*,tc.base_url,tc.launch_type,tc.connector_code,tc.connector_status
@@ -3171,8 +3171,6 @@ def build_ipip_prescription_launch(engine, prescription_id, signing_key, valid_s
     if str(row.get('status') or '').upper()=='TERMINE':
         raise ValueError('Cette passation IPIP-NEO-120 est terminée.')
     now=int(time.time()); ttl=max(60,min(int(valid_seconds or 900),3600))
-    beneficiary=one(engine,"SELECT first_name,last_name FROM beneficiaries WHERE id=:b",{'b':row['beneficiary_id']}) or {}
-    action=one(engine,"SELECT action_no,title FROM actions WHERE id=:a",{'a':row['action_id']}) or {}
     payload={
       'v':1,'iat':now,'exp':now+ttl,
       'beneficiary_id':str(row['beneficiary_id']),
@@ -3181,10 +3179,6 @@ def build_ipip_prescription_launch(engine, prescription_id, signing_key, valid_s
       'tool_id':'ipip-neo120',
       'hub_source':'GESTION_ACTIONS_I9_H1',
       'scopes':['IPIP_RUN','IPIP_RESUME','IPIP_STATUS','IPIP_RESULT_READ'],
-      'beneficiary_first_name':str(beneficiary.get('first_name') or '').strip(),
-      'beneficiary_last_name':str(beneficiary.get('last_name') or '').strip(),
-      'action_number':str(action.get('action_no') or '').strip(),
-      'action_title':str(action.get('title') or '').strip(),
     }
     if row.get('participant_id') is not None:
         payload['participant_id']=str(row.get('participant_id'))
@@ -4514,7 +4508,11 @@ def _service_snapshot(engine, service_id:int, actor:str, reason:str|None=None):
 
 
 def list_services(engine, active_only=False, family_id=None):
-    sql='SELECT s.*,f.family_code,f.name family_master_name FROM service_catalog s LEFT JOIN service_families f ON f.id=s.family_id'
+    sql='''SELECT s.*,f.family_code,f.name family_master_name,
+      (SELECT COUNT(*) FROM service_competency_criteria c WHERE c.service_id=s.id AND c.active=1) criterion_count,
+      (SELECT COUNT(*) FROM person_service_qualifications ql JOIN professional_persons pp ON pp.professional_person_id=ql.professional_person_id
+        WHERE ql.service_id=s.id AND ql.human_value IS NOT NULL AND pp.active=1 AND pp.principal_status='INTERVENANT') qualified_people_count
+      FROM service_catalog s LEFT JOIN service_families f ON f.id=s.family_id'''
     wh=[]; params={}
     if active_only: wh.append('s.active=1')
     if family_id is not None: wh.append('s.family_id=:f'); params['f']=int(family_id)
@@ -4701,7 +4699,8 @@ def criterion_versions(engine, criterion_id:int):
 
 # --- INTERVENANTS J2 : dossier professionnel 360 degres ---
 PROFESSIONAL_DOCUMENT_CATEGORIES=('CV','PHOTO','DIPLOME','CERTIFICATION','HABILITATION','ATTESTATION','NDA_JUSTIFICATIF','QUALIOPI_CERTIFICAT','RC_PRO','REFERENCE','AUTRE')
-PROFESSIONAL_COLLABORATION_TYPES=('A_DEFINIR','SALARIE_INTERNE','INDEPENDANT','SOUS_TRAITANT','PARTENAIRE')
+PROFESSIONAL_COLLABORATION_TYPES=('A_DEFINIR','SALARIE','STAGIAIRE','SOUS_TRAITANT','MANDATAIRE_ASSOCIE')
+PROFESSIONAL_LEGACY_COLLABORATION_TYPES=('SALARIE_INTERNE','INDEPENDANT','PARTENAIRE')
 
 
 def list_professional_people(engine, include_inactive=True):
@@ -4734,8 +4733,22 @@ def professional_people_operational_view(engine, include_inactive=True, warning_
         row['alert_count']=alert_counts.get(ppid,{}).get('alerts',0)
         row['expired_alert_count']=alert_counts.get(ppid,{}).get('expired',0)
         if person.get('principal_status')=='CANDIDAT':
-            row['completion_percent']=candidate_completeness(engine,ppid)['percent']
-        else: row['completion_percent']=None
+            comp=candidate_completeness(engine,ppid); row['completion_percent']=comp['percent']
+            row['missing_items']=', '.join(k for k,v in comp['checks'].items() if not v) or 'Aucun'
+            row['claimed_services']='Non renseigné'
+            status=person.get('candidate_work_status') or 'NOUVEAU'
+            row['next_action']='Compléter le dossier' if comp['percent']<100 else ('Prendre une décision' if status=='PRET_DECISION' else 'Étudier la candidature')
+        else:
+            row['completion_percent']=None; row['missing_items']=''; row['claimed_services']=''; row['next_action']=''
+        coll=person.get('collaboration_type') or 'A_DEFINIR'
+        row['collaboration_label']={'A_DEFINIR':'À définir','SALARIE':'Salarié','STAGIAIRE':'Stagiaire','SOUS_TRAITANT':'Sous-traitant','MANDATAIRE_ASSOCIE':'Mandataire / Associé'}.get(coll,coll)
+        reg=prof.get('regulatory_status') or {}
+        row['compliance_label']='OK' if (reg.get('nda_status')=='OUI' or reg.get('qualiopi_status')=='OUI') else 'À vérifier'
+        dates=[x.get('review_due_at') for x in validated if x.get('review_due_at')]
+        row['next_review']=min(dates) if dates else None
+        row['mission_count']=len(professional_missions_view(engine,ppid))
+        row['todo_count']=int(row.get('alert_count') or 0)+sum(1 for x in list_qualification_review_points(engine,ppid,open_only=True))
+        row['last_activity']=person.get('updated_at') or person.get('created_at')
         out.append(row)
     return out
 
@@ -4818,8 +4831,10 @@ def create_professional_candidate(engine, full_name, email=None, phone=None, col
     return ppid
 
 
-def update_professional_profile(engine, ppid, payload, actor='system'):
+def update_professional_profile(engine, ppid, payload, actor='system', source_kind='HUMAN', source_document_id=None, ai_suggestion_id=None):
     if not one(engine,'SELECT 1 x FROM professional_persons WHERE professional_person_id=:p',{'p':ppid}): raise ValueError('Dossier professionnel introuvable.')
+    current=one(engine,'SELECT collaboration_type,title,summary FROM professional_profiles WHERE professional_person_id=:p',{'p':ppid}) or {}
+    old_collab=current.get('collaboration_type') or 'A_DEFINIR'
     now=utcnow_iso(); collab=payload.get('collaboration_type') or 'A_DEFINIR'
     if collab not in PROFESSIONAL_COLLABORATION_TYPES: raise ValueError('Type de collaboration invalide.')
     vals={
@@ -4833,7 +4848,13 @@ def update_professional_profile(engine, ppid, payload, actor='system'):
     execute(engine,'''INSERT INTO professional_profiles(professional_person_id,title,summary,collaboration_type,origin,email,phone,address_line1,address_line2,postal_code,city,country,website,linkedin_url,notes_internal,created_at,updated_at)
       VALUES(:p,:t,:s,:c,:o,:e,:ph,:a1,:a2,:pc,:ci,:co,:w,:li,:ni,:n,:n)
       ON CONFLICT(professional_person_id) DO UPDATE SET title=:t,summary=:s,collaboration_type=:c,email=:e,phone=:ph,address_line1=:a1,address_line2=:a2,postal_code=:pc,city=:ci,country=:co,website=:w,linkedin_url=:li,notes_internal=:ni,updated_at=:n''',vals)
-    audit(engine,'PROFESSIONAL_PROFILE_UPDATED',actor=actor,entity_type='professional_person',entity_id=ppid,details={})
+    if collab!=old_collab:
+        _record_collaboration_change(engine,ppid,old_collab,collab,actor,'Modification humaine du type de collaboration',False)
+    if vals.get('t') and (source_kind!='HUMAN' or current.get('title')!=vals.get('t')):
+        add_professional_fact_source(engine,ppid,'PROFILE_TITLE',ppid,actor,source_document_id,ai_suggestion_id,source_kind)
+    if vals.get('s') and (source_kind!='HUMAN' or current.get('summary')!=vals.get('s')):
+        add_professional_fact_source(engine,ppid,'PROFILE_SUMMARY',ppid,actor,source_document_id,ai_suggestion_id,source_kind)
+    audit(engine,'PROFESSIONAL_PROFILE_UPDATED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'collaboration_type':collab})
 
 
 def update_professional_identity(engine, ppid, first_name, last_name, actor='system'):
@@ -4860,7 +4881,7 @@ def _fact_norm(value):
     return ' '.join(str(value or '').strip().casefold().split())
 
 
-def add_professional_experience(engine,ppid,role_title,organization=None,start_date=None,end_date=None,current_role=False,description=None,actor='system'):
+def add_professional_experience(engine,ppid,role_title,organization=None,start_date=None,end_date=None,current_role=False,description=None,actor='system',source_kind='HUMAN',source_document_id=None,ai_suggestion_id=None):
     role=validate_short_text(role_title,'Fonction',required=True,max_len=180)
     existing=q(engine,'SELECT * FROM professional_experiences WHERE professional_person_id=:p',{'p':ppid})
     for row in existing:
@@ -4869,13 +4890,14 @@ def add_professional_experience(engine,ppid,role_title,organization=None,start_d
             if description and not row.get('description'):
                 execute(engine,'UPDATE professional_experiences SET description=:d,updated_at=:n WHERE id=:i',{'d':description,'n':utcnow_iso(),'i':row['id']})
             audit(engine,'PROFESSIONAL_EXPERIENCE_DUPLICATE_MERGED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'experience_id':row['id']})
+            add_professional_fact_source(engine,ppid,'EXPERIENCE',row['id'],actor,source_document_id,ai_suggestion_id,source_kind)
             return row['id']
     rid=execute(engine,'''INSERT INTO professional_experiences(professional_person_id,organization,role_title,description,start_date,end_date,current_role,created_at,updated_at)
       VALUES(:p,:o,:r,:d,:s,:e,:c,:n,:n)''',{'p':ppid,'o':organization or None,'r':role,'d':description or None,'s':start_date or None,'e':None if current_role else (end_date or None),'c':1 if current_role else 0,'n':utcnow_iso()})
-    audit(engine,'PROFESSIONAL_EXPERIENCE_ADDED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'experience_id':rid});return rid
+    audit(engine,'PROFESSIONAL_EXPERIENCE_ADDED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'experience_id':rid});add_professional_fact_source(engine,ppid,'EXPERIENCE',rid,actor,source_document_id,ai_suggestion_id,source_kind);return rid
 
 
-def add_professional_education(engine,ppid,diploma_title,institution=None,field=None,obtained_date=None,description=None,actor='system'):
+def add_professional_education(engine,ppid,diploma_title,institution=None,field=None,obtained_date=None,description=None,actor='system',source_kind='HUMAN',source_document_id=None,ai_suggestion_id=None):
     title=validate_short_text(diploma_title,'Diplôme / formation',required=True,max_len=220)
     existing=q(engine,'SELECT * FROM professional_education WHERE professional_person_id=:p',{'p':ppid})
     for row in existing:
@@ -4884,13 +4906,14 @@ def add_professional_education(engine,ppid,diploma_title,institution=None,field=
             if field and not row.get('field'):
                 execute(engine,'UPDATE professional_education SET field=:f,updated_at=:n WHERE id=:i',{'f':field,'n':utcnow_iso(),'i':row['id']})
             audit(engine,'PROFESSIONAL_EDUCATION_DUPLICATE_MERGED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'education_id':row['id']})
+            add_professional_fact_source(engine,ppid,'EDUCATION',row['id'],actor,source_document_id,ai_suggestion_id,source_kind)
             return row['id']
     rid=execute(engine,'''INSERT INTO professional_education(professional_person_id,diploma_title,institution,field,obtained_date,description,created_at,updated_at)
       VALUES(:p,:d,:i,:f,:o,:x,:n,:n)''',{'p':ppid,'d':title,'i':institution or None,'f':field or None,'o':obtained_date or None,'x':description or None,'n':utcnow_iso()})
-    audit(engine,'PROFESSIONAL_EDUCATION_ADDED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'education_id':rid});return rid
+    audit(engine,'PROFESSIONAL_EDUCATION_ADDED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'education_id':rid});add_professional_fact_source(engine,ppid,'EDUCATION',rid,actor,source_document_id,ai_suggestion_id,source_kind);return rid
 
 
-def add_professional_certification(engine,ppid,name,certification_type='CERTIFICATION',issuer=None,reference=None,obtained_date=None,valid_until=None,description=None,actor='system'):
+def add_professional_certification(engine,ppid,name,certification_type='CERTIFICATION',issuer=None,reference=None,obtained_date=None,valid_until=None,description=None,actor='system',source_kind='HUMAN',source_document_id=None,ai_suggestion_id=None):
     if certification_type not in ('CERTIFICATION','HABILITATION','ATTESTATION'): raise ValueError('Type de certification invalide.')
     cname=validate_short_text(name,'Certification / habilitation',required=True,max_len=220)
     existing=q(engine,'SELECT * FROM professional_certifications WHERE professional_person_id=:p',{'p':ppid})
@@ -4898,23 +4921,187 @@ def add_professional_certification(engine,ppid,name,certification_type='CERTIFIC
         if (_fact_norm(row.get('certification_type'))==_fact_norm(certification_type) and _fact_norm(row.get('name'))==_fact_norm(cname)
             and _fact_norm(row.get('issuer'))==_fact_norm(issuer) and (_fact_norm(row.get('reference'))==_fact_norm(reference) or not row.get('reference') or not reference)):
             audit(engine,'PROFESSIONAL_CERTIFICATION_DUPLICATE_MERGED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'certification_id':row['id']})
+            add_professional_fact_source(engine,ppid,'CERTIFICATION',row['id'],actor,source_document_id,ai_suggestion_id,source_kind)
             return row['id']
     rid=execute(engine,'''INSERT INTO professional_certifications(professional_person_id,certification_type,name,issuer,reference,obtained_date,valid_until,description,created_at,updated_at)
       VALUES(:p,:t,:n,:i,:r,:o,:v,:d,:u,:u)''',{'p':ppid,'t':certification_type,'n':cname,'i':issuer or None,'r':reference or None,'o':obtained_date or None,'v':valid_until or None,'d':description or None,'u':utcnow_iso()})
-    audit(engine,'PROFESSIONAL_CERTIFICATION_ADDED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'certification_id':rid,'type':certification_type});return rid
+    audit(engine,'PROFESSIONAL_CERTIFICATION_ADDED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'certification_id':rid,'type':certification_type});add_professional_fact_source(engine,ppid,'CERTIFICATION',rid,actor,source_document_id,ai_suggestion_id,source_kind);return rid
 
 
-def add_professional_language(engine,ppid,language,level=None,evidence=None,actor='system'):
+def add_professional_language(engine,ppid,language,level=None,evidence=None,actor='system',source_kind='HUMAN',source_document_id=None,ai_suggestion_id=None):
+    lang=validate_short_text(language,'Langue',required=True,max_len=80)
     now=utcnow_iso(); execute(engine,'''INSERT INTO professional_languages(professional_person_id,language,level,evidence,created_at,updated_at) VALUES(:p,:l,:v,:e,:n,:n)
-      ON CONFLICT(professional_person_id,language) DO UPDATE SET level=:v,evidence=:e,updated_at=:n''',{'p':ppid,'l':validate_short_text(language,'Langue',required=True,max_len=80),'v':level or None,'e':evidence or None,'n':now})
-    audit(engine,'PROFESSIONAL_LANGUAGE_UPDATED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'language':language})
+      ON CONFLICT(professional_person_id,language) DO UPDATE SET level=:v,evidence=:e,updated_at=:n''',{'p':ppid,'l':lang,'v':level or None,'e':evidence or None,'n':now})
+    row=one(engine,'SELECT id FROM professional_languages WHERE professional_person_id=:p AND language=:l',{'p':ppid,'l':lang})
+    audit(engine,'PROFESSIONAL_LANGUAGE_UPDATED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'language':lang})
+    if row: add_professional_fact_source(engine,ppid,'LANGUAGE',row['id'],actor,source_document_id,ai_suggestion_id,source_kind)
+    return row['id'] if row else None
 
 
-def add_professional_specialty(engine,ppid,specialty,notes=None,actor='system'):
+def add_professional_specialty(engine,ppid,specialty,notes=None,actor='system',source_kind='HUMAN',source_document_id=None,ai_suggestion_id=None):
+    spec=validate_short_text(specialty,'Spécialité',required=True,max_len=180)
     now=utcnow_iso(); execute(engine,'''INSERT INTO professional_specialties(professional_person_id,specialty,notes,created_at,updated_at) VALUES(:p,:s,:x,:n,:n)
-      ON CONFLICT(professional_person_id,specialty) DO UPDATE SET notes=:x,updated_at=:n''',{'p':ppid,'s':validate_short_text(specialty,'Spécialité',required=True,max_len=180),'x':notes or None,'n':now})
-    audit(engine,'PROFESSIONAL_SPECIALTY_UPDATED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'specialty':specialty})
+      ON CONFLICT(professional_person_id,specialty) DO UPDATE SET notes=:x,updated_at=:n''',{'p':ppid,'s':spec,'x':notes or None,'n':now})
+    row=one(engine,'SELECT id FROM professional_specialties WHERE professional_person_id=:p AND specialty=:s',{'p':ppid,'s':spec})
+    audit(engine,'PROFESSIONAL_SPECIALTY_UPDATED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'specialty':spec})
+    if row: add_professional_fact_source(engine,ppid,'SPECIALTY',row['id'],actor,source_document_id,ai_suggestion_id,source_kind)
+    return row['id'] if row else None
 
+
+
+# --- RC2-2-2 P1 : migrations, points de revue, provenance et réutilisation ---
+QUALIFICATION_REVIEW_POINT_STATUSES=('OUVERT','LEVE','CONFIRME','NON_PERTINENT')
+QUALIFICATION_REVIEW_POINT_SOURCES=('IA','HUMAIN','MIGRATION')
+PROFESSIONAL_FACT_SOURCE_KINDS=('HUMAN','AI_ACCEPTED','IMPORT','MIGRATION','OTHER')
+
+
+def list_professional_collaboration_history(engine, ppid, open_only=False):
+    _require_professional(engine,ppid)
+    sql='SELECT * FROM professional_collaboration_history WHERE professional_person_id=:p'
+    if open_only: sql+=" AND status='OUVERT'"
+    return q(engine,sql+' ORDER BY created_at DESC,id DESC',{'p':ppid})
+
+
+def _record_collaboration_change(engine, ppid, old_type, new_type, actor, reason='Modification du type de collaboration', reclassification_required=False):
+    if new_type not in PROFESSIONAL_COLLABORATION_TYPES: raise ValueError('Type de collaboration invalide.')
+    now=utcnow_iso(); status='OUVERT' if reclassification_required else 'CLOTURE'
+    event_key=f"human:{ppid}:{now}:{old_type or ''}:{new_type}"
+    execute(engine,"""INSERT INTO professional_collaboration_history(
+      professional_person_id,old_type,new_type,reason,event_key,reclassification_required,status,actor,created_at)
+      VALUES(:p,:o,:n,:r,:ek,:rr,:s,:a,:t)""",{'p':ppid,'o':old_type,'n':new_type,'r':reason,'ek':event_key,'rr':1 if reclassification_required else 0,'s':status,'a':actor,'t':now})
+    if new_type!='A_DEFINIR':
+        execute(engine,"""UPDATE professional_collaboration_history SET status='CLOTURE',resolved_type=:n,resolved_by=:a,resolved_at=:t
+          WHERE professional_person_id=:p AND status='OUVERT'""",{'n':new_type,'a':actor,'t':now,'p':ppid})
+    audit(engine,'PROFESSIONAL_COLLABORATION_CHANGED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'old_type':old_type,'new_type':new_type,'reclassification_required':bool(reclassification_required)})
+
+
+def add_professional_fact_source(engine, ppid, fact_type, fact_ref_id, actor, professional_document_id=None, ai_suggestion_id=None, source_kind='HUMAN', source_label=None):
+    _require_professional(engine,ppid)
+    ft=validate_code(fact_type,'Type de fait',required=True,max_len=80).upper()
+    ref=validate_short_text(str(fact_ref_id),'Référence du fait',required=True,max_len=160)
+    sk=(source_kind or 'HUMAN').upper()
+    if sk not in PROFESSIONAL_FACT_SOURCE_KINDS: raise ValueError('Origine du fait invalide.')
+    if professional_document_id is not None:
+        doc=one(engine,'SELECT id FROM professional_documents WHERE id=:i AND professional_person_id=:p',{'i':int(professional_document_id),'p':ppid})
+        if not doc: raise ValueError('Document source introuvable pour cette personne.')
+    if ai_suggestion_id is not None:
+        sug=one(engine,'SELECT id FROM professional_ai_suggestions WHERE id=:i AND professional_person_id=:p',{'i':int(ai_suggestion_id),'p':ppid})
+        if not sug: raise ValueError('Proposition IA source introuvable pour cette personne.')
+    params={'p':ppid,'t':ft,'r':ref,'d':professional_document_id,'s':ai_suggestion_id,'k':sk}
+    row=one(engine,"""SELECT * FROM professional_fact_sources WHERE professional_person_id=:p AND fact_type=:t AND fact_ref_id=:r
+      AND ((professional_document_id=:d) OR (professional_document_id IS NULL AND :d IS NULL))
+      AND ((ai_suggestion_id=:s) OR (ai_suggestion_id IS NULL AND :s IS NULL)) AND source_kind=:k ORDER BY id DESC LIMIT 1""",params)
+    if row: return row['id']
+    now=utcnow_iso()
+    rid=execute(engine,"""INSERT INTO professional_fact_sources(
+      professional_person_id,fact_type,fact_ref_id,professional_document_id,ai_suggestion_id,source_kind,source_label,validated_by,validated_at,created_at)
+      VALUES(:p,:t,:r,:d,:s,:k,:l,:a,:n,:n)""",{**params,'l':source_label or None,'a':actor,'n':now})
+    return rid
+
+
+def list_professional_fact_sources(engine, ppid, fact_type=None, fact_ref_id=None):
+    _require_professional(engine,ppid)
+    sql="""SELECT fs.*,d.display_name document_name FROM professional_fact_sources fs
+      LEFT JOIN professional_documents d ON d.id=fs.professional_document_id WHERE fs.professional_person_id=:p"""
+    params={'p':ppid}
+    if fact_type:
+        sql+=' AND fs.fact_type=:t';params['t']=str(fact_type).upper()
+    if fact_ref_id is not None:
+        sql+=' AND fs.fact_ref_id=:r';params['r']=str(fact_ref_id)
+    return q(engine,sql+' ORDER BY fs.created_at DESC,fs.id DESC',params)
+
+
+def link_qualification_evidence(engine, ppid, service_id, actor, criterion_id=None, fact_type=None, fact_ref_id=None, professional_document_id=None, relevance_comment=None):
+    _require_professional(engine,ppid); _require_service(engine,service_id)
+    if criterion_id is not None:
+        cr=one(engine,'SELECT id FROM service_competency_criteria WHERE id=:c AND service_id=:s',{'c':int(criterion_id),'s':int(service_id)})
+        if not cr: raise ValueError('Le critère ne correspond pas à cette prestation.')
+    if professional_document_id is not None:
+        doc=one(engine,'SELECT id FROM professional_documents WHERE id=:d AND professional_person_id=:p AND archived_at IS NULL',{'d':int(professional_document_id),'p':ppid})
+        if not doc: raise ValueError('Document professionnel introuvable pour cette personne.')
+    ft=str(fact_type).upper() if fact_type else None; ref=str(fact_ref_id) if fact_ref_id is not None else None
+    if ft and ref:
+        src=one(engine,'SELECT id FROM professional_fact_sources WHERE professional_person_id=:p AND fact_type=:t AND fact_ref_id=:r LIMIT 1',{'p':ppid,'t':ft,'r':ref})
+        if not src: raise ValueError('Le fait professionnel doit être validé/sourcé avant d’être relié à une qualification.')
+    if not professional_document_id and not (ft and ref): raise ValueError('Sélectionnez un fait validé ou un document source.')
+    comment=validate_free_text(relevance_comment,'Commentaire de pertinence',required=False,max_len=2000) if relevance_comment else None
+    params={'p':ppid,'s':int(service_id),'c':criterion_id,'t':ft,'r':ref,'d':professional_document_id}
+    row=one(engine,"""SELECT id FROM qualification_evidence_links WHERE professional_person_id=:p AND service_id=:s
+      AND ((criterion_id=:c) OR (criterion_id IS NULL AND :c IS NULL))
+      AND ((fact_type=:t) OR (fact_type IS NULL AND :t IS NULL)) AND ((fact_ref_id=:r) OR (fact_ref_id IS NULL AND :r IS NULL))
+      AND ((professional_document_id=:d) OR (professional_document_id IS NULL AND :d IS NULL)) ORDER BY id DESC LIMIT 1""",params)
+    if row: return row['id']
+    now=utcnow_iso()
+    rid=execute(engine,"""INSERT INTO qualification_evidence_links(
+      professional_person_id,service_id,criterion_id,fact_type,fact_ref_id,professional_document_id,relevance_comment,validated_by,validated_at,created_at)
+      VALUES(:p,:s,:c,:t,:r,:d,:x,:a,:n,:n)""",{**params,'x':comment,'a':actor,'n':now})
+    audit(engine,'QUALIFICATION_EVIDENCE_LINKED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'service_id':int(service_id),'criterion_id':criterion_id,'fact_type':ft,'fact_ref_id':ref,'professional_document_id':professional_document_id})
+    return rid
+
+
+def list_qualification_evidence_links(engine, ppid, service_id, criterion_id=None):
+    _require_professional(engine,ppid); _require_service(engine,service_id)
+    sql="""SELECT l.*,d.display_name document_name FROM qualification_evidence_links l
+      LEFT JOIN professional_documents d ON d.id=l.professional_document_id
+      WHERE l.professional_person_id=:p AND l.service_id=:s"""; params={'p':ppid,'s':int(service_id)}
+    if criterion_id is not None: sql+=' AND l.criterion_id=:c';params['c']=int(criterion_id)
+    return q(engine,sql+' ORDER BY l.created_at DESC,l.id DESC',params)
+
+
+def create_qualification_review_point(engine, ppid, service_id, label, actor, source='HUMAIN', criterion_id=None, professional_document_id=None, qualification_evidence_id=None, ai_run_id=None, source_key=None):
+    _require_professional(engine,ppid); _require_service(engine,service_id)
+    src=(source or 'HUMAIN').upper()
+    if src not in QUALIFICATION_REVIEW_POINT_SOURCES: raise ValueError('Source du point à vérifier invalide.')
+    txt=validate_free_text(label,'Point à vérifier',required=True,max_len=3000)
+    if criterion_id is not None:
+        cr=one(engine,'SELECT id FROM service_competency_criteria WHERE id=:c AND service_id=:s',{'c':int(criterion_id),'s':int(service_id)})
+        if not cr: raise ValueError('Le critère ne correspond pas à cette prestation.')
+    if professional_document_id is not None:
+        doc=one(engine,'SELECT id FROM professional_documents WHERE id=:d AND professional_person_id=:p',{'d':int(professional_document_id),'p':ppid})
+        if not doc: raise ValueError('Document du point à vérifier introuvable.')
+    raw_key=source_key or f"{src}|{service_id}|{criterion_id or ''}|{professional_document_id or ''}|{qualification_evidence_id or ''}|{ai_run_id or ''}|{txt}"
+    key=source_key or hashlib.sha256(raw_key.encode('utf-8')).hexdigest()
+    now=utcnow_iso()
+    execute(engine,"""INSERT OR IGNORE INTO qualification_review_points(
+      professional_person_id,service_id,criterion_id,professional_document_id,qualification_evidence_id,ai_run_id,source,source_key,label,status,created_by,created_at,updated_at)
+      VALUES(:p,:s,:c,:d,:e,:r,:src,:k,:l,'OUVERT',:a,:n,:n)""",{'p':ppid,'s':int(service_id),'c':criterion_id,'d':professional_document_id,'e':qualification_evidence_id,'r':ai_run_id,'src':src,'k':key,'l':txt,'a':actor,'n':now})
+    row=one(engine,'SELECT * FROM qualification_review_points WHERE professional_person_id=:p AND service_id=:s AND source_key=:k',{'p':ppid,'s':int(service_id),'k':key})
+    return row['id'] if row else None
+
+
+def list_qualification_review_points(engine, ppid, service_id=None, open_only=False):
+    _require_professional(engine,ppid)
+    sql="""SELECT rp.*,c.label criterion_label,d.display_name document_name FROM qualification_review_points rp
+      LEFT JOIN service_competency_criteria c ON c.id=rp.criterion_id
+      LEFT JOIN professional_documents d ON d.id=rp.professional_document_id
+      WHERE rp.professional_person_id=:p""";params={'p':ppid}
+    if service_id is not None: sql+=' AND rp.service_id=:s';params['s']=int(service_id)
+    if open_only: sql+=" AND rp.status='OUVERT'"
+    return q(engine,sql+' ORDER BY CASE rp.status WHEN \'OUVERT\' THEN 0 ELSE 1 END,rp.created_at DESC,rp.id DESC',params)
+
+
+def decide_qualification_review_point(engine, point_id, status, actor, comment=None):
+    point=one(engine,'SELECT * FROM qualification_review_points WHERE id=:i',{'i':int(point_id)})
+    if not point: raise ValueError('Point à vérifier introuvable.')
+    st=(status or '').upper()
+    if st not in ('LEVE','CONFIRME','NON_PERTINENT'): raise ValueError('Décision de point invalide.')
+    txt=validate_free_text(comment,'Commentaire de résolution',required=False,max_len=3000) if comment else None
+    if st in ('LEVE','CONFIRME') and not txt and not point.get('professional_document_id') and not point.get('qualification_evidence_id'):
+        raise ValueError('Un commentaire ou un élément objectif est requis pour lever/confirmer ce point.')
+    if point.get('status')==st and (point.get('resolution_comment') or None)==txt: return False
+    now=utcnow_iso();execute(engine,"""UPDATE qualification_review_points SET status=:s,resolution_comment=:c,resolved_by=:a,resolved_at=:n,updated_at=:n WHERE id=:i""",{'s':st,'c':txt,'a':actor,'n':now,'i':int(point_id)})
+    execute(engine,"""INSERT INTO qualification_history(professional_person_id,service_id,criterion_id,event_type,comment,actor,created_at)
+      VALUES(:p,:s,:c,'REVIEW_POINT_'||:st,:x,:a,:n)""",{'p':point['professional_person_id'],'s':point['service_id'],'c':point.get('criterion_id'),'st':st,'x':txt or point.get('label'),'a':actor,'n':now})
+    audit(engine,'QUALIFICATION_REVIEW_POINT_DECIDED',actor=actor,entity_type='professional_person',entity_id=point['professional_person_id'],details={'point_id':int(point_id),'service_id':point['service_id'],'status':st})
+    return True
+
+
+def reopen_qualification_review_point(engine, point_id, actor, comment=None):
+    point=one(engine,'SELECT * FROM qualification_review_points WHERE id=:i',{'i':int(point_id)})
+    if not point: raise ValueError('Point à vérifier introuvable.')
+    now=utcnow_iso();execute(engine,"""UPDATE qualification_review_points SET status='OUVERT',resolution_comment=:c,resolved_by=NULL,resolved_at=NULL,updated_at=:n WHERE id=:i""",{'c':comment or None,'n':now,'i':int(point_id)})
+    audit(engine,'QUALIFICATION_REVIEW_POINT_REOPENED',actor=actor,entity_type='professional_person',entity_id=point['professional_person_id'],details={'point_id':int(point_id),'service_id':point['service_id']})
+    return True
 
 
 # --- INTERVENANTS J3 : workflow Candidat -> Intervenant ---
@@ -5123,10 +5310,14 @@ def get_person_service_qualification(engine, ppid, service_id):
       LEFT JOIN professional_documents d ON d.id=e.professional_document_id
       WHERE e.professional_person_id=:p AND e.service_id=:s ORDER BY e.created_at DESC,e.id DESC""",{'p':ppid,'s':service_id})
     history=q(engine,"""SELECT * FROM qualification_history WHERE professional_person_id=:p AND service_id=:s ORDER BY created_at DESC,id DESC""",{'p':ppid,'s':service_id})
-    return {'qualification':row,'criteria':criteria,'evidence':evidence,'history':history}
+    review_points=list_qualification_review_points(engine,ppid,service_id)
+    evidence_links=list_qualification_evidence_links(engine,ppid,service_id)
+    return {'qualification':row,'criteria':criteria,'evidence':evidence,'evidence_links':evidence_links,'review_points':review_points,'history':history}
 
 
-def set_human_service_qualification(engine, ppid, service_id, human_value, actor, comment=None, human_locked=True, review_due_at=None):
+def set_human_service_qualification(engine, ppid, service_id, human_value, actor, comment=None, human_locked=True, review_due_at=None, exception_reason=None, enforce_required_criteria=False):
+    # RC2-2-2: any human decision is protected automatically. human_locked is retained only for API compatibility.
+    human_locked=True
     _require_professional(engine,ppid); svc=_require_service(engine,service_id)
     level=int(human_value)
     if level not in QUALIFICATION_LEVEL_LABELS: raise ValueError('Niveau de qualification invalide : utilisez une valeur de 0 à 4.')
@@ -5135,6 +5326,16 @@ def set_human_service_qualification(engine, ppid, service_id, human_value, actor
         except Exception: raise ValueError('Date de révision invalide (AAAA-MM-JJ).')
     old=one(engine,'SELECT * FROM person_service_qualifications WHERE professional_person_id=:p AND service_id=:s',{'p':ppid,'s':service_id})
     now=utcnow_iso(); comment=validate_free_text(comment,'Commentaire de qualification',required=False,max_len=4000) if comment else None
+    # RC2-2-2 CDC 10.5: a final human validation cannot silently bypass a required criterion.
+    required_rows=q(engine,'''SELECT c.id,c.label,c.minimum_level,a.human_value
+      FROM service_competency_criteria c LEFT JOIN qualification_criterion_assessments a
+        ON a.criterion_id=c.id AND a.professional_person_id=:p
+      WHERE c.service_id=:s AND c.active=1 AND c.required=1 ORDER BY c.label''',{'p':ppid,'s':service_id})
+    required_gaps=[r for r in required_rows if r.get('human_value') is None or int(r.get('human_value')) < int(r.get('minimum_level') or 0)]
+    exception_reason=validate_free_text(exception_reason,'Motif de dérogation',required=False,max_len=3000) if exception_reason else None
+    if enforce_required_criteria and required_gaps and not exception_reason:
+        labels=', '.join(str(r.get('label') or r.get('id')) for r in required_gaps[:5])
+        raise ValueError('Des critères obligatoires restent sous le niveau minimal : '+labels+'. Une dérogation explicite et motivée est requise pour valider malgré cet écart.')
     if old and old.get('human_value') is not None and int(old.get('human_value'))==level and (old.get('human_comment') or None)==comment and bool(old.get('human_locked'))==bool(human_locked) and (old.get('review_due_at') or None)==(review_due_at or None):
         return old['id']
     if old:
@@ -5146,13 +5347,18 @@ def set_human_service_qualification(engine, ppid, service_id, human_value, actor
         qid=execute(engine,"""INSERT INTO person_service_qualifications(professional_person_id,service_id,human_value,human_comment,human_validated_by,human_validated_at,human_locked,qualification_date,review_due_at,created_at,updated_at)
           VALUES(:p,:s,:v,:c,:a,:n,:l,:n,:r,:n,:n)""",{'p':ppid,'s':service_id,'v':level,'c':comment,'a':actor,'n':now,'l':1 if human_locked else 0,'r':review_due_at or None})
         oldv=None
+    if enforce_required_criteria and required_gaps and exception_reason:
+        execute(engine,"""INSERT INTO qualification_history(professional_person_id,service_id,event_type,old_human_value,new_human_value,comment,actor,created_at)
+          VALUES(:p,:s,'SERVICE_HUMAN_EXCEPTION',:o,:v,:c,:a,:n)""",{'p':ppid,'s':service_id,'o':oldv,'v':level,'c':exception_reason,'a':actor,'n':now})
     execute(engine,"""INSERT INTO qualification_history(professional_person_id,service_id,event_type,old_human_value,new_human_value,comment,actor,created_at)
       VALUES(:p,:s,'SERVICE_HUMAN_VALIDATION',:o,:v,:c,:a,:n)""",{'p':ppid,'s':service_id,'o':oldv,'v':level,'c':comment,'a':actor,'n':now})
-    audit(engine,'PROFESSIONAL_SERVICE_QUALIFIED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'service_id':service_id,'service_code':svc['service_code'],'human_value':level,'human_locked':bool(human_locked),'review_due_at':review_due_at})
+    audit(engine,'PROFESSIONAL_SERVICE_QUALIFIED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'service_id':service_id,'service_code':svc['service_code'],'human_value':level,'human_locked':bool(human_locked),'review_due_at':review_due_at,'required_exception':bool(required_gaps),'exception_reason':exception_reason})
     return qid
 
 
 def set_human_criterion_assessment(engine, ppid, criterion_id, human_value, actor, comment=None, human_locked=True):
+    # RC2-2-2: any human criterion decision is protected automatically.
+    human_locked=True
     _require_professional(engine,ppid)
     cr=one(engine,'SELECT * FROM service_competency_criteria WHERE id=:i',{'i':int(criterion_id)})
     if not cr: raise ValueError('Critère de compétence introuvable.')
@@ -5283,7 +5489,7 @@ def save_ai_qualification_proposal(engine, ppid, service_id, ai_result, actor, p
     if existing:
         execute(engine,"""UPDATE person_service_qualifications SET ai_value=:v,ai_confidence=:c,ai_evidence_json=:e,ai_rationale=:r,ai_missing_json=:mi,ai_provider=:pr,ai_model=:m,ai_prompt_version=:pv,ai_run_id=:run,ai_updated_at=:n,updated_at=:n WHERE professional_person_id=:p AND service_id=:s""",params)
     else:
-        execute(engine,"""INSERT INTO person_service_qualifications(professional_person_id,service_id,human_locked,ai_value,ai_confidence,ai_evidence_json,ai_rationale,ai_missing_json,ai_provider,ai_model,ai_prompt_version,ai_run_id,ai_updated_at,created_at,updated_at) VALUES(:p,:s,1,:v,:c,:e,:r,:mi,:pr,:m,:pv,:run,:n,:n,:n)""",params)
+        execute(engine,"""INSERT INTO person_service_qualifications(professional_person_id,service_id,human_locked,ai_value,ai_confidence,ai_evidence_json,ai_rationale,ai_missing_json,ai_provider,ai_model,ai_prompt_version,ai_run_id,ai_updated_at,created_at,updated_at) VALUES(:p,:s,0,:v,:c,:e,:r,:mi,:pr,:m,:pv,:run,:n,:n,:n)""",params)
     _materialize_ai_qualification_proposals(engine,ppid,service_id,ai_result,run_id,actor)
     # Never mutate any human_* field. A locked human value remains the effective decision.
     execute(engine,"""INSERT INTO qualification_history(professional_person_id,service_id,event_type,comment,actor,created_at) VALUES(:p,:s,'AI_PROPOSAL',:c,:a,:n)""",{'p':ppid,'s':service_id,'c':f"Proposition IA niveau {level} - confiance {conf:.0%}",'a':actor,'n':now})
@@ -5350,7 +5556,8 @@ def decide_ai_criterion_proposal(engine, proposal_id, accept, actor, comment=Non
     pr=one(engine,'SELECT * FROM ai_criterion_proposals WHERE id=:i',{'i':int(proposal_id)})
     if not pr: raise ValueError('Proposition de critère IA introuvable.')
     if pr['status']!='PROPOSEE': return True
-    if accept: set_human_criterion_assessment(engine,pr['professional_person_id'],pr['criterion_id'],pr['proposed_level'],actor,comment or pr.get('rationale'),True)
+    # RC2-2-2: accepting/classifying an AI proposal is not a human criterion validation.
+    # Human 0-4 decisions are persisted only through set_human_criterion_assessment().
     now=utcnow_iso(); status='ACCEPTEE' if accept else 'REJETEE'
     execute(engine,'UPDATE ai_criterion_proposals SET status=:s,decided_by=:a,decided_at=:n,decision_comment=:c WHERE id=:i',{'s':status,'a':actor,'n':now,'c':comment,'i':proposal_id})
     return True
@@ -5387,7 +5594,31 @@ def collective_qualification_matrix(engine, include_candidates=False, include_in
               'required_total':summary['required_total'],'required_ok':summary['required_ok'],'required_complete':summary['required_complete'],
               'evidence_count':summary['evidence_count']
             })
-    return rows
+    # RC2-2-2 P4: enrich the management projection without changing business truth.
+    today=datetime.now().date()
+    for r in rows:
+        pts=list_qualification_review_points(engine,r['professional_person_id'],r['service_id'],open_only=True)
+        r['open_points_count']=len(pts)
+        due=r.get('review_due_at')
+        due_date=None
+        if due:
+            try: due_date=datetime.fromisoformat(str(due)[:10]).date()
+            except ValueError: due_date=None
+        if due_date and due_date < today:
+            status='REVISION_ECHUE'
+        elif r['open_points_count']:
+            status='POINTS_OUVERTS'
+        elif r.get('human_value') is None and (r.get('ai_value') is not None or r.get('criteria_assessed') or r.get('evidence_count')):
+            status='A_INSTRUIRE'
+        elif r.get('human_value') is None:
+            status='NON_EVALUEE'
+        elif due_date and due_date <= today+timedelta(days=90):
+            status='REVISION_PROCHAINE'
+        else:
+            status='QUALIFICATION_VALIDEE'
+        r['management_status']=status
+    priority={'A_INSTRUIRE':0,'POINTS_OUVERTS':1,'REVISION_ECHUE':2,'REVISION_PROCHAINE':3,'QUALIFICATION_VALIDEE':4,'NON_EVALUEE':5}
+    return sorted(rows,key=lambda x:(priority.get(x['management_status'],99),x['name'].lower(),x['service_name'].lower()))
 
 
 def search_qualified_professionals(engine, service_id, min_human_value=3, require_required_complete=False, collaboration_type=None, city=None, include_candidates=False):
@@ -5623,12 +5854,30 @@ def professional_cv_snapshot(engine, ppid, audience='CLIENT'):
                     'notes_internal':prof.get('notes_internal') or '','regulatory_status':prof.get('regulatory_status') or {}})
     return out
 
+def professional_cv_source_sha256(engine, ppid, audience='CLIENT'):
+    snapshot=professional_cv_snapshot(engine,ppid,audience)
+    payload=json.dumps(snapshot,ensure_ascii=False,sort_keys=True,separators=(',',':'),default=str).encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
+
+def professional_cv_status(engine, ppid, audience='CLIENT'):
+    _require_professional(engine,ppid); audience=str(audience or 'CLIENT').upper()
+    if audience not in ('INTERNE','CLIENT'): raise ValueError('Audience CV invalide.')
+    source_sha=professional_cv_source_sha256(engine,ppid,audience)
+    latest=one(engine,'SELECT * FROM professional_cv_generations WHERE professional_person_id=:p AND audience=:a ORDER BY version_no DESC,id DESC LIMIT 1',{'p':ppid,'a':audience})
+    if not latest: return {'status':'JAMAIS_GENERE','label':'CV jamais généré','needs_regeneration':True,'source_sha256':source_sha,'latest':None}
+    changed=(not latest.get('source_sha256')) or latest.get('source_sha256')!=source_sha
+    return {'status':'A_REGENERER' if changed else 'A_JOUR','label':'CV à régénérer' if changed else 'CV à jour','needs_regeneration':changed,'source_sha256':source_sha,'latest':latest}
+
 def record_professional_cv_generation(engine, ppid, audience, file_name, data, actor):
     _require_professional(engine,ppid); audience=str(audience).upper()
     if audience not in ('INTERNE','CLIENT'): raise ValueError('Audience CV invalide.')
-    digest=hashlib.sha256(data).hexdigest(); r=one(engine,'SELECT COALESCE(MAX(version_no),0) n FROM professional_cv_generations WHERE professional_person_id=:p AND audience=:a',{'p':ppid,'a':audience}); version=int(r['n'])+1
-    execute(engine,'INSERT INTO professional_cv_generations(professional_person_id,audience,version_no,file_name,sha256,generated_by,generated_at) VALUES(:p,:a,:v,:f,:h,:u,:n)',{'p':ppid,'a':audience,'v':version,'f':file_name,'h':digest,'u':actor,'n':utcnow_iso()})
-    audit(engine,'PROFESSIONAL_CV_GENERATED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'audience':audience,'version':version,'file_name':file_name,'sha256':digest})
+    digest=hashlib.sha256(data).hexdigest(); source_sha=professional_cv_source_sha256(engine,ppid,audience)
+    latest=one(engine,'SELECT * FROM professional_cv_generations WHERE professional_person_id=:p AND audience=:a ORDER BY version_no DESC,id DESC LIMIT 1',{'p':ppid,'a':audience})
+    if latest and latest.get('sha256')==digest and latest.get('source_sha256')==source_sha:
+        return int(latest['version_no'])
+    r=one(engine,'SELECT COALESCE(MAX(version_no),0) n FROM professional_cv_generations WHERE professional_person_id=:p AND audience=:a',{'p':ppid,'a':audience}); version=int(r['n'])+1
+    execute(engine,'INSERT INTO professional_cv_generations(professional_person_id,audience,version_no,file_name,sha256,source_sha256,generated_by,generated_at) VALUES(:p,:a,:v,:f,:h,:s,:u,:n)',{'p':ppid,'a':audience,'v':version,'f':file_name,'h':digest,'s':source_sha,'u':actor,'n':utcnow_iso()})
+    audit(engine,'PROFESSIONAL_CV_GENERATED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'audience':audience,'version':version,'file_name':file_name,'sha256':digest,'source_sha256':source_sha})
     return version
 
 def professional_cv_history(engine,ppid):
@@ -5703,11 +5952,14 @@ def build_global_professional_ai_payload(engine, ppid, selected_document_ids=Non
     return {'person':{'professional_person_id':ppid,'declared_name':prof.get('display_name') or prof.get('full_name') or prof.get('title') or '', 'existing_title':prof.get('title'),'existing_summary':prof.get('summary')},'documents':docs,'service_catalog':services}
 
 
-def save_global_professional_ai_analysis(engine, ppid, result, actor, provider='openai', model='', prompt_version='', request_hash='', usage=None, selected_document_ids=None):
+def save_global_professional_ai_analysis(engine, ppid, result, actor, provider='openai', model='', prompt_version='', request_hash='', usage=None, selected_document_ids=None, run_metrics=None):
     _require_professional(engine,ppid); now=utcnow_iso()
     tin=int(getattr(usage,'input_tokens',0) or 0) if usage is not None else None; tout=int(getattr(usage,'output_tokens',0) or 0) if usage is not None else None
-    run_id=execute(engine,"""INSERT INTO professional_global_ai_runs(professional_person_id,provider,model,prompt_version,request_hash,status,selected_document_ids_json,output_json,input_tokens,output_tokens,actor,created_at)
-      VALUES(:p,:pr,:m,:pv,:h,'SUCCESS',:d,:o,:tin,:tout,:a,:n)""",{'p':ppid,'pr':provider,'m':model,'pv':prompt_version,'h':request_hash,'d':json.dumps(selected_document_ids or []),'o':json.dumps(result,ensure_ascii=False),'tin':tin,'tout':tout,'a':actor,'n':now})
+    metrics=dict(run_metrics or {})
+    total_tokens=metrics.get('total_tokens')
+    if total_tokens is None and (tin is not None or tout is not None): total_tokens=int(tin or 0)+int(tout or 0)
+    run_id=execute(engine,"""INSERT INTO professional_global_ai_runs(professional_person_id,provider,model,prompt_version,request_hash,status,selected_document_ids_json,output_json,input_tokens,output_tokens,duration_seconds,api_call_count,retry_count,total_tokens,estimated_cost,actor,created_at)
+      VALUES(:p,:pr,:m,:pv,:h,'SUCCESS',:d,:o,:tin,:tout,:dur,:calls,:retry,:total,:cost,:a,:n)""",{'p':ppid,'pr':provider,'m':model,'pv':prompt_version,'h':request_hash,'d':json.dumps(selected_document_ids or []),'o':json.dumps(result,ensure_ascii=False),'tin':tin,'tout':tout,'dur':metrics.get('duration_seconds'),'calls':metrics.get('api_call_count'),'retry':metrics.get('retry_count'),'total':total_tokens,'cost':metrics.get('estimated_cost'),'a':actor,'n':now})
     def add(kind,payload,source=None):
         execute(engine,"""INSERT INTO professional_ai_suggestions(professional_person_id,run_id,suggestion_type,payload_json,source_document_id,status,created_at)
           VALUES(:p,:r,:t,:j,:d,'PROPOSE',:n)""",{'p':ppid,'r':run_id,'t':kind,'j':json.dumps(payload,ensure_ascii=False),'d':source,'n':now})
@@ -5729,6 +5981,15 @@ def save_global_professional_ai_analysis(engine, ppid, result, actor, provider='
             'evidence':sc.get('evidence') or [],'missing_points':sc.get('missing_points') or [],'criteria':sc.get('criteria') or []}
         save_ai_qualification_proposal(engine,ppid,sid,qa,actor,provider,model,prompt_version,
             f"{request_hash}:service:{sid}",None,{'source':'GLOBAL_DOSSIER','global_run_id':run_id,'documents':selected_document_ids or []})
+        qrow=one(engine,'SELECT ai_run_id FROM person_service_qualifications WHERE professional_person_id=:p AND service_id=:s',{'p':ppid,'s':sid})
+        qualification_run_id=qrow.get('ai_run_id') if qrow else None
+        for idx,label in enumerate(qa.get('missing_points') or []):
+            label=str(label or '').strip()
+            if not label: continue
+            source_key=f"ai-run:{qualification_run_id}:missing:{idx}"
+            execute(engine,"""INSERT OR IGNORE INTO qualification_review_points(
+              professional_person_id,service_id,ai_run_id,source,source_key,label,status,created_by,created_at,updated_at)
+              VALUES(:p,:s,:r,'IA',:k,:l,'OUVERT',:a,:n,:n)""",{'p':ppid,'s':sid,'r':qualification_run_id,'k':source_key,'l':label,'a':actor,'n':now})
     audit(engine,'PROFESSIONAL_GLOBAL_AI_ANALYZED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'run_id':run_id,'documents':selected_document_ids or [],'identity_alerts':len(result.get('identity_alerts') or []),'qualification_services':len(result.get('service_candidates') or [])})
     return run_id
 
@@ -5796,6 +6057,7 @@ def professional_global_ai_reanalysis_state(engine, ppid):
 def professional_reset_preview(engine, ppid):
     person=_require_professional(engine,ppid); prof=get_professional_360(engine,ppid) or {}
     tables=('professional_global_ai_runs','professional_ai_suggestions','ai_analysis_runs','ai_criterion_proposals','ai_qualification_evidence_proposals',
+      'qualification_review_points','qualification_evidence_links','professional_fact_sources',
       'person_service_qualifications','qualification_criterion_assessments','qualification_evidence','qualification_history',
       'professional_experiences','professional_education','professional_certifications','professional_languages','professional_specialties',
       'professional_cv_generations','professional_maintenance_actions','professional_regulatory_status')
@@ -5814,6 +6076,7 @@ def reset_professional_dossier(engine, ppid, actor, admin_password):
     if not admin_password_ok(engine,actor,admin_password): raise ValueError('Mot de passe administrateur incorrect.')
     person=_require_professional(engine,ppid); prof=get_professional_360(engine,ppid) or {}; preview=professional_reset_preview(engine,ppid)
     snapshot_tables=('professional_global_ai_runs','professional_ai_suggestions','ai_analysis_runs','ai_criterion_proposals','ai_qualification_evidence_proposals',
+      'qualification_review_points','qualification_evidence_links','professional_fact_sources',
       'person_service_qualifications','qualification_criterion_assessments','qualification_evidence','qualification_history',
       'professional_experiences','professional_education','professional_certifications','professional_languages','professional_specialties',
       'professional_cv_generations','professional_maintenance_actions','professional_regulatory_status')
@@ -5825,7 +6088,8 @@ def reset_professional_dossier(engine, ppid, actor, admin_password):
     snap_dir=ROOT/'backups'/'professional_resets'; snap_dir.mkdir(parents=True,exist_ok=True)
     stamp=datetime.now(ZoneInfo('UTC')).strftime('%Y%m%d_%H%M%S'); snap_path=snap_dir/f'{ppid}_{stamp}.json'
     payload=json.dumps(snapshot,ensure_ascii=False,default=str,indent=2).encode('utf-8'); snap_path.write_bytes(payload); snap_sha=hashlib.sha256(payload).hexdigest()
-    delete_order=('ai_qualification_evidence_proposals','ai_criterion_proposals','ai_analysis_runs','qualification_evidence',
+    delete_order=('qualification_review_points','qualification_evidence_links','professional_fact_sources',
+      'ai_qualification_evidence_proposals','ai_criterion_proposals','ai_analysis_runs','qualification_evidence',
       'qualification_criterion_assessments','qualification_history','person_service_qualifications','professional_ai_suggestions','professional_global_ai_runs',
       'professional_experiences','professional_education','professional_certifications','professional_languages','professional_specialties',
       'professional_cv_generations','professional_maintenance_actions','professional_regulatory_status')
@@ -5847,13 +6111,14 @@ def review_professional_ai_suggestion(engine, suggestion_id, decision, actor):
     if sug['status']!='PROPOSE': return False
     payload=json.loads(sug['payload_json'] or '{}'); ppid=sug['professional_person_id']; typ=sug['suggestion_type']
     if dec=='ACCEPTE':
+        src_doc=sug.get('source_document_id'); src_sug=sug['id']
         if typ=='PROFILE':
-            prof=get_professional_360(engine,ppid); update_professional_profile(engine,ppid,{'title':payload.get('title') or prof.get('title'),'summary':payload.get('summary') or prof.get('summary'),'collaboration_type':prof.get('collaboration_type') or 'A_DEFINIR','email':prof.get('profile_email') or prof.get('trainer_email'),'phone':prof.get('profile_phone') or prof.get('trainer_phone'),'city':prof.get('city'),'country':prof.get('country'),'website':prof.get('website'),'linkedin_url':prof.get('linkedin_url'),'notes_internal':prof.get('notes_internal')},actor)
-        elif typ=='SPECIALTY': add_professional_specialty(engine,ppid,payload.get('specialty'),actor=actor)
-        elif typ=='EXPERIENCE': add_professional_experience(engine,ppid,payload.get('role_title'),payload.get('organization'),payload.get('start_date'),payload.get('end_date'),False,payload.get('description'),actor)
-        elif typ=='EDUCATION': add_professional_education(engine,ppid,payload.get('diploma_title'),payload.get('institution'),payload.get('field'),payload.get('obtained_date'),actor=actor)
-        elif typ=='CERTIFICATION': add_professional_certification(engine,ppid,payload.get('name'),payload.get('certification_type') or 'CERTIFICATION',payload.get('issuer'),payload.get('reference'),payload.get('obtained_date'),payload.get('valid_until'),actor=actor)
-        elif typ=='LANGUAGE': add_professional_language(engine,ppid,payload.get('language'),payload.get('level'),actor=actor)
+            prof=get_professional_360(engine,ppid); update_professional_profile(engine,ppid,{'title':payload.get('title') or prof.get('title'),'summary':payload.get('summary') or prof.get('summary'),'collaboration_type':prof.get('collaboration_type') or 'A_DEFINIR','email':prof.get('profile_email') or prof.get('trainer_email'),'phone':prof.get('profile_phone') or prof.get('trainer_phone'),'city':prof.get('city'),'country':prof.get('country'),'website':prof.get('website'),'linkedin_url':prof.get('linkedin_url'),'notes_internal':prof.get('notes_internal')},actor,'AI_ACCEPTED',src_doc,src_sug)
+        elif typ=='SPECIALTY': add_professional_specialty(engine,ppid,payload.get('specialty'),actor=actor,source_kind='AI_ACCEPTED',source_document_id=src_doc,ai_suggestion_id=src_sug)
+        elif typ=='EXPERIENCE': add_professional_experience(engine,ppid,payload.get('role_title'),payload.get('organization'),payload.get('start_date'),payload.get('end_date'),False,payload.get('description'),actor,'AI_ACCEPTED',src_doc,src_sug)
+        elif typ=='EDUCATION': add_professional_education(engine,ppid,payload.get('diploma_title'),payload.get('institution'),payload.get('field'),payload.get('obtained_date'),actor=actor,source_kind='AI_ACCEPTED',source_document_id=src_doc,ai_suggestion_id=src_sug)
+        elif typ=='CERTIFICATION': add_professional_certification(engine,ppid,payload.get('name'),payload.get('certification_type') or 'CERTIFICATION',payload.get('issuer'),payload.get('reference'),payload.get('obtained_date'),payload.get('valid_until'),actor=actor,source_kind='AI_ACCEPTED',source_document_id=src_doc,ai_suggestion_id=src_sug)
+        elif typ=='LANGUAGE': add_professional_language(engine,ppid,payload.get('language'),payload.get('level'),actor=actor,source_kind='AI_ACCEPTED',source_document_id=src_doc,ai_suggestion_id=src_sug)
     execute(engine,'UPDATE professional_ai_suggestions SET status=:s,reviewed_by=:a,reviewed_at=:n WHERE id=:i',{'s':dec,'a':actor,'n':utcnow_iso(),'i':suggestion_id})
     audit(engine,'PROFESSIONAL_AI_SUGGESTION_REVIEWED',actor=actor,entity_type='professional_person',entity_id=ppid,details={'suggestion_id':suggestion_id,'type':typ,'decision':dec})
     return True
@@ -5918,6 +6183,7 @@ def delete_professional_if_unused(engine, ppid, actor='system'):
     except Exception:
         docs=[]
     owned_pp_tables=[
+      'qualification_review_points','qualification_evidence_links','professional_fact_sources','professional_collaboration_history',
       'ai_qualification_evidence_proposals','ai_criterion_proposals','ai_analysis_runs',
       'qualification_evidence','qualification_criterion_assessments','qualification_history','person_service_qualifications',
       'professional_ai_suggestions','professional_global_ai_runs',
@@ -5963,6 +6229,7 @@ def update_professional_structured_row(engine, table, row_id, ppid, values, acto
       'professional_certifications':('certification_type','name','issuer','reference','obtained_date','valid_until','description'),
       'professional_languages':('language','level','evidence'),
       'professional_specialties':('specialty','notes')}
+    fact_types={'professional_experiences':'EXPERIENCE','professional_education':'EDUCATION','professional_certifications':'CERTIFICATION','professional_languages':'LANGUAGE','professional_specialties':'SPECIALTY'}
     if table not in allowed: raise ValueError('Table non administrable.')
     current=one(engine,f'SELECT * FROM {table} WHERE id=:i AND professional_person_id=:p',{'i':row_id,'p':ppid})
     if not current: raise ValueError('Ligne introuvable.')
@@ -5973,16 +6240,21 @@ def update_professional_structured_row(engine, table, row_id, ppid, values, acto
     if not fields: return False
     if 'updated_at' in current: fields.append('updated_at=:n')
     execute(engine,f"UPDATE {table} SET {','.join(fields)} WHERE id=:i AND professional_person_id=:p",params)
+    add_professional_fact_source(engine,ppid,fact_types[table],row_id,actor,source_kind='HUMAN',source_label='Modification humaine')
     audit(engine,'PROFESSIONAL_STRUCTURED_ROW_UPDATED',actor=actor,entity_type=table,entity_id=row_id,details={'professional_person_id':ppid})
     return True
 
 def delete_professional_structured_row(engine, table, row_id, ppid, actor='system'):
     allowed=('professional_experiences','professional_education','professional_certifications','professional_languages','professional_specialties')
+    fact_types={'professional_experiences':'EXPERIENCE','professional_education':'EDUCATION','professional_certifications':'CERTIFICATION','professional_languages':'LANGUAGE','professional_specialties':'SPECIALTY'}
     if table not in allowed: raise ValueError('Table non administrable.')
     current=one(engine,f'SELECT id FROM {table} WHERE id=:i AND professional_person_id=:p',{'i':row_id,'p':ppid})
     if not current: raise ValueError('Ligne introuvable.')
+    ft=fact_types[table]; ref=str(row_id)
+    execute(engine,'DELETE FROM qualification_evidence_links WHERE professional_person_id=:p AND fact_type=:t AND fact_ref_id=:r',{'p':ppid,'t':ft,'r':ref})
+    execute(engine,'DELETE FROM professional_fact_sources WHERE professional_person_id=:p AND fact_type=:t AND fact_ref_id=:r',{'p':ppid,'t':ft,'r':ref})
     execute(engine,f'DELETE FROM {table} WHERE id=:i AND professional_person_id=:p',{'i':row_id,'p':ppid})
-    audit(engine,'PROFESSIONAL_STRUCTURED_ROW_DELETED',actor=actor,entity_type=table,entity_id=row_id,details={'professional_person_id':ppid})
+    audit(engine,'PROFESSIONAL_STRUCTURED_ROW_DELETED',actor=actor,entity_type=table,entity_id=row_id,details={'professional_person_id':ppid,'fact_type':ft})
     return True
 
 def update_professional_document_metadata(engine, ppid, document_id, display_name, category, valid_until=None, notes=None, actor='system'):
@@ -5993,3 +6265,79 @@ def update_professional_document_metadata(engine, ppid, document_id, display_nam
             {'n':validate_short_text(display_name,'Nom du document',required=True,max_len=220),'c':category,'v':valid_until or None,'x':notes or None,'i':document_id,'p':ppid})
     audit(engine,'PROFESSIONAL_DOCUMENT_METADATA_UPDATED',actor=actor,entity_type='professional_document',entity_id=document_id,details={'professional_person_id':ppid})
     return True
+
+# ---------------------------------------------------------------------------
+# RC2-2-2 P3 - cockpit DRH and missions read models
+# ---------------------------------------------------------------------------
+def professional_cockpit_summary(engine, ppid):
+    """Compact, factual read model for the dossier Synthese cockpit.
+
+    'Assignable services' means services with a human level >= 1 and all required
+    criteria satisfied. Final eligibility for a concrete Action remains governed
+    by action_professional_eligibility(), including the Action minimum level.
+    """
+    prof=get_professional_360(engine,ppid)
+    if not prof: raise ValueError('Dossier professionnel introuvable.')
+    quals=list_person_service_qualifications(engine,ppid,active_services_only=True)
+    validated=[x for x in quals if x.get('human_value') is not None]
+    assignable=[]
+    for row in validated:
+        if int(row.get('human_value') or 0)<1: continue
+        summary=qualification_adequacy_summary(engine,ppid,row['service_id'])
+        if summary.get('required_complete'): assignable.append(row['service_name'])
+    open_points=list_qualification_review_points(engine,ppid,open_only=True)
+    alerts=professional_maintenance_alerts(engine,include_candidates=True,include_inactive=True)
+    own_alerts=[a for a in alerts if a.get('professional_person_id')==ppid]
+    next_actions=[]
+    docs=prof.get('documents') or []
+    if not docs: next_actions.append('Ajouter les documents disponibles dans Analyse IA.')
+    if prof.get('principal_status')=='CANDIDAT':
+        comp=candidate_completeness(engine,ppid)
+        if int(comp.get('percent') or 0)<100: next_actions.append(f"Compléter le dossier candidat ({int(comp.get('percent') or 0)} %).")
+    if open_points: next_actions.append(f"Traiter {len(open_points)} point(s) de qualification encore ouvert(s).")
+    if own_alerts: next_actions.append(f"Traiter {len(own_alerts)} alerte(s) documentaire(s) ou de révision.")
+    if not validated: next_actions.append('Instruire et valider au moins une qualification humaine.')
+    if not next_actions: next_actions.append('Aucune action prioritaire détectée dans le dossier.')
+    coll_code=prof.get('collaboration_type') or 'A_DEFINIR'
+    coll={'A_DEFINIR':'À définir','SALARIE':'Salarié','STAGIAIRE':'Stagiaire','SOUS_TRAITANT':'Sous-traitant','MANDATAIRE_ASSOCIE':'Mandataire / Associé'}.get(coll_code,coll_code)
+    comp=candidate_completeness(engine,ppid)
+    reg=prof.get('regulatory_status') or {}
+    compliance_parts=[]
+    if reg.get('nda_status')=='OUI': compliance_parts.append('NDA renseigné')
+    if reg.get('qualiopi_status')=='OUI': compliance_parts.append('Qualiopi renseigné')
+    compliance_label=', '.join(compliance_parts) if compliance_parts else 'À vérifier / non renseigné'
+    mission_count=len(professional_missions_view(engine,ppid))
+    return {
+      'status_label':'Intervenant' if prof.get('principal_status')=='INTERVENANT' else 'Candidat',
+      'collaboration_label':coll,
+      'completion_percent':comp['percent'],
+      'compliance_label':compliance_label,
+      'validated_qualifications':len(validated),
+      'open_points':len(open_points),
+      'active_alerts':len(own_alerts),
+      'mission_count':mission_count,
+      'assignable_services':assignable,
+      'next_actions':next_actions,
+    }
+
+
+def professional_missions_view(engine, ppid):
+    """Active Action assignments for one professional dossier, enriched with qualification status."""
+    person=one(engine,'SELECT trainer_id FROM professional_persons WHERE professional_person_id=:p',{'p':ppid})
+    if not person or not person.get('trainer_id'): return []
+    rows=q(engine,"""SELECT at.action_id,at.role,at.is_referent,at.start_date assignment_start,at.end_date assignment_end,
+      a.action_no,a.title,a.start_date,a.end_date,a.status,
+      r.service_id,s.name service_name
+      FROM action_trainers at JOIN actions a ON a.id=at.action_id
+      LEFT JOIN action_service_requirements r ON r.action_id=a.id
+      LEFT JOIN service_catalog s ON s.id=r.service_id
+      WHERE at.trainer_id=:t AND at.active=1
+      ORDER BY COALESCE(a.start_date,''),a.action_no""",{'t':person['trainer_id']})
+    out=[]
+    for row in rows:
+        ev=action_professional_eligibility(engine,row['action_id'],ppid)
+        start=row.get('start_date') or row.get('assignment_start') or ''
+        end=row.get('end_date') or row.get('assignment_end') or ''
+        dates=start if start==end or not end else f'{start} -> {end}'
+        out.append({**row,'dates':dates,'eligibility_status':ev.get('status'),'eligibility_reason':ev.get('reason'),'human_value':ev.get('human_value')})
+    return out

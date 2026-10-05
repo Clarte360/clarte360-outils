@@ -96,7 +96,7 @@
       "name": "Préférences professionnelles",
       "category": "ORIENTATION_PROFESSIONNELLE",
       "base_url": "https://preferences-professionnelles.clarte360.com",
-      "tool_version": "1.9.7-json-save-report-equivalence-vps-hub",
+      "tool_version": "1.9.8-ux-navigation-retour",
       "active": true,
       "prescription_allowed": true,
       "allowed_publics": [
@@ -110,7 +110,7 @@
       "metadata": {
         "source": "REGISTRE_I9",
         "deployment_status": "production",
-        "runtime_version": "1.9.7-json-save-report-equivalence-vps-hub",
+        "runtime_version": "1.9.8-ux-navigation-retour",
         "compatibility_policy": "ALL_ACTION_TYPES"
       }
     },

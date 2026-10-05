@@ -14,7 +14,7 @@ def test_candidate_is_unique_professional_person_and_not_trainer(tmp_path):
 
 def test_professional_360_structured_sections(tmp_path):
     e=eng(tmp_path);p=create_professional_candidate(e,'Bob Exemple',actor='admin')
-    update_professional_profile(e,p,{'title':'Consultant formateur','collaboration_type':'INDEPENDANT','city':'Paris','country':'France'},'admin')
+    update_professional_profile(e,p,{'title':'Consultant formateur','collaboration_type':'SOUS_TRAITANT','city':'Paris','country':'France'},'admin')
     add_professional_experience(e,p,'Responsable QHSE','Entreprise X',description='Pilotage',actor='admin')
     add_professional_education(e,p,'Master QHSE','Université','QHSE',actor='admin')
     add_professional_certification(e,p,'Auditeur','CERTIFICATION','Organisme',actor='admin')
