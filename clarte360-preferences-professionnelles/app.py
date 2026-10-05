@@ -2,6 +2,7 @@ import json
 import hashlib
 import random
 import re
+import secrets
 import smtplib
 import uuid
 from datetime import datetime, timedelta
@@ -17,9 +18,12 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
-from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-APP_VERSION = "1.9.4-socle-clarte360"
+from validation import (ValidationError, access_code as validate_access_code, clean_text, decode_json_bytes, email as validate_email, finite_number, name as validate_name, phone as validate_phone, validate_state)
+from guard_state import fingerprint as guard_fingerprint, persisted_fingerprint as guard_persisted_fingerprint, is_dirty as guard_is_dirty
+
+APP_VERSION = "1.9.7-json-save-report-equivalence-vps-hub"
 SOCLE_CLARTE360_VERSION = "3.0"
 RGPD_TEXT_VERSION = "RGPD-Clarte360-v1.0-2026-07"
 BENEFICIARY_TIMEOUT_MINUTES = 15
@@ -136,6 +140,37 @@ DIMENSION_DESCRIPTIONS = {
     "Responsabilités": "Préférence concernant le niveau d'implication, de pilotage, d'arbitrage ou d'influence souhaité.",
 }
 
+
+def dimension_report_content(code: str, dimensions_df: pd.DataFrame) -> dict:
+    """Retourne uniquement les repères officiels présents dans le référentiel XLSX."""
+    code = str(code or "").strip()
+    label = DIMENSION_LABELS.get(code, code)
+    row = dimensions_df[dimensions_df["Code"].astype(str).str.strip() == code]
+    if row.empty:
+        return {
+            "description": DIMENSION_DESCRIPTIONS.get(label, ""),
+            "question": "",
+            "basse": "",
+            "haute": "",
+        }
+    r = row.iloc[0]
+    return {
+        "description": DIMENSION_DESCRIPTIONS.get(label, ""),
+        "question": str(r.get("Question explorée", "") or "").strip(),
+        "basse": str(r.get("Interprétation basse", "") or "").strip(),
+        "haute": str(r.get("Interprétation haute", "") or "").strip(),
+    }
+
+
+def continuum_position_text(pct: float) -> str:
+    if pct < 25:
+        return "Votre résultat se situe nettement vers le pôle bas de cette dimension."
+    if pct < 50:
+        return "Votre résultat se situe dans la partie intermédiaire, plutôt vers le pôle bas de cette dimension."
+    if pct < 75:
+        return "Votre résultat se situe dans la partie intermédiaire, plutôt vers le pôle haut de cette dimension."
+    return "Votre résultat se situe nettement vers le pôle haut de cette dimension."
+
 REQUIRED_QUESTION_COLUMNS = [
     "ID", "Dimension", "Libelle dimension", "Question",
     "Reponse A", "Score A", "Reponse B", "Score B", "Reponse C", "Score C", "Reponse D", "Score D",
@@ -144,10 +179,10 @@ REQUIRED_QUESTION_COLUMNS = [
 
 
 def sanitize_filename(value: str) -> str:
-    value = value.strip().lower()
+    value = str(value or "").strip().lower().replace("..", "")
     value = re.sub(r"[^a-z0-9àâäéèêëîïôöùûüçñ\- ]+", "", value, flags=re.IGNORECASE)
-    value = re.sub(r"\s+", "_", value)
-    return value or "beneficiaire"
+    value = re.sub(r"\s+", "_", value).strip("._-")
+    return value[:120] or "beneficiaire"
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -165,6 +200,8 @@ def validate_questionnaire(df: pd.DataFrame) -> list[str]:
     ids = df["ID"].astype(str).str.strip()
     if ids.duplicated().any():
         errors.append("Des ID de questions sont en doublon.")
+    if (~ids.str.fullmatch(r"Q\d{3}")).any():
+        errors.append("Les ID de questions doivent respecter le format Q001 à Q999.")
     active = df[df["Statut"].astype(str).str.lower().str.strip() == "active"]
     if len(active) != 60:
         errors.append(f"Le questionnaire doit contenir exactement 60 questions actives. Actuellement : {len(active)}.")
@@ -172,6 +209,8 @@ def validate_questionnaire(df: pd.DataFrame) -> list[str]:
         converted = pd.to_numeric(df[col], errors="coerce")
         if converted.isna().any():
             errors.append(f"La colonne {col} contient des valeurs non numériques.")
+        elif not converted.map(lambda x: bool(pd.notna(x)) and float(x) == float(x) and abs(float(x)) != float("inf")).all():
+            errors.append(f"La colonne {col} contient des valeurs non finies.")
     for col in ["Question", "Reponse A", "Reponse B", "Reponse C", "Reponse D"]:
         if df[col].astype(str).str.strip().eq("").any():
             errors.append(f"La colonne {col} contient au moins une cellule vide.")
@@ -229,10 +268,16 @@ def start_new_session(active_questions: pd.DataFrame, nom: str, prenom: str, ema
     st.session_state.beneficiaire = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip()}
     st.session_state.test_started = True
     st.session_state.email_sent = False
+    st.session_state.guard_saved_fingerprint = None
+    st.session_state.json_downloaded = False
+    st.session_state.exit_json_ready = False
+    st.session_state.exit_json_prefix = "clarte360_preferences_sauvegarde"
+    st.session_state.exit_mode = None
     ensure_access_tracking(user_activity=True)
 
 
 def restore_from_progress(payload: dict):
+    payload = validate_state(payload, allow_completed=False)
     st.session_state.session_id = payload.get("session_id", str(uuid.uuid4()))
     st.session_state.question_order = payload.get("question_order_displayed", payload.get("question_order", []))
     st.session_state.option_orders = payload.get("option_orders_displayed", payload.get("option_orders", {}))
@@ -261,6 +306,12 @@ def restore_from_progress(payload: dict):
     st.session_state.rgpd_consent_given = bool(payload.get("rgpd", {}).get("consent_given", False)) if isinstance(payload.get("rgpd"), dict) else False
     st.session_state.rgpd_consent_at = payload.get("rgpd", {}).get("consent_at", "") if isinstance(payload.get("rgpd"), dict) else ""
     ensure_access_tracking(user_activity=True)
+    # Le JSON importé constitue le point de sauvegarde de référence.
+    st.session_state.guard_saved_fingerprint = guard_persisted_fingerprint(st.session_state)
+    st.session_state.json_downloaded = True
+    st.session_state.exit_json_ready = False
+    st.session_state.exit_json_prefix = "clarte360_preferences_sauvegarde"
+    st.session_state.exit_mode = None
 
 
 def reset_all():
@@ -268,7 +319,8 @@ def reset_all():
         "session_id", "passation_id", "question_order", "option_orders", "answers", "current_index",
         "started_at", "beneficiaire", "test_started", "email_sent", "start_email_sent",
         "pending_beneficiaire", "access_code", "code_sent", "code_message", "code_verified",
-        "welcome_choice", "resume_json_main"
+        "welcome_choice", "resume_json_main", "guard_saved_fingerprint", "json_downloaded",
+        "exit_json_ready", "exit_json_prefix", "exit_mode", "exit_json_payload"
     ]:
         st.session_state.pop(key, None)
     st.rerun()
@@ -327,11 +379,13 @@ def build_user_interpretation(results: pd.DataFrame, beneficiaire: dict) -> str:
     intro = f"{prenom}, vos réponses" if prenom else "Vos réponses"
     return (
         f"{intro} ne définissent pas une personnalité. Elles mettent en évidence des préférences professionnelles "
-        "déclarées à un moment donné. Elles servent de support à l’échange avec votre consultant Clarté360.\n\n"
-        f"Les préférences les plus marquées apparaissent autour de : {top_txt}. "
-        f"Les préférences les moins marquées concernent davantage : {low_txt}. "
-        "Ces éléments ne constituent pas une orientation automatique : ils ouvrent des pistes de réflexion sur les conditions "
-        "dans lesquelles vous vous sentez le plus à l’aise pour travailler."
+        "déclarées à un moment donné et servent de support à l’échange avec votre consultant Clarté360.\n\n"
+        "Chaque pourcentage situe vos réponses sur un continuum propre à la dimension : un pourcentage faible ne signifie "
+        "donc pas une absence de préférence, mais une position davantage orientée vers le pôle bas décrit pour cette dimension.\n\n"
+        f"Les dimensions où vos réponses se situent le plus vers leur pôle haut sont : {top_txt}. "
+        f"Celles où elles se situent le plus vers leur pôle bas sont : {low_txt}. "
+        "Ces éléments ne constituent ni une qualité, ni une faiblesse, ni une orientation automatique : ils aident à questionner "
+        "les conditions et modes de travail qui vous conviennent davantage aujourd’hui."
     )
 
 
@@ -360,6 +414,16 @@ def get_email_config() -> dict | None:
 
 
 def send_email(to_email: str, subject: str, body: str, attachment: bytes | None = None, attachment_name: str | None = None) -> tuple[bool, str]:
+    try:
+        to_email = validate_email(to_email)
+        subject = clean_text(subject, "Objet de l'e-mail", 200, required=True, single_line=True)
+        body = clean_text(body, "Corps de l'e-mail", 20000, required=True)
+        if attachment_name:
+            attachment_name = sanitize_filename(attachment_name.rsplit(".", 1)[0]) + ".json"
+        if attachment is not None and len(attachment) > 2 * 1024 * 1024:
+            raise ValidationError("Pièce jointe trop volumineuse.")
+    except ValidationError as exc:
+        return False, str(exc)
     cfg = get_email_config()
     if cfg is None:
         return False, "SMTP non configuré. Aucun email n'a été envoyé."
@@ -393,7 +457,7 @@ def send_email(to_email: str, subject: str, body: str, attachment: bytes | None 
 
 
 def generate_access_code() -> str:
-    return f"{random.randint(100000, 999999)}"
+    return f"{secrets.randbelow(900000) + 100000:06d}"
 
 
 def send_access_code_email(beneficiaire: dict, access_code: str) -> tuple[bool, str]:
@@ -582,12 +646,38 @@ def pdf_footer(canvas, doc):
     canvas.restoreState()
 
 
-def make_pdf(results: pd.DataFrame, interpretation: str, beneficiaire: dict) -> bytes:
+def append_pdf_preference_details(story, results: pd.DataFrame, dimensions_df: pd.DataFrame, h2_teal, normal):
+    story.append(Paragraph("Comprendre vos préférences professionnelles", h2_teal))
+    story.append(Paragraph(
+        "Les dix dimensions sont présentées du pourcentage le plus élevé au plus faible. Chaque pourcentage situe vos réponses sur un continuum entre deux pôles de préférence : il ne s'agit ni d'une note de qualité, ni d'un niveau de compétence.",
+        normal,
+    ))
+    story.append(Spacer(1, 0.15*cm))
+    for _, r in results.sort_values("Pourcentage", ascending=False).iterrows():
+        content = dimension_report_content(r["Code"], dimensions_df)
+        heading_block = [
+            Paragraph(f"<b>{r['Dimension'].upper()} — {r['Pourcentage']:.1f} %</b>", h2_teal),
+            Paragraph(f"<b>Votre lecture :</b> {r['Lecture']}. {continuum_position_text(float(r['Pourcentage']))}", normal),
+        ]
+        if content["question"]:
+            heading_block.append(Paragraph(f"<b>Question explorée :</b> {content['question']}", normal))
+        story.append(KeepTogether(heading_block))
+        if content["description"]:
+            story.append(Paragraph(f"<b>Ce que travaille cette dimension :</b> {content['description']}", normal))
+        story.append(Paragraph("<b>Repères du continuum</b>", normal))
+        if content["basse"]:
+            story.append(Paragraph(f"<b>Pôle bas :</b> {content['basse']}", normal))
+        if content["haute"]:
+            story.append(Paragraph(f"<b>Pôle haut :</b> {content['haute']}", normal))
+        story.append(Spacer(1, 0.18*cm))
+
+
+def make_pdf(results: pd.DataFrame, interpretation: str, beneficiaire: dict, dimensions_df: pd.DataFrame) -> bytes:
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.2*cm, bottomMargin=1.8*cm)
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("TitleTeal", parent=styles["Title"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=18, leading=22)
-    h2_teal = ParagraphStyle("H2Teal", parent=styles["Heading2"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=13, leading=16)
+    h2_teal = ParagraphStyle("H2Teal", parent=styles["Heading2"], textColor=colors.HexColor(OFFICIAL_TEAL), fontSize=13, leading=16, spaceBefore=7, spaceAfter=5)
     normal = styles["BodyText"]
     story = []
     if LOGO_PATH.exists():
@@ -598,22 +688,18 @@ def make_pdf(results: pd.DataFrame, interpretation: str, beneficiaire: dict) -> 
     nom = beneficiaire.get("nom", "")
     prenom = beneficiaire.get("prenom", "")
     identite = " ".join([prenom, nom]).strip()
-    story.append(Paragraph(f"Bénéficiaire : {identite}", normal))
-    story.append(Paragraph(f"Date : {datetime.now().strftime('%d/%m/%Y')}", normal))
+    story.append(Paragraph(f"Bénéficiaire : <b>{identite}</b>", normal))
+    story.append(Paragraph(f"Date : {datetime.now().strftime('%d/%m/%Y %H:%M')}", normal))
+    story.append(Paragraph(f"Identifiant de passation : {st.session_state.get('passation_id', '')}", normal))
     story.append(Spacer(1, 0.25*cm))
-    story.append(Paragraph("Première lecture bénéficiaire", h2_teal))
-    story.append(Paragraph(interpretation.replace("\n", "<br/>"), normal))
-    story.append(Spacer(1, 0.4*cm))
 
-    bar_fig = plot_bar_results(results)
-    radar_fig = plot_radar_results(results)
-    story.append(Image(fig_to_png_bytes(bar_fig), width=17.0*cm, height=10.0*cm))
-    plt.close(bar_fig)
-    story.append(Spacer(1, 0.2*cm))
-    story.append(Image(fig_to_png_bytes(radar_fig), width=12.0*cm, height=12.0*cm))
-    plt.close(radar_fig)
-    story.append(Spacer(1, 0.3*cm))
+    story.append(Paragraph("Précaution de lecture", h2_teal))
+    story.append(Paragraph(
+        "Cet outil explore des préférences professionnelles déclarées à partir de situations concrètes. Les pourcentages positionnent les réponses sur des continuums propres à chaque dimension ; ils ne mesurent ni une aptitude, ni une compétence, ni une personnalité et ne produisent aucune orientation automatique.",
+        normal,
+    ))
 
+    story.append(Paragraph("Résultats", h2_teal))
     data = [["Dimension", "Score", "Lecture"]]
     for r in results.sort_values("Pourcentage", ascending=False).itertuples():
         data.append([r.Dimension, f"{r.Pourcentage:.0f} %", r.Lecture])
@@ -627,9 +713,25 @@ def make_pdf(results: pd.DataFrame, interpretation: str, beneficiaire: dict) -> 
         ("BACKGROUND", (0,1), (-1,-1), colors.HexColor("#F5FBFB")),
     ]))
     story.append(table)
-    story.append(Spacer(1, 0.35*cm))
-    story.append(Paragraph("Ce document est un support d’échange. Il ne constitue ni un diagnostic, ni un test psychométrique, ni une orientation automatique.", styles["Italic"]))
-    story.append(Paragraph("Document généré localement. Les données restent sous le contrôle du bénéficiaire.", styles["Italic"]))
+    story.append(Spacer(1, 0.3*cm))
+
+    bar_fig = plot_bar_results(results)
+    radar_fig = plot_radar_results(results)
+    story.append(Image(fig_to_png_bytes(bar_fig), width=17.0*cm, height=10.0*cm))
+    plt.close(bar_fig)
+    story.append(Spacer(1, 0.2*cm))
+    story.append(Image(fig_to_png_bytes(radar_fig), width=12.0*cm, height=12.0*cm))
+    plt.close(radar_fig)
+    story.append(Spacer(1, 0.3*cm))
+
+    story.append(Paragraph("Première lecture bénéficiaire", h2_teal))
+    story.append(Paragraph(interpretation.replace("\n", "<br/>"), normal))
+    story.append(Spacer(1, 0.25*cm))
+    append_pdf_preference_details(story, results, dimensions_df, h2_teal, normal)
+
+    story.append(Paragraph("Confidentialité et portée", h2_teal))
+    story.append(Paragraph("Ce document est un support d’échange. Il ne constitue ni un diagnostic, ni un test psychométrique, ni une orientation automatique.", normal))
+    story.append(Paragraph("Document généré localement. Les données restent sous le contrôle du bénéficiaire.", normal))
     doc.build(story, onFirstPage=pdf_footer, onLaterPages=pdf_footer)
     buffer.seek(0)
     return buffer.getvalue()
@@ -802,16 +904,29 @@ def beneficiary_has_timed_out() -> bool:
     return False
 
 
+def mark_current_state_saved(export_fingerprint: str | None = None):
+    """Le point de sauvegarde devient exactement l'état contenu dans le JSON rendu."""
+    st.session_state.guard_saved_fingerprint = export_fingerprint or guard_persisted_fingerprint(st.session_state)
+    st.session_state.json_downloaded = True
+
+
 def install_beforeunload_warning():
-    if st.session_state.get("test_started") and not st.session_state.get("json_downloaded"):
+    dirty = guard_is_dirty(st.session_state, st.session_state.get("guard_saved_fingerprint"))
+    if dirty:
         components.html("""
         <script>
         window.parent.onbeforeunload = function (e) {
-            const message = "Avant de quitter, utilisez le bouton Clarté360 : Quitter et télécharger mon JSON.";
+            const message = "Votre travail a ete modifie depuis votre derniere sauvegarde JSON.";
             e.preventDefault();
             e.returnValue = message;
             return message;
         };
+        </script>
+        """, height=0)
+    else:
+        components.html("""
+        <script>
+        window.parent.onbeforeunload = null;
         </script>
         """, height=0)
 
@@ -881,12 +996,21 @@ def contact_form_main():
         consent = st.checkbox("J'accepte que Clarté360 traite ces informations pour répondre à ma demande.")
         submit = st.form_submit_button("Envoyer à Clarté360", type="primary")
     if submit:
-        if not objet.strip() or not message.strip() or not consent:
-            st.error("Merci de renseigner l'objet, le message et le consentement.")
+        try:
+            prenom_v = validate_name(prenom, "Prénom", required=False)
+            nom_v = validate_name(nom, "Nom", required=False)
+            email_v = validate_email(email, required=False)
+            telephone_v = validate_phone(telephone, required=False)
+            objet_v = clean_text(objet, "Objet", 160, required=True, single_line=True)
+            message_v = clean_text(message, "Message", 4000, required=True)
+            if not consent:
+                raise ValidationError("Le consentement est obligatoire pour envoyer le message.")
+        except ValidationError as exc:
+            st.error(str(exc))
             return
         ensure_access_tracking(user_activity=True)
-        body = f"""Demande depuis l'application Clarté360 - Préférences professionnelles.\n\nNom : {prenom} {nom}\nE-mail : {email}\nTéléphone : {telephone}\nObjet : {objet}\n\nMessage :\n{message}\n\nApplication : {APP_TITLE}\nVersion : {APP_VERSION}\nSocle Clarté360 : {SOCLE_CLARTE360_VERSION}\nSession : {st.session_state.get('active_session_id','')}\nTemps cumulé : {format_seconds(st.session_state.get('access',{}).get('temps_total_cumule_secondes',0))}\nInfos techniques : {json.dumps(get_client_network(), ensure_ascii=False)}\n"""
-        ok, msg = send_email(FINAL_EMAIL_TO, f"Clarté360 - Contact application - {objet}", body)
+        body = f"""Demande depuis l'application Clarté360 - Préférences professionnelles.\n\nNom : {prenom_v} {nom_v}\nE-mail : {email_v}\nTéléphone : {telephone_v}\nObjet : {objet_v}\n\nMessage :\n{message_v}\n\nApplication : {APP_TITLE}\nVersion : {APP_VERSION}\nSocle Clarté360 : {SOCLE_CLARTE360_VERSION}\nSession : {st.session_state.get('active_session_id','')}\nTemps cumulé : {format_seconds(st.session_state.get('access',{}).get('temps_total_cumule_secondes',0))}\nInfos techniques : {json.dumps(get_client_network(), ensure_ascii=False)}\n"""
+        ok, msg = send_email(FINAL_EMAIL_TO, f"Clarté360 - Contact application - {objet_v}", body)
         if ok:
             st.success("Votre message a été transmis à Clarté360.")
         else:
@@ -916,8 +1040,9 @@ def render_sidebar():
             if len(st.session_state.get("answers", {})) < len(st.session_state.get("question_order", [])):
                 if st.button("💾 Préparer mon JSON pour reprendre plus tard", use_container_width=True):
                     ensure_access_tracking(user_activity=False)
-                    st.session_state.exit_json_payload = build_progress_json()
                     st.session_state.exit_json_ready = True
+                    st.session_state.exit_json_prefix = "clarte360_preferences_sauvegarde"
+                    st.session_state.exit_mode = "prepare"
                     st.session_state.access.setdefault("sauvegardes", []).append({"at": now_iso(), "motif": "sauvegarde_manuelle_reprise", "session_id": st.session_state.get("active_session_id", "")})
                     st.rerun()
                 if st.button("🚪 Quitter et télécharger mon JSON", type="primary", use_container_width=True):
@@ -925,33 +1050,37 @@ def render_sidebar():
                     for sess in st.session_state.access.get("sessions", []):
                         if sess.get("session_id") == st.session_state.get("active_session_id"):
                             sess["ended_at"] = now_iso(); sess["end_reason"] = "sortie_utilisateur_par_bouton"
-                    st.session_state.exit_json_payload = build_progress_json()
                     st.session_state.exit_json_ready = True
+                    st.session_state.exit_json_prefix = "clarte360_preferences_sortie"
+                    st.session_state.exit_mode = "quit"
                     st.rerun()
             if st.session_state.get("exit_json_ready"):
+                # Le JSON est reconstruit à chaque rendu depuis l'état validé courant.
+                # Il ne peut donc jamais rester figé sur une préparation antérieure.
+                current_json_bytes = json_download_bytes(build_progress_json())
+                current_json_fingerprint = guard_persisted_fingerprint(st.session_state)
+                current_prefix = st.session_state.get("exit_json_prefix", "clarte360_preferences_sauvegarde")
                 st.download_button(
                     "⬇️ Télécharger le JSON préparé",
-                    data=json_download_bytes(st.session_state.exit_json_payload),
-                    file_name=f"clarte360_preferences_sauvegarde_{current_name_part()}_{timestamp_part()}.json",
+                    data=current_json_bytes,
+                    file_name=f"{current_prefix}_{current_name_part()}_{timestamp_part()}.json",
                     mime="application/json",
                     use_container_width=True,
-                    on_click=lambda: st.session_state.update({"json_downloaded": True}),
+                    on_click=mark_current_state_saved,
+                    args=(current_json_fingerprint,),
                 )
         if (not st.session_state.get("test_started")) and st.session_state.get("welcome_choice") == "import":
             resume_file = st.file_uploader("Importer mon fichier JSON", type=["json"], key="resume_json")
             if resume_file is not None:
                 try:
-                    payload = json.loads(resume_file.getvalue().decode("utf-8"))
-                    if payload.get("outil") != "clarte360_preferences_professionnelles":
-                        st.error("Ce fichier JSON ne correspond pas à cet outil.")
-                    elif payload.get("completed") is True:
-                        st.error("Ce JSON correspond à un test déjà terminé. Il ne peut pas servir à reprendre une passation.")
-                    else:
-                        restore_from_progress(payload)
-                        st.success("Sauvegarde chargée. Reprise du questionnaire.")
-                        st.rerun()
-                except Exception as exc:
-                    st.error(f"Impossible de charger la sauvegarde : {exc}")
+                    payload = decode_json_bytes(resume_file.getvalue(), allow_completed=False)
+                    restore_from_progress(payload)
+                    st.success("Sauvegarde chargée. Reprise du questionnaire.")
+                    st.rerun()
+                except ValidationError as exc:
+                    st.error(str(exc))
+                except Exception:
+                    st.error("Impossible de charger la sauvegarde. Vérifiez que le fichier JSON correspond bien à cette application.")
         st.markdown("---")
         if st.button("💬 Contacter Clarté360", use_container_width=True):
             st.session_state.show_contact_page = True; st.session_state.show_rgpd_page = False; st.rerun()
@@ -987,6 +1116,13 @@ if st.session_state.get("show_rgpd_page"):
     rgpd_page()
     if st.button("← Retour à l’application"):
         st.session_state.show_rgpd_page = False; st.rerun()
+    st.stop()
+
+if st.session_state.get("test_started") and st.session_state.get("exit_json_ready") and st.session_state.get("exit_mode") == "quit":
+    install_beforeunload_warning()
+    render_header()
+    st.success("Votre JSON de sortie est prêt à être téléchargé dans la barre latérale.")
+    st.info("Le fichier proposé est reconstruit depuis la dernière version validée de votre travail. Après téléchargement, vous pouvez fermer l’onglet du navigateur.")
     st.stop()
 
 if not st.session_state.get("test_started") and not st.session_state.get("code_sent") and not st.session_state.get("welcome_choice"):
@@ -1059,14 +1195,16 @@ if not st.session_state.get("test_started"):
             send_code = st.form_submit_button("Recevoir mon code d'accès", type="primary")
 
         if send_code:
-            if not prenom.strip() or not nom.strip() or not email.strip():
-                st.error("Merci de renseigner le prénom, le nom et l'adresse email.")
-            elif "@" not in email or "." not in email:
-                st.error("Merci de renseigner une adresse email valide.")
-            elif not consent:
-                st.error("Le consentement RGPD est obligatoire avant toute utilisation.")
+            try:
+                prenom_v = validate_name(prenom, "Prénom")
+                nom_v = validate_name(nom, "Nom")
+                email_v = validate_email(email)
+                if not consent:
+                    raise ValidationError("Le consentement RGPD est obligatoire avant toute utilisation.")
+            except ValidationError as exc:
+                st.error(str(exc))
             else:
-                beneficiaire_tmp = {"nom": nom.strip(), "prenom": prenom.strip(), "email": email.strip()}
+                beneficiaire_tmp = {"nom": nom_v, "prenom": prenom_v, "email": email_v}
                 code = generate_access_code()
                 ok, msg = send_access_code_email(beneficiaire_tmp, code)
                 st.session_state.pending_beneficiaire = beneficiaire_tmp
@@ -1074,7 +1212,7 @@ if not st.session_state.get("test_started"):
                 st.session_state.rgpd_consent_at = now_iso()
                 st.session_state.rgpd_acceptance = {"consentement": True, "date": datetime.now().strftime("%Y-%m-%d"), "heure": datetime.now().strftime("%H:%M:%S"), "version_texte": RGPD_TEXT_VERSION}
                 ensure_access_tracking(user_activity=True)
-                st.session_state.access.setdefault("code_history", []).append({"at": now_iso(), "email": email.strip(), "status": "generated", "app_version": APP_VERSION})
+                st.session_state.access.setdefault("code_history", []).append({"at": now_iso(), "email": email_v, "status": "generated", "app_version": APP_VERSION})
                 st.session_state.access_code = code
                 st.session_state.code_sent = ok
                 st.session_state.code_message = msg
@@ -1108,7 +1246,12 @@ if not st.session_state.get("test_started"):
 
         if validate_code:
             expected = str(st.session_state.get("access_code", "")).strip()
-            if code_input.strip() == expected:
+            try:
+                code_v = validate_access_code(code_input)
+            except ValidationError as exc:
+                st.error(str(exc))
+                code_v = ""
+            if code_v and code_v == expected:
                 st.session_state.code_verified = True
                 ensure_access_tracking(user_activity=True)
                 st.session_state.access["code_verified"] = True
@@ -1124,7 +1267,9 @@ ensure_access_tracking(user_activity=True)
 install_beforeunload_warning()
 if beneficiary_has_timed_out():
     st.error("Session interrompue après 15 minutes sans activité. Téléchargez votre JSON puis reprenez avec ce fichier si nécessaire.")
-    st.download_button("Télécharger mon JSON de reprise", data=json_download_bytes(build_progress_json()), file_name=f"clarte360_preferences_timeout_{current_name_part()}_{timestamp_part()}.json", mime="application/json")
+    timeout_payload = build_progress_json()
+    timeout_fingerprint = guard_persisted_fingerprint(st.session_state)
+    st.download_button("Télécharger mon JSON de reprise", data=json_download_bytes(timeout_payload), file_name=f"clarte360_preferences_timeout_{current_name_part()}_{timestamp_part()}.json", mime="application/json", on_click=mark_current_state_saved, args=(timeout_fingerprint,))
     st.stop()
 beneficiaire = st.session_state.get("beneficiaire", {})
 st.markdown(f"**Bénéficiaire :** {beneficiaire.get('prenom','')} {beneficiaire.get('nom','')}")
@@ -1169,6 +1314,14 @@ else:
     st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Première lecture bénéficiaire</h2>", unsafe_allow_html=True)
     st.write(interpretation)
 
+    st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Synthèse chiffrée</h2>", unsafe_allow_html=True)
+    st.caption("Le pourcentage situe vos réponses sur le continuum propre à chaque dimension. Un score faible ne signifie pas une absence de préférence.")
+    st.dataframe(
+        results[["Dimension", "Pourcentage", "Lecture"]].sort_values("Pourcentage", ascending=False),
+        hide_index=True,
+        use_container_width=True,
+    )
+
     bar_fig = plot_bar_results(results)
     radar_fig = plot_radar_results(results)
     st.pyplot(bar_fig)
@@ -1176,12 +1329,23 @@ else:
     plt.close(bar_fig)
     plt.close(radar_fig)
 
-    st.markdown(f"<h2 style='color:{OFFICIAL_TEAL};'>Synthèse chiffrée</h2>", unsafe_allow_html=True)
-    st.dataframe(
-        results[["Dimension", "Pourcentage", "Lecture"]].sort_values("Pourcentage", ascending=False),
-        hide_index=True,
-        use_container_width=True,
-    )
+    st.markdown("### Comprendre vos préférences professionnelles")
+    st.caption("Les dimensions sont présentées du pourcentage le plus élevé au plus faible. Les deux pôles du continuum sont ceux du référentiel métier Clarté360 utilisé pour ce questionnaire.")
+    for _, r in results.sort_values("Pourcentage", ascending=False).iterrows():
+        content = dimension_report_content(r["Code"], dimensions_df)
+        with st.expander(f"{r['Dimension']} — {r['Pourcentage']:.1f} % — {r['Lecture']}"):
+            st.markdown(f"**Votre lecture : {r['Lecture']}**")
+            st.write(continuum_position_text(float(r["Pourcentage"])))
+            if content["question"]:
+                st.markdown(f"**Question explorée —** {content['question']}")
+            if content["description"]:
+                st.markdown("**Ce que travaille cette dimension**")
+                st.write(content["description"])
+            st.markdown("**Repères du continuum**")
+            if content["basse"]:
+                st.markdown(f"**Pôle bas —** {content['basse']}")
+            if content["haute"]:
+                st.markdown(f"**Pôle haut —** {content['haute']}")
 
     export_payload = build_export_json(active_questions, results, score_details)
     name_part = current_name_part()
@@ -1202,7 +1366,7 @@ else:
 
     export_payload = build_export_json(active_questions, results, score_details)
     json_bytes = json_download_bytes(export_payload)
-    pdf_bytes = make_pdf(results, interpretation, beneficiaire)
+    pdf_bytes = make_pdf(results, interpretation, beneficiaire, dimensions_df)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1211,6 +1375,8 @@ else:
             data=json_bytes,
             file_name=final_json_name,
             mime="application/json",
+            on_click=mark_current_state_saved,
+            args=(guard_persisted_fingerprint(st.session_state),),
         )
     with col2:
         st.download_button(

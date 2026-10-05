@@ -1,4 +1,15 @@
-__pycache__/
-*.pyc
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
 .streamlit/secrets.toml
+*.pem
+*.key
+*.pfx
+*.p12
+*.bak
+*.tmp
+*~
 exports/
+runtime_data/

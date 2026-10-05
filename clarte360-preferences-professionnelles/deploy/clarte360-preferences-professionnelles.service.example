@@ -1,0 +1,15 @@
+[Unit]
+Description=Clarte360 Preferences professionnelles
+After=network.target
+
+[Service]
+Type=simple
+User=clarte360
+WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-preferences-professionnelles
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/clarte360/clarte360-outils/clarte360-preferences-professionnelles/.venv/bin/streamlit run app.py --server.address 127.0.0.1 --server.port 8507 --server.headless true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
