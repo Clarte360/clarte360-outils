@@ -29,7 +29,7 @@ def test_pdf_archived_in_existing_document_system_and_linked(tmp_path,monkeypatc
     rid,sha,dedup=archive_pip_report_pdf(e,pres,pdf,source_event_id='evt-pdf-1',source_reference='secure-ref')
     r=get_pip_prescription_report(e,pres)
     assert r['document_reference_id']==rid and r['action_id']==aid and r['beneficiary_id']==bid
-    assert r['participant_id']==pid and r['audience']=='ACTION_BENEFICIARIES' and r['visible_to_beneficiary']==1
+    assert r['participant_id']==pid and r['audience']=='BENEFICIARY_ONLY' and r['visible_to_beneficiary']==1
     assert r['sha256']==sha and Path(r['storage_path']).read_bytes()==pdf
 
 

@@ -103,7 +103,9 @@ def test_i9d_trainer_prescription_requires_explicit_action_permission():
 def test_i9d_beneficiary_portal_has_business_tool_tab_and_no_connector_technical_ids():
     text=Path('app.py').read_text(encoding='utf-8')
     block=text[text.index('def beneficiary_portal_page'):text.index('def footer')]
-    assert 'Mes outils Clarté360' in block
+    from navigation_p3 import BENEFICIARY_SCREENS
+    assert any(section.key == 'tools' and 'Mes outils' in section.label for section in BENEFICIARY_SCREENS)
+    assert "if selected_section=='tools':" in block
     assert 'OUVRIR CET OUTIL' in block
     assert 'launch_token_ref' not in block and 'connector_code' not in block
 

@@ -77,9 +77,13 @@ def test_worker_sends_final_bundle_attachment(tmp_path, monkeypatch):
     execute(e,"UPDATE actions SET status='CLOTUREE',final_bundle_path=:p,final_bundle_generated_at=:n WHERE id=:a",{'p':str(z),'n':utcnow_iso(),'a':a})
     queue_client_transmission(e,a,'FINAL',z.name,['client@x.fr'],'admin')
     sent=[]
-    import worker
+    import worker, services
+    # P1: existing ZIPs may contain private learner documents; never attach them.
+    monkeypatch.setattr(services,'action_final_bundle',lambda *args,**kwargs:b'PK-safe-client-proofs')
     monkeypatch.setattr(worker,'send_mail',lambda cfg,to,subject,body,attachments=None: sent.append((to,subject,attachments)))
     n=worker._run_client_transmissions(e,{'enabled':True,'host':'smtp.test','from_email':'x@test'})
     assert n==1 and sent and sent[0][0]=='client@x.fr'
-    assert sent[0][2][0]['filename']==z.name and sent[0][2][0]['data']==b'PK-test'
+    assert sent[0][2][0]['filename']=='CLA-CAND_JUSTIFICATIFS.zip'
+    assert sent[0][2][0]['data']==b'PK-safe-client-proofs'
+    assert sent[0][2][0]['data']!=z.read_bytes()
     assert one(e,"SELECT status FROM client_transmissions WHERE action_id=:a",{'a':a})['status']=='SENT'

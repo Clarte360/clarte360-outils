@@ -3,7 +3,7 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report, refresh_countersign_communications, delivery_mode_label, trainer_microsoft_identity, mark_trainer_entra_identity, mark_trainer_entra_not_found, consume_pip_outbox, refresh_pip_connector_runtime_status, consume_ipip_outbox, refresh_ipip_connector_runtime_status
+from services import list_document_notifications, token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report, refresh_countersign_communications, delivery_mode_label, trainer_microsoft_identity, mark_trainer_entra_identity, mark_trainer_entra_not_found, consume_pip_outbox, refresh_pip_connector_runtime_status, consume_ipip_outbox, refresh_ipip_connector_runtime_status
 from mailer import send_mail, resolve_mail_config
 from graph_client import GraphClient, graph_config_from_mapping, graph_config_missing
 
@@ -17,6 +17,60 @@ def load_cfg():
     p=ROOT/'.streamlit'/'secrets.toml'
     return tomllib.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
 
+
+def _run_document_notifications(eng,smtp,cfg,base,limit=30):
+    """Emails facultatifs: opt-in individuel + interrupteur central explicite.
+
+    Jamais de titre, categorie, contenu, personne ni pièce jointe dans le message.
+    Une notification sans autorisation, ou encore en cours apres une panne, n'est
+    pas relancée a l'aveugle. Les notifications dans l'espace demeurent disponibles.
+    """
+    setting=cfg.get('documents') or {}
+    if setting.get('email_notifications_enabled') is not True:
+        return 0
+    rows=q(eng,"""SELECT * FROM document_notifications
+      WHERE email_status='A_ENVOYER' ORDER BY id LIMIT :n""",{'n':limit})
+    sent=0
+    for row in rows:
+        now=datetime.now(timezone.utc).isoformat()
+        with eng.begin() as con:
+            claimed=con.exec_driver_sql("""UPDATE document_notifications SET email_status='EN_COURS',
+              email_attempts=email_attempts+1 WHERE id=? AND email_status='A_ENVOYER'""",(row['id'],))
+            if claimed.rowcount!=1:continue
+        role=row['recipient_type'];rid=row['recipient_id'];aid=row['action_id']
+        # L'habilitation, la publication et le consentement sont revérifiés a l'envoi.
+        pref=one(eng,'SELECT email_opt_in FROM document_notification_preferences WHERE recipient_type=:r AND recipient_id=:i',
+                 {'r':role,'i':rid})
+        visible=list_document_notifications(eng,role,rid,aid)
+        if not pref or not pref['email_opt_in'] or not any(n['id']==row['id'] for n in visible):
+            execute(eng,"UPDATE document_notifications SET email_status='ANNULE' WHERE id=:i",{'i':row['id']})
+            continue
+        if role=='BENEFICIARY':
+            acc=one(eng,'SELECT email FROM beneficiary_portal_accounts WHERE beneficiary_id=:i AND active=1',{'i':rid})
+            suffix='?beneficiary_portal=1'
+        elif role=='TRAINER':
+            acc=one(eng,'SELECT email FROM trainers WHERE id=:i AND active=1',{'i':rid})
+            suffix=f'?trainer_portal=1&action_id={aid}'
+        else:
+            acc=None;suffix=''
+        recipient=(acc or {}).get('email')
+        if not recipient:
+            execute(eng,"UPDATE document_notifications SET email_status='ANNULE' WHERE id=:i",{'i':row['id']})
+            continue
+        try:
+            url=base.rstrip('/')+suffix
+            body=("<p>Un nouveau document est disponible dans votre espace Clarté360.</p>"
+                 "<p>Pour le consulter, connectez-vous à votre espace personnel :</p>"
+                 f"<p><a href='{url}'>OUVRIR MON ESPACE</a></p>"
+                 "<p>Aucun document ni renseignement confidentiel n'est transmis par cet e-mail.</p>")
+            send_mail(smtp,recipient,'Clarté360 — Nouveau document disponible',body)
+            execute(eng,"""UPDATE document_notifications SET email_status='ENVOYE',email_sent_at=:n
+              WHERE id=:i AND email_status='EN_COURS'""",{'n':datetime.now(timezone.utc).isoformat(),'i':row['id']})
+            sent+=1
+        except Exception:
+            # Pas de retry aveugle si le serveur SMTP a peut-etre accepté le message.
+            execute(eng,"UPDATE document_notifications SET email_status='A_CONTROLER' WHERE id=:i",{'i':row['id']})
+    return sent
 
 def _callback_recipient(cfg, smtp):
     section=cfg.get('pip_public') or cfg.get('PIP_PUBLIC') or {}
@@ -211,23 +265,21 @@ def _client_transmission_content(eng, row):
         dates=f"{a.get('start_date') or ''} au {a.get('end_date') or a.get('start_date') or ''}".strip()
     contact=org.get('general_email') or org.get('privacy_contact') or ''
     if row['transmission_type']=='FINAL':
-        path=Path(a.get('final_bundle_path') or '')
-        if not path.is_file(): raise FileNotFoundError('Dossier final introuvable sur le serveur.')
-        subject=f"{org_name} — Dossier de fin d’action — {a.get('action_no') or ''} — {a.get('title') or ''}"
-        docs='feuille(s) d’émargement définitive(s), certificat(s) de réalisation et évaluation(s) à chaud disponible(s)'
-        body=f"""<p>Bonjour,</p><p>Veuillez trouver en pièce jointe le dossier de fin d’action.</p><p><strong>Organisme :</strong> {org_name}<br><strong>Action :</strong> {a.get('action_no') or ''} — {a.get('title') or ''}<br><strong>Prestation :</strong> {a.get('prestation_type') or a.get('nature') or ''}<br><strong>Dates :</strong> {dates}<br><strong>Client :</strong> {a.get('client_name') or ''}<br><strong>Documents transmis :</strong> {docs}</p><p>Contact organisme : {contact}</p>"""
-        return subject,body,{'filename':path.name,'data':path.read_bytes(),'maintype':'application','subtype':'zip'}
+        if str(a.get('nature') or '').upper()!='FORMATION':
+            raise PermissionError('Dossier final client bloqué hors formation : confidentialité à vérifier.')
+        # Ne JAMAIS envoyer l'ancien ZIP sur disque : il pourrait contenir des documents individuels.
+        # Reconstruire le contenu minimal depuis les preuves autorisées.
+        from services import action_final_bundle
+        data=action_final_bundle(eng,row['action_id'],persist=False,actor='worker')
+        subject=f"{org_name} — Justificatifs de fin d’action — {a.get('action_no') or ''} — {a.get('title') or ''}"
+        body=("<p>Bonjour,</p><p>Veuillez trouver les justificatifs de fin d’action : "
+              "feuilles d’émargement et certificats de réalisation.</p>"
+              f"<p>Organisme : {org_name} ; action : {a.get('action_no') or ''} ; dates : {dates}.</p>"
+              f"<p>Contact organisme : {contact}</p>")
+        return subject,body,{'filename':f"{a.get('action_no') or 'ACTION'}_JUSTIFICATIFS.zip",'data':data,
+                             'maintype':'application','subtype':'zip'}
     if row['transmission_type']=='COLD':
-        cid=row.get('campaign_id')
-        if not cid: raise ValueError('Campagne qualité à froid absente de la transmission.')
-        from pdf_utils import quality_response_pdf
-        data=quality_response_pdf(eng,cid)
-        camp=one(eng,"""SELECT c.*,p.first_name,p.last_name FROM quality_campaigns c LEFT JOIN participants p ON p.id=c.participant_id WHERE c.id=:c""",{'c':cid}) or {}
-        who=(f"{camp.get('first_name') or ''} {camp.get('last_name') or ''}").strip()
-        filename=row.get('document_name') or f'evaluation_a_froid_{cid}.pdf'
-        subject=f"{org_name} — Évaluation à froid — {a.get('action_no') or ''} — {a.get('title') or ''}"
-        body=f"""<p>Bonjour,</p><p>L’évaluation à froid suivante vient d’être complétée. Elle est transmise indépendamment du dossier initial de fin d’action.</p><p><strong>Organisme :</strong> {org_name}<br><strong>Action :</strong> {a.get('action_no') or ''} — {a.get('title') or ''}<br><strong>Prestation :</strong> {a.get('prestation_type') or a.get('nature') or ''}<br><strong>Dates :</strong> {dates}<br><strong>Client :</strong> {a.get('client_name') or ''}<br><strong>Participant :</strong> {who}<br><strong>Document transmis :</strong> évaluation à froid</p><p>Contact organisme : {contact}</p>"""
-        return subject,body,{'filename':filename,'data':data,'maintype':'application','subtype':'pdf'}
+        raise PermissionError('Réponses individuelles à froid : aucune communication brute au client.')
     raise ValueError('Type de transmission client inconnu.')
 
 def _run_client_transmissions(eng,smtp,limit=30):
@@ -244,6 +296,9 @@ def _run_client_transmissions(eng,smtp,limit=30):
             sent_at=datetime.now(timezone.utc).isoformat()
             execute(eng,"UPDATE client_transmissions SET status='SENT',sent_at=:s,claim_token=NULL,claimed_at=NULL,last_error=NULL WHERE id=:i AND claim_token=:c",{'s':sent_at,'i':row['id'],'c':claim})
             audit(eng,'CLIENT_TRANSMISSION_SENT',row['action_id'],'worker','client_transmission',row['id'],{'type':row['transmission_type'],'recipient':row['recipient_email']});sent+=1
+        except PermissionError as ex:
+            execute(eng,"UPDATE client_transmissions SET status='BLOCKED_PRIVACY',claim_token=NULL,claimed_at=NULL,last_error=:e WHERE id=:i AND claim_token=:c",{'e':str(ex)[:500],'i':row['id'],'c':claim})
+            audit(eng,'CLIENT_TRANSMISSION_PRIVACY_BLOCKED',row['action_id'],'worker','client_transmission',row['id'],{'type':row['transmission_type']})
         except Exception as ex:
             execute(eng,"UPDATE client_transmissions SET status='PENDING',claim_token=NULL,claimed_at=NULL,last_error=:e WHERE id=:i AND claim_token=:c",{'e':str(ex)[:500],'i':row['id'],'c':claim})
     return sent
@@ -458,6 +513,7 @@ def run_once():
     sent += _run_quality_events(eng,smtp,base)
     sent += _run_client_transmissions(eng,smtp)
     sent += _run_communication_events(eng,smtp,base)
+    sent += _run_document_notifications(eng,smtp,cfg,base)
     return sent + teams_changed + pip_changed + ipip_changed
 
 if __name__=='__main__':

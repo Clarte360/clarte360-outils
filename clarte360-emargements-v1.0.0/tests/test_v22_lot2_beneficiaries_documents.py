@@ -70,11 +70,11 @@ def test_portal_zip_contains_documents(tmp_path, monkeypatch):
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         assert 'CLA9007/Support.pdf' in z.namelist();assert z.read('CLA9007/Support.pdf')==b'abc'
 
-def test_physical_file_removed_only_after_last_reference(tmp_path, monkeypatch):
+def test_archived_reference_keeps_binaries_until_controlled_retention_purge(tmp_path, monkeypatch):
     import services
     monkeypatch.setattr(services,'BENEFICIARY_DOC_DIR',tmp_path/'blobs');services.BENEFICIARY_DOC_DIR.mkdir()
     e=engine(tmp_path);a1=action(e,'CLA9008');a2=action(e,'CLA9009')
     r1,h,_=store_document(e,b'xyz','A.pdf','COURS','admin',action_id=a1);r2,_,_=store_document(e,b'xyz','B.pdf','COURS','admin',action_id=a2)
     sf=one(e,'SELECT * FROM stored_files WHERE sha256=:h',{'h':h});path=Path(sf['storage_path']);assert path.exists()
     assert delete_document_reference(e,r1,'admin');assert path.exists()
-    assert delete_document_reference(e,r2,'admin');assert not path.exists();assert one(e,'SELECT * FROM stored_files WHERE sha256=:h',{'h':h}) is None
+    assert delete_document_reference(e,r2,'admin');assert path.exists();assert one(e,'SELECT * FROM stored_files WHERE sha256=:h',{'h':h}) is not None

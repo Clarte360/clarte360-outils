@@ -152,7 +152,8 @@ V2_SCHEMA = [
  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, legal_name TEXT, address TEXT, postal_code TEXT, city TEXT, country TEXT,
  siret TEXT, rcs TEXT, naf TEXT, vat_id TEXT, nda TEXT, website TEXT, general_email TEXT, phone TEXT, timezone TEXT NOT NULL DEFAULT 'Europe/Paris',
  privacy_contact TEXT, privacy_notice TEXT, logo_path TEXT, favicon_path TEXT, primary_color TEXT, secondary_color TEXT,
- email_from_name TEXT, email_from_address TEXT, retention_months INTEGER, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+ email_from_name TEXT, email_from_address TEXT, retention_months INTEGER, can_upload_documents INTEGER NOT NULL DEFAULT 0,
+          active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
 """CREATE TABLE IF NOT EXISTS agencies (
  id INTEGER PRIMARY KEY AUTOINCREMENT, organization_id INTEGER NOT NULL, name TEXT NOT NULL, address TEXT, postal_code TEXT, city TEXT, country TEXT,
  siret TEXT, nda TEXT, email TEXT, phone TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -213,6 +214,90 @@ V2_SCHEMA = [
  uploaded_by TEXT, created_at TEXT NOT NULL, deleted_at TEXT,
  FOREIGN KEY(stored_file_id) REFERENCES stored_files(id), FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE,
  FOREIGN KEY(beneficiary_id) REFERENCES beneficiaries(id) ON DELETE CASCADE, FOREIGN KEY(participant_id) REFERENCES participants(id) ON DELETE CASCADE)"""
+]
+
+# P2 - registre de notifications documentaires individualise, sans contenu sensible.
+P2_DOCUMENT_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS document_notifications (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ document_reference_id INTEGER NOT NULL,
+ action_id INTEGER,
+ recipient_type TEXT NOT NULL,
+ recipient_id INTEGER NOT NULL,
+ status TEXT NOT NULL DEFAULT 'NON_LUE',
+ created_at TEXT NOT NULL,
+ read_at TEXT,
+ email_status TEXT NOT NULL DEFAULT 'NON_DEMANDE',
+ email_sent_at TEXT,
+ email_attempts INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(document_reference_id,recipient_type,recipient_id),
+ FOREIGN KEY(document_reference_id) REFERENCES document_references(id) ON DELETE CASCADE
+)""",
+"""CREATE TABLE IF NOT EXISTS document_notification_preferences (
+ recipient_type TEXT NOT NULL,
+ recipient_id INTEGER NOT NULL,
+ email_opt_in INTEGER NOT NULL DEFAULT 0,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(recipient_type,recipient_id)
+)"""
+]
+
+# P4 - Comptes de connexion Client et habilitations, pas de référentiel CRM concurrent.
+CLIENT_PORTAL_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS client_portal_accounts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ crm_contact_id INTEGER NOT NULL UNIQUE,
+ email TEXT NOT NULL UNIQUE,
+ password_hash TEXT,
+ active INTEGER NOT NULL DEFAULT 1,
+ last_login_at TEXT,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ FOREIGN KEY(crm_contact_id) REFERENCES crm_contacts(id) ON DELETE RESTRICT
+)""",
+"""CREATE TABLE IF NOT EXISTS client_portal_tokens (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ account_id INTEGER NOT NULL,
+ token_hash TEXT NOT NULL UNIQUE,
+ token_kind TEXT NOT NULL,
+ expires_at TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ used_at TEXT,
+ FOREIGN KEY(account_id) REFERENCES client_portal_accounts(id) ON DELETE CASCADE
+)""",
+"""CREATE TABLE IF NOT EXISTS client_action_grants (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ account_id INTEGER NOT NULL,
+ action_id INTEGER NOT NULL,
+ role TEXT NOT NULL,
+ can_download INTEGER NOT NULL DEFAULT 0,
+ can_upload INTEGER NOT NULL DEFAULT 0,
+ granted_at TEXT NOT NULL,
+ granted_by TEXT NOT NULL,
+ revoked_at TEXT,
+ UNIQUE(account_id,action_id),
+ FOREIGN KEY(account_id) REFERENCES client_portal_accounts(id) ON DELETE CASCADE,
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE
+)""",
+"""CREATE TABLE IF NOT EXISTS client_document_shares (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ document_reference_id INTEGER NOT NULL,
+ account_id INTEGER NOT NULL,
+ published_at TEXT NOT NULL,
+ published_by TEXT NOT NULL,
+ revoked_at TEXT,
+ UNIQUE(document_reference_id,account_id),
+ FOREIGN KEY(document_reference_id) REFERENCES document_references(id) ON DELETE CASCADE,
+ FOREIGN KEY(account_id) REFERENCES client_portal_accounts(id) ON DELETE CASCADE
+)""",
+"""CREATE TABLE IF NOT EXISTS client_login_attempts (
+ email_hash TEXT PRIMARY KEY,
+ failed_count INTEGER NOT NULL DEFAULT 0,
+ last_failed_at TEXT NOT NULL,
+ locked_until TEXT
+)""",
+"CREATE INDEX IF NOT EXISTS idx_client_action_grants_action ON client_action_grants(action_id,revoked_at)",
+"CREATE INDEX IF NOT EXISTS idx_client_document_shares_account ON client_document_shares(account_id,revoked_at)"
 ]
 
 I9A_SCHEMA = [
@@ -721,6 +806,8 @@ def init_db(engine: Engine):
     with engine.begin() as c:
         for sql in SCHEMA:
             c.execute(text(sql))
+        for sql in P2_DOCUMENT_SCHEMA:
+            c.execute(text(sql))
         for sql in V2_SCHEMA:
             c.execute(text(sql))
         for sql in I9A_SCHEMA:
@@ -738,6 +825,8 @@ def init_db(engine: Engine):
         for sql in I9G_SCHEMA:
             c.execute(text(sql))
         for sql in CRM0_SCHEMA:
+            c.execute(text(sql))
+        for sql in CLIENT_PORTAL_SCHEMA:
             c.execute(text(sql))
         for sql in INTERVENANTS_J0_SCHEMA:
             c.execute(text(sql))
@@ -858,6 +947,19 @@ def init_db(engine: Engine):
             "ALTER TABLE slot_trainers ADD COLUMN can_manage_planning INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE action_trainers ADD COLUMN can_prescribe_tools INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE professional_cv_generations ADD COLUMN source_sha256 TEXT",
+            # P2: migrations documentaires strictement additives, donnees anciennes publiees.
+            "ALTER TABLE document_references ADD COLUMN logical_key TEXT",
+            "ALTER TABLE document_references ADD COLUMN version_no INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE document_references ADD COLUMN supersedes_reference_id INTEGER",
+            "ALTER TABLE document_references ADD COLUMN superseded_at TEXT",
+            "ALTER TABLE document_references ADD COLUMN publication_status TEXT NOT NULL DEFAULT 'PUBLIE'",
+            "ALTER TABLE document_references ADD COLUMN validation_status TEXT NOT NULL DEFAULT 'A_VERIFIER'",
+            "ALTER TABLE document_references ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'HUMAIN'",
+            "ALTER TABLE document_references ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'A_DEFINIR'",
+            "ALTER TABLE document_references ADD COLUMN published_at TEXT",
+            "ALTER TABLE document_references ADD COLUMN validated_at TEXT",
+            "ALTER TABLE document_references ADD COLUMN finalized_at TEXT",
+            "ALTER TABLE document_references ADD COLUMN revision_reason TEXT",
         ]
         for sql in migrations:
             try: c.execute(text(sql))
@@ -893,6 +995,12 @@ def init_db(engine: Engine):
           FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE)"""
         ]
         for sql in extra: c.execute(text(sql))
+        # P1: historical trainer schema is created after earlier best-effort migrations.
+        # Re-run the additive migration for older DBs once the table exists.
+        try:
+            c.execute(text("ALTER TABLE trainers ADD COLUMN can_upload_documents INTEGER NOT NULL DEFAULT 0"))
+        except Exception:
+            pass
         try: c.execute(text("ALTER TABLE trainers ADD COLUMN professional_person_id TEXT"))
         except Exception: pass
 
@@ -1390,6 +1498,10 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_participants_beneficiary ON participants(beneficiary_id)",
             "CREATE INDEX IF NOT EXISTS ix_document_refs_action ON document_references(action_id,deleted_at)",
             "CREATE INDEX IF NOT EXISTS ix_document_refs_beneficiary ON document_references(beneficiary_id,deleted_at)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_document_ref_active_logical ON document_references(logical_key) WHERE logical_key IS NOT NULL AND deleted_at IS NULL AND superseded_at IS NULL",
+            "CREATE INDEX IF NOT EXISTS ix_docrefs_history ON document_references(logical_key,version_no)",
+            "CREATE INDEX IF NOT EXISTS ix_doc_notifications_subject ON document_notifications(recipient_type,recipient_id,status)",
+            "CREATE INDEX IF NOT EXISTS ix_doc_notifications_email ON document_notifications(email_status,created_at)",
             "CREATE INDEX IF NOT EXISTS ix_action_trainers_action ON action_trainers(action_id,active,is_referent)",
             "CREATE INDEX IF NOT EXISTS ix_action_trainers_trainer ON action_trainers(trainer_id,active)",
             "CREATE INDEX IF NOT EXISTS ix_slot_trainers_slot ON slot_trainers(slot_id,active)",

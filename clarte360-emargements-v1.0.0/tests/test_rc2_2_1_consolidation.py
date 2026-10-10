@@ -130,7 +130,9 @@ def test_beneficiary_portal_keeps_multiple_tools_and_does_not_reopen_finished_si
     start = app.index('def beneficiary_portal_page')
     end = app.index('def footer')
     block = app[start:end]
-    assert 'Mes outils Clarté360' in block
+    from navigation_p3 import BENEFICIARY_SCREENS
+    assert any(section.key == 'tools' and 'Mes outils' in section.label for section in BENEFICIARY_SCREENS)
+    assert "if selected_section=='tools':" in block
     assert "pr.get('tool_code')=='PIP_RIASEC_ONET'" in block
     assert "pr.get('tool_code')=='IPIP_NEO120'" in block
     assert "('PIP_RIASEC_ONET','IPIP_NEO120')" in block

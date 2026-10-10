@@ -52,7 +52,8 @@ def test_action_can_add_and_remove_tools_freely():
 
 def test_beneficiary_portal_uses_direct_autonomous_links_and_fresh_pip_signed_link():
     src=Path('app.py').read_text(encoding='utf-8')
-    block=src[src.index("with tabs[4]:"):src.index("with tabs[5]:")]
+    portal=src[src.index("def beneficiary_portal_page"):src.index("def footer(")]
+    block=portal[portal.index("if selected_section=='tools':"):portal.index("if selected_section=='documents':")]
     assert "build_pip_prescription_launch" in block
     assert "launch_url=(pr.get('base_url')" in block
     assert "create_prescription_launch_token" not in block

@@ -123,7 +123,7 @@ def test_i9c_unknown_teams_email_is_never_blindly_attributed_and_can_be_confirme
 
 def test_i9c_user_interfaces_do_not_expose_meeting_id_or_entra_id_to_portals():
     text=Path('app.py').read_text(encoding='utf-8')
-    trainer_block=text[text.index('with tab_teams:'):text.index('with tab_em:')]
-    beneficiary=text[text.index("with tabs[3]:"):text.index("with tabs[4]:")]
+    trainer_block=text[text.index("if selected_section=='teams':"):text.index("if selected_section=='signatures':")]
+    beneficiary=text[text.index("if selected_section=='teams':",text.index("def beneficiary_portal_page")):text.index("if selected_section=='tools':")]
     assert 'Meeting ID' not in trainer_block and 'Entra ID' not in trainer_block
     assert 'Meeting ID' not in beneficiary and 'Entra ID' not in beneficiary and 'COORGANIZER' not in beneficiary

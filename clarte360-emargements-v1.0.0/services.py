@@ -5,6 +5,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit, parse_qsl
 from sqlalchemy import text, inspect
+from sqlalchemy.exc import IntegrityError
 from db import q, one, execute, audit, new_token, utcnow_iso
 from security import hash_password, verify_password, seal_short_secret, open_short_secret
 from input_validation import (
@@ -1714,12 +1715,9 @@ def complete_quality_campaign(engine,campaign_id,answers,actor='beneficiary'):
     execute(engine,"UPDATE quality_email_events SET status='SKIPPED' WHERE campaign_id=:c AND status='PENDING'",{'c':campaign_id})
     _create_issue_from_quality(engine,campaign_id,answers,actor)
     audit(engine,'QUALITY_CAMPAIGN_COMPLETED',camp['action_id'],actor,'quality_campaign',campaign_id,{})
-    # V2.2 candidate: a completed cold evaluation is a second, independent client transmission.
-    if camp.get('campaign_kind')=='COLD':
-        action=one(engine,'SELECT transmit_final_bundle FROM actions WHERE id=:a',{'a':camp['action_id']}) or {}
-        recipients=configured_final_recipients(engine,camp['action_id']) if action.get('transmit_final_bundle') else []
-        if recipients:
-            queue_client_transmission(engine,camp['action_id'],'COLD',f'evaluation_a_froid_{campaign_id}.pdf',recipients,actor,campaign_id=campaign_id)
+    # P1: satisfaction individuelle en formation = dossier qualité interne.
+    # Aucun envoi brut automatique au donneur d'ordre.
+    # Les anciennes transmissions encore en file sont bloquées dans le worker.
 
 def _create_issue_from_quality(engine,campaign_id,answers,actor):
     camp=one(engine,'SELECT action_id FROM quality_campaigns WHERE id=:c',{'c':campaign_id}); questions={x['id']:x for x in quality_questions(engine,campaign_id)}
@@ -2166,57 +2164,515 @@ def set_beneficiary_portal_active(engine,beneficiary_id,active,actor='system'):
     execute(engine,'UPDATE beneficiary_portal_accounts SET active=:a,updated_at=:u WHERE beneficiary_id=:b',{'a':1 if active else 0,'u':utcnow_iso(),'b':beneficiary_id})
     audit(engine,'BENEFICIARY_PORTAL_STATUS_CHANGED',actor=actor,entity_type='beneficiary',entity_id=beneficiary_id,details={'active':bool(active)})
 
-def store_document(engine,data:bytes,display_name,category,actor='system',action_id=None,beneficiary_id=None,participant_id=None,audience='ACTION_BENEFICIARIES',visible_to_beneficiary=True,max_file_mb=DEFAULT_MAX_FILE_MB,allowed_extensions=None):
-    import hashlib, mimetypes
+# P1: Les audiences documentaires ne sont pas de simples étiquettes UI.
+# Les anciennes références peuvent associer un bénéficiaire à ACTION_BENEFICIARIES :
+# la cible individuelle doit toujours primer sur une étiquette collective.
+DOC_SHARED = 'ACTION_BENEFICIARIES'
+DOC_PRIVATE = 'BENEFICIARY_ONLY'
+DOC_ADMIN = 'ADMIN_ONLY'
+DOC_CLIENT = 'CLIENT_ONLY'
+DOC_TRAINER = 'TRAINER_ONLY'
+
+
+def _document_participant_matches(engine, action_id, beneficiary_id=None, participant_id=None):
+    """Refuse un croisement entre une action, un participant et un bénéficiaire."""
+    if participant_id is not None:
+        p=one(engine,'SELECT id,action_id,beneficiary_id,active FROM participants WHERE id=:p',{'p':participant_id})
+        if not p or not p['active'] or (action_id is not None and p['action_id']!=action_id):
+            raise ValueError('Rattachement documentaire : participant hors action ou inactif.')
+        if beneficiary_id is not None and p.get('beneficiary_id')!=beneficiary_id:
+            raise ValueError('Rattachement documentaire : bénéficiaire différent du participant.')
+    if action_id is not None and beneficiary_id is not None:
+        matched=one(engine,"SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1 LIMIT 1",{'a':action_id,'b':beneficiary_id})
+        if not matched: raise ValueError('Rattachement documentaire : bénéficiaire non inscrit à cette action.')
+
+
+def _document_audience(category, audience, beneficiary_id, participant_id):
+    """Fail-closed: seul un cours non nominatif est diffusable à toute une action."""
+    cat=str(category or '').strip().upper()
+    aud=str(audience or '').strip().upper()
+    personal=beneficiary_id is not None or participant_id is not None
+    if aud not in (DOC_SHARED,DOC_PRIVATE,DOC_ADMIN,DOC_CLIENT,DOC_TRAINER):
+        raise ValueError('Destinataires du document non reconnus.')
+    # A legacy client/administrative category cannot be made visible to a
+    # beneficiary simply by changing a visibility flag or audience string.
+    if cat in ('CLIENT_CONTRACTUEL','INTERNE','CONTRAT_CLIENT','FACTURE_CLIENT','ADMINISTRATIF'):
+        return DOC_ADMIN
+    if aud==DOC_SHARED:
+        if personal: return DOC_PRIVATE  # compatibilité des anciens connecteurs PIP/NEO
+        if cat=='COURS': return DOC_SHARED
+        return DOC_ADMIN  # ADMINISTRATIF et toute nouvelle catégorie inconnue = privé par défaut
+    if aud==DOC_PRIVATE and not personal:
+        raise ValueError('Un document individuel doit être rattaché à une personne ou participation.')
+    if aud==DOC_SHARED and cat!='COURS': return DOC_ADMIN
+    return aud
+
+
+# P2 : un même contexte documentaire garde un seul document courant et un historique immuable.
+# La clé ne reprend aucune identité civile : seulement des identifiants internes et le libellé normalisé.
+def _document_logical_key(action_id,beneficiary_id,participant_id,category,audience,display_name):
+    import unicodedata
+    label=unicodedata.normalize('NFKC',str(display_name or '').strip()).casefold()
+    label=' '.join(label.split())
+    values=[action_id,beneficiary_id,participant_id,str(category or '').upper(),str(audience or '').upper(),label]
+    return hashlib.sha256(json.dumps(values,ensure_ascii=False,separators=(',',':')).encode('utf-8')).hexdigest()
+
+
+def _document_source_kind(actor):
+    actor=str(actor or '').lower()
+    if any(v in actor for v in ('connector','pip_','ipip_','application:','tool_')): return 'APPLICATION'
+    if 'import' in actor: return 'IMPORT'
+    return 'HUMAIN'
+
+
+def _document_retention_class(engine,action_id,category):
+    # La vraie durée/purge réglementaire sera arbitrée en conformité et testée à P5.
+    if str(category or '').upper() in ('CLIENT_CONTRACTUEL','CONTRAT_CLIENT','FACTURE_CLIENT'):
+        return 'CONTRACTUEL_A_DEFINIR'
+    if action_id is not None:
+        action=one(engine,'SELECT prestation_type,nature FROM actions WHERE id=:a',{'a':action_id}) or {}
+        kind=str(action.get('prestation_type') or action.get('nature') or '').upper()
+        if 'BILAN' in kind: return 'BILAN_COMPETENCES_A_DEFINIR'
+    return 'METIER_A_DEFINIR'
+
+
+def store_document(engine,data:bytes,display_name,category,actor='system',action_id=None,beneficiary_id=None,participant_id=None,audience='ACTION_BENEFICIARIES',visible_to_beneficiary=True,max_file_mb=DEFAULT_MAX_FILE_MB,allowed_extensions=None,*,publish=True,revision_reason=None,progress_callback=None,logical_namespace=None):
+    import mimetypes
     if not data: raise ValueError('Fichier vide.')
+    # Neutralise chemins injectés par un navigateur, zip ou import externe.
+    display_name=str(display_name or '').replace('\\','/').split('/')[-1].strip()
+    if not display_name or display_name in ('.','..') or len(display_name)>180:
+        raise ValueError('Nom de fichier non autorisé.')
+    if action_id is not None and not one(engine,'SELECT id FROM actions WHERE id=:a',{'a':action_id}):
+        raise ValueError('Action du document introuvable.')
+    _document_participant_matches(engine,action_id,beneficiary_id,participant_id)
+    audience=_document_audience(category,audience,beneficiary_id,participant_id)
+    if audience in (DOC_ADMIN,DOC_CLIENT,DOC_TRAINER): visible_to_beneficiary=False
+    if audience==DOC_SHARED and action_id is None:
+        raise ValueError('Un document collectif exige une action.')
     if len(data)>int(max_file_mb)*1024*1024: raise ValueError(f'Fichier trop volumineux (maximum {max_file_mb} Mo).')
-    ext=Path(display_name or '').suffix.lower(); allowed=set(allowed_extensions or DEFAULT_ALLOWED_EXTENSIONS)
-    if ext not in allowed: raise ValueError('Type de fichier non autorise.')
-    digest=hashlib.sha256(data).hexdigest(); row=one(engine,'SELECT * FROM stored_files WHERE sha256=:h',{'h':digest})
-    if row:
-        sfid=row['id']; path=Path(row['storage_path'])
-        if not path.is_file(): path.write_bytes(data)
+    ext=Path(display_name).suffix.lower(); allowed=set(allowed_extensions or DEFAULT_ALLOWED_EXTENSIONS)
+    if ext not in allowed: raise ValueError('Type de fichier non autorisé.')
+    def stage(label,value):
+        if progress_callback: progress_callback(label,value)
+    stage('Validation du périmètre',0.15)
+    digest=hashlib.sha256(data).hexdigest()
+    key=_document_logical_key(action_id,beneficiary_id,participant_id,category,audience,display_name)
+    if logical_namespace is not None:
+        # A company may upload the same filename as another client on an action.
+        # A dedicated namespace prevents cross-client logical deduplication.
+        scope=str(logical_namespace)
+        if len(scope)>150:raise ValueError('Périmètre documentaire non autorisé.')
+        key=hashlib.sha256(json.dumps(['P4_CLIENT_SCOPE',key,scope],separators=(',',':')).encode()).hexdigest()
+
+    stage('Calcul de l’intégrité',0.35)
+    now=utcnow_iso()
+    previous=None
+    row_current=one(engine,'''SELECT dr.*,sf.sha256 FROM document_references dr JOIN stored_files sf ON sf.id=dr.stored_file_id
+        WHERE dr.logical_key=:k AND dr.deleted_at IS NULL AND dr.superseded_at IS NULL ORDER BY dr.id DESC LIMIT 1''',{'k':key})
+    if not row_current and logical_namespace is None:
+        # Raccordement prudent des references anciennes dont la cle logique P2 n'existait pas.
+        candidates=q(engine,'''SELECT dr.*,sf.sha256 FROM document_references dr JOIN stored_files sf ON sf.id=dr.stored_file_id
+          WHERE dr.action_id IS :a AND dr.beneficiary_id IS :b AND dr.participant_id IS :p
+          AND UPPER(dr.category)=:cat AND dr.audience=:au
+          AND dr.deleted_at IS NULL AND dr.superseded_at IS NULL ORDER BY dr.id DESC''',
+          {'a':action_id,'b':beneficiary_id,'p':participant_id,'cat':str(category).upper(),'au':audience})
+        row_current=next((r for r in candidates if _document_logical_key(action_id,beneficiary_id,participant_id,category,audience,r['display_name'])==key),None)
+        if not row_current:
+            # Un meme binaire redéposé dans le même périmètre et la même catégorie ne recrée pas une référence.
+            row_current=next((r for r in candidates if r['sha256']==digest),None)
+        if row_current and not row_current.get('logical_key'):
+            # Attribution tardive de clé pour préserver les references historiques sans recreer leurs données.
+            key=_document_logical_key(action_id,beneficiary_id,participant_id,category,audience,row_current['display_name'])
+    if row_current and row_current['sha256']==digest:
+        blob=one(engine,'SELECT storage_path FROM stored_files WHERE sha256=:h',{'h':digest})
+        known=Path(blob['storage_path']) if blob else None
+        if known is None or not known.is_file() or hashlib.sha256(known.read_bytes()).hexdigest()!=digest:
+            raise ValueError('Une anomalie d’intégrité empêche le dépôt. Aucune référence réutilisée.')
+        stage('Document déjà enregistré',1.0)
+        return row_current['id'],digest,True
+    if row_current and row_current.get('validation_status')=='FINALISE' and not str(revision_reason or '').strip():
+        raise ValueError('Une version finalisée exige un motif explicite pour une nouvelle version.')
+    old_version=int(row_current.get('version_no') or 1) if row_current else 0
+    physical=one(engine,'SELECT * FROM stored_files WHERE sha256=:h',{'h':digest})
+    sfid=physical['id'] if physical else None
+    path=Path(physical['storage_path']) if physical else BENEFICIARY_DOC_DIR/digest
+    # Les originaux sont conserves sous SHA-256; jamais de remplacement d'un contenu different.
+    if path.exists():
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:
+            raise ValueError('Une anomalie d’intégrité empêche le dépôt. Aucun remplacement effectué.')
     else:
-        path=BENEFICIARY_DOC_DIR/digest
-        if not path.exists(): path.write_bytes(data)
-        sfid=execute(engine,"""INSERT INTO stored_files(sha256,storage_path,size_bytes,mime_type,extension,created_at,last_verified_at) VALUES(:h,:p,:s,:m,:e,:c,:c)""",{'h':digest,'p':str(path),'s':len(data),'m':mimetypes.guess_type(display_name)[0] or 'application/octet-stream','e':ext,'c':utcnow_iso()})
-    rid=execute(engine,"""INSERT INTO document_references(stored_file_id,action_id,beneficiary_id,participant_id,category,display_name,audience,visible_to_beneficiary,uploaded_by,created_at)
-        VALUES(:f,:a,:b,:p,:c,:n,:au,:v,:u,:d)""",{'f':sfid,'a':action_id,'b':beneficiary_id,'p':participant_id,'c':category,'n':display_name,'au':audience,'v':1 if visible_to_beneficiary else 0,'u':actor,'d':utcnow_iso()})
-    audit(engine,'DOCUMENT_REFERENCE_CREATED',action_id,actor,'document_reference',rid,{'sha256':digest,'deduplicated':bool(row),'display_name':display_name,'beneficiary_id':beneficiary_id})
-    return rid,digest,bool(row)
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_bytes(data)
+    stage('Conservation du fichier original',0.7)
+    try:
+        with engine.begin() as c:
+            if sfid is None:
+                c.execute(text('''INSERT OR IGNORE INTO stored_files(sha256,storage_path,size_bytes,mime_type,extension,created_at,last_verified_at)
+                   VALUES(:h,:p,:s,:m,:e,:c,:c)'''),
+                   {'h':digest,'p':str(path),'s':len(data),'m':mimetypes.guess_type(display_name)[0] or 'application/octet-stream','e':ext,'c':now})
+                sfid=c.execute(text('SELECT id FROM stored_files WHERE sha256=:h'),{'h':digest}).scalar_one()
+            if row_current:
+                c.execute(text('''UPDATE document_references
+                  SET superseded_at=:n,logical_key=COALESCE(logical_key,:k),
+                  publication_status=CASE WHEN :pub=1 AND publication_status='PUBLIE' THEN 'REMPLACE' ELSE publication_status END
+                  WHERE id=:id AND deleted_at IS NULL AND superseded_at IS NULL'''),
+                  {'n':now,'k':key,'pub':1 if publish else 0,'id':row_current['id']})
+            rid=c.execute(text('''INSERT INTO document_references(
+               stored_file_id,action_id,beneficiary_id,participant_id,category,display_name,audience,visible_to_beneficiary,
+               uploaded_by,created_at,logical_key,version_no,supersedes_reference_id,publication_status,validation_status,
+               source_kind,retention_class,published_at,revision_reason)
+               VALUES(:f,:a,:b,:p,:cat,:nm,:au,:vis,:actor,:t,:k,:v,:old,:pub,'A_VERIFIER',:src,:ret,:pt,:reason)'''),
+               {'f':sfid,'a':action_id,'b':beneficiary_id,'p':participant_id,'cat':category,'nm':display_name,
+                'au':audience,'vis':1 if visible_to_beneficiary else 0,'actor':actor,'t':now,'k':key,
+                'v':old_version+1,'old':row_current['id'] if row_current else None,
+                'pub':'PUBLIE' if publish else 'BROUILLON',
+                'src':_document_source_kind(actor),'ret':_document_retention_class(engine,action_id,category),
+                'pt':now if publish else None,'reason':str(revision_reason or '').strip() or None}).lastrowid
+    except IntegrityError as exc:
+        concurrent=one(engine,'''SELECT dr.id,sf.sha256,sf.storage_path FROM document_references dr
+            JOIN stored_files sf ON sf.id=dr.stored_file_id
+            WHERE dr.logical_key=:k AND dr.deleted_at IS NULL AND dr.superseded_at IS NULL
+            ORDER BY dr.id DESC LIMIT 1''',{'k':key})
+        if concurrent and concurrent['sha256']==digest:
+            concurrent_path=Path(concurrent['storage_path'])
+            if concurrent_path.is_file() and hashlib.sha256(concurrent_path.read_bytes()).hexdigest()==digest:
+                stage('Document déjà enregistré',1.0)
+                return concurrent['id'],digest,True
+        raise ValueError('Le document a changé simultanément. Actualiser avant de déposer une nouvelle version.') from exc
+    stage('Enregistrement de la référence',0.9)
+    audit(engine,'DOCUMENT_REFERENCE_CREATED',action_id,actor,'document_reference',rid,
+          {'sha256':digest,'deduplicated':bool(physical),'display_name':display_name,
+           'version':old_version+1,'supersedes':row_current['id'] if row_current else None,
+           'source_kind':_document_source_kind(actor),'publication':'PUBLIE' if publish else 'BROUILLON'})
+    if publish: _create_document_notifications(engine,rid,actor)
+    stage('Dépôt terminé',1.0)
+    return rid,digest,bool(physical)
 
 def list_action_documents(engine,action_id,include_deleted=False):
-    clause='' if include_deleted else 'AND dr.deleted_at IS NULL'
+    # Une ancienne version publiee reste lisible tant que sa nouvelle version est un brouillon.
+    clause='' if include_deleted else "AND dr.deleted_at IS NULL AND (dr.superseded_at IS NULL OR dr.publication_status='PUBLIE')"
     return q(engine,f"""SELECT dr.*,sf.sha256,sf.storage_path,sf.size_bytes,sf.mime_type,sf.extension FROM document_references dr JOIN stored_files sf ON sf.id=dr.stored_file_id WHERE dr.action_id=:a {clause} ORDER BY dr.created_at DESC""",{'a':action_id})
 
 def list_beneficiary_documents(engine,beneficiary_id):
-    return q(engine,"""SELECT DISTINCT dr.*,sf.sha256,sf.storage_path,sf.size_bytes,sf.mime_type,sf.extension,a.action_no,a.title
+    """Contrôle côté requête : supports publics du groupe ou documents *individuels*.
+
+    En particulier une ligne PIP/NEO historique portant une audience collective
+    mais un beneficiary_id n'est jamais montrée aux pairs de la même action.
+    """
+    return q(engine,"""SELECT dr.*,sf.sha256,sf.storage_path,sf.size_bytes,sf.mime_type,sf.extension,a.action_no,a.title
       FROM document_references dr JOIN stored_files sf ON sf.id=dr.stored_file_id
       LEFT JOIN actions a ON a.id=dr.action_id
-      LEFT JOIN participants p ON p.action_id=dr.action_id AND p.beneficiary_id=:b
-      WHERE dr.deleted_at IS NULL AND dr.visible_to_beneficiary=1 AND (
-        dr.beneficiary_id=:b OR dr.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b) OR
-        (dr.audience='ACTION_BENEFICIARIES' AND dr.action_id IN (SELECT action_id FROM participants WHERE beneficiary_id=:b))
-      ) ORDER BY dr.created_at DESC""",{'b':beneficiary_id})
+      WHERE dr.deleted_at IS NULL AND dr.publication_status='PUBLIE' AND dr.visible_to_beneficiary=1
+        AND dr.audience NOT IN ('ADMIN_ONLY','CLIENT_ONLY','TRAINER_ONLY')
+        AND UPPER(dr.category) NOT IN ('CLIENT_CONTRACTUEL','INTERNE','CONTRAT_CLIENT','FACTURE_CLIENT','ADMINISTRATIF')
+        AND (
+        (dr.audience='ACTION_BENEFICIARIES' AND UPPER(dr.category)='COURS'
+         AND dr.beneficiary_id IS NULL AND dr.participant_id IS NULL
+         AND EXISTS (SELECT 1 FROM participants p WHERE p.action_id=dr.action_id AND p.beneficiary_id=:b AND p.active=1))
+        OR (
+           (dr.audience='BENEFICIARY_ONLY' OR dr.beneficiary_id IS NOT NULL OR dr.participant_id IS NOT NULL)
+           AND (
+            (dr.beneficiary_id=:b AND (dr.action_id IS NULL OR EXISTS (
+                SELECT 1 FROM participants p WHERE p.action_id=dr.action_id AND p.beneficiary_id=:b AND p.active=1)))
+            OR (dr.participant_id IN (SELECT id FROM participants WHERE beneficiary_id=:b AND active=1)
+                AND (dr.action_id IS NULL OR EXISTS (
+                   SELECT 1 FROM participants p WHERE p.id=dr.participant_id AND p.action_id=dr.action_id)))
+           )
+        )
+      ) ORDER BY dr.created_at DESC,dr.id DESC""",{'b':beneficiary_id})
+
+
+def _trainer_document_is_referent(engine,trainer_id,action_id):
+    """Les rapports individuels sont limités à un référent habilité de l'action."""
+    assigned=one(engine,'SELECT trainer_id FROM actions WHERE id=:a',{'a':action_id})
+    legacy=bool(assigned and assigned.get('trainer_id')==trainer_id)
+    designated=one(engine,"SELECT id FROM action_trainers WHERE action_id=:a AND trainer_id=:t AND active=1 AND is_referent=1 LIMIT 1",{'a':action_id,'t':trainer_id})
+    return bool(legacy or designated)
+
+
+def list_trainer_documents(engine,trainer_id,action_id):
+    """Aucun droit par défaut sur les documents client ou les autres bénéficiaires."""
+    active=one(engine,'SELECT active FROM trainers WHERE id=:t',{'t':trainer_id})
+    if not active or not active.get('active') or not trainer_action_authorized(engine,trainer_id,action_id): return []
+    referent=_trainer_document_is_referent(engine,trainer_id,action_id)
+    qap_enabled=bool(referent or one(engine,"SELECT id FROM action_trainers WHERE trainer_id=:t AND action_id=:a AND active=1 LIMIT 1",{'t':trainer_id,'a':action_id}))
+    result=[]
+    for d in list_action_documents(engine,action_id):
+        if d.get('publication_status')!='PUBLIE': continue
+        category=str(d.get('category') or '').upper()
+        target=bool(d.get('beneficiary_id') is not None or d.get('participant_id') is not None)
+        audience=str(d.get('audience') or '').upper()
+        if category=='COURS' and audience==DOC_SHARED and not target:
+            result.append(d)
+        elif target and category=='QAP' and qap_enabled:
+            result.append(d)
+        elif target and referent and category in ('BENEFICIAIRE','IPIP_NEO120','PIP_RIASEC_ONET'):
+            result.append(d)
+    return result
+
+
+def list_admin_documents(engine,admin_email,action_id):
+    """Métadonnées de l'action sans octroyer la lecture du contenu individuel."""
+    active=one(engine,'SELECT id FROM admins WHERE lower(email)=lower(:e) AND active=1',{'e':admin_email or ''})
+    return list_action_documents(engine,action_id) if active else []
+
+
+def read_document_for_actor(engine,reference_id,role,actor_id,action_id=None):
+    """Point d'entrée contrôlé pour tout téléchargement de portail (lecture + octets).
+
+    Admin n'est pas une dispense de secret professionnel : pièces privées interdites
+    en l'absence d'une habilitation de confidentialité dédiée (reportée après P1).
+    """
+    role=str(role or '').upper()
+    if role=='BENEFICIARY':
+        rows=list_beneficiary_documents(engine,actor_id)
+    elif role=='TRAINER':
+        rows=list_trainer_documents(engine,actor_id,action_id) if action_id is not None else []
+    elif role=='CLIENT':
+        from client_portal import list_client_documents
+        rows=list_client_documents(engine,actor_id,action_id) if action_id is not None else []
+    elif role=='ADMIN':
+        rows=[d for d in list_admin_documents(engine,actor_id,action_id) if
+              str(d.get('audience') or '').upper() in (DOC_SHARED,DOC_ADMIN)
+              and d.get('beneficiary_id') is None and d.get('participant_id') is None
+              and (str(d.get('audience') or '').upper()!=DOC_SHARED or str(d.get('category') or '').upper() in ('COURS','ADMINISTRATIF','CLIENT_CONTRACTUEL','INTERNE'))
+              or (str(d.get('audience') or '').upper()==DOC_CLIENT
+                  and str(d.get('category') or '').upper() in ('JUSTIFICATIF_CLIENT','ATTESTATION_CLIENT','DOCUMENT_CLIENT_RECU')
+                  and d.get('beneficiary_id') is None and d.get('participant_id') is None)]
+    else:
+        rows=[]  # client et tout rôle non explicitement géré : refus par défaut
+    d=next((d for d in rows if d['id']==reference_id),None)
+    if not d: raise PermissionError('Document non autorisé pour ce compte ou cette action.')
+    path=Path(d['storage_path'])
+    if not path.is_file(): raise FileNotFoundError('Le document est momentanément indisponible.')
+    data=path.read_bytes()
+    # Vérification de l'intégrité d'un binaire existant avant de le livrer.
+    if hashlib.sha256(data).hexdigest()!=d.get('sha256'):
+        raise ValueError('Intégrité du document non vérifiée. Contacter l’administration.')
+    return data
+
+
+def store_document_for_actor(engine,role,actor_id,data,display_name,action_id,*,
+                             beneficiary_id=None,participant_id=None,category='COURS',publish=True,
+                             revision_reason=None,progress_callback=None):
+    """Dépôt initié depuis les portails, avec contrôle de la session et du contexte."""
+    role=str(role or '').upper()
+    if role=='TRAINER':
+        tr=one(engine,'SELECT id,active,can_upload_documents FROM trainers WHERE id=:t',{'t':actor_id})
+        if not tr or not tr['active'] or not tr.get('can_upload_documents') or not trainer_action_authorized(engine,actor_id,action_id):
+            raise PermissionError('Dépôt non autorisé pour cet intervenant.')
+        if str(category).upper()!='COURS' or beneficiary_id is not None or participant_id is not None:
+            raise PermissionError('Cet espace permet uniquement les supports collectifs.')
+        return store_document(engine,data,display_name,'COURS',f'trainer:{actor_id}',action_id=action_id,
+                              audience=DOC_SHARED,publish=publish,revision_reason=revision_reason,progress_callback=progress_callback)
+    if role=='BENEFICIARY':
+        pp=one(engine,"SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1 LIMIT 1",{'a':action_id,'b':actor_id})
+        if not pp or (beneficiary_id is not None and beneficiary_id!=actor_id) or (participant_id is not None and participant_id!=pp['id']):
+            raise PermissionError('Dépôt individuel en dehors de votre propre action.')
+        return store_document(engine,data,display_name,'BENEFICIAIRE',f'beneficiary:{actor_id}',
+                              action_id=action_id,beneficiary_id=actor_id,participant_id=pp['id'],
+                              audience=DOC_PRIVATE,allowed_extensions={'.pdf','.json'},publish=publish,revision_reason=revision_reason,progress_callback=progress_callback)
+    if role=='ADMIN':
+        acc=one(engine,'SELECT id FROM admins WHERE lower(email)=lower(:e) AND active=1',{'e':actor_id or ''})
+        if not acc: raise PermissionError('Compte administrateur inactif ou inexistant.')
+        cat=str(category or '').upper()
+        if cat=='COURS':
+            if beneficiary_id is not None or participant_id is not None: raise ValueError('Support collectif non nominatif uniquement.')
+            return store_document(engine,data,display_name,'COURS',actor_id,action_id=action_id,audience=DOC_SHARED,publish=publish,revision_reason=revision_reason,progress_callback=progress_callback)
+        if cat=='ADMINISTRATIF_INDIVIDUEL':
+            if beneficiary_id is None or participant_id is None: raise ValueError('Bénéficiaire et participation obligatoires.')
+            return store_document(engine,data,display_name,cat,actor_id,action_id=action_id,beneficiary_id=beneficiary_id,
+                                  participant_id=participant_id,audience=DOC_PRIVATE,publish=publish,revision_reason=revision_reason,progress_callback=progress_callback)
+        if cat in ('ADMINISTRATIF','CLIENT_CONTRACTUEL','INTERNE'):
+            if beneficiary_id is not None or participant_id is not None: raise ValueError('Document interne non nominatif.')
+            return store_document(engine,data,display_name,cat,actor_id,action_id=action_id,
+                                  audience=DOC_ADMIN,visible_to_beneficiary=False,publish=publish,revision_reason=revision_reason,progress_callback=progress_callback)
+        raise ValueError('Catégorie documentaire non autorisée dans cet espace.')
+    raise PermissionError('Rôle non autorisé au dépôt documentaire.')
+
+
+# --- P2 : publication, historique, notifications et ZIP documentaire par droits ---
+def list_document_versions_admin(engine,reference_id,admin_email):
+    if not one(engine,'SELECT id FROM admins WHERE lower(email)=lower(:e) AND active=1',{'e':admin_email or ''}):
+        raise PermissionError('Administration non autorisée.')
+    row=one(engine,'SELECT * FROM document_references WHERE id=:i',{'i':reference_id})
+    if not row: return []
+    if row.get('logical_key'):
+        return q(engine,'''SELECT id,version_no,supersedes_reference_id,created_at,superseded_at,deleted_at,
+          display_name,publication_status,validation_status,source_kind,retention_class,revision_reason
+          FROM document_references WHERE logical_key=:k ORDER BY version_no DESC,id DESC''',{'k':row['logical_key']})
+    return [{k:row.get(k) for k in ('id','version_no','supersedes_reference_id','created_at','superseded_at',
+             'deleted_at','display_name','publication_status','validation_status','source_kind','retention_class','revision_reason')}]
+
+
+def _document_admin_allowed(engine,admin_email):
+    return bool(one(engine,'SELECT id FROM admins WHERE lower(email)=lower(:e) AND active=1',{'e':admin_email or ''}))
+
+
+def set_document_publication(engine,reference_id,publish,admin_email):
+    if not _document_admin_allowed(engine,admin_email): raise PermissionError('Publication réservée à un administrateur actif.')
+    d=one(engine,'SELECT * FROM document_references WHERE id=:i AND deleted_at IS NULL AND superseded_at IS NULL',{'i':reference_id})
+    if not d: raise ValueError('Version courante introuvable.')
+    target='PUBLIE' if publish else 'BROUILLON'
+    if d['publication_status']==target: return False
+    with engine.begin() as con:
+        if publish and d.get('logical_key'):
+            con.execute(text("UPDATE document_references SET publication_status='REMPLACE' WHERE logical_key=:k AND id<>:i AND publication_status='PUBLIE'"),
+                        {'k':d['logical_key'],'i':reference_id})
+        con.execute(text("UPDATE document_references SET publication_status=:s,published_at=CASE WHEN :s='PUBLIE' THEN :t ELSE NULL END WHERE id=:i"),
+                    {'s':target,'t':utcnow_iso(),'i':reference_id})
+    audit(engine,'DOCUMENT_PUBLICATION_CHANGED',d['action_id'],admin_email,'document_reference',reference_id,{'published':bool(publish)})
+    if publish:_create_document_notifications(engine,reference_id,admin_email)
+    return True
+
+
+def set_document_validation(engine,reference_id,status,admin_email):
+    if not _document_admin_allowed(engine,admin_email): raise PermissionError('Validation réservée à un administrateur actif.')
+    status=str(status or '').strip().upper()
+    if status not in ('A_VERIFIER','VALIDE','FINALISE'):raise ValueError('Etat de validation inconnu.')
+    d=one(engine,'SELECT * FROM document_references WHERE id=:i AND deleted_at IS NULL AND superseded_at IS NULL',{'i':reference_id})
+    if not d:raise ValueError('Version courante introuvable.')
+    if d.get('validation_status')=='FINALISE' and status!='FINALISE':
+        raise ValueError('Document finalisé verrouillé : ouvrir une nouvelle version avec motif.')
+    if d.get('validation_status')==status:return False
+    now=utcnow_iso()
+    execute(engine,'''UPDATE document_references SET validation_status=:s,
+      validated_at=CASE WHEN :s IN ('VALIDE','FINALISE') THEN COALESCE(validated_at,:t) ELSE NULL END,
+      finalized_at=CASE WHEN :s='FINALISE' THEN :t ELSE finalized_at END WHERE id=:i''',
+      {'s':status,'t':now,'i':reference_id})
+    audit(engine,'DOCUMENT_VALIDATION_CHANGED',d['action_id'],admin_email,'document_reference',reference_id,{'status':status})
+    return True
+
+
+def _create_document_notifications(engine,reference_id,actor):
+    d=one(engine,"SELECT * FROM document_references WHERE id=:i AND deleted_at IS NULL AND superseded_at IS NULL AND publication_status='PUBLIE'",{'i':reference_id})
+    if not d or not d.get('action_id'):return 0
+    recips=[]
+    category=str(d.get('category') or '').upper(); audience=d['audience']
+    if audience==DOC_SHARED and category=='COURS' and d.get('beneficiary_id') is None and d.get('participant_id') is None:
+        recips=[('BENEFICIARY',p['beneficiary_id']) for p in q(engine,'''SELECT DISTINCT p.beneficiary_id FROM participants p JOIN beneficiaries b ON b.id=p.beneficiary_id
+          JOIN beneficiary_portal_accounts ba ON ba.beneficiary_id=b.id
+          WHERE p.action_id=:a AND p.active=1 AND b.active=1 AND ba.active=1 AND p.beneficiary_id IS NOT NULL''',{'a':d['action_id']})]
+        recips += [('TRAINER',t['trainer_id']) for t in q(engine,'''SELECT DISTINCT at.trainer_id FROM action_trainers at JOIN trainers t ON t.id=at.trainer_id
+          WHERE at.action_id=:a AND at.active=1 AND t.active=1''',{'a':d['action_id']})]
+    elif audience==DOC_PRIVATE:
+        bid=d.get('beneficiary_id')
+        if bid is None and d.get('participant_id'):
+            p=one(engine,'SELECT beneficiary_id FROM participants WHERE id=:p',{'p':d['participant_id']})
+            bid=(p or {}).get('beneficiary_id')
+        if bid is not None:recips=[('BENEFICIARY',bid)]
+        # Un QAP publié ne concerne que les formateurs réellement affectés.
+        if category=='QAP':
+            recips += [('TRAINER',t['trainer_id']) for t in q(engine,'SELECT trainer_id FROM action_trainers WHERE action_id=:a AND active=1',{'a':d['action_id']})]
+    result=0
+    for role,rid in set(recips):
+        if str(actor)==f'{role.lower()}:{rid}':continue  # pas d'avis automatique de son propre dépôt
+        allowed=list_beneficiary_documents(engine,rid) if role=='BENEFICIARY' else list_trainer_documents(engine,rid,d['action_id'])
+        if not any(row['id']==reference_id for row in allowed):continue
+        pref=one(engine,'SELECT email_opt_in FROM document_notification_preferences WHERE recipient_type=:r AND recipient_id=:id',{'r':role,'id':rid}) or {}
+        result += int(bool(execute(engine,'''INSERT OR IGNORE INTO document_notifications(document_reference_id,action_id,recipient_type,recipient_id,status,created_at,email_status)
+          VALUES(:d,:a,:r,:id,'NON_LUE',:t,:em)''',{'d':reference_id,'a':d['action_id'],'r':role,'id':rid,'t':utcnow_iso(),
+           'em':'A_ENVOYER' if pref.get('email_opt_in') else 'NON_DEMANDE'})))
+    return result
+
+
+def list_document_notifications(engine,role,actor_id,action_id=None):
+    role=str(role or '').upper()
+    if role not in ('BENEFICIARY','TRAINER'):return []
+    if role=='TRAINER' and action_id is None:return []
+    authorized=list_beneficiary_documents(engine,actor_id) if role=='BENEFICIARY' else list_trainer_documents(engine,actor_id,action_id)
+    allowed={x['id']:x for x in authorized}
+    params={'r':role,'id':actor_id}
+    clause=''
+    if action_id is not None:clause='AND n.action_id=:a';params['a']=action_id
+    rows=q(engine,f'''SELECT n.id,n.document_reference_id,n.action_id,n.status,n.created_at,n.read_at,
+       a.action_no FROM document_notifications n JOIN actions a ON a.id=n.action_id
+       WHERE n.recipient_type=:r AND n.recipient_id=:id {clause} ORDER BY n.id DESC LIMIT 100''',params)
+    return [row for row in rows if row['document_reference_id'] in allowed]
+
+
+def mark_document_notification_read(engine,notification_id,role,actor_id,action_id=None):
+    visible=list_document_notifications(engine,role,actor_id,action_id)
+    if not any(r['id']==notification_id for r in visible):raise PermissionError('Notification inaccessible ou expirée.')
+    n=one(engine,'SELECT status FROM document_notifications WHERE id=:i',{'i':notification_id})
+    if not n or n['status']=='LUE':return False
+    execute(engine,'''UPDATE document_notifications SET status='LUE',read_at=:t
+      WHERE id=:i AND recipient_type=:r AND recipient_id=:a AND status='NON_LUE' ''',
+      {'t':utcnow_iso(),'i':notification_id,'r':role.upper(),'a':actor_id})
+    return True
+
+
+def document_notification_preference(engine,role,actor_id):
+    role=str(role or '').upper()
+    if role not in ('BENEFICIARY','TRAINER'):raise PermissionError('Destinataire inconnu.')
+    r=one(engine,'SELECT email_opt_in FROM document_notification_preferences WHERE recipient_type=:r AND recipient_id=:i',{'r':role,'i':actor_id})
+    return bool(r and r['email_opt_in'])
+
+
+def set_document_notification_preference(engine,role,actor_id,opt_in):
+    role=str(role or '').upper()
+    if role=='BENEFICIARY':
+        exists=one(engine,'''SELECT b.id FROM beneficiaries b JOIN beneficiary_portal_accounts p ON p.beneficiary_id=b.id
+           WHERE b.id=:i AND b.active=1 AND p.active=1''',{'i':actor_id})
+    elif role=='TRAINER':
+        exists=one(engine,'SELECT id FROM trainers WHERE id=:i AND active=1',{'i':actor_id})
+    else:raise PermissionError('Destinataire inconnu.')
+    if not exists:raise PermissionError('Compte inactif ou inexistant.')
+    execute(engine,'''INSERT INTO document_notification_preferences(recipient_type,recipient_id,email_opt_in,updated_at)
+      VALUES(:r,:i,:v,:t) ON CONFLICT(recipient_type,recipient_id) DO UPDATE SET email_opt_in=excluded.email_opt_in,updated_at=excluded.updated_at''',
+      {'r':role,'i':actor_id,'v':1 if opt_in else 0,'t':utcnow_iso()})
+    if not opt_in:
+        execute(engine,'''UPDATE document_notifications SET email_status='NON_DEMANDE'
+          WHERE recipient_type=:r AND recipient_id=:i AND email_status="A_ENVOYER"''',{'r':role,'i':actor_id})
+    return bool(opt_in)
+
+
+def export_action_documents_zip(engine,action_id,role,actor_id):
+    # ZIP des seuls documents effectivement lisibles par le rôle et dans l'action.
+    role=str(role or '').upper()
+    if role=='BENEFICIARY':
+        docs=[d for d in list_beneficiary_documents(engine,actor_id) if d.get('action_id')==action_id]
+    elif role=='TRAINER':docs=list_trainer_documents(engine,actor_id,action_id)
+    elif role=='CLIENT':
+        from client_portal import list_client_documents
+        docs=list_client_documents(engine,actor_id,action_id)
+    elif role=='ADMIN':docs=list_admin_documents(engine,actor_id,action_id)
+    else:raise PermissionError('Rôle non autorisé à exporter.')
+    if role=='ADMIN' and not _document_admin_allowed(engine,actor_id):raise PermissionError('Administration inactive.')
+    buf=io.BytesIO();seen=set();manifest=[]
+    with zipfile.ZipFile(buf,'w',zipfile.ZIP_DEFLATED) as archive:
+        for d in docs:
+            try:content=read_document_for_actor(engine,d['id'],role,actor_id,action_id=action_id)
+            except PermissionError:continue
+            name=_safe_filename(d.get('display_name') or f"document_{d['id']}")
+            label=f"{d['id']}_v{d.get('version_no') or 1}_{name}"
+            if label in seen:raise ValueError('Identifiant documentaire dupliqué.')
+            seen.add(label)
+            archive.writestr('documents/'+label,content)
+            manifest.append({'reference_id':d['id'],'file':label,'sha256':d['sha256'],
+                 'version':d.get('version_no') or 1,'category':d['category'],'source_kind':d.get('source_kind') or 'HUMAIN'})
+        archive.writestr('manifest.json',json.dumps({'action_id':action_id,'documents':manifest},ensure_ascii=False,indent=2))
+    audit(engine,'ACTION_DOCUMENTS_ZIP_CREATED',action_id,str(actor_id),'action',action_id,
+          {'role':role,'documents':len(manifest)})
+    return buf.getvalue()
 
 def delete_document_reference(engine,reference_id,actor='system'):
+    """Retrait logique réversible : la pièce et l'historique restent conservés.
+
+    La destruction physique, notamment des documents élaborés pour un bilan,
+    exige un traitement légal distinct et contrôlé. P2/P5 préciseront ce cycle.
+    """
     r=one(engine,'SELECT * FROM document_references WHERE id=:i AND deleted_at IS NULL',{'i':reference_id})
     if not r: return False
     execute(engine,'UPDATE document_references SET deleted_at=:d WHERE id=:i',{'d':utcnow_iso(),'i':reference_id})
-    remaining=one(engine,'SELECT COUNT(*) n FROM document_references WHERE stored_file_id=:f AND deleted_at IS NULL',{'f':r['stored_file_id']})['n']
-    if not remaining:
-        sf=one(engine,'SELECT * FROM stored_files WHERE id=:f',{'f':r['stored_file_id']})
-        try:
-            if sf and Path(sf['storage_path']).is_file(): Path(sf['storage_path']).unlink()
-        except Exception: pass
-        execute(engine,'DELETE FROM document_references WHERE stored_file_id=:f AND deleted_at IS NOT NULL',{'f':r['stored_file_id']})
-        execute(engine,'DELETE FROM stored_files WHERE id=:f',{'f':r['stored_file_id']})
-    audit(engine,'DOCUMENT_REFERENCE_DELETED',r.get('action_id'),actor,'document_reference',reference_id,{'physical_deleted':not bool(remaining)})
+    audit(engine,'DOCUMENT_REFERENCE_ARCHIVED',r.get('action_id'),actor,'document_reference',reference_id,
+          {'stored_file_id':r['stored_file_id'],'physical_deleted':False})
     return True
 
 def document_storage_stats(engine):
     r=one(engine,'SELECT COALESCE(SUM(size_bytes),0) bytes,COUNT(*) files FROM stored_files') or {'bytes':0,'files':0}
-    refs=one(engine,'SELECT COUNT(*) n FROM document_references WHERE deleted_at IS NULL')['n']
+    refs=one(engine,"SELECT COUNT(*) n FROM document_references WHERE deleted_at IS NULL AND (superseded_at IS NULL OR publication_status='PUBLIE')")['n']
     return {'bytes':int(r['bytes'] or 0),'files':int(r['files'] or 0),'references':int(refs or 0)}
 
 def beneficiary_portal_zip(engine,beneficiary_id):
@@ -2224,13 +2680,18 @@ def beneficiary_portal_zip(engine,beneficiary_id):
     used=set()
     with zipfile.ZipFile(bio,'w',zipfile.ZIP_DEFLATED) as z:
         for d in docs:
-            base=(d.get('action_no') or 'GENERAL')+'/'+(d.get('display_name') or ('document'+(d.get('extension') or '')))
+            # ZIP entry components are not trusted paths. Keep display labels while
+            # removing path separators and traversal markers.
+            action_part=_safe_filename(d.get('action_no') or 'GENERAL')
+            label=str(d.get('display_name') or ('document'+(d.get('extension') or '')))
+            label=label.replace('/', '_').replace('\\', '_').replace('\x00', '_')
+            if label in ('.','..') or label.startswith('..'): label=_safe_filename(label)
+            base=action_part+'/'+label
             name=base;n=2
             while name in used:
                 p=Path(base);name=str(p.with_name(f'{p.stem}_{n}{p.suffix}'));n+=1
             used.add(name)
-            path=Path(d['storage_path'])
-            if path.is_file(): z.writestr(name,path.read_bytes())
+            z.writestr(name,read_document_for_actor(engine,d['id'],'BENEFICIARY',beneficiary_id))
     audit(engine,'BENEFICIARY_PORTAL_ZIP_CREATED',actor='beneficiary',entity_type='beneficiary',entity_id=beneficiary_id,details={'documents':len(docs)})
     return bio.getvalue()
 
@@ -2257,29 +2718,31 @@ def _safe_filename(v):
     import re
     return re.sub(r'[^A-Za-z0-9._-]+','_',str(v or '').strip()).strip('_') or 'document'
 
-def participant_final_zip(engine, participant_id):
+def participant_final_zip(engine, participant_id, recipient='CLIENT'):
+    """Dossier de justificatifs ; envoi client = uniquement présence et attestation.
+
+    Pas de QAP, rapports PIP/NEO, travaux personnels, satisfaction brute ni
+    résultats du bilan. Une remise personnelle distincte exige son propre flux.
+    """
     import io, zipfile
     from pdf_utils import individual_pdf, certificate_pdf
-    p=one(engine,'SELECT * FROM participants WHERE id=:p',{'p':participant_id});
+    p=one(engine,'SELECT * FROM participants WHERE id=:p',{'p':participant_id})
     if not p: raise ValueError('Participant introuvable')
     a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':p['action_id']})
-    if normalize_action_status(a.get('status')) not in ('CLOTUREE','ARCHIVEE'): raise ValueError("L'action doit etre cloturee.")
+    if normalize_action_status(a.get('status')) not in ('CLOTUREE','ARCHIVEE'):
+        raise ValueError("L'action doit etre cloturee.")
     ok,issues=can_issue_certificate(engine,participant_id,require_closed=True)
     if not ok: raise ValueError('Dossier incomplet : '+' ; '.join(issues[:5]))
+    if recipient not in ('CLIENT','BENEFICIARY'): raise ValueError('Destinataire du dossier final inconnu.')
     bio=io.BytesIO(); base=f"{_safe_filename(p['last_name'])}_{_safe_filename(p['first_name'])}"
     with zipfile.ZipFile(bio,'w',zipfile.ZIP_DEFLATED) as z:
         z.writestr(f'{base}/01_emargement_individuel.pdf',individual_pdf(engine,participant_id))
         z.writestr(f'{base}/02_certificat_realisation.pdf',certificate_pdf(engine,participant_id))
-        hot=q(engine,"SELECT id FROM quality_campaigns WHERE participant_id=:p AND campaign_kind='HOT' AND status='COMPLETED' ORDER BY id DESC LIMIT 1",{'p':participant_id})
-        if hot:
-            try:
-                from pdf_utils import quality_response_pdf
-                z.writestr(f'{base}/03_evaluation_a_chaud.pdf',quality_response_pdf(engine,hot[0]['id']))
-            except Exception: pass
-        for d in list_beneficiary_documents(engine,p.get('beneficiary_id')) if p.get('beneficiary_id') else []:
-            if d.get('action_id')==a['id']:
-                fp=Path(d['storage_path'])
-                if fp.is_file(): z.writestr(f"{base}/documents/{_safe_filename(d['display_name'])}",fp.read_bytes())
+        if recipient=='BENEFICIARY':
+            for d in list_beneficiary_documents(engine,p.get('beneficiary_id')) if p.get('beneficiary_id') else []:
+                if d.get('action_id')==a['id']:
+                    z.writestr(f"{base}/documents/{_safe_filename(d['display_name'])}",
+                               read_document_for_actor(engine,d['id'],'BENEFICIARY',p['beneficiary_id']))
     return bio.getvalue()
 
 def action_final_bundle(engine, action_id, persist=True, actor='system'):
@@ -2293,15 +2756,9 @@ def action_final_bundle(engine, action_id, persist=True, actor='system'):
     with zipfile.ZipFile(bio,'w',zipfile.ZIP_DEFLATED) as z:
         z.writestr('00_emargement_collectif.pdf',collective_pdf(engine,action_id))
         for p in parts:
-            pzip=participant_final_zip(engine,p['id'])
+            pzip=participant_final_zip(engine,p['id'],recipient='CLIENT')
             with zipfile.ZipFile(io.BytesIO(pzip),'r') as pz:
                 for n in pz.namelist(): z.writestr(n,pz.read(n))
-        for c in list_quality_campaigns(engine,action_id):
-            if c.get('status')=='COMPLETED':
-                try:
-                    from pdf_utils import quality_response_pdf
-                    z.writestr(f"qualite/{c['campaign_kind']}_{c['id']}.pdf",quality_response_pdf(engine,c['id']))
-                except Exception: pass
     data=bio.getvalue()
     if persist:
         bundle_date=(a.get('end_date') or datetime.now().date().isoformat())[:10]
@@ -2310,7 +2767,7 @@ def action_final_bundle(engine, action_id, persist=True, actor='system'):
         fp=FINAL_BUNDLE_ROOT/f"{prefix} {_safe_filename(a['action_no'])} DOCS STAGIAIRES.zip"; fp.write_bytes(data); now=utcnow_iso()
         execute(engine,'UPDATE actions SET final_bundle_generated_at=:n,final_bundle_path=:p WHERE id=:a',{'n':now,'p':str(fp),'a':action_id})
         audit(engine,'FINAL_BUNDLE_GENERATED',action_id,actor,'action',action_id,{'path':str(fp),'bytes':len(data)})
-        if a.get('transmit_final_bundle'):
+        if a.get('transmit_final_bundle') and str(a.get('nature') or '').upper()=='FORMATION':
             recipients=configured_final_recipients(engine,action_id)
             if recipients:
                 queue_client_transmission(engine,action_id,'FINAL',fp.name,recipients,actor)
@@ -2341,6 +2798,9 @@ def quality_management_summary(engine, **filters):
     return {**base,'rubric_averages':rubric_avg,'nps_score':nps_score,'weak_points':weak}
 
 def configure_final_transmission(engine, action_id, enabled=False, to_quality=True, to_training=True, other_first_name=None, other_last_name=None, other_email=None, actor='system'):
+    aa=one(engine,'SELECT nature FROM actions WHERE id=:a',{'a':action_id})
+    if enabled and (not aa or str(aa.get('nature') or '').upper()!='FORMATION'):
+        raise ValueError('Envoi automatique du dossier final client réservé aux formations : autorisation spécifique nécessaire pour les autres prestations.')
     if other_first_name: other_first_name=validate_participant_payload({'last_name':'X','first_name':other_first_name},require_identity=True)['first_name']
     if other_last_name: other_last_name=validate_participant_payload({'last_name':other_last_name,'first_name':'X'},require_identity=True)['last_name']
     other_email=validate_email(other_email,'Autre destinataire final')
@@ -3203,7 +3663,7 @@ def archive_ipip_report_pdf(engine, prescription_id, data: bytes, *, display_nam
         raise ValueError('Un rapport IPIP différent est déjà archivé pour cette prescription.')
     name=(display_name or f"Rapport_IPIP_NEO120_{prescription_id}.pdf").strip()
     if not name.lower().endswith('.pdf'): raise ValueError('Le rapport IPIP doit être un PDF.')
-    rid,digest,dedup=store_document(engine,data,name,'IPIP_NEO120',actor,action_id=pr['action_id'],beneficiary_id=pr['beneficiary_id'],participant_id=pr.get('participant_id'),audience='ACTION_BENEFICIARIES',visible_to_beneficiary=True,allowed_extensions={'.pdf'})
+    rid,digest,dedup=store_document(engine,data,name,'IPIP_NEO120',actor,action_id=pr['action_id'],beneficiary_id=pr['beneficiary_id'],participant_id=pr.get('participant_id'),audience='BENEFICIARY_ONLY',visible_to_beneficiary=True,allowed_extensions={'.pdf'})
     try:
         execute(engine,"""INSERT INTO prescription_documents(prescription_id,document_reference_id,document_kind,source_event_id,source_reference,created_at)
           VALUES(:p,:d,:k,:e,:r,:c)""",{'p':prescription_id,'d':rid,'k':kind,'e':source_event_id,'r':str(source_reference)[:500] if source_reference else None,'c':utcnow_iso()})
@@ -3426,7 +3886,7 @@ def archive_pip_report_pdf(engine, prescription_id, data: bytes, *, display_name
     prefix='Rapport_ONET' if kind=='ONET_REPORT' else 'Rapport_PIP_RIASEC'
     name=(display_name or f"{prefix}_{prescription_id}.pdf").strip()
     if not name.lower().endswith('.pdf'): raise ValueError('Le rapport PIP doit être un PDF.')
-    rid,digest,dedup=store_document(engine,data,name,'PIP_RIASEC_ONET',actor,action_id=pr['action_id'],beneficiary_id=pr['beneficiary_id'],participant_id=pr.get('participant_id'),audience='ACTION_BENEFICIARIES',visible_to_beneficiary=True,allowed_extensions={'.pdf'})
+    rid,digest,dedup=store_document(engine,data,name,'PIP_RIASEC_ONET',actor,action_id=pr['action_id'],beneficiary_id=pr['beneficiary_id'],participant_id=pr.get('participant_id'),audience='BENEFICIARY_ONLY',visible_to_beneficiary=True,allowed_extensions={'.pdf'})
     try:
         execute(engine,"""INSERT INTO prescription_documents(prescription_id,document_reference_id,document_kind,source_event_id,source_reference,created_at)
           VALUES(:p,:d,:k,:e,:r,:c)""",{'p':prescription_id,'d':rid,'k':kind,'e':source_event_id,'r':str(source_reference)[:500] if source_reference else None,'c':utcnow_iso()})

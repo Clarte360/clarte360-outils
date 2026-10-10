@@ -1,3 +1,58 @@
+## 3.0.0-P5-RECETTE-RC1 (09/10/2026) - CANDIDAT LOCAL / NO-GO PRODUCTION
+- Recette générale hors production et essai de migration additive sur base SQLite fictive.
+- Correctif ACL Client : requalification d'une action vers bilan/coaching individuel bloque immédiatement anciens téléchargements, partages et dépôts.
+- 4 nouveaux contrôles spécifiques ; journal des tests et PV de recette externe au ZIP.
+- Contrôles réels Microsoft 365, préproduction Streamlit, PRA chiffré, CRM17 et données VPS non réalisés : aucun GO production.
+
+## 3.0.0-P4-ESPACE-CLIENT-RC1 (09/10/2026) - CANDIDAT LOCAL
+
+- Base cumulative P3-RC1 (P0, P1, P2, P3 conserves). Ajout du quatrieme espace Client/DRH et Prescripteur en navigation verticale.
+- Acces Client CRM0 transitoire par un contact preexistant, invitation a usage unique (jeton hache), mot de passe PBKDF2 et session persistante CLIENT. Aucune entree CRM0 ne donne un acces sans habilitation distincte.
+- Droits par compte et action (CLIENT_ADMIN ou PRESCRIPTEUR), privileges lecture/depot distincts, revocation, desactivation, controles d'e-mail CRM et suspension des contacts archives.
+- Donnees Client exposees de facon minimale : referentiels d'actions autorisees et, pour les formations collectives seulement, effectifs agreges de 5 ou plus et planning sans noms; aucune reponse individuelle de BC, de coaching ou d'outil.
+- Justificatifs Client : brouillon puis validation et publication, puis partage nominatif explicite. ZIP limite aux droits reels, controle d'integrite SHA-256 et journalisation des telechargements. Nouveaux brouillons conservant la version deja remise jusqu'au partage explicite du successeur.
+- Depots par Client en brouillon prive; empreinte logique separee par compte pour empecher toute fusion de references de deux clients sur une meme action.
+- Tables/indices P4 ajoutes par initialisation additive, aucune reprise automatique des donnees CRM dans une base concurrente.
+- CRM17 et Contractualisation demeurent des modules autonomes. Leur futur branchement financier/API n'est PAS simule; GO-14 Competences & Projets reste non ouvert.
+- Les espaces Beneficiaire, Intervenant et Administrateur P3 et tous leurs traitements existants restent en place (Teams, signatures, planning, formations, qualite, PIP/NEO, dossier Intervenants).
+- Recette locale ciblee et complete, puis recette du ZIP extrait a neuf; pas de test M365/SMTP ni de restauration PRA, pas de modification GitHub/VPS.
+
+## 3.0.0-P3-ERGONOMIE-RC1 (09/10/2026) — candidat local
+
+- Navigation verticale contextuelle des espaces Beneficiaire, Intervenant et Administrateur, selection d'une action en amont.
+- Les 11 rubriques Beneficiaire, les 8 rubriques Intervenant et les 12 panneaux Administration par action sont conserves et rendus conditionnellement (pas de remplacement metier).
+- Ajout d'un accueil multi-actions beneficiiaire avec bouton Ouvrir et profil en lecture seule; navigation dossier professionnel verticale.
+- Microsoft Teams reste dans les trois espaces; signatures, QR, ICS, outils, parcours de formation, CRM0, qualifications et rapports restent accessibles.
+- Aucun espace Client deploye par P3 : sa creation complete reste au jalon P4.
+- Nouvelles regles de navigation et controles de non-regression de la couverture.
+- Aucune migration de donnees / aucune modification du stockage ou de la configuration VPS.
+
+## 3.0.0-P2-DOCUMENTS-RC1 - 2026-10-09 (CANDIDATE HORS PRODUCTION)
+
+- P2 construit sur la RC1 P1, sans retirer les protections ni le patrimoine Gestion des Actions.
+- Références logiques anti-doublons dans chaque action / personne / prescription pertinente ; déduplication physique SHA-256 et versionnage des originaux.
+- Publication manuelle indépendante de la sauvegarde ; une version brouillon ne masque pas la dernière version publiée.
+- Validation et finalisation administrateur ; toute révision après finalisation exige un motif et produit une version distincte.
+- Classification de provenance et classe de conservation préparatoire, sans destruction réglementaire automatisée.
+- Notifications contextualisées en application ; courriels facultatifs, désactivés par défaut au niveau infrastructure et conditionnés à opt-in individuel.
+- Exports ZIP par action filtrés par droits, avec empreintes SHA-256 dans le manifeste ; contrôles serveur des contenus.
+- Adaptation des écrans existants (Bénéficiaire, Intervenant, Admin) ; navigation en quatre espaces réservée à P3, espace Client réservé à P4.
+- Campagne complète locale et extraction ZIP : résultats détaillés dans le rapport P2. Aucun test E2E réel M365 / SMTP / restauration des sauvegardes.
+- Les documents runtime, bases, signatures, clés et secrets sont EXCLUS du ZIP de livraison.
+- Aucune intervention sur GitHub, VPS ou les données de production.
+
+## 3.0.0-P1-DROITS-DOCS-RC1 - 2026-10-09 (CANDIDATE, HORS PRODUCTION)
+
+- Droits documentaires cote service : scope par action/beneficiaire/participant et referent intervenant.
+- Documents collectifs conserves comme depot unique; PIP et IPIP prives; categories administratives exclues des espaces beneficiaires.
+- Lecture et depot par acteur avec controle de role, d'affectation et d'integrite SHA-256.
+- ZIP Beneficiaire filtree, controle d'integrite; bundles clients limites aux seuls justificatifs formation.
+- Worker : blocage des transmissions COLD de reponses individuelles et regeneration des FINAL avant envoi.
+- Archivage logique de reference documentaire au lieu de destruction immediate.
+- Initialisation/migration additive de can_upload_documents sur trainers pour bases neuves et existantes.
+- 538 tests locaux passes; restaurabilite de la production, Teams/Graph/M365 et SMTP live restent a tester avant deploiement.
+- Pas de modification GitHub/VPS ni des donnees de production dans ce jalon.
+
 ## 3.0.0-INTERVENANTS-RC2-2-2-P2 — 2026-10-02
 - P2 IA réalisé depuis le checkpoint P1 validé.
 - Faux 0/4 corrigé : 0 signifie désormais absence réelle de tout élément positif ; la complétude des critères obligatoires est séparée.

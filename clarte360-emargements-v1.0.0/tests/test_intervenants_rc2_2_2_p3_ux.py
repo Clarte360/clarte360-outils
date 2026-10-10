@@ -54,7 +54,7 @@ def test_p3_date_pickers_cover_key_dossier_dates():
     assert "date_input('Date de déclaration'" in APP
 
 def test_p3_dossier_navigation_is_pilotable_for_deep_links():
-    assert "screen=st.radio('Navigation du dossier'" in APP
+    assert "screen=st.sidebar.radio('Navigation du dossier'" in APP
     assert "st.session_state[screen_key]='Qualifications'" in APP
     assert "st.session_state[screen_key]='Analyse IA'" in APP
     # The professional dossier no longer relies on a st.tabs container for its seven target screens.

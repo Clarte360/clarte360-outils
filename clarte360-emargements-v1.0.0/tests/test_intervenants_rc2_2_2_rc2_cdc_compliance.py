@@ -71,4 +71,4 @@ def test_e8_ai_observability_details_are_visible():
 
 def test_version_is_rc2_compliance_checkpoint():
     import branding
-    assert branding.APP_VERSION=='3.0.0-INTERVENANTS-RC2-2-2-RC2'
+    assert branding.APP_VERSION=='3.0.0-P5-RECETTE-RC1'

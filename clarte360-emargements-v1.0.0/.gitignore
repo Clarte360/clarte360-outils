@@ -15,3 +15,13 @@ data/professional_documents/
 data/trainer_reports/
 data/final_bundles/
 data/import_sources/
+
+# P1: protection des donnees et sauvegardes d exploitation
+**/.streamlit/secrets.toml*
+**/data/
+**/backups/
+**/*.db
+**/*.sqlite*
+**/*.pfx
+**/*.pem
+**/*.key

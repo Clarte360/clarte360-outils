@@ -1,7 +1,7 @@
 from pathlib import Path
 
 APP_NAME = "Clarté360 — Gestion des actions"
-APP_VERSION = '3.0.0-INTERVENANTS-RC2-2-2-RC2'
+APP_VERSION = '3.0.0-P5-RECETTE-RC1'
 BRAND = "#008080"
 BRAND_LIGHT = "#F1F8F8"
 TEXT = "#1F2937"
@@ -40,6 +40,9 @@ div.stButton > button[kind="primary"] * {{color:white!important;}}
 div.stDownloadButton > button:first-child {{border-radius:10px;border:1px solid {BRAND};color:{BRAND};background:white;}}
 [data-testid="stSidebar"] {{background:{BRAND_LIGHT};}}
 [data-testid="stMetricValue"] {{color:{BRAND};}}
+[data-testid="stSidebar"] [role="radiogroup"] > label {{border-radius:8px;padding:7px 8px;margin:2px 0;transition:background .15s ease;}}
+[data-testid="stSidebar"] [role="radiogroup"] > label:hover {{background:#E6F2F2;}}
+[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) {{background:#DDF0F0;font-weight:700;}}
 @media (max-width: 700px) {{
  .block-container {{padding-left:1rem;padding-right:1rem;padding-top:.8rem;}}
  .c360-header {{align-items:flex-start;}}

@@ -7,7 +7,7 @@ from typing import Any
 
 from db import execute, one, q, utcnow_iso
 
-SESSION_TYPES = {"ADMIN", "TRAINER", "BENEFICIARY"}
+SESSION_TYPES = {"ADMIN", "TRAINER", "BENEFICIARY", "CLIENT"}
 DEFAULT_TTL_HOURS = 12
 
 

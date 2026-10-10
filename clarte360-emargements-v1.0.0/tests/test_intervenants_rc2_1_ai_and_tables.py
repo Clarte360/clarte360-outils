@@ -97,7 +97,7 @@ def test_qualification_evidence_is_editable_and_removable(tmp_path):
 
 def test_rc21_ui_exposes_ai_benefit_and_management_actions():
     import branding
-    assert branding.APP_VERSION=='3.0.0-INTERVENANTS-RC2-2-2-RC2'
+    assert branding.APP_VERSION=='3.0.0-P5-RECETTE-RC1'
     src=open('app.py',encoding='utf-8').read()
     assert 'Résultat IA sur l’ensemble des prestations' in src
     assert 'Aucun élément repéré' in src
