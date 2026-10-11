@@ -1,3 +1,49 @@
+## P5-RC2 / J11 — Paramétrage des rappels Teams (11/10/2026)
+- Réglage par organisme, dans Administration > Paramètres > Général, du premier et du deuxième rappel en minutes (défauts 120 et 15, jamais restaurés automatiquement).
+- Migration SQLite additive ; date de séance et UTC de preuve inchangés ; reprogrammation immédiate des rappels en attente et calcul autonome du worker.
+- Contrôle au moment de l'envoi et libellé email cohérent avec le délai choisi ; suppression des files périmées sans effacer les courriels déjà envoyés.
+- Livraison J11 = ZIP de recette pour installation contrôlée par le propriétaire ; aucun GO d'exploitation ni connecteur externe déclaré validé.
+
+## 2026-10-11 — P5-RC2 J10 correctif R27 (candidate hors production)
+
+- Synchronisation automatique des rappels Teams H−2 h/H−15 min depuis le worker, sans action manuelle.
+- Blocage des anciens rappels lors d'un report, d'une modification de séance, d'une révocation ou d'un changement d'horaire ; dates/heures recalculées selon le fuseau de l'organisme.
+- Correction du traitement des communications d'émargement obsolètes et des confirmations de planning après report.
+- Libellés de diagnostic pour les rappels préparés/en attente/échoués ; historique envoyé conservé, pas de relance SMTP aveugle.
+- Contre-tests J10-R27 ajoutés, test historique actualisé. Recette hors production uniquement ; J10/J11 non approuvés, aucune mise en ligne.
+
+## P5-RC2 / J5 - Deux espaces administrateur et navigation contextuelle - 10/10/2026
+
+- Accueil administrateur : Administration generale et Gestion des actions ; bascule controlee, notifications J4 accessibles dans chaque espace.
+- Tableaux de bord separes, commandes de creation/import rassemblees, parametres d'une action non dupliques ; 12 rubriques conservees.
+- Liste d'actions : recherche tous participants/email et clients, tri par statut, archives masquees, filtres annees/prestation, pages 25/50 ; premier stagiaire et effectif.
+- Liaisons internes d'actions, intervenants et Qualite conservees ; 21 tests J5 nouveaux, 775/775 PASS en campagne complete.
+- Livraison intermediaire uniquement, aucune action GitHub/VPS.
+
+## P5-RC2 / J4 - Notifications multiespaces et echanges (hors production ; 10/10/2026)
+
+- Boîte de notifications commune aux rôles ADMIN / TRAINER / BENEFICIARY / CLIENT avec contrôles d'accès à la consultation.
+- Signalements, réponses et statuts Qualité, CAPA, documents partagés/déposés et planning ; aucune notification n'accorde de droit ni ne clôture une fiche métier.
+- Document Client partagé avant première connexion : notification conservée, affichage après activation et vérification de droits.
+- Contrat privé d'événements v1 pour future Gestion Clients n°17 : IDs stables, mapping vérifié, idempotence ; transport authentifié réel reporté.
+- 26 tests J4 nouveaux, suite générale 753/753 réussie sur copie locale ; aucun GitHub ni VPS.
+
+## P5-RC2 / J3 - Qualite : enquêtes, indicateurs et traitements courts - 2026-10-10
+
+- Séparation des notes 1-5, NPS et textes ; moyennes pondérées, validation serveur des valeurs.
+- Pilotage HOT/COLD/Intervenant/Client/Prescripteur/OPCO avec filtres, échéances, relances et PDF conservés.
+- Pilotage Qualité général et par action sur trois vues ; traitement court historisé des notes faibles et R12/I06.
+- 727 tests réussis sur copie locale, dont 27 nouveaux J3 ; aucune installation GitHub/VPS.
+
+## P5-RC2 - J2 (candidat de travail, hors production ; 10/10/2026)
+
+- Qualite : liens explicites avec les anciennes fiches, fiche de reference unique, journal historique append-only, correspondances et CAPA.
+- Navigation : meme fiche depuis Qualite generale ou Qualite d'une action ; archives non rapprochees conservees pour validation humaine.
+- Integration : statuts des signalements synchronises, compatibilite des services historiques, suppression J1 et nouvelles dependances J2.
+- Tests : scenario J2 supplementaires et adaptation du test de parcours ancien ; campagne finale reportee dans le rapport J2.
+- Hors J2 : statistiques HOT/COLD (J3), centre de notifications (J4), ergonomie quatre espaces (jalons suivants), integration/recette reelle (J10/J11).
+- Regle : aucun commit GitHub assistant, aucun deploiement VPS intermediaire ; seul le proprietaire transferera l'archive finale P5-RC2 a la fin du parcours.
+
 ## 3.0.0-P5-RECETTE-RC1 (09/10/2026) - CANDIDAT LOCAL / NO-GO PRODUCTION
 - Recette générale hors production et essai de migration additive sur base SQLite fictive.
 - Correctif ACL Client : requalification d'une action vers bilan/coaching individuel bloque immédiatement anciens téléchargements, partages et dépôts.
@@ -639,3 +685,9 @@ Voir `INCREMENT_V3_I9_H2_4_CONTRESIGNATURE_DOCUMENTS_ERGONOMIE.md`.
 - Parcours Action -> Qualification -> retour Action extrait dans `workflow_navigation.py` pour être testable sans navigateur.
 - Couverture C5 renforcée : personne/prestation exactes, validation humaine, recalcul réel, retour Action, succès/alerte selon éligibilité.
 - Package nettoyé : aucune sauvegarde runtime, aucun document/signature de test, aucun `__pycache__`, `.pyc` ou cache pytest.
+
+
+### J1 P5-RC2 — 10/10/2026 (candidate hors production)
+- Purge des essais certifies (COR-013): prévisualisation, confirmation renforcée, dépendances qualité et documents, transaction SQL, fichiers en quarantaine et journal de reprise.
+- 19 tests J1 ajoutés et deux tests historiques de suppression ajustés, sans toucher au registre officiel des corrections.
+- Aucun changement de données d’exploitation ni déploiement; voir `INCREMENT_P5_RC2_J1_PURGE_ESSAIS_20261010.md`.

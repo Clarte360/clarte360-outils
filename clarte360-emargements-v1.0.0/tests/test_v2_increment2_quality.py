@@ -83,7 +83,17 @@ def test_action_purge_removes_quality_children():
     prepare_quality_campaigns(e,aid,'https://example.test');c=one(e,'SELECT id FROM quality_campaigns WHERE action_id=:a',{'a':aid})
     iid=execute(e,"INSERT INTO quality_issues(action_id,campaign_id,issue_type,title,status,created_at) VALUES(:a,:c,'DIFFICULTE_ALEA','x','OUVERTE',:n)",{'a':aid,'c':c['id'],'n':utcnow_iso()})
     execute(e,"INSERT INTO improvement_actions(issue_id,action_id,title,status,created_at) VALUES(:i,:a,'améliorer','A_FAIRE',:n)",{'i':iid,'a':aid,'n':utcnow_iso()})
-    purge_action(e,aid,'admin')
+    from security import hash_password
+    from purge_guard import certify_test_action,preview_action_purge
+    actor='admin@j1.invalid'; password='FAKE-PASSWORD-123'
+    execute(e,'INSERT INTO admins(email,password_hash,created_at) VALUES(:e,:h,:n)',
+        {'e':actor,'h':hash_password(password),'n':utcnow_iso()})
+    yes,reason=certify_test_action(e,aid,actor,evidence='Scenario entierement fictif pour la verification de purge qualite.',
+        confirmation='JE CERTIFIE ESSAI A1',password=password)
+    assert yes,reason
+    preview=preview_action_purge(e,aid)
+    ok,reason=purge_action(e,aid,actor,confirmation='SUPPRIMER ESSAI A1',preview_fingerprint=preview['fingerprint'])
+    assert ok,reason
     assert one(e,'SELECT id FROM actions WHERE id=:a',{'a':aid}) is None
     assert one(e,'SELECT id FROM quality_issues WHERE action_id=:a',{'a':aid}) is None
     assert one(e,'SELECT id FROM improvement_actions WHERE action_id=:a',{'a':aid}) is None

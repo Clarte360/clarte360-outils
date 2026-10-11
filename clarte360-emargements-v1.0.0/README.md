@@ -1,4 +1,15 @@
-# Clarté360 — Émargements V2.0.0-dev
+# Clarté360 — Gestion des actions / Émargements — P5-RECETTE-RC2
+
+> **Livrable J11 pour recette sur VPS, pas validation d'exploitation définitive.**
+> Le seul guide de déploiement à considérer est `DEPLOIEMENT_VPS.md` (Framework VPS V1.4).
+> Le dossier de production, l'URL, le port 8501, les services systemd et les données persistantes sont conservés.
+>
+> NOUVEAUTÉ J11 : Administration → Paramètres → Général → Programmation des rappels
+> (formations en ligne / Teams). Deux délais configurables par organisme, 120 et 15 min
+> par défaut. Essais possibles à 5 et 2 min, puis restauration **manuelle** à 120 et 15 min.
+> Les emails reflètent le délai choisi ; aucune remise à zéro automatique.
+
+---
 
 Application Streamlit autonome pour créer des actions, gérer des participants et des créneaux, recueillir les signatures sur smartphone/ordinateur, automatiser les demandes et relances, générer les feuilles d'émargement/certificats et exporter une archive portable.
 

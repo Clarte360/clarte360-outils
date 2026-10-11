@@ -144,7 +144,8 @@ def test_action_is_chosen_before_showing_private_sections():
 def test_trainer_and_admin_select_action_in_sidebar():
     assert "st.sidebar.selectbox('Action \u00e0 ouvrir'" in APP
     assert "st.sidebar.selectbox('Choisir une action'" in APP
-    assert "st.sidebar.radio('Navigation du dossier'" in APP
+    # J6: the admin professional dossier has one contextual selector, no mixed sidebars.
+    assert "screen=st.selectbox('Rubrique à consulter'" in APP
     assert "st.session_state['p3_admin_action_id']" in APP
 
 

@@ -379,6 +379,8 @@ def share_client_document(engine,reference_id,account_id,admin_email):
                   VALUES(:d,:c,:n,:by)''',{'d':reference_id,'c':account_id,'n':now,'by':admin_email})
     audit(engine,'CLIENT_DOCUMENT_SHARED',d['action_id'],admin_email,'document_reference',reference_id,
           {'client_portal_account_id':account_id})
+    from workspace_notifications import client_document_shared
+    client_document_shared(engine,reference_id,account_id,d['action_id'])
 
 
 def list_admin_client_document_shares(engine,reference_id,admin_email):

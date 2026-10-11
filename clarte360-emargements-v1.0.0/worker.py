@@ -3,7 +3,7 @@ import time, uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from db import make_engine,init_db,q,execute,audit,one
-from services import list_document_notifications, token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report, refresh_countersign_communications, delivery_mode_label, trainer_microsoft_identity, mark_trainer_entra_identity, mark_trainer_entra_not_found, consume_pip_outbox, refresh_pip_connector_runtime_status, consume_ipip_outbox, refresh_ipip_connector_runtime_status
+from services import list_document_notifications, token_url, organization_runtime_config, quality_token_url, email_event_due_utc, generate_due_final_bundles, portal_retention_candidates, mark_portal_retention_warning, due_portal_purges, purge_beneficiary_portal_documents, action_module_enabled, create_or_sync_teams_room, teams_room, teams_roles, mark_teams_guest_invitation, store_teams_attendance_report, refresh_countersign_communications, synchronize_teams_reminders, teams_reminder_event_state, online_reminder_offsets_for_action, delivery_mode_label, trainer_microsoft_identity, mark_trainer_entra_identity, mark_trainer_entra_not_found, consume_pip_outbox, refresh_pip_connector_runtime_status, consume_ipip_outbox, refresh_ipip_connector_runtime_status
 from mailer import send_mail, resolve_mail_config
 from graph_client import GraphClient, graph_config_from_mapping, graph_config_missing
 
@@ -126,13 +126,22 @@ def _run_communication_events(eng,smtp,base,limit=100):
             execute(eng,"UPDATE communication_events SET status='ECHEC',last_error='Adresse email absente',updated_at=:u WHERE id=:i",{'u':now,'i':e['id']});continue
         claim=_claim_communication(eng,e['id'])
         if not claim:continue
+        if e['communication_type'] in ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15'):
+            fresh=one(eng,'SELECT * FROM communication_events WHERE id=:i',{'i':e['id']}) or {}
+            allowed,reason,_=teams_reminder_event_state(eng,fresh,now=datetime.now(timezone.utc))
+            if not allowed:
+                execute(eng,"""UPDATE communication_events SET status='ANNULE',claim_token=NULL,claimed_at=NULL,
+                  last_error=:reason,updated_at=:n WHERE id=:i AND status='EN_FILE' AND claim_token=:claim""",
+                  {'reason':'R27: '+reason,'n':datetime.now(timezone.utc).isoformat(),'i':e['id'],'claim':claim})
+                audit(eng,'TEAMS_REMINDER_SUPPRESSED',e['action_id'],'worker','communication_event',e['id'],{'reason':reason})
+                continue
         runtime=organization_runtime_config(eng,e['action_id']);org=runtime['organization'];cfg=dict(smtp)
         if org.get('email_from_name'):cfg['from_name']=org['email_from_name']
         if org.get('email_from_address'):cfg['from_email']=org['email_from_address']
         org_name=org.get('name') or 'Organisme'
         try:
             if e['communication_type']=='PLANNING_CONFIRMATION':
-                slots=q(eng,"SELECT slot_date,start_time,end_time FROM slots WHERE action_id=:a AND COALESCE(status,'PREVU') NOT IN ('ANNULE') ORDER BY slot_date,start_time",{'a':e['action_id']})
+                slots=q(eng,"SELECT slot_date,start_time,end_time FROM slots WHERE action_id=:a AND COALESCE(status,'PREVU') NOT IN ('ANNULE','REPORTE','REMPLACE') ORDER BY slot_date,start_time",{'a':e['action_id']})
                 rows=''.join(f"<li>{x['slot_date']} — {x['start_time']}–{x['end_time']}</li>" for x in slots) or '<li>Planning en cours de finalisation</li>'
                 modality=delivery_mode_label(e.get('delivery_mode'))
                 subject=f"{org_name} — Confirmation de votre planning — {e['action_no']}"
@@ -140,7 +149,9 @@ def _run_communication_events(eng,smtp,base,limit=100):
             elif e['communication_type'] in ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15'):
                 is_trainer=bool(e.get('trainer_id'))
                 who=e.get('trainer_name') if is_trainer else ((e.get('first_name') or '')+' '+(e.get('last_name') or '')).strip()
-                delay='2 heures' if e['communication_type']=='TEAMS_REMINDER_H2' else '15 minutes'
+                from regional_settings import format_online_reminder_delay
+                delay_minutes=int(online_reminder_offsets_for_action(eng,e['action_id'])[e['communication_type']].total_seconds()//60)
+                delay=format_online_reminder_delay(delay_minutes)
                 portal=(f"{base.rstrip('/')}?trainer_portal=1&action_id={e['action_id']}" if is_trainer else f"{base.rstrip('/')}?beneficiary_portal=1")
                 portal_label='MON ESPACE INTERVENANT' if is_trainer else 'MON ESPACE BÉNÉFICIAIRE'
                 subject=f"{org_name} — Rappel séance dans {delay} — action {e['action_no']}"
@@ -151,6 +162,15 @@ def _run_communication_events(eng,smtp,base,limit=100):
                 body=f"<p>Bonjour {e.get('trainer_name') or ''},</p><p>Merci de vérifier les présences/absences et de contresigner le créneau du <strong>{e.get('slot_date')} de {e.get('start_time')} à {e.get('end_time')}</strong>.</p><p><a href='{direct}'>OUVRIR LA CONTRESIGNATURE</a></p><p>La page est utilisable sur ordinateur, tablette et smartphone.</p>"
             else:
                 execute(eng,"UPDATE communication_events SET status='ANNULE',claim_token=NULL,last_error='Type de communication non géré par le worker',updated_at=:u WHERE id=:i AND claim_token=:c",{'u':now,'i':e['id'],'c':claim});continue
+            # Recheck again immediately before SMTP (including revocation during body rendering).
+            if e['communication_type'] in ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15'):
+                fresh=one(eng,'SELECT * FROM communication_events WHERE id=:i',{'i':e['id']}) or {}
+                allowed,reason,_=teams_reminder_event_state(eng,fresh,now=datetime.now(timezone.utc))
+                if not allowed or fresh.get('claim_token')!=claim or fresh.get('status')!='EN_FILE':
+                    execute(eng,"""UPDATE communication_events SET status='ANNULE',claim_token=NULL,claimed_at=NULL,
+                        last_error=:reason,updated_at=:n WHERE id=:i AND status='EN_FILE' AND claim_token=:claim""",
+                        {'reason':'R27: '+(reason if not allowed else 'CLAIM_CANCELLED'),'n':datetime.now(timezone.utc).isoformat(),'i':e['id'],'claim':claim})
+                    continue
             send_mail(cfg,recipient,subject,body)
             at=datetime.now(timezone.utc).isoformat()
             execute(eng,"UPDATE communication_events SET status='ENVOYE',sent_at=:at,claim_token=NULL,claimed_at=NULL,last_error=NULL,updated_at=:at WHERE id=:i AND claim_token=:c",{'at':at,'i':e['id'],'c':claim})
@@ -463,6 +483,17 @@ def run_once():
     # I9-H2.4: keep countersignature requests alive until the trainer signs.
     # Refresh before SMTP processing so end-of-slot requests are actually queued.
     refresh_countersign_communications(eng)
+    # Always prepare/cancel time-sensitive TEAMS reminders, even if SMTP is disabled.
+    # Horizon follows the LARGEST configured advance reminder (can exceed two hours).
+    # Scan enough future slots to prepare emails BEFORE their configured deadline.
+    try:
+        reminder_horizon=q(eng,"""SELECT COALESCE(MAX(online_reminder_first_minutes),120) AS m
+            FROM organizations""")[0]['m']
+        reminder_horizon=max(180,int(reminder_horizon or 120))
+        synchronize_teams_reminders(eng,now=datetime.now(timezone.utc),actor='worker',
+            lookahead=timedelta(minutes=reminder_horizon+5))
+    except Exception as ex:
+        audit(eng,'TEAMS_REMINDER_SYNC_FAILED',actor='worker',entity_type='worker',details={'reason':str(ex)[:300]})
     if not smtp.get('enabled'): return teams_changed + pip_changed + ipip_changed
     _process_portal_retention(eng,smtp,base)
     now=datetime.now(timezone.utc).isoformat()
@@ -472,12 +503,17 @@ def run_once():
     # actives, on recalcule leur vraie échéance à partir du créneau et du fuseau de l'organisme,
     # puis on n'envoie que si cette échéance recalculée est réellement atteinte.
     events=q(eng,"""SELECT e.*,p.email,p.first_name,p.last_name,a.title,a.action_no,a.id action_id,s.slot_date,s.start_time,s.end_time,
-              s.send_offset_min,s.reminder1_offset_min,s.reminder2_offset_min,s.close_offset_min
+              s.send_offset_min,s.reminder1_offset_min,s.reminder2_offset_min,s.close_offset_min,
+              s.status AS slot_status,p.active AS participant_active
        FROM email_events e JOIN participants p ON p.id=e.participant_id JOIN slots s ON s.id=e.slot_id JOIN actions a ON a.id=p.action_id
        WHERE e.status='PENDING' AND p.email IS NOT NULL AND TRIM(p.email)<>'' AND a.status IN ('ACTIVE','A_CLOTURER')
        ORDER BY e.due_at LIMIT 500""")
     sent=0
     for e in events:
+        if (str(e.get('slot_status') or 'PREVU').upper() in ('ANNULE','REPORTE','REMPLACE')
+                or not e.get('participant_active')):
+            execute(eng,"UPDATE email_events SET status='SKIPPED',last_error='R27: créneau ou participant indisponible' WHERE id=:i AND status='PENDING'",{'i':e['id']})
+            continue
         runtime=organization_runtime_config(eng,e['action_id'])
         tz_name=runtime.get('timezone') or 'Europe/Paris'
         expected_due=email_event_due_utc(e,e['event_type'],tz_name)
@@ -492,6 +528,13 @@ def run_once():
             continue
         claim=_claim_event(eng,e['id'])
         if not claim: continue
+        live=one(eng,"""SELECT s.status slot_status,p.active participant_active FROM email_events ev
+            JOIN slots s ON s.id=ev.slot_id JOIN participants p ON p.id=ev.participant_id
+            WHERE ev.id=:i""",{'i':e['id']})
+        if (not live or str(live.get('slot_status') or 'PREVU').upper() in ('ANNULE','REPORTE','REMPLACE')
+                or not live.get('participant_active')):
+            execute(eng,"UPDATE email_events SET status='SKIPPED',claim_token=NULL,claimed_at=NULL,last_error='R27: créneau modifié ou annulé' WHERE id=:id AND claim_token=:c",{'id':e['id'],'c':claim})
+            continue
         if one(eng,'SELECT id FROM signatures WHERE participant_id=:p AND slot_id=:s AND status="VALIDE"',{'p':e['participant_id'],'s':e['slot_id']}):
             execute(eng,"UPDATE email_events SET status='SKIPPED',claim_token=NULL WHERE id=:id AND claim_token=:c",{'id':e['id'],'c':claim});continue
         org=runtime['organization']

@@ -19,19 +19,35 @@ def action(e,no='J2C-001'):
 
 
 def test_worker_handles_teams_h2_and_h15(monkeypatch):
+    """Historical I9 rendering contract, now with an ACTIVE scheduled Teams slot.
+
+    The old 2020-due reminder on a 2026-past slot can no longer be sent: it is
+    deliberately neutralized by R27 instead of claiming an imminent session.
+    """
+    from datetime import timezone
     e=eng(); aid=action(e)
-    tid=add_trainer(e,'Dominique BRIET','dbriet@clarte360.com','','test'); assign_trainer(e,aid,tid,'test')
+    tid=add_trainer(e,'Dominique BRIET','dbriet@clarte360.com','','test');assign_trainer(e,aid,tid,'test')
     pid,_=add_participant(e,aid,{'last_name':'PAQUETTE','first_name':'Quentin','birth_date':'1990-01-01','email':'q@example.org'},'test')
-    sid=add_slot(e,aid,'2026-09-16','18:00','19:00','test')
-    due='2020-01-01T00:00:00+00:00'
-    for typ,participant,trainer,email in [
-        ('TEAMS_REMINDER_H2',pid,None,'q@example.org'),
-        ('TEAMS_REMINDER_H15',None,tid,'dbriet@clarte360.com')]:
+    # Keep the historic template and routing assertions, but exercise real H-2 and H-15 windows.
+    first=add_slot(e,aid,'2030-06-10','13:45','14:45','test')   # 11:45 UTC => H-2 at 09:45 UTC
+    second=add_slot(e,aid,'2030-06-10','12:00','13:00','test')  # 10:00 UTC => H-15 at 09:45 UTC
+    execute(e,"UPDATE actions SET status='ACTIVE' WHERE id=:a",{'a':aid})
+    execute(e,"""INSERT INTO action_modules(action_id,module_code,enabled,enabled_at,enabled_by,created_at,updated_at)
+      VALUES(:a,'TEAMS',1,:n,'test',:n,:n)""",{'a':aid,'n':utcnow_iso()})
+    due='2030-06-10T09:45:00+00:00'
+    for typ,participant,trainer,email,sid in [
+        ('TEAMS_REMINDER_H2',pid,None,'q@example.org',first),
+        ('TEAMS_REMINDER_H15',None,tid,'dbriet@clarte360.com',second)]:
         execute(e,"""INSERT INTO communication_events(action_id,participant_id,trainer_id,slot_id,communication_type,recipient_email,trigger_mode,status,due_at,attempts,created_at,updated_at)
           VALUES(:a,:p,:t,:s,:ct,:em,'AUTO','A_ENVOYER',:d,0,:n,:n)""",{'a':aid,'p':participant,'t':trainer,'s':sid,'ct':typ,'em':email,'d':due,'n':utcnow_iso()})
+    class WorkerClock(datetime):
+        @classmethod
+        def now(cls,tz=None):
+            fixed=datetime(2030,6,10,9,45,tzinfo=timezone.utc)
+            return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
+    monkeypatch.setattr(worker,'datetime',WorkerClock)
     sent=[]
     monkeypatch.setattr(worker,'send_mail',lambda cfg,to,subject,body: sent.append((to,subject,body)))
-    monkeypatch.setattr(worker,'organization_runtime_config',lambda eng,aid:{'organization':{'name':'Clarté360'}})
     assert worker._run_communication_events(e,{},'https://emargements.clarte360.com')==2
     assert len(sent)==2
     all_body=' '.join(x[2] for x in sent)

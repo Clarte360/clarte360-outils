@@ -18,6 +18,7 @@ from ui_guard import log_ui_exception, safe_call, user_message
 from production_readiness import runtime_readiness
 from services import *
 from services import _duration_hms, _slot_participant_states
+from purge_guard import preview_action_purge, certify_test_action, recover_action_purges, legacy_quality_orphans
 from input_validation import validate_action_no, validate_short_text, validate_date_range, validate_participant_payload, validate_email, validate_full_name, InputValidationError
 from excel_import import read_action_xlsm, list_action_numbers_for_profile, read_clarte360_xlsm, read_adca_xlsm, list_action_numbers
 from pdf_utils import collective_pdf, individual_pdf, certificate_pdf, quality_response_pdf, teams_evidence_pdf, professional_cv_pdf
@@ -28,6 +29,19 @@ from signature_guard import signature_trace_is_valid, signature_trace_metrics
 from qualification_ai import QualificationAIGateway, GlobalDossierAIGateway, extract_document_text, inspect_pdf_for_ai, PROMPT_VERSION, GLOBAL_PROMPT_VERSION
 from workflow_navigation import prepare_action_qualification_navigation, mark_qualification_saved_for_action, prepare_return_to_action
 from navigation_p3 import ADMIN_PAGES, screens_for_role, preferred_screen, authorized_action_choice, action_rows
+from admin_navigation import (
+    WORKSPACE_HOME, WORKSPACE_GENERAL, WORKSPACE_ACTIONS, WORKSPACES,
+    GENERAL_PAGES, ACTION_PAGES, PAGE_SIZE, pages_for_workspace,
+    workspace_for_route, valid_route, filter_sort_actions, page_slice,
+    action_label, action_list_rows,
+)
+from portal_dashboard import beneficiary_dashboard, client_dashboard
+from regional_settings import (format_timestamp as regional_timestamp,format_date as regional_date,
+    format_wall_time as regional_wall_time,date_input_format as regional_date_input_format)
+from mission_engagements import (
+    action_mission_coverage,enable_action_mission_control,list_action_missions,
+    list_trainer_missions,verify_mission_engagement,revise_mission,mission_outbox_pending,change_mission_status,
+)
 from client_portal import (
     client_portal_identity, verify_client_login, redeem_client_access_token,
     create_client_portal_account, list_client_accounts_admin, set_client_account_active,
@@ -67,7 +81,32 @@ try:
     seed_tool_catalog(ENGINE,'system')
 except Exception:
     pass
-BASE_URL=secret('app','base_url','http://localhost:8501');TZ=secret('app','timezone','Europe/Paris')
+BASE_URL=secret('app','base_url','http://localhost:8501')
+DISPLAY_PREFERENCES=get_regional_preferences(ENGINE)
+TZ=DISPLAY_PREFERENCES['timezone']
+
+def format_app_datetime(value, action_id=None):
+    prefs=get_regional_preferences(ENGINE,action_id) if action_id else DISPLAY_PREFERENCES
+    return regional_timestamp(value,prefs)
+
+def format_app_date(value,action_id=None):
+    prefs=get_regional_preferences(ENGINE,action_id) if action_id else DISPLAY_PREFERENCES
+    return regional_date(value,prefs)
+
+def format_app_time(value,action_id=None):
+    prefs=get_regional_preferences(ENGINE,action_id) if action_id else DISPLAY_PREFERENCES
+    return regional_wall_time(value,prefs)
+
+def format_app_deadline(value,action_id=None):
+    """Deadlines can be date-only OR UTC timestamps; never hide a real due hour."""
+    if isinstance(value,datetime) or (isinstance(value,str) and ('T' in value or ' ' in value)):
+        return format_app_datetime(value,action_id)
+    return format_app_date(value,action_id)
+
+
+def app_date_input_format():
+    return regional_date_input_format(DISPLAY_PREFERENCES)
+
 try:
     refresh_pip_connector_runtime_status(ENGINE,secret('pip_connector','launch_signing_key',''),secret('pip_connector','outbox_path',''),'system')
 except Exception:
@@ -238,7 +277,7 @@ def _restore_client_session():
     return True
 
 
-def _p3_sidebar_section(role, *, action_id=None, action_no=None):
+def _p3_sidebar_section(role, *, action_id=None, action_no=None, show_title=True):
     """Contextual vertical sidebar; no access is conferred by navigation."""
     screens=screens_for_role(role,action_selected=(action_id is not None))
     choices=[screen.key for screen in screens]
@@ -253,7 +292,7 @@ def _p3_sidebar_section(role, *, action_id=None, action_no=None):
     label_by_key={screen.key:screen.label for screen in screens}
     selection=st.sidebar.radio('Navigation contextuelle',choices,key=key,format_func=lambda value:label_by_key[value],label_visibility='collapsed')
     screen=next(x for x in screens if x.key==selection)
-    st.markdown(f"### {screen.title}")
+    if show_title:st.markdown(f"### {screen.title}")
     return selection
 
 
@@ -387,6 +426,8 @@ def send_planning_change_notifications(action_id, slot_id, actor):
     ev=one(ENGINE,'SELECT id FROM planning_change_events WHERE action_id=:a AND slot_id=:s ORDER BY id DESC LIMIT 1',{'a':action_id,'s':slot_id}) if slot_id else None
     if ev:
         execute(ENGINE,'UPDATE planning_change_events SET notification_status=:st WHERE id=:i',{'st':'SENT' if not failed else ('PARTIAL' if sent or trainer_sent else 'ERROR'),'i':ev['id']})
+        from workspace_notifications import schedule_changed
+        schedule_changed(ENGINE,action_id,slot_id,ev['id'])
     return sent+trainer_sent,failed
 
 
@@ -415,6 +456,13 @@ def sync_quality_schedule(action_id, actor):
 
 def activate_action_ui(a, location_key):
     """Single operational activation workflow, reusable from several tabs."""
+    cover=action_mission_coverage(ENGINE,a['id'])
+    if cover['mode']=='ENFORCE':
+        if cover['ready']: st.success('Couverture des missions vérifiée pour cette action.')
+        else:
+            st.warning('Avant activation : '+ ' ; '.join(cover['issues']))
+    else:
+        st.caption('Action historique : contrôle des engagements en mode consultation. Le renforcer depuis Intervenants.')
     status=normalize_action_status(a.get('status'))
     if status not in ('BROUILLON','PLANIFIEE'):
         return False
@@ -583,9 +631,9 @@ def render_trainer_action(action, trainer):
     c1,c2,c3,c4=st.columns(4)
     c1.metric('Prestation',(a.get('prestation_type') or a.get('nature') or '—').replace('_',' '))
     c2.metric('Client',a.get('client_name') or '—')
-    c3.metric('Modalité',delivery_mode_label(a.get('delivery_mode')))
+    c3.markdown('**Modalité**'); c3.write(delivery_mode_label(a.get('delivery_mode')))  # J9: never truncate long labels in a metric
     c4.metric('Participants',len(parts))
-    st.caption(f"Lieu / précision : {a.get('location') or 'Non renseigné'} · Période : {a.get('start_date') or '—'} → {a.get('end_date') or '—'} · Statut : {normalize_action_status(a.get('status'))}")
+    st.caption(f"Lieu / précision : {a.get('location') or 'Non renseigné'} · Période : {format_app_date(a.get('start_date'))} → {format_app_date(a.get('end_date'))} · Statut : {normalize_action_status(a.get('status'))}")
     if selected_section=='overview':
         if next_slot:
             st.success(f"Prochaine séance : {_slot_label(next_slot)}")
@@ -647,7 +695,7 @@ def render_trainer_action(action, trainer):
                 signed=one(ENGINE,"SELECT COUNT(*) n FROM signatures WHERE slot_id=:s AND status='VALIDE'",{'s':sl['id']})['n']
                 absent=one(ENGINE,"SELECT COUNT(*) n FROM attendance_status WHERE slot_id=:s AND status='ABSENT'",{'s':sl['id']})['n']
                 cs_ok,cs_missing=required_slot_countersignatures_complete(ENGINE,sl['id'])
-                cal.append({'Date':sl['slot_date'],'Début':sl['start_time'],'Fin':sl['end_time'],'Type':sl.get('slot_kind') or 'NORMAL','Signés':signed,'Absents':absent,'Contresigné':'Oui' if cs_ok else ('Manque '+str(len(cs_missing)))})
+                cal.append({'Date':format_app_date(sl['slot_date']),'Début':format_app_time(sl['start_time']),'Fin':format_app_time(sl['end_time']),'Type':sl.get('slot_kind') or 'NORMAL','Signés':signed,'Absents':absent,'Contresigné':'Oui' if cs_ok else ('Manque '+str(len(cs_missing)))})
             st.dataframe(pd.DataFrame(cal),use_container_width=True,hide_index=True)
             ics=action_calendar_ics(ENGINE,aid,trainer_id=tid)
             if ics:
@@ -666,7 +714,7 @@ def render_trainer_action(action, trainer):
                 emap={_slot_label(x):x for x in editable}; elab=st.selectbox('Créneau à déplacer',list(emap),key=f'tr_plan_edit_{aid}'); es=emap[elab]
                 with st.form(f'tr_plan_edit_form_{es["id"]}'):
                     c1,c2,c3=st.columns(3)
-                    nd=c1.date_input('Nouvelle date',value=date.fromisoformat(es['slot_date']))
+                    nd=c1.date_input('Nouvelle date',value=date.fromisoformat(es['slot_date']),format=app_date_input_format())
                     ns=c2.time_input('Nouveau début',value=dt_time.fromisoformat(es['start_time']))
                     ne=c3.time_input('Nouvelle fin',value=dt_time.fromisoformat(es['end_time']))
                     save_plan=st.form_submit_button('Enregistrer ce déplacement',type='primary')
@@ -680,7 +728,7 @@ def render_trainer_action(action, trainer):
 
                 with st.expander('📅 Reporter ce créneau'):
                     c1,c2,c3=st.columns(3)
-                    rd=c1.date_input('Date du report',value=date.fromisoformat(es['slot_date']),key=f'tr_rep_d_{es["id"]}')
+                    rd=c1.date_input('Date du report',value=date.fromisoformat(es['slot_date']),key=f'tr_rep_d_{es["id"]}',format=app_date_input_format())
                     rs=c2.time_input('Début du report',value=dt_time.fromisoformat(es['start_time']),key=f'tr_rep_s_{es["id"]}')
                     re_=c3.time_input('Fin du report',value=dt_time.fromisoformat(es['end_time']),key=f'tr_rep_e_{es["id"]}')
                     reason=st.text_input('Motif du report',key=f'tr_rep_reason_{es["id"]}')
@@ -695,7 +743,7 @@ def render_trainer_action(action, trainer):
                 with st.expander('➕ Ajouter une séance'):
                     with st.form(f'tr_plan_add_{aid}'):
                         c1,c2,c3=st.columns(3)
-                        ad=c1.date_input('Date',value=date.today(),key=f'tr_add_d_{aid}')
+                        ad=c1.date_input('Date',value=date.today(),key=f'tr_add_d_{aid}',format=app_date_input_format())
                         ast=c2.time_input('Début',value=dt_time(9,0),key=f'tr_add_s_{aid}')
                         aet=c3.time_input('Fin',value=dt_time(10,30),key=f'tr_add_e_{aid}')
                         add_plan=st.form_submit_button('Ajouter cette séance')
@@ -836,24 +884,7 @@ def render_trainer_action(action, trainer):
             if st.button('Générer un nouveau code',key=f'pin_reset_{aid}_{pp["id"]}',disabled=not confirm):
                 newpin=reset_participant_pin(ENGINE,pp['id'],actor); st.session_state[state_key]=newpin; st.success('Nouveau code généré. L’ancien code est désormais invalide.'); rerun()
     if selected_section=='documents':
-        notices=list_document_notifications(ENGINE,'TRAINER',tid,action_id=aid)
-        unread=[n for n in notices if n['status']=='NON_LUE']
-        st.caption(f"Notifications de documents non lus : {len(unread)}")
-        if unread:
-            with st.expander('Nouveaux documents pour cette action',expanded=False):
-                for n in unread[:12]:
-                    left,right=st.columns([5,1])
-                    left.write(f"Action {n['action_no']} · Nouveau document disponible")
-                    if right.button('Lu',key=f'tr_doc_notice_{n["id"]}'):
-                        mark_document_notification_read(ENGINE,n['id'],'TRAINER',tid,aid)
-                        rerun()
-        with st.expander('Notifications par email',expanded=False):
-            opt=st.checkbox('Recevoir un email neutre lors de la publication de documents autorisés',
-                 value=document_notification_preference(ENGINE,'TRAINER',tid),key=f'tr_doc_opt_{tid}_{aid}')
-            st.caption("Aucun titre ni contenu personnel n'est envoyé. L'option technique reste désactivée par défaut.")
-            if st.button('Enregistrer ma préférence',key=f'tr_doc_opt_save_{tid}_{aid}'):
-                set_document_notification_preference(ENGINE,'TRAINER',tid,opt)
-                st.success('Préférence enregistrée.')
+        # J4 common inbox appears at top of this space, not inside every rubric.
         docs=list_trainer_documents(ENGINE,tid,aid)
         if docs:
             for d in docs:
@@ -892,7 +923,7 @@ def render_trainer_action(action, trainer):
                 bmap={f"{x['last_name']} {x['first_name']} — {x['public_id']}":x for x in linked}
                 tmap={f"{x['name']} — {x.get('tool_version') or 'version non précisée'}":x for x in tools}
                 with st.form(f'tr_tool_prescribe_{aid}'):
-                    bl=st.selectbox('Bénéficiaire',list(bmap)); tl=st.selectbox('Outil',list(tmap)); due=st.date_input('Échéance indicative',value=None)
+                    bl=st.selectbox('Bénéficiaire',list(bmap)); tl=st.selectbox('Outil',list(tmap)); due=st.date_input('Échéance indicative',value=None,format=app_date_input_format())
                     submit_tool=st.form_submit_button('PRESCRIRE CET OUTIL',type='primary')
                 if submit_tool:
                     bx=bmap[bl]; tx=tmap[tl]
@@ -902,11 +933,25 @@ def render_trainer_action(action, trainer):
                     except ValueError as ex: st.error(str(ex))
             hist=[x for x in list_tool_prescriptions(ENGINE,action_id=aid,trainer_id=tid) if x.get('status')!='ANNULE']
             if hist:
-                st.dataframe(pd.DataFrame([{'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Moi' if (x.get('prescriber_type')=='TRAINER' and str(x.get('prescriber_id'))==str(tid)) else 'Autre utilisateur','Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or '','Statut':x['status'].replace('_',' ')} for x in hist]),use_container_width=True,hide_index=True)
+                st.dataframe(pd.DataFrame([{'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Moi' if (x.get('prescriber_type')=='TRAINER' and str(x.get('prescriber_id'))==str(tid)) else 'Autre utilisateur','Créée':format_app_datetime(x['created_at']),'Échéance':format_app_deadline(x.get('due_at')),'Statut':x['status'].replace('_',' ')} for x in hist]),use_container_width=True,hide_index=True)
                 hmap={f"{x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']} — {x['prescription_id']}":x for x in hist}
                 hh=hmap[st.selectbox('Prescription existante',list(hmap),key=f'tr_tool_existing_{aid}')]
+                # J6 - follow-up allowed for an action-authorized trainer even if another user created it.
+                choices=trainer_tool_followup_choices(ENGINE,tid,hh['prescription_id'])
+                if choices:
+                    choice=st.selectbox('Suivi pédagogique de cette prescription',choices,
+                        format_func=lambda value:value.replace('_',' ').capitalize(),
+                        key=f'j6_followup_{hh["id"]}')
+                    if st.button('Enregistrer mon suivi',key=f'j6_followup_save_{hh["id"]}'):
+                        try:
+                            trainer_update_tool_followup(ENGINE,tid,hh['prescription_id'],choice,actor)
+                            st.success('Suivi pédagogique enregistré, avec historique.');rerun()
+                        except (PermissionError,ValueError) as ex:st.warning(str(ex))
+                else:
+                    st.caption('Suivi manuel indisponible : droits, état final ou connecteur protégé.')
                 owns=(hh.get('prescriber_type')=='TRAINER' and str(hh.get('prescriber_id'))==str(tid))
-                if st.button('SUPPRIMER MA PRESCRIPTION',key=f'tr_tool_cancel_{hh["id"]}',disabled=not owns):
+                if st.button('SUPPRIMER MA PRESCRIPTION',key=f'tr_tool_cancel_{hh["id"]}',
+                    disabled=not owns or hh.get('status') in ('TERMINE','REVU_EN_SEANCE')):
                     ok,msg=cancel_tool_prescription_owned(ENGINE,hh['prescription_id'],'TRAINER',tid,actor)
                     if ok: st.success('Prescription supprimée de votre liste active et conservée dans la piste d’audit.');rerun()
                     else: st.warning(msg)
@@ -930,13 +975,17 @@ def render_trainer_action(action, trainer):
                     except Exception: val=x.get('answer_json')
                     view.append({'Question':x['question_text'],'Réponse':val})
                 if view: st.dataframe(pd.DataFrame(view),use_container_width=True,hide_index=True)
-            bstats=quality_question_stats(ENGINE,action_id=aid)
+            # J3: only beneficiary HOT/COLD results, never TRAINER/NPS as a /5 average.
+            bstats=quality_question_stats(ENGINE,action_id=aid,campaign_kinds=('HOT','COLD'))
             bcamps=q(ENGINE,"SELECT campaign_kind,status FROM quality_campaigns WHERE action_id=:a AND campaign_kind IN ('HOT','COLD')",{'a':aid})
             completed=sum(1 for x in bcamps if x['status']=='COMPLETED')
             if bcamps:
                 st.markdown('#### Résultats des bénéficiaires de cette action')
-                vals=[x['Moyenne'] for x in bstats if x.get('Moyenne') is not None]
-                c1,c2=st.columns(2); c1.metric('Moyenne des réponses',f"{round(sum(vals)/len(vals),2)}/5" if vals else '—'); c2.metric('Questionnaires reçus',f"{completed}/{len(bcamps)}")
+                total_notes=sum(x['Notes valides 1-5'] for x in bstats)
+                total_score=sum(x['_sum_1_5'] for x in bstats)
+                c1,c2=st.columns(2)
+                c1.metric('Moyenne des réponses',f"{total_score/total_notes:.2f}/5" if total_notes else '—')
+                c2.metric('Questionnaires reçus',f"{completed}/{len(bcamps)}")
                 if bstats:
                     st.dataframe(pd.DataFrame([{'Thème':x['Rubrique'],'Question':x['Question'],'Réponses':x['Réponses'],'Moyenne':x['Moyenne'] if x['Moyenne'] is not None else '—'} for x in bstats]),use_container_width=True,hide_index=True)
         else:
@@ -948,7 +997,7 @@ def render_trainer_action(action, trainer):
             rt=st.selectbox('Nature',['Observation','Difficulté','Incident','Problème logistique','Besoin de contact','Autre'])
             subject=st.text_input('Objet *'); desc=st.text_area('Description *',height=150)
             st.caption('Ce signalement sera automatiquement intégré au suivi qualité, avec la nature sélectionnée ci-dessus.')
-            up=st.file_uploader('Joindre éventuellement un document (10 Mo max)',type=['pdf','docx','xlsx','png','jpg','jpeg','txt'],key=f'tr_report_file_{aid}')
+            up=_j4_report_file_uploader('Joindre éventuellement un document (10 Mo max)',types=['pdf','docx','xlsx','png','jpg','jpeg','txt'],key=f'tr_report_file_{aid}')
             submit=st.form_submit_button('TRANSMETTRE À L’ADMINISTRATION',type='primary')
         if submit:
             if not subject.strip() or not desc.strip(): st.error('Objet et description sont obligatoires.')
@@ -962,8 +1011,9 @@ def render_trainer_action(action, trainer):
                 else: st.error('Transmission impossible : action non autorisée.')
         history=trainer_reports(ENGINE,aid,tid)
         if history:
+            _j4_portal_threads('TRAINER',tid,history)
             st.markdown('#### Mes transmissions récentes')
-            st.dataframe(pd.DataFrame([{'Date':x['created_at'][:16].replace('T',' '),'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status'].replace('_',' '),'Réponse administration':x.get('admin_response') or ''} for x in history]),use_container_width=True,hide_index=True)
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x['created_at']),'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status'].replace('_',' '),'Réponse administration':x.get('admin_response') or ''} for x in history]),use_container_width=True,hide_index=True)
 
 def trainer_portal_page():
     _restore_trainer_session()
@@ -983,13 +1033,107 @@ def trainer_portal_page():
     if not tr:
         st.session_state.pop('trainer_portal_id',None); st.session_state.pop('trainer_portal_name',None); rerun()
     header('Clarté360 — Espace intervenant',f"Bienvenue {tr['full_name']}")
+    _j4_notification_drawer('TRAINER',tid)
     top1,top2=st.columns([4,1])
-    top1.caption('Tableau de bord sécurisé : seules les actions qui vous sont affectées sont visibles.')
+    top1.caption('Espace personnel sécurisé : seules vos missions et vos données autorisées sont accessibles.')
     if top2.button('Se déconnecter',use_container_width=True):
         _logout_persistent('TRAINER',['trainer_portal_id','trainer_portal_name'])
     acts=trainer_actions(ENGINE,tid)
     if not acts:
-        st.info('Aucune action ne vous est actuellement affectée.'); footer(); return
+        st.info('Aucune action ne vous est actuellement affectée. Votre dossier personnel reste accessible.')
+    # J6 - the personal dashboard and the current action are distinct views.
+    # A J4 notification forces the relevant action view, with its authorization checked below.
+    pending_notice=st.session_state.get('j4_trainer_action')
+    if pending_notice is not None:
+        st.session_state['_j6_next_trainer_view']='Mes interventions'
+    next_view=st.session_state.pop('_j6_next_trainer_view',None)
+    if next_view:st.session_state['j6_trainer_view']=next_view
+    views=('Accueil personnel','Mon dossier professionnel','Mes missions','Mes interventions','Mes échanges')
+    if st.session_state.get('j6_trainer_view') not in views:
+        st.session_state['j6_trainer_view']='Accueil personnel'
+    st.sidebar.markdown('### Mon espace personnel')
+    selected_view=st.sidebar.radio('Choisir mon espace',views,key='j6_trainer_view')
+    if selected_view=='Mon dossier professionnel':
+        st.markdown('### Mon dossier professionnel')
+        person=professional_person_for_trainer(ENGINE,tid)
+        if not person or not person.get('active'):
+            st.info("Aucun dossier professionnel individuel n'est encore lié à votre compte. Contactez l'administration.")
+        else:
+            prof=get_professional_360(ENGINE,person['professional_person_id'])
+            st.markdown(f"#### {prof.get('display_name') or tr['full_name']}")
+            st.caption(f"Profession : {prof.get('title') or 'non renseignée'} · Collaboration : {_collaboration_label(prof.get('collaboration_type'))}")
+            if prof.get('summary'):st.write(prof['summary'])
+            st.markdown('#### Documents expressément partagés avec moi')
+            shared=trainer_shared_professional_documents(ENGINE,tid)
+            if not shared:st.info("Aucun document professionnel n'a été partagé par l'administration.")
+            for item in shared:
+                with st.container():
+                    c1,c2=st.columns([3,1]);c1.write(f"{item['display_name']} · {item['category']}")
+                    try:
+                        # Authorization checked on each rerender; no cached bytes in session.
+                        safe=trainer_shared_professional_document_bytes(ENGINE,tid,item['id'])
+                        c2.download_button('Télécharger',safe['data'],safe['name'],
+                            safe.get('mime_type') or 'application/octet-stream',key=f'j6_prof_dl_{item["id"]}')
+                    except (PermissionError,FileNotFoundError) as ex:st.warning(str(ex))
+            st.caption('Les notes internes, les preuves IA et les documents non partagés restent réservés à l’administration.')
+        footer();return
+    if selected_view=='Mes missions':
+        st.markdown('### Mes missions et affectations')
+        personal_missions=list_trainer_missions(ENGINE,tid)
+        if personal_missions:
+            st.caption('Documents acceptés et missions confiées. Les références en préparation restent informatives.')
+            st.dataframe(pd.DataFrame([{'Action':m['action_no'],'Mission':m['mission_id'],
+                'Rôle':m.get('role') or '', 'État':m['status'],
+                'Document accepté':m.get('document_ref') if m['status']=='VERIFIE' else 'À vérifier',
+                'Version':m.get('document_version') if m['status']=='VERIFIE' else '',
+                'Archive':'Oui' if not m['active'] else 'Non'} for m in personal_missions]),
+                use_container_width=True,hide_index=True)
+        else:st.info('Aucun engagement associé aux interventions.')
+        st.caption('Missions liées aux actions qui vous sont affectées. Les documents acceptés sont référencés ici ; leur gestion reste dans Contractualisation.')
+        st.dataframe(pd.DataFrame([{'Action':a['action_no'],'Intitulé':a['title'],
+            'Client':a.get('client_name') or '—','Début':a.get('start_date') or '—',
+            'Fin':a.get('end_date') or '—','Statut':normalize_action_status(a.get('status'))} for a in acts]),
+            use_container_width=True,hide_index=True)
+        st.info('Les versions et preuves des engagements restent historisées, y compris après remplacement.')
+        footer();return
+    if selected_view=='Mes échanges':
+        st.markdown('### Mes échanges avec Clarté360')
+        myids=[int(a['id']) for a in acts]
+        # Filter on both the authenticated trainer AND his currently authorized actions.
+        all_reports=[]
+        for aid in myids:all_reports.extend(trainer_reports(ENGINE,aid,tid))
+        all_reports.sort(key=lambda x:(x.get('created_at') or '',int(x.get('id') or 0)),reverse=True)
+        if all_reports:
+            _j4_portal_threads('TRAINER',tid,all_reports)
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x.get('created_at')),
+                'Objet':x['subject'],'Statut':str(x.get('status') or '').replace('_',' '),
+                'Réponse administration':x.get('admin_response') or ''} for x in all_reports[:80]]),use_container_width=True,hide_index=True)
+        else:st.info('Aucune transmission enregistrée pour vos actions actuellement accessibles.')
+        st.caption("Pour envoyer un nouveau signalement, ouvrez l'action concernée, puis « Signaler / informer ».")
+        footer();return
+    if selected_view=='Mes interventions':
+        if not acts:
+            st.info('Aucune action autorisée à ouvrir.'); footer();return
+        labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a.get('status'))}":a for a in acts}
+        requested_action=st.query_params.get('action_id')
+        try: requested_action=int(requested_action) if requested_action is not None else None
+        except Exception:requested_action=None
+        from_notification=st.session_state.pop('j4_trainer_action',None)
+        if from_notification is not None:requested_action=from_notification
+        label_options=list(labels)
+        if requested_action and any(row['id']==requested_action for row in acts):
+            preferred=next(k for k,v in labels.items() if v['id']==requested_action)
+            st.session_state['trainer_action_choice']=preferred
+        if st.session_state.get('trainer_action_choice') not in label_options:
+            st.session_state['trainer_action_choice']=label_options[0]
+        st.sidebar.markdown('#### Action en cours')
+        lab=st.sidebar.selectbox('Action à ouvrir',label_options,key='trainer_action_choice')
+        if st.button('← Revenir à mon accueil personnel',key='j6_trainer_back_home'):
+            st.session_state['_j6_next_trainer_view']='Accueil personnel';rerun()
+        render_trainer_action(labels[lab],tr)
+        footer(labels[lab]['id']);return
+    # Global attendance and action list are limited to the personal homepage.
+    st.markdown('### Tableau de bord de mes interventions')
     tasks=trainer_countersign_tasks(ENGINE,tid)
     # Tableau de bord global : obligations de l'intervenant + signatures bénéficiaires à suivre.
     global_missing=global_absent=global_finalized=global_slots=0
@@ -1021,14 +1165,8 @@ def trainer_portal_page():
         data=trainer_action_dashboard(ENGINE,tid,a['id'],TZ); nxt=data.get('next_slot') if data else None
         cards.append({'Action':a['action_no'],'Intitulé':a['title'],'Client':a.get('client_name') or '','Début':a.get('start_date') or '','Fin':a.get('end_date') or '','Prochaine séance':_slot_label(nxt) if nxt else '—','Statut':normalize_action_status(a.get('status'))})
     st.dataframe(pd.DataFrame(cards),use_container_width=True,hide_index=True)
-    labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a.get('status'))}":a for a in acts}
-    requested_action=st.query_params.get('action_id')
-    try: requested_action=int(requested_action) if requested_action is not None else None
-    except Exception: requested_action=None
-    lab_list=list(labels); default_idx=next((i for i,k in enumerate(lab_list) if labels[k]['id']==requested_action),0)
-    st.sidebar.markdown('#### Mes interventions')
-    lab=st.sidebar.selectbox('Action à ouvrir',lab_list,index=default_idx,key='trainer_action_choice'); render_trainer_action(labels[lab],tr)
-    footer(labels[lab]['id'])
+    st.caption('Pour agir sur une action, choisissez « Mes interventions » dans le menu personnel.')
+    footer();return
 
 
 def beneficiary_invitation_page(token):
@@ -1119,6 +1257,7 @@ def beneficiary_portal_page():
     if not b or not acc:
         st.session_state.pop('beneficiary_portal_id',None);rerun()
     header('Clarté360 — Espace bénéficiaire',f"Bienvenue {b['first_name']} {b['last_name']}")
+    _j4_notification_drawer('BENEFICIARY',bid)
     c1,c2=st.columns([4,1]);c1.caption(f"Identifiant interne : {b['public_id']} · Connexion : {acc['email']}")
     if c2.button('Se déconnecter',use_container_width=True): _logout_persistent('BENEFICIARY',['beneficiary_portal_id'])
     all_acts=beneficiary_participations(ENGINE,bid)
@@ -1155,20 +1294,56 @@ def beneficiary_portal_page():
     # P3 navigation: action first, then authorized contextual section.
 
     if selected_section=='home':
-        st.metric('Parcours enregistrés',len(acts));st.metric('Documents disponibles',len(docs));st.metric('Actions à réaliser',len(pending))
-        new_notices=[n for n in doc_notifications if n['status']=='NON_LUE']
-        st.caption(f"Nouveaux documents à consulter : {len(new_notices)}")
-        if new_notices:
-            with st.expander('Mes notifications documentaires',expanded=False):
-                for notice in new_notices[:12]:
-                    left,right=st.columns([5,1])
-                    left.write(f"Action {notice['action_no']} · Nouveau document disponible · {notice['created_at'][:16].replace('T',' ')}")
-                    if right.button('Lu',key=f'ben_doc_notice_{notice["id"]}'):
-                        mark_document_notification_read(ENGINE,notice['id'],'BENEFICIARY',bid)
-                        rerun()
-
-        if acts: st.dataframe(pd.DataFrame([{'Action':a['action_no'],'Intitulé':a['title'],'Prestation':a.get('prestation_type') or a.get('nature'),'Début':a.get('start_date') or '','Fin':a.get('end_date') or '','Statut':normalize_action_status(a.get('status'))} for a in acts]),use_container_width=True,hide_index=True)
+        # J7: a true personal multi-action dashboard, never reusing a filtered action
+        # selection to hide other legitimate appointments or outstanding work.
+        overview=beneficiary_dashboard(ENGINE,bid)
+        st.markdown('#### Mon tableau de bord personnel')
+        b1,b2,b3=st.columns(3)
+        b1.metric('Parcours enregistrés',len(overview['actions']))
+        b2.metric('Documents disponibles',len(overview['documents']))
+        b3.metric('Actions à réaliser',len(overview['pending_campaigns'])+len(overview['pending_tools']))
+        b4,b5,b6=st.columns(3)
+        b4.metric('Rendez-vous à venir',len(overview['upcoming']))
+        b5.metric('Signatures à régulariser',overview['signatures_to_review'])
+        b6.metric('Demandes envoyées',len(overview['reports']))
+        personal_view=st.radio('Mon espace personnel',['Mon activité','Mes documents','Mes échanges'],
+            horizontal=True,key='j7_benef_home_view')
+        if personal_view=='Mon activité':
+            st.markdown('##### Mes prochains rendez-vous')
+            if overview['upcoming']:
+                st.caption('Vue de restitution en lecture seule : le planning se modifie dans chaque action.')
+                st.dataframe(pd.DataFrame([{'Action':r['action_no'],'Date':format_app_date(r['slot_date']),
+                    'Début':r['start_time'],'Fin':r['end_time']} for r in overview['upcoming'][:8]]),
+                    use_container_width=True,hide_index=True)
+            else:st.info('Aucun rendez-vous planifié prochainement.')
+            st.markdown('##### Mes travaux et questionnaires à faire')
+            if overview['pending_campaigns']:
+                st.caption('Vue de restitution en lecture seule : ouvrez l’action pour répondre au questionnaire.')
+                st.dataframe(pd.DataFrame([{'Action':r['action_no'],'Questionnaire':r['title'],
+                    'Échéance':format_app_deadline(r.get('due_at'))} for r in overview['pending_campaigns'][:12]]),
+                    use_container_width=True,hide_index=True)
+            if overview['pending_tools']:
+                st.caption(f"Outils à réaliser ou suivre : {len(overview['pending_tools'])}")
+            if not overview['pending_campaigns'] and not overview['pending_tools']:
+                st.success('Aucun travail ou questionnaire en attente.')
+        if personal_view=='Mes documents':
+            st.caption('Documents disponibles dans vos actions autorisées, jamais ceux des autres bénéficiaires.')
+            for document in overview['documents'][:20]:
+                st.write(f"{document.get('action_no') or 'Général'} — {document['display_name']}")
+            if not overview['documents']:st.info('Aucun document partagé.')
+            st.caption('Ouvrez le dossier concerné dans le menu pour télécharger le document autorisé.')
+        if personal_view=='Mes échanges':
+            st.caption('Retrouvez vos signalements, les réponses de l’administration et leur état.')
+            for report in overview['reports'][:20]:
+                st.write(f"{report.get('action_no') or 'Action'} — {report['subject']} · {report['status']}")
+                if report.get('admin_response'):st.caption(f"Réponse : {report['admin_response']}")
+            if not overview['reports']:st.info('Aucune demande envoyée.')
+        st.markdown('#### Mes formations et accompagnements')
         if all_acts:
+            st.dataframe(pd.DataFrame([{'Action':a['action_no'],'Intitulé':a['title'],
+                'Prestation':a.get('prestation_type') or a.get('nature'),'Début':a.get('start_date') or '',
+                'Fin':a.get('end_date') or '','Statut':normalize_action_status(a.get('status'))}
+                for a in all_acts]),use_container_width=True,hide_index=True)
             st.markdown('#### Ouvrir une action')
             for a in all_acts:
                 c1,c2=st.columns([5,1])
@@ -1177,6 +1352,7 @@ def beneficiary_portal_page():
                 if c2.button('Ouvrir',key=f"p3_open_benef_action_{a['id']}"):
                     st.session_state['_p3_next_beneficiary_action']=a['id']
                     rerun()
+        else:st.info('Aucun parcours inscrit.')
 
     if selected_section=='journey':
         if acts: st.dataframe(pd.DataFrame([{'Action':a['action_no'],'Intitulé':a['title'],'Client':a.get('client_name') or '','Lieu / modalité':a.get('location') or a.get('mode') or '','Période':f"{a.get('start_date') or '—'} → {a.get('end_date') or '—'}"} for a in acts]),use_container_width=True,hide_index=True)
@@ -1184,7 +1360,7 @@ def beneficiary_portal_page():
     if selected_section=='planning':
         rows=[]
         for a in acts:
-            for sl in q(ENGINE,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE') ORDER BY slot_date,start_time",{'a':a['id']}): rows.append({'Action':a['action_no'],'Date':sl['slot_date'],'Début':sl['start_time'],'Fin':sl['end_time'],'Type':sl.get('slot_kind') or 'NORMAL'})
+            for sl in q(ENGINE,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE') ORDER BY slot_date,start_time",{'a':a['id']}): rows.append({'Action':a['action_no'],'Date':format_app_date(sl['slot_date']),'Début':format_app_time(sl['start_time']),'Fin':format_app_time(sl['end_time']),'Type':sl.get('slot_kind') or 'NORMAL'})
         if rows: st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
         else: st.info('Aucun créneau disponible.')
         if acts:
@@ -1249,13 +1425,7 @@ def beneficiary_portal_page():
                 st.divider()
     if selected_section=='documents':
         _show_docs([d for d in docs if d['category']!='COURS'],'Aucun document administratif disponible.','admin')
-        with st.expander('Préférences de notification',expanded=False):
-            opt=st.checkbox('Recevoir aussi un email neutre quand un nouveau document est publié',
-                 value=document_notification_preference(ENGINE,'BENEFICIARY',bid),key=f'benef_doc_notif_opt_{bid}')
-            st.caption("Sans pièce jointe ni titre de document. L'envoi nécessite aussi l'activation du service de messagerie documentaire.")
-            if st.button('Enregistrer mon choix',key=f'benef_doc_notif_save_{bid}'):
-                set_document_notification_preference(ENGINE,'BENEFICIARY',bid,opt)
-                st.success('Votre préférence est enregistrée.')
+        # J4: email preference controls removed; in-app alerts are automatic.
 
     if selected_section=='courses':
         _show_docs([d for d in docs if d['category']=='COURS'],'Aucun document de cours disponible.','cours')
@@ -1333,7 +1503,7 @@ def beneficiary_portal_page():
                 rt=st.selectbox('Nature',['Observation','Difficulté','Incident','Problème logistique','Besoin de contact','Autre'],key='benef_report_type')
                 subject=st.text_input('Objet *',key='benef_report_subject'); desc=st.text_area('Description *',height=150,key='benef_report_desc')
                 st.caption('Ce signalement sera automatiquement intégré au suivi qualité, avec la nature sélectionnée ci-dessus.')
-                up=st.file_uploader('Joindre éventuellement un document (10 Mo max)',type=['pdf','docx','xlsx','png','jpg','jpeg','txt','json'],key='benef_report_file')
+                up=_j4_report_file_uploader('Joindre éventuellement un document (10 Mo max)',types=['pdf','docx','xlsx','png','jpg','jpeg','txt','json'],key='benef_report_file')
                 submit=st.form_submit_button('TRANSMETTRE À L’ADMINISTRATION',type='primary')
             if submit:
                 if not subject.strip() or not desc.strip(): st.error('Objet et description sont obligatoires.')
@@ -1347,8 +1517,9 @@ def beneficiary_portal_page():
                     else: st.error('Transmission impossible pour cette action.')
         hist=beneficiary_reports(ENGINE,beneficiary_id=bid)
         if hist:
+            _j4_portal_threads('BENEFICIARY',bid,hist)
             st.markdown('#### Mes signalements')
-            st.dataframe(pd.DataFrame([{'Date':x['created_at'][:16].replace('T',' '),'Action':x['action_no'],'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status'].replace('_',' '),'Réponse administration':x.get('admin_response') or ''} for x in hist]),use_container_width=True,hide_index=True)
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x['created_at']),'Action':x['action_no'],'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status'].replace('_',' '),'Réponse administration':x.get('admin_response') or ''} for x in hist]),use_container_width=True,hide_index=True)
         else: st.info('Aucun signalement transmis.')
     if selected_section=='archives':
         st.caption('Vous pouvez télécharger à tout moment une copie des documents actuellement mis à disposition dans votre portail.')
@@ -1624,20 +1795,195 @@ def _crm_interests(value):
         return [x.strip() for x in value.split(",") if x.strip()]
     return []
 
+def _j4_report_file_uploader(label,*,types,key):
+    """Constrain signalement uploads to 10 MB without reducing the separate
+    business-document allowance (25 MB). Older Streamlit versions still use
+    the server-wide 50 MB caption, but business validation always blocks >10.
+    """
+    import inspect
+    options={'type':types,'key':key}
+    try:
+        if 'max_upload_size' in inspect.signature(st.file_uploader).parameters:
+            options['max_upload_size']=10
+    except (ValueError,TypeError):
+        pass
+    return st.file_uploader(label,**options)
+
+# J4 - one permission-controlled notification drawer across the four workspaces.
+def _j4_notification_drawer(role,actor_id):
+    from workspace_notifications import inbox,mark_read
+    rows=inbox(ENGINE,role,actor_id,unread_only=True,limit=100)
+    st.sidebar.markdown(f"### 🔔 Notifications ({len(rows)})")
+    show_history=st.sidebar.checkbox('Voir les notifications consultées',key=f'j4_history_{role}_{actor_id}')
+    shown=inbox(ENGINE,role,actor_id,unread_only=False,limit=100) if show_history else rows
+    with st.sidebar.expander('Boîte de notifications',expanded=bool(rows)):
+        if not shown:st.caption('Aucune notification dans cette liste.')
+        for notice in shown[:35]:
+            prefix='À traiter' if notice['category']=='ACTION' else 'Information'
+            st.caption(f"{prefix} · {notice['display_text']} · {format_app_datetime(notice['created_at'])}")
+            if notice.get('read_at'):st.caption('Consultée')
+            if st.button('Ouvrir',key=f'j4_open_{role}_{actor_id}_{notice["id"]}',use_container_width=True):
+                try:
+                    # Access is checked in mark_read AND at the destination.
+                    mark_read(ENGINE,notice['id'],role,actor_id)
+                    _j4_notification_destination(role,notice)
+                    rerun()
+                except PermissionError:st.warning('Cet accès a été retiré ; la notification n’est plus accessible.')
+
+def _j4_notification_destination(role,notice):
+    kind=notice['target_kind'];aid=notice.get('action_id')
+    if role=='ADMIN':
+        if kind in ('QUALITY','CAPA'):
+            st.session_state['j4_jump_quality']=int(notice['target_id']) if kind=='QUALITY' else int(one(ENGINE,'SELECT quality_event_id FROM quality_event_actions WHERE id=:i',{'i':int(notice['target_id'])})['quality_event_id'])
+            st.session_state['admin_workspace']=WORKSPACE_GENERAL
+            st.session_state['nav']='Qualité'
+        elif aid:
+            st.session_state['admin_workspace']=WORKSPACE_ACTIONS
+            st.session_state['admin_actions_view']='detail'
+            st.session_state['nav']='Actions'
+            st.session_state['p3_admin_action_id']=int(aid)
+            st.session_state[f'p3_screen_admin_action_{aid}']='action_documents' if kind=='DOCUMENT' else 'action_parametres'
+    elif role=='TRAINER':
+        if kind=='PROFESSIONAL_DOCUMENT':
+            st.session_state['_j6_next_trainer_view']='Mon dossier professionnel'
+            return
+        if kind=='QUALITY':st.session_state['j4_focus_event_id']=int(notice['target_id'])
+        st.session_state['j4_trainer_action']=int(aid)
+        st.session_state[f'p3_screen_trainer_{aid}']='reports' if kind=='QUALITY' else 'documents' if kind=='DOCUMENT' else 'planning' if notice['event_code']=='PLANNING_CHANGED' else 'overview'
+    elif role=='BENEFICIARY':
+        if kind=='QUALITY':st.session_state['j4_focus_event_id']=int(notice['target_id'])
+        st.session_state['p3_beneficiary_action_id']=int(aid)
+        st.session_state['p3_screen_beneficiary']='reports' if kind=='QUALITY' else 'documents' if kind=='DOCUMENT' else 'planning' if notice['event_code']=='PLANNING_CHANGED' else 'journey'
+    elif role=='CLIENT':
+        st.session_state['p4_client_action_id']=int(aid)
+        st.session_state[f'p3_screen_client_{aid}']='documents' if kind=='DOCUMENT' else 'actions'
+
+def _j4_portal_threads(role,subject_id,reports):
+    from services import quality_portal_thread
+    kind='TRAINER_REPORT' if role=='TRAINER' else 'BENEFICIARY_REPORT'
+    highlighted=st.session_state.get('j4_focus_event_id')
+    for report in reports[:25]:
+        link=one(ENGINE,'SELECT quality_event_id FROM quality_source_links WHERE source_kind=:k AND source_id=:i',{'k':kind,'i':report['id']})
+        if not link:continue
+        ev_id=link['quality_event_id']
+        try:thread=quality_portal_thread(ENGINE,ev_id,role,subject_id)
+        except PermissionError:continue
+        prefix='🔔 Réponse reçue : ' if ev_id==highlighted else 'Suivi de ma demande : '
+        with st.expander(prefix+str(report['subject']),expanded=(ev_id==highlighted)):
+            st.caption(f"Fiche {thread['public_id']} · État : {thread['status']}")
+            if not thread['messages']:st.caption('Aucune réponse reçue à ce jour.')
+            for message in thread['messages']:
+                st.write(format_app_datetime(message['created_at'])+ ' — Administration : '+message['message'])
+
+def _set_admin_workspace(destination):
+    """Switch spaces only after explicit confirmation; do not alter rights."""
+    if destination not in WORKSPACES:
+        return
+    st.session_state['admin_workspace']=destination
+    st.session_state.pop('j5_pending_space',None)
+    if destination != WORKSPACE_HOME:
+        st.session_state['nav']=valid_route(destination,None)
+    else:
+        st.session_state.pop('nav',None)
+    if destination==WORKSPACE_ACTIONS:
+        st.session_state['admin_actions_view']='list'
+
+
+def _request_admin_workspace(destination):
+    current=st.session_state.get('admin_workspace',WORKSPACE_HOME)
+    if current==destination:
+        return
+    # Forms buffer values before submit: require acknowledgement for a change
+    # of workspace, rather than silently destroying an unsaved input.
+    if current==WORKSPACE_HOME or st.session_state.get('nav') in ('Tableau de bord', 'Actions') and st.session_state.get('admin_actions_view','list')=='list':
+        _set_admin_workspace(destination)
+    else:
+        st.session_state['j5_pending_space']=destination
+
+
+def _admin_workspace_home():
+    header('Clarté360 — Accueil administrateur','Choisissez votre espace de travail. Vous pourrez passer de l’un à l’autre sans vous déconnecter.')
+    c1,c2=st.columns(2)
+    with c1:
+        st.subheader('Administration générale')
+        st.write('Qualité et CAPA, relances, intervenants, clients/DRH, contacts, études et paramètres de l’organisme.')
+        if st.button('Ouvrir Administration générale',key='j5_home_general',use_container_width=True,type='primary'):
+            _set_admin_workspace(WORKSPACE_GENERAL);rerun()
+    with c2:
+        st.subheader('Gestion des actions')
+        st.write('Créer ou importer une action, retrouver les dossiers, puis gérer les paramètres et les 12 rubriques de chaque action.')
+        if st.button('Ouvrir Gestion des actions',key='j5_home_actions',use_container_width=True,type='primary'):
+            _set_admin_workspace(WORKSPACE_ACTIONS);rerun()
+    st.caption('La navigation ne modifie ni vos habilitations ni les données des dossiers.')
+    footer()
+
+
 def sidebar():
-    st.sidebar.image(str(LOGO_PATH),width=70);st.sidebar.markdown(f"**{st.session_state.get('admin_name','Administrateur')}**")
-    pages=['Tableau de bord','Nouvelle action','Importer une action','Actions','Relances','Qualité','Études PIP/O*NET','Contacts / Prospects','Espace Client / DRH','Intervenants / Partenaires','Paramètres']
-    st.sidebar.markdown('#### Administration')
-    page=st.sidebar.radio('Navigation',pages,key='nav',format_func=lambda value:ADMIN_PAGES.get(value,value))
+    st.sidebar.image(str(LOGO_PATH),width=70)
+    st.sidebar.markdown(f"**{st.session_state.get('admin_name','Administrateur')}**")
+    _j4_notification_drawer('ADMIN',st.session_state.get('admin_email'))
+    workspace=st.session_state.get('admin_workspace',WORKSPACE_HOME)
+    if workspace not in WORKSPACES:
+        workspace=WORKSPACE_HOME
+        st.session_state['admin_workspace']=workspace
+    st.sidebar.markdown('#### Espaces administrateur')
+    if st.sidebar.button('🏠 Accueil administrateur',key='j5_goto_home',use_container_width=True):
+        _request_admin_workspace(WORKSPACE_HOME);rerun()
+    if workspace!=WORKSPACE_GENERAL and st.sidebar.button('⚙️ Administration générale',key='j5_goto_general',use_container_width=True):
+        _request_admin_workspace(WORKSPACE_GENERAL);rerun()
+    if workspace!=WORKSPACE_ACTIONS and st.sidebar.button('📁 Gestion des actions',key='j5_goto_actions',use_container_width=True):
+        _request_admin_workspace(WORKSPACE_ACTIONS);rerun()
+    pending=st.session_state.get('j5_pending_space')
+    if pending in WORKSPACES and pending!=workspace:
+        st.sidebar.warning('Les saisies non enregistrées seront perdues si vous changez d’espace. Confirmez avant de poursuivre.')
+        if st.sidebar.button('Confirmer le changement',key='j5_confirm_change',use_container_width=True):
+            _set_admin_workspace(pending);rerun()
+        if st.sidebar.button('Rester ici',key='j5_cancel_change',use_container_width=True):
+            st.session_state.pop('j5_pending_space',None);rerun()
+    pages=pages_for_workspace(workspace)
+    if pages:
+        st.sidebar.markdown('#### ' + ('Administration générale' if workspace==WORKSPACE_GENERAL else 'Gestion des actions'))
+        current=valid_route(workspace,st.session_state.get('nav'))
+        if st.session_state.get('nav')!=current:
+            st.session_state['nav']=current
+        page=st.sidebar.radio('Navigation',pages,key='nav',format_func=lambda value:ADMIN_PAGES.get(value,value))
+    else:
+        page='__home__'
     st.sidebar.divider()
-    if st.sidebar.button('🔄 MAJ WORKER — toutes les actions',use_container_width=True,help='Recalcule les files automatiques (émargements, rappels Teams, contresignatures et qualité) sans envoyer de doublons.'):
-        try:
-            result=refresh_all_worker_events(ENGINE,BASE_URL,TZ,st.session_state.get('admin_email') or 'admin')
-            st.sidebar.success(f"Worker synchronisé : {result.get('actions',0)} action(s), {result.get('teams_reminders',0)} rappel(s) Teams préparé(s).")
-        except Exception as ex:
-            _ui_incident('admin_refresh_worker_all',ex,subject='La mise à jour Worker',level='warning')
-    if st.sidebar.button('Se déconnecter',use_container_width=True): _logout_persistent('ADMIN',['admin_email','admin_name','nav'])
+    if workspace==WORKSPACE_GENERAL:
+        if st.sidebar.button('🔄 MAJ WORKER — toutes les actions',use_container_width=True,help='Recalcule les files automatiques sans envoyer de doublons.'):
+            try:
+                result=refresh_all_worker_events(ENGINE,BASE_URL,TZ,st.session_state.get('admin_email') or 'admin')
+                st.sidebar.success(f"Files préparées : {result.get('actions',0)} action(s), {result.get('teams_reminders',0)} nouveau(x) rappel(s) Teams, {result.get('teams_pending',0)} en attente. Aucun courriel envoyé par ce bouton.")
+                if result.get('teams_failed',0):
+                    st.sidebar.warning(f"{result['teams_failed']} rappel(s) Teams en échec / à vérifier dans le journal des communications (SMTP/worker).")
+                if not mail_cfg().get('enabled'):
+                    st.sidebar.warning('SMTP désactivé : les rappels Teams ne pourront pas partir tant que la messagerie ne sera pas opérationnelle.')
+            except Exception as ex:
+                _ui_incident('admin_refresh_worker_all',ex,subject='La mise à jour Worker',level='warning')
+    if st.sidebar.button('Se déconnecter',use_container_width=True):
+        _logout_persistent('ADMIN',['admin_email','admin_name','nav','admin_workspace','admin_actions_view','j5_pending_space'])
     return page
+
+
+def admin_general_dashboard():
+    header('Clarté360 — Administration générale','Pilotage de l’organisme, des intervenants, des clients et de la Qualité')
+    st.subheader('Domaines de gestion')
+    entries=[('Qualité','Fiches à traiter, enquêtes et CAPA'),('Relances','Relances et régularisations'),
+             ('Intervenants / Partenaires','Dossiers, qualifications et prestations'),
+             ('Espace Client / DRH','Comptes et habilitations Clients'),
+             ('Contacts / Prospects','Contacts et prospection'),('Études PIP/O*NET','Études et référencement'),
+             ('Paramètres','Organisme et configuration générale')]
+    for i in range(0,len(entries),2):
+        cols=st.columns(2)
+        for column,(route,description) in zip(cols,entries[i:i+2]):
+            with column:
+                st.markdown('**'+route+'**')
+                st.caption(description)
+                if st.button('Ouvrir '+route,key='j5_general_link_'+str(i)+route,use_container_width=True):
+                    st.session_state['_next_nav']=route;rerun()
+    st.caption('Les listes d’actions et la création/import figurent exclusivement dans Gestion des actions.')
+    footer()
 
 def create_action_screen(prefill=None,participants_prefill=None):
     # Lors d'un import, le brouillon reste en session jusqu'à création ou annulation.
@@ -1686,7 +2032,11 @@ def create_action_screen(prefill=None,participants_prefill=None):
     imported_mod=p.get('delivery_mode'); imported_mod=imported_mod if imported_mod in modality_codes else modality_codes[0]
 
     # CRM-0 : recherche/rattachement du donneur d'ordre avant création de l'action.
-    crm_prefill_id=st.session_state.get('crm_prefill_contact_id')
+    crm_prefill_id=st.session_state.get('crm_prefill_contact_id') or p.get('crm_contact_id')
+    if not crm_prefill_id and p.get('crm_contact_public_id'):
+        imported_contact=one(ENGINE,'SELECT id FROM crm_contacts WHERE public_id=:r',
+                             {'r':p.get('crm_contact_public_id')})
+        crm_prefill_id=imported_contact['id'] if imported_contact else None
     crm_prefill=one(ENGINE,'SELECT * FROM crm_contacts WHERE id=:i',{'i':crm_prefill_id}) if crm_prefill_id else None
     crm_mode=st.radio('Le client existe déjà dans le CRM ?', ['Oui','Non'],index=0 if crm_prefill else 1,horizontal=True,key='new_action_crm_mode')
     selected_crm=None; create_crm_from_action=False
@@ -1695,14 +2045,18 @@ def create_action_screen(prefill=None,participants_prefill=None):
         crm_rows=find_crm_contacts(ENGINE,search,100)
         if crm_prefill and all(x['id']!=crm_prefill['id'] for x in crm_rows): crm_rows=[crm_prefill]+crm_rows
         if crm_rows:
-            crm_opts={f"{x['first_name']} {x['last_name']} — {x.get('company') or 'Particulier'} — {x['email']}":x for x in crm_rows}
-            default_label=next((k for k,v in crm_opts.items() if crm_prefill and v['id']==crm_prefill['id']),list(crm_opts)[0])
+            crm_opts={'— Sélectionner explicitement un donneur d’ordre —':None,
+                **{f"{x['first_name']} {x['last_name']} — {x.get('company') or 'Particulier'} — {x['email']}":x for x in crm_rows}}
+            default_label=next((k for k,v in crm_opts.items() if crm_prefill and v and v['id']==crm_prefill['id']),
+                               '— Sélectionner explicitement un donneur d’ordre —')
             crm_label=st.selectbox('Client / prospect CRM',list(crm_opts),index=list(crm_opts).index(default_label),key='new_action_crm_pick')
             selected_crm=crm_opts[crm_label]
-            st.caption(f"Sélectionné : {selected_crm['public_id']} — centres d’intérêt : {', '.join(_crm_interests(selected_crm.get('interests_json'))) or '—'}")
+            if selected_crm:
+                st.caption(f"Sélectionné : {selected_crm['public_id']} — centres d’intérêt : {', '.join(_crm_interests(selected_crm.get('interests_json'))) or '—'}")
         else: st.warning('Aucun contact trouvé. Passez sur « Non » pour créer une nouvelle fiche CRM avec l’action.')
     else:
-        create_crm_from_action=st.checkbox('Créer aussi une fiche CRM Client / Prospect',value=True,key='new_action_create_crm')
+        create_crm_from_action=True
+        st.caption('Un donneur d’ordre et un contact de référence sont obligatoires : la fiche CRM0 sera créée avec l’action, sans droit Client/DRH automatique.')
 
     # J17 — rattachement explicite au catalogue dès la création. Jamais de première prestation implicite.
     creation_services=list_services(ENGINE,active_only=True)
@@ -1742,8 +2096,8 @@ def create_action_screen(prefill=None,participants_prefill=None):
         action_require_criteria=cqs2.checkbox('Exiger tous les critères obligatoires démontrés',value=False)
 
         c1,c2=st.columns(2)
-        start_date=c1.date_input('Date de début',value=start_default)
-        end_date=c2.date_input('Date de fin',value=end_default)
+        start_date=c1.date_input('Date de début',value=start_default,format=app_date_input_format())
+        end_date=c2.date_input('Date de fin',value=end_default,format=app_date_input_format())
 
         c1,c2,c3,c4=st.columns(4)
         mode=c1.selectbox('Organisation',mode_options,index=mode_options.index(mode_default))
@@ -1753,7 +2107,8 @@ def create_action_screen(prefill=None,participants_prefill=None):
 
         c1,c2=st.columns(2)
         selected_client_name=((selected_crm.get('company') or f"{selected_crm.get('first_name','')} {selected_crm.get('last_name','')}").strip() if selected_crm else None)
-        client=c1.text_input('Client / entreprise (facultatif)',value=selected_client_name or p.get('client_name') or '')
+        client=c1.text_input('Client / entreprise *',value=selected_client_name or p.get('client_name') or '',
+                              disabled=bool(selected_crm),help='L’identité sélectionnée dans le CRM prime : aucun rattachement ne repose sur une simple similitude de nom.')
         client_type_default='Professionnel' if selected_crm and selected_crm.get('company') else ('Particulier' if selected_crm else 'Non précisé')
         client_types=['Non précisé','Professionnel','Particulier']; client_type=c2.selectbox('Type client',client_types,index=client_types.index(client_type_default))
         crm_new_fn=crm_new_ln=crm_new_email=crm_new_phone=crm_new_job=''
@@ -1839,8 +2194,13 @@ def create_action_screen(prefill=None,participants_prefill=None):
             st.error('Le n° d’action et l’intitulé sont obligatoires.')
         elif one(ENGINE,'SELECT id FROM actions WHERE action_no=:n',{'n':action_no}):
             st.error('Ce numéro d’action existe déjà.')
+        elif crm_mode=='Oui' and not selected_crm:
+            st.error('Sélectionnez le contact Client/Donneur d’ordre dans le CRM.')
+        elif crm_mode=='Non' and (not crm_new_fn.strip() or not crm_new_ln.strip() or not crm_new_email.strip()):
+            st.error('Le nouveau donneur d’ordre nécessite un contact complet : prénom, nom et e-mail.')
         else:
-            aid=create_action(ENGINE,{
+            try:
+                aid=create_action_with_client(ENGINE,{
                 'action_no':action_no,
                 'title':title,
                 'subtitle':subtitle or None,
@@ -1858,7 +2218,12 @@ def create_action_screen(prefill=None,participants_prefill=None):
                 'location':location or None,
                 'notes':notes or None,
                 'source':p.get('source') or 'SAISIE MANUELLE'
-            },st.session_state.admin_email)
+                },st.session_state.admin_email,crm_contact_id=selected_crm['id'] if selected_crm else None,
+                new_crm_contact={'first_name':crm_new_fn,'last_name':crm_new_ln,'email':crm_new_email,
+                    'phone':crm_new_phone or None,'job_title':crm_new_job or None,'company':client or None}
+                    if crm_mode=='Non' else None)
+            except (ValueError,InputValidationError) as ex:
+                st.error(str(ex));return
 
             # J17 — rattachement prestation/action immédiatement après création.
             selected_action_service=creation_service_map.get(action_service_label)
@@ -1866,16 +2231,8 @@ def create_action_screen(prefill=None,participants_prefill=None):
                 set_action_service_requirement(ENGINE,aid,selected_action_service['id'],st.session_state.admin_email,action_min_level,action_require_criteria)
             st.session_state.pop('_j17_new_service_id',None)
 
-            crm_contact_for_action=selected_crm
-            if crm_mode=='Non' and create_crm_from_action:
-                try:
-                    crm_contact_for_action=create_crm_contact(ENGINE,crm_new_fn,crm_new_ln,crm_new_email,phone=crm_new_phone or None,
-                      job_title=crm_new_job or None,company=client or None,actor=st.session_state.admin_email)
-                except ValueError as ex:
-                    st.warning(f"Action créée, mais fiche CRM non créée : {ex}")
-            if crm_contact_for_action:
-                try: link_crm_contact_action(ENGINE,crm_contact_for_action['id'],aid,'CLIENT',st.session_state.admin_email)
-                except Exception as ex: st.warning(f"Action créée, mais rattachement CRM non effectué : {ex}")
+            # J7: l’identité client et sa liaison CRM sont déjà enregistrées dans
+            # la même transaction que l’action, sans ouverture automatique d’accès.
             st.session_state.pop('crm_prefill_contact_id',None)
 
             if trainer_opts.get(trainer_label):
@@ -1996,55 +2353,172 @@ def import_screen():
             except Exception as e: _ui_incident('import_csv',e,subject='La lecture du fichier CSV')
     footer()
 
+def _j5_action_participants_summary():
+    """One bounded query for totals and first participant; no 200x N+1 lookup."""
+    rows=q(ENGINE,"""SELECT a.id action_id,
+        (SELECT COUNT(*) FROM participants p WHERE p.action_id=a.id) participant_count,
+        (SELECT TRIM(COALESCE(p.first_name,'') || ' ' || COALESCE(p.last_name,''))
+          FROM participants p WHERE p.action_id=a.id ORDER BY p.id LIMIT 1) first_participant
+        FROM actions a""")
+    return {int(r['action_id']):r for r in rows}
+
+
+def _j5_action_table(rows,*,with_open=False):
+    st.caption('Vue de restitution : sélectionnez un dossier ci-dessous pour le modifier dans ses rubriques.')
+    st.dataframe(pd.DataFrame([{
+        'Action':a['action_no'], 'Intitulé':a['title'],
+        'Client':a.get('client_name') or '—',
+        'Stagiaires':int(a.get('participant_count') or 0),
+        'Premier stagiaire':a.get('first_participant') or '—',
+        'Début':a.get('start_date') or '—',
+        'Statut':normalize_action_status(a.get('status')),
+    } for a in rows]),use_container_width=True,hide_index=True)
+
+
 def dashboard():
-    header('Clarté360 — Gestion des actions','Vue globale des actions et du suivi opérationnel')
-    acts=q(ENGINE,'SELECT * FROM actions ORDER BY id DESC')
-    total=len(acts);open_n=sum(normalize_action_status(a['status'])!='ARCHIVEE' for a in acts);pending=one(ENGINE,"SELECT COUNT(*) n FROM email_events WHERE status='PENDING'")['n'];signed=one(ENGINE,"SELECT COUNT(*) n FROM signatures WHERE status='VALIDE'")['n']
+    header('Clarté360 — Gestion des actions','Tableau de bord des dossiers et interventions')
+    acts=q(ENGINE,'SELECT id,status FROM actions')
+    counts={s:sum(normalize_action_status(a['status'])==s for a in acts) for s in ('ACTIVE','BROUILLON','PLANIFIEE','ARCHIVEE')}
     c1,c2,c3,c4=st.columns(4)
-    for c,n,l in [(c1,total,'Actions'),(c2,open_n,'Actives'),(c3,signed,'Signatures'),(c4,pending,'Envois / relances prévus')]: c.markdown(f"<div class='c360-kpi'><div class='n'>{n}</div><div class='l'>{l}</div></div>",unsafe_allow_html=True)
-    st.subheader('Actions récentes')
-    rows=[]
-    recent=acts[:20]
-    for a in recent:
-        pr=action_progress(ENGINE,a['id']);rows.append({'Action':a['action_no'],'Intitulé':a['title'],'Mode':a['mode'],'Participants':pr['participants'],'Créneaux':pr['slots'],'Signatures':f"{pr['signed']}/{pr['expected']}",'Avancement':f"{pr['percent']}%"})
-    if rows:
-        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-        amap={f"{a['action_no']} — {a['title']}":a for a in recent}
-        alab=st.selectbox('Action du tableau à ouvrir',list(amap),key='dashboard_recent_action_manage')
-        if st.button('OUVRIR / GÉRER CETTE ACTION',key='dashboard_recent_action_open'):
-            st.session_state.selected_action=amap[alab]['id']; st.session_state['p3_admin_action_id']=amap[alab]['id']; st.session_state['_next_nav']='Actions'; rerun()
-    else:
-        st.info('Aucune action enregistrée.')
-    st.caption("Le pilotage qualité est centralisé dans l’onglet Qualité.")
+    c1.metric('Actions actives',counts['ACTIVE'])
+    c2.metric('Brouillons',counts['BROUILLON'])
+    c3.metric('Planifiées',counts['PLANIFIEE'])
+    c4.metric('Archivées',counts['ARCHIVEE'])
+    st.caption('Les archives sont exclues par défaut de la liste des actions ; les brouillons restent accessibles.')
+    c1,c2,c3=st.columns(3)
+    if c1.button('📁 Rechercher ou ouvrir une action',key='j5_db_list',use_container_width=True,type='primary'):
+        st.session_state['admin_actions_view']='list';st.session_state['_next_action_view']='list';st.session_state['_next_nav']='Actions';rerun()
+    if c2.button('➕ Nouvelle action',key='j5_db_create',use_container_width=True):
+        st.session_state['_next_nav']='Nouvelle action';rerun()
+    if c3.button('📥 Importer une action',key='j5_db_import',use_container_width=True):
+        st.session_state['_next_nav']='Importer une action';rerun()
+    st.subheader('Actions récemment créées')
+    actions=search_actions(ENGINE,'',include_archived=False)
+    if actions:
+        summary=_j5_action_participants_summary()
+        rows=action_list_rows(actions[:5],summary)
+        _j5_action_table(rows)
+    else:st.info('Aucune action hors archives.')
     footer()
 
+
 def actions_list():
-    header('Clarté360 — Actions','Reprendre, modifier et suivre une action')
-    c1,c2=st.columns([3,1]); search=c1.text_input('Rechercher une action, un bénéficiaire, un client ou un email'); include_archived=c2.checkbox('Inclure les archives',value=False); acts=search_actions(ENGINE,search,include_archived=include_archived)
-    if not acts: st.info('Aucune action correspondant aux critères.');footer();return
-    labels={f"{a['action_no']} — {a['title']} — {normalize_action_status(a['status'])}":a['id'] for a in acts}
-    action_map={row['id']:row for row in acts}; action_ids=list(action_map)
-    remembered=authorized_action_choice(action_ids,st.session_state.get('selected_action'))
-    if st.session_state.get('p3_admin_action_id') not in action_ids:
-        st.session_state['p3_admin_action_id']=remembered if remembered is not None else action_ids[0]
-    st.sidebar.markdown('#### Action sélectionnée')
+    """List first, then one action and its original 12 handlers; no duplicate menu."""
+    if st.session_state.get('admin_actions_view')!='detail':
+        header('Clarté360 — Gestion des actions','Rechercher, créer, importer ou reprendre un dossier')
+        top1,top2=st.columns(2)
+        if top1.button('➕ Nouvelle action',key='j5_actions_create',use_container_width=True):
+            st.session_state['_next_nav']='Nouvelle action';rerun()
+        if top2.button('📥 Importer une action',key='j5_actions_import',use_container_width=True):
+            st.session_state['_next_nav']='Importer une action';rerun()
+        st.subheader('Liste des actions')
+        c1,c2=st.columns([4,1])
+        term=c1.text_input('Recherche : action, intitulé, client ou stagiaire',key='j5_actions_query')
+        include_archived=c2.checkbox('Afficher les archives',value=False,key='j5_show_archives')
+        all_rows=search_actions(ENGINE,term,include_archived=True)
+        summary=_j5_action_participants_summary()
+        all_rows=action_list_rows(all_rows,summary)
+        years=['Toutes']+sorted({str(a.get('start_date') or '')[:4] for a in all_rows if a.get('start_date')},reverse=True)
+        prestations=['Toutes']+sorted({str(a.get('prestation_type')) for a in all_rows if a.get('prestation_type')})
+        c1,c2,c3=st.columns(3)
+        status=c1.selectbox('Statut',['Tous','ACTIVE','A_CLOTURER','PLANIFIEE','BROUILLON','CLOTUREE','ARCHIVEE'],key='j5_filter_status')
+        year=c2.selectbox('Année',years,key='j5_filter_year')
+        prestation=c3.selectbox('Type de prestation',prestations,key='j5_filter_pt')
+        result=filter_sort_actions(all_rows,include_archived=include_archived,status=status,year=year,prestation=prestation)
+        if status=='ARCHIVEE' and not include_archived:
+            st.info('Cochez « Afficher les archives » pour consulter les dossiers archivés.')
+        st.caption(f'{len(result)} action(s) trouvée(s), classées par statut puis date récente. Archives masquées par défaut.')
+        if not result:
+            st.info('Aucune action ne correspond aux filtres.')
+            footer();return
+        pcol,ccol=st.columns([2,1]);size=pcol.selectbox('Actions par page',[25,50],key='j5_page_size')
+        maxpage=max(1,(len(result)+size-1)//size)
+        if int(st.session_state.get('j5_page_index') or 1)>maxpage:
+            st.session_state['j5_page_index']=maxpage
+        page=ccol.number_input('Page',min_value=1,max_value=maxpage,value=1,key='j5_page_index')
+        visible,page,total=page_slice(result,page=page,size=size)
+        st.caption(f'Page {page} sur {total}')
+        _j5_action_table(visible)
+        labels={a['id']:action_label(a) for a in visible}
+        chosen=st.selectbox('Sélectionner une action à ouvrir',list(labels),key='j5_action_select',format_func=lambda n:labels[n])
+        if st.button('OUVRIR / GÉRER CETTE ACTION',key='j5_actions_open',type='primary'):
+            st.session_state['selected_action']=chosen
+            st.session_state['p3_admin_action_id']=chosen
+            st.session_state['admin_actions_view']='detail'
+            rerun()
+        footer();return
+    # Detail only: one contextual navigation, without duplicating the action listing.
+    st.sidebar.markdown('#### Dossier ouvert')
+    if st.sidebar.button('← Retour à la liste des actions',key='j5_return_list',use_container_width=True):
+        st.session_state['admin_actions_view']='list';rerun()
+    all_rows=search_actions(ENGINE,'',include_archived=True)
+    if not all_rows:
+        st.warning('Aucune action existante.');st.session_state['admin_actions_view']='list';return
+    summary=_j5_action_participants_summary()
+    all_rows=action_list_rows(all_rows,summary)
+    action_ids=[a['id'] for a in all_rows]
+    remembered=authorized_action_choice(action_ids,st.session_state.get('p3_admin_action_id'))
+    if remembered is None:
+        st.session_state['admin_actions_view']='list'
+        st.warning('Cette action n’est plus accessible. Revenez à la liste.')
+        return
+    labels={a['id']:action_label(a) for a in all_rows}
     aid=st.sidebar.selectbox('Choisir une action',action_ids,key='p3_admin_action_id',
-        format_func=lambda value:next((lab for lab,num in labels.items() if num==value),str(value)))
+        format_func=lambda value:labels.get(value,str(value)))
     st.session_state.selected_action=aid
-    st.caption(f"Action : {action_map[aid]['action_no']} — {action_map[aid]['title']}")
+    st.caption('Gestion du dossier sélectionné — pour changer de dossier, utilisez le sélecteur latéral ou revenez à la liste.')
     action_detail(aid)
     a=one(ENGINE,'SELECT * FROM actions WHERE id=:a',{'a':aid})
     if st.session_state.get(f'p3_screen_admin_action_{aid}')=='action_parametres':
-        with st.expander('🗑️ Supprimer définitivement cette action'):
-            st.error('Suppression irréversible : participants, créneaux, signatures, absences, relances, contresignatures et historique de cette action seront supprimés.')
-            confirm=st.text_input(f"Pour confirmer, saisissez le n° d’action : {a['action_no']}",key=f'delactxt{aid}');pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'delacpw{aid}')
-            if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT L’ACTION',key=f'delac{aid}'):
-                if confirm.strip()!=a['action_no']: st.error('Le numéro d’action saisi ne correspond pas.')
-                elif not admin_password_ok(ENGINE,st.session_state.admin_email,pw): st.error('Mot de passe administrateur incorrect.')
-                else:
-                    ok,msg=purge_action(ENGINE,aid,st.session_state.admin_email)
-                    if ok: st.session_state.pop('selected_action',None);st.success('Action et données associées supprimées.');rerun()
+        with st.expander('🗑️ Supprimer un dossier d’essai (contrôle renforcé)'):
+            st.warning("Réservé exclusivement aux données fictives. Les dossiers réels, preuves réglementaires et données confidentielles ne doivent jamais être effacés par ce circuit.")
+            # Recovery is a separate, explicit administrative decision. Never repair silently.
+            recovery=st.button('Vérifier les purges interrompues',key=f'purge_recovery_{aid}')
+            if recovery:
+                states=recover_action_purges(ENGINE)
+                st.info(f"Journal contrôlé : {len(states)} opération(s) à examiner.")
+                if any(row.get('status')=='ERROR' for row in states):
+                    st.error('Restauration ou nettoyage à reprendre avant toute purge.')
+            try:
+                preview=preview_action_purge(ENGINE,aid)
+            except Exception as exc:
+                preview=None
+                st.error('Prévisualisation indisponible : '+str(exc))
+            if preview:
+                st.write(f"Action : {preview['action_no']} — {preview['title']}")
+                st.caption('Inventaire préalable de toutes les dépendances connues. Aucun fichier ne sera touché avant une deuxième confirmation.')
+                st.dataframe([{'Élément':key,'Enregistrements':value} for key,value in sorted(preview['counts'].items())],
+                    hide_index=True,use_container_width=True)
+                st.caption(f"Fichiers à retirer si non partagés : {sum(bool(x['exists']) for x in preview['files'])} ; documents partagés préservés : {preview['shared_files_kept']}.")
+                st.caption('Les anciennes fiches Qualité sans action ne sont ni rattachées ni supprimées par supposition.')
+                try:
+                    orphans=legacy_quality_orphans(ENGINE)
+                    st.caption('Fiches historiques sans action (lecture seule) : '+', '.join(f'{key}={value}' for key,value in orphans.items()))
+                except Exception:
+                    pass
+                st.markdown('**Étape 1 — Attester qu’il s’agit exclusivement d’un essai fictif**')
+                st.caption('La référence ou le titre contenant ESSAI ne constitue jamais une preuve suffisante.')
+                evidence=st.text_area('Justification et contrôle de l’absence de données réelles (au moins 24 caractères)',key=f'purge_evidence_{aid}')
+                certification=st.text_input(f"Taper exactement : JE CERTIFIE ESSAI {a['action_no']}",key=f'purge_certification_{aid}')
+                password=st.text_input('Mot de passe administrateur pour certifier',type='password',key=f'purge_cert_pw_{aid}')
+                if st.button('Enregistrer mon attestation d’essai',key=f'purge_cert_button_{aid}'):
+                    ok,msg=certify_test_action(ENGINE,aid,st.session_state.admin_email,
+                        evidence=evidence,confirmation=certification,password=password)
+                    if ok: st.success(msg);rerun()
                     else: st.error(msg)
+                st.markdown('**Étape 2 — Confirmer après avoir relu les dépendances**')
+                confirm=st.text_input(f"Taper exactement : SUPPRIMER ESSAI {a['action_no']}",key=f'purge_final_confirm_{aid}')
+                pw=st.text_input('Mot de passe administrateur avant suppression',type='password',key=f'delacpw{aid}')
+                if st.button('🗑️ SUPPRIMER DÉFINITIVEMENT CE DOSSIER FICTIF',key=f'delac{aid}'):
+                    if not admin_password_ok(ENGINE,st.session_state.admin_email,pw):
+                        st.error('Mot de passe administrateur incorrect.')
+                    else:
+                        ok,msg=purge_action(ENGINE,aid,st.session_state.admin_email,
+                            confirmation=confirm,preview_fingerprint=preview['fingerprint'])
+                        if ok:
+                            st.session_state.pop('selected_action',None)
+                            st.success(msg);rerun()
+                        else:st.error(msg)
     footer()
 
 def action_detail(aid):
@@ -2056,7 +2530,7 @@ def action_detail(aid):
         elif flash[1]=='warning': st.warning(flash[2])
         else: st.info(flash[2])
     c1,c2,c3,c4=st.columns(4);c1.metric('Participants',pr['participants']);c2.metric('Créneaux',pr['slots']);c3.metric('Signatures',f"{pr['signed']}/{pr['expected']}");c4.metric('Avancement',f"{pr['percent']} %")
-    selected=_p3_sidebar_section('ADMIN_ACTION',action_id=aid,action_no=a['action_no'])
+    selected=_p3_sidebar_section('ADMIN_ACTION',action_id=aid,action_no=a['action_no'],show_title=False)
     tab_specs=[
         ('action_parametres', action_settings_tab),('action_participants', participants_tab),('action_intervenants', action_trainers_tab),
         ('action_calendrier', calendar_tab),('action_teams', teams_tab),('action_outils', action_tools_tab),
@@ -2079,7 +2553,7 @@ def action_settings_tab(a):
     current_mod=a.get('delivery_mode') if a.get('delivery_mode') in modality_codes else modality_codes[0]
     with st.form(f'action_settings_{a["id"]}'):
         c1,c2=st.columns(2);title=c1.text_input('Intitulé',value=a['title']);subtitle=c2.text_input('Intitulé complémentaire',value=a.get('subtitle') or '')
-        c1,c2=st.columns(2);start_date=c1.date_input('Date de début',value=date.fromisoformat(a['start_date']) if a.get('start_date') else date.today());end_date=c2.date_input('Date de fin',value=date.fromisoformat(a['end_date']) if a.get('end_date') else date.today())
+        c1,c2=st.columns(2);start_date=c1.date_input('Date de début',value=date.fromisoformat(a['start_date']) if a.get('start_date') else date.today(),format=app_date_input_format());end_date=c2.date_input('Date de fin',value=date.fromisoformat(a['end_date']) if a.get('end_date') else date.today(),format=app_date_input_format())
         c1,c2=st.columns(2);mode=c1.selectbox('Organisation',['INTRA','INTER','INDIVIDUEL'],index=['INTRA','INTER','INDIVIDUEL'].index(a['mode']));current_status=normalize_action_status(a.get('status'));c2.text_input('Statut',value=current_status,disabled=True);status=current_status
         c1,c2,c3=st.columns(3);planned=c1.number_input('Durée prévue (h)',min_value=0.0,step=.5,value=float(a.get('planned_hours') or 0));expected=c2.number_input('Nombre prévu de participants',min_value=1,step=1,value=int(a.get('expected_participants') or 1));group=c3.text_input('Code groupe / session',value=a.get('group_code') or '')
         c1,c2=st.columns(2);client=c1.text_input('Client / entreprise',value=a.get('client_name') or '');client_type=c2.selectbox('Type client',['Non précisé','Professionnel','Particulier'],index=['Non précisé','Professionnel','Particulier'].index(a.get('client_type')) if a.get('client_type') in ['Non précisé','Professionnel','Particulier'] else 0)
@@ -2101,6 +2575,18 @@ def action_settings_tab(a):
             execute(ENGINE,'UPDATE actions SET start_date=:s,end_date=:e WHERE id=:a',{'s':start_date.isoformat(),'e':end_date.isoformat(),'a':a['id']})
             assign_trainer(ENGINE,a['id'],trainer_opts.get(trainer_label),st.session_state.admin_email);st.success('Action mise à jour.');rerun()
         except ValueError as ex: st.error(str(ex))
+    # J7 — explicit customer identity is independent from any Client portal rights.
+    st.markdown('### Client / donneur d’ordre')
+    customer=action_ordering_client(ENGINE,a['id'])
+    if customer:
+        st.caption(f"Référence : {customer['customer_ref']} · {customer['display_name']} — aucun droit Client/DRH automatique")
+    else:
+        st.warning('Aucun donneur d’ordre de référence : confirmer le rattachement CRM pour ce dossier historique.')
+    if st.button('GÉRER LES ACCÈS CLIENT / DRH DE CETTE ACTION',key=f'j7_client_grants_{a["id"]}'):
+        st.session_state['p4_access_action_id']=a['id']
+        st.session_state['p4_admin_client_section']='Habilitations par action'
+        st.session_state['_next_nav']='Espace Client / DRH'
+        rerun()
     current_status=normalize_action_status(a.get('status'))
     if current_status in ('BROUILLON','PLANIFIEE'):
         st.markdown('### Validation opérationnelle')
@@ -2162,7 +2648,7 @@ def action_tools_tab(a):
     if linked and tools:
         bmap={f"{x['last_name']} {x['first_name']} — {x['public_id']}":x for x in linked}; tmap={x['name']:x for x in tools}
         with st.form(f'admin_tool_prescribe_{a["id"]}'):
-            bl=st.selectbox('Bénéficiaire',list(bmap)); tl=st.selectbox('Outil Clarté360',list(tmap)); due=st.date_input('Échéance indicative',value=None,key=f'tool_due_{a["id"]}')
+            bl=st.selectbox('Bénéficiaire',list(bmap)); tl=st.selectbox('Outil Clarté360',list(tmap)); due=st.date_input('Échéance indicative',value=None,key=f'tool_due_{a["id"]}',format=app_date_input_format())
             submit=st.form_submit_button('PRESCRIRE CET OUTIL',type='primary')
         if submit:
             bx=bmap[bl]; tx=tmap[tl]
@@ -2203,7 +2689,7 @@ def action_tools_tab(a):
     rows=list_tool_prescriptions(ENGINE,action_id=a['id'])
     if rows:
         st.markdown('#### Prescriptions de cette action')
-        st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Administrateur' if x.get('prescriber_type')=='ADMIN' else 'Intervenant','Statut':x['status'].replace('_',' '),'Créée':x['created_at'][:16].replace('T',' '),'Échéance':x.get('due_at') or ''} for x in rows if x.get('status')!='ANNULE']),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Administrateur' if x.get('prescriber_type')=='ADMIN' else 'Intervenant','Statut':x['status'].replace('_',' '),'Créée':format_app_datetime(x['created_at']),'Échéance':format_app_deadline(x.get('due_at'))} for x in rows if x.get('status')!='ANNULE']),use_container_width=True,hide_index=True)
         rmap={f"{x['prescription_id']} — {x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']}":x for x in rows}; rl=st.selectbox('Prescription à gérer',list(rmap),key=f'presc_manage_{a["id"]}'); rr=rmap[rl]
         if rr.get('tool_code')=='PIP_RIASEC_ONET':
             try: _meta=json.loads(rr.get('metadata_json') or '{}')
@@ -2527,6 +3013,79 @@ def action_trainers_tab(a):
             if ok: st.success("Affectation action désactivée. Les affectations de créneaux et l’historique ne sont pas effacés.");rerun()
             else: st.error(msg)
 
+    # J8: operational mission coverage and existing-document references only.
+    st.markdown('### Missions et engagements')
+    cover=action_mission_coverage(ENGINE,a['id'])
+    st.caption('GDA contrôle les affectations et références d’engagement. Les contrats sont produits et acceptés hors de cette application (Contractualisation n°13) ; les fournisseurs et factures relèvent de Gestion Clients n°17.')
+    if cover['mode']!='ENFORCE':
+        st.warning('Contrôle des missions en consultation pour cette action historique. Aucune modification rétroactive de son statut.')
+        if st.button('Activer le contrôle obligatoire pour cette action',key=f'j8_mode_{a["id"]}'):
+            enable_action_mission_control(ENGINE,a['id'],st.session_state.admin_email,'ENFORCE');st.success('Contrôle activé.');rerun()
+    elif cover['issues']:
+        st.warning('Conditions à vérifier : '+' ; '.join(cover['issues']))
+    else: st.success('Missions couvertes et références documentaires vérifiées.')
+    missions=list_action_missions(ENGINE,a['id'])
+    if missions:
+        st.dataframe(pd.DataFrame([{'Mission':m['mission_id'],'Intervenant':m['full_name'],
+            'Référent de suivi':'Oui' if m['is_followup_responsible'] else 'Non',
+            'Collaboration':m.get('collaboration_type') or 'À définir',
+            'Document':m.get('document_ref') or 'À prévoir',
+            'Version':m.get('document_version') or '',
+            'Engagement':m['status'],'Archive':'Historique' if not m['active'] else 'En cours'}
+            for m in missions]),use_container_width=True,hide_index=True)
+        current_missions={f"{m['full_name']} — {m['mission_id']} — {m['status']}":m for m in missions if m['active']}
+        if current_missions:
+            selected_label=st.selectbox('Mission à suivre',list(current_missions),key=f'j8_mission_select_{a["id"]}')
+            chosen=current_missions[selected_label]
+            if chosen['status']!='VERIFIE':
+                with st.expander('Demander / refuser / annuler un engagement',expanded=False):
+                    with st.form(f'j8_status_mission_{chosen["mission_id"]}'):
+                        decision=st.selectbox('Décision',['DEMANDE','REFUSE','ANNULE'])
+                        reason=st.text_input('Motif motivé et historisé')
+                        do=st.form_submit_button('Enregistrer cette décision de mission')
+                    if do:
+                        try:
+                            change_mission_status(ENGINE,chosen['mission_id'],st.session_state.admin_email,decision,reason)
+                            st.success('Décision enregistrée dans l’historique de la mission.');rerun()
+                        except (ValueError,PermissionError) as ex:st.error(str(ex))
+                with st.form(f'j8_verify_mission_{chosen["mission_id"]}'):
+                    st.caption('Saisir uniquement les références d’un document réellement accepté, contrôlé par l’administration.')
+                    ref=st.text_input('Référence du document accepté')
+                    version=st.text_input('Version du document')
+                    accepted=st.text_input('Date/heure réelle d’acceptation (ISO 8601, avec fuseau)',placeholder='2026-10-10T13:00:00+02:00')
+                    supplier=st.text_input('Référence fournisseur n°17 (sous-traitant uniquement)',value=chosen.get('supplier_id') or '')
+                    contract=st.text_input('Référence Contractualisation n°13 (si disponible)',value=chosen.get('external_contract_ref') or '')
+                    cost_ref=st.text_input('Référence engagement financier n°17 (sans montant)',value=chosen.get('cost_commitment_ref') or '')
+                    description=st.text_area('Mission / suivi défini')
+                    submit=st.form_submit_button('Attester le contrôle du document accepté')
+                if submit:
+                    try:
+                        verify_mission_engagement(ENGINE,chosen['mission_id'],st.session_state.admin_email,
+                            document_ref=ref,document_version=version,accepted_at=accepted,
+                            supplier_id=supplier or None,external_contract_ref=contract or None,
+                            cost_commitment_ref=cost_ref or None,description=description)
+                        st.success('Engagement vérifié et historisé. Interface fournisseur prête à être raccordée.');rerun()
+                    except ValueError as ex:st.error(str(ex))
+            else:
+                st.info('La référence documentaire vérifiée est conservée. Pour tout avenant, créer une révision.')
+                with st.expander('Annuler une mission vérifiée (avec conservation de la preuve)'):
+                    cancel_reason=st.text_input('Motif de l’annulation contractuelle',key=f'j8_cancel_reason_{chosen["mission_id"]}')
+                    if st.button('Confirmer l’annulation de cette mission',key=f'j8_cancel_{chosen["mission_id"]}'):
+                        try:
+                            change_mission_status(ENGINE,chosen['mission_id'],st.session_state.admin_email,'ANNULE',cancel_reason)
+                            st.success('Mission annulée et historisée ; l’activation est recontrôlée.');rerun()
+                        except (ValueError,PermissionError) as ex:st.error(str(ex))
+                with st.form(f'j8_revise_{chosen["mission_id"]}'):
+                    why=st.text_input('Motif de l’avenant ou du remplacement')
+                    rev=st.form_submit_button('Créer une nouvelle révision de mission')
+                if rev:
+                    try:revise_mission(ENGINE,chosen['mission_id'],st.session_state.admin_email,why);rerun()
+                    except ValueError as ex:st.error(str(ex))
+        with st.expander('Traçabilité vers Gestion Clients n°17 (sans transmission automatique)'):
+            st.caption('Événements versionnés prêts pour un raccordement authentifié. Aucune facture ni paiement ne sont créés dans GDA.')
+            st.json(mission_outbox_pending(ENGINE,a['id']))
+    else:st.info('Aucune mission préparée : affecter d’abord les intervenants dans cette action.')
+
     st.markdown('### Affectations par créneau')
     slots=q(ENGINE,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE') ORDER BY slot_date,start_time",{'a':a['id']})
     if not slots:
@@ -2581,7 +3140,7 @@ def action_trainers_tab(a):
     if hist:
         with st.expander('Historique des affectations de ce créneau'):
             st.dataframe(pd.DataFrame([{
-                'Date':x['created_at'][:19].replace('T',' '),'Intervenant':x.get('full_name') or f"#{x.get('trainer_id')}",
+                'Date':format_app_datetime(x['created_at']),'Intervenant':x.get('full_name') or f"#{x.get('trainer_id')}",
                 'Événement':x['event_type'],'Ancien rôle':x.get('old_role') or '', 'Nouveau rôle':x.get('new_role') or '',
                 'Ancien statut':x.get('old_status') or '', 'Nouveau statut':x.get('new_status') or '', 'Motif':x.get('reason') or ''
             } for x in hist]),use_container_width=True,hide_index=True)
@@ -2769,7 +3328,7 @@ def calendar_tab(a):
         display=[]
         for i,x in enumerate(slots,1):
             initial='Au début' if int(x.get('send_offset_min') or 0)==slot_start_offset_minutes(x['start_time'],x['end_time']) else f"{x['send_offset_min']} min / fin"
-            display.append({'Séance':i,'Date':x['slot_date'],'Début':x['start_time'],'Fin':x['end_time'],'Durée':slot_duration_hours(x),'Envoi initial':initial})
+            display.append({'Séance':i,'Date':format_app_date(x['slot_date']),'Début':format_app_time(x['start_time']),'Fin':format_app_time(x['end_time']),'Durée':slot_duration_hours(x),'Envoi initial':initial})
         st.dataframe(pd.DataFrame(display),use_container_width=True,hide_index=True)
 
     st.markdown('### Ajouter une nouvelle séance')
@@ -2778,7 +3337,7 @@ def calendar_tab(a):
     last_end=dt_time.fromisoformat(slots[-1]['end_time']) if slots else dt_time(10,30)
     with st.form(f'addslot_{a["id"]}',clear_on_submit=False):
         c1,c2,c3=st.columns(3)
-        d=c1.date_input('Date de la nouvelle séance',value=last_date,key=f'd{a["id"]}')
+        d=c1.date_input('Date de la nouvelle séance',value=last_date,key=f'd{a["id"]}',format=app_date_input_format())
         stt=c2.time_input('Début',value=last_start,key=f's{a["id"]}')
         ett=c3.time_input('Fin',value=last_end,key=f'e{a["id"]}')
         c1,c2,c3=st.columns(3)
@@ -2806,7 +3365,7 @@ def calendar_tab(a):
     dates=sorted(set(x['slot_date'] for x in slots))
     src=st.selectbox('Date source',dates,index=len(dates)-1,key=f'dupsrc{a["id"]}')
     src_date=date.fromisoformat(src)
-    dst=st.date_input('Nouvelle date',value=src_date+__import__('datetime').timedelta(days=7),key=f'dup{a["id"]}')
+    dst=st.date_input('Nouvelle date',value=src_date+__import__('datetime').timedelta(days=7),key=f'dup{a["id"]}',format=app_date_input_format())
     if st.button('Dupliquer cette journée vers la nouvelle date',key=f'dupbtn{a["id"]}'):
         if dst.isoformat()==src:
             st.error('La nouvelle date doit être différente de la date source.')
@@ -2821,7 +3380,7 @@ def calendar_tab(a):
         st.warning(f"Vous modifiez réellement {edit_lab}. Pour créer une autre séance, utilisez la zone « Ajouter une nouvelle séance » ci-dessus.")
         current_begin=int(es.get('send_offset_min') or 0)==slot_start_offset_minutes(es['start_time'],es['end_time'])
         with st.form(f'editslot{es["id"]}'):
-            c1,c2,c3=st.columns(3);ed=c1.date_input('Date',value=date.fromisoformat(es['slot_date']));est=c2.time_input('Début',value=dt_time.fromisoformat(es['start_time']));eet=c3.time_input('Fin',value=dt_time.fromisoformat(es['end_time']))
+            c1,c2,c3=st.columns(3);ed=c1.date_input('Date',value=date.fromisoformat(es['slot_date']),format=app_date_input_format());est=c2.time_input('Début',value=dt_time.fromisoformat(es['start_time']));eet=c3.time_input('Fin',value=dt_time.fromisoformat(es['end_time']))
             c1,c2=st.columns(2)
             edit_send_mode=c1.selectbox('Envoi initial',['Au début du créneau','Personnalisé'],index=0 if current_begin else 1)
             esend=c2.number_input('Décalage personnalisé (min / fin)',min_value=-1440,max_value=1440,value=int(es['send_offset_min']),step=5,disabled=edit_send_mode!='Personnalisé')
@@ -2842,7 +3401,7 @@ def calendar_tab(a):
     with st.expander('📅 Reporter une séance non encore réalisée',expanded=False):
         rep_choices={f"Séance {i} — {x['slot_date']} {x['start_time']}–{x['end_time']}":x for i,x in enumerate(slots,1)}
         rep_lab=st.selectbox('Séance à reporter',list(rep_choices),key=f'repsel{a["id"]}');rsrc=rep_choices[rep_lab]
-        c1,c2,c3=st.columns(3);rpd=c1.date_input('Nouvelle date',value=date.fromisoformat(rsrc['slot_date']),key=f'rpd{rsrc["id"]}');rps=c2.time_input('Nouveau début',value=dt_time.fromisoformat(rsrc['start_time']),key=f'rps{rsrc["id"]}');rpe=c3.time_input('Nouvelle fin',value=dt_time.fromisoformat(rsrc['end_time']),key=f'rpe{rsrc["id"]}')
+        c1,c2,c3=st.columns(3);rpd=c1.date_input('Nouvelle date',value=date.fromisoformat(rsrc['slot_date']),key=f'rpd{rsrc["id"]}',format=app_date_input_format());rps=c2.time_input('Nouveau début',value=dt_time.fromisoformat(rsrc['start_time']),key=f'rps{rsrc["id"]}');rpe=c3.time_input('Nouvelle fin',value=dt_time.fromisoformat(rsrc['end_time']),key=f'rpe{rsrc["id"]}')
         rpr=st.text_input('Motif du report',key=f'rpr{rsrc["id"]}')
         if st.button('REPORTER CETTE SÉANCE',key=f'report{rsrc["id"]}'):
             ns=report_slot(ENGINE,rsrc['id'],rpd.isoformat(),rps.strftime('%H:%M'),rpe.strftime('%H:%M'),st.session_state.admin_email,rpr or 'Report')
@@ -2896,7 +3455,7 @@ def dispatch_tab(a):
         for e in events:
             due=local_dt(e['due_at'],tzname).strftime('%d/%m/%Y %H:%M') if e.get('due_at') else ''
             sent_local=local_dt(e['sent_at'],tzname).strftime('%d/%m/%Y %H:%M') if e.get('sent_at') else ''
-            evrows.append({'Nom':e['last_name'],'Prénom':e['first_name'],'Email':e.get('email') or '','Date séance':datetime.fromisoformat(e['slot_date']).strftime('%d/%m/%Y'),'Début':e['start_time'],'Fin':e['end_time'],'Type':e['event_type'],'Échéance (heure locale)':due,'Statut':e['status'],'Envoyé le':sent_local,'Dernière anomalie':friendly_mail_error(e.get('last_error'))})
+            evrows.append({'Nom':e['last_name'],'Prénom':e['first_name'],'Email':e.get('email') or '','Date séance':format_app_date(e['slot_date']),'Début':format_app_time(e['start_time']),'Fin':format_app_time(e['end_time']),'Type':e['event_type'],'Échéance (heure locale)':due,'Statut':e['status'],'Envoyé le':sent_local,'Dernière anomalie':friendly_mail_error(e.get('last_error'))})
         st.dataframe(pd.DataFrame(evrows),use_container_width=True,hide_index=True)
         st.caption("Historique technique des événements d'envoi : non supprimable pour conserver la traçabilité. Les relances se pilotent ci-dessous.")
     st.markdown('### Envoi / relance manuelle')
@@ -2920,6 +3479,10 @@ def dispatch_tab(a):
         st.info('L’envoi manuel est disponible après activation de l’action.')
 
     st.markdown('### Journal des communications I9')
+    current_reminder_config=get_online_reminder_preferences(ENGINE,a['id'])
+    st.caption(f"Rappels Teams : premier à H−{current_reminder_config['online_reminder_first_minutes']} min, deuxième à H−{current_reminder_config['online_reminder_second_minutes']} min. Consultez ici A_ENVOYER (programmé), ENVOYE, ECHEC ou ANNULE. « MAJ WORKER » prépare la file mais n’expédie pas les emails.")
+    if action_module_enabled(ENGINE,a['id'],'TEAMS') and not smtp_enabled:
+        st.warning('Messagerie SMTP non activée : les rappels Teams sont préparés mais ne peuvent pas être envoyés.')
     comm=communication_journal(ENGINE,a['id'])
     if comm:
         status_labels={'A_ENVOYER':'À envoyer','EN_FILE':'En file','ENVOYE':'Envoyé','ECHEC':'Échec','RELANCE':'Relancé','ANNULE':'Annulé'}
@@ -2998,130 +3561,343 @@ def tracking_tab(a):
             else: st.error(msga)
         if c2.button('Remettre EN ATTENTE',key=f'wait{a["id"]}'): set_attendance_status(ENGINE,pp['id'],ss['id'],'EN_ATTENTE',reason,st.session_state.admin_email);rerun()
         st.markdown('### Créer une séance de rattrapage')
-        absent=q(ENGINE,"""SELECT p.* FROM attendance_status x JOIN participants p ON p.id=x.participant_id WHERE x.slot_id=:s AND x.status='ABSENT'""",{'s':ss['id']});opts={f"{p['last_name']} {p['first_name']}":p['id'] for p in absent};sel=st.multiselect('Absents concernés',list(opts),default=list(opts));c1,c2,c3=st.columns(3);rd=c1.date_input('Date du rattrapage',key=f'rd{a["id"]}');rs=c2.time_input('Début rattrapage',value=dt_time(9,0),key=f'rs{a["id"]}');re=c3.time_input('Fin rattrapage',value=dt_time(12,0),key=f're{a["id"]}')
+        absent=q(ENGINE,"""SELECT p.* FROM attendance_status x JOIN participants p ON p.id=x.participant_id WHERE x.slot_id=:s AND x.status='ABSENT'""",{'s':ss['id']});opts={f"{p['last_name']} {p['first_name']}":p['id'] for p in absent};sel=st.multiselect('Absents concernés',list(opts),default=list(opts));c1,c2,c3=st.columns(3);rd=c1.date_input('Date du rattrapage',key=f'rd{a["id"]}',format=app_date_input_format());rs=c2.time_input('Début rattrapage',value=dt_time(9,0),key=f'rs{a["id"]}');re=c3.time_input('Fin rattrapage',value=dt_time(12,0),key=f're{a["id"]}')
         if st.button('Créer le créneau de rattrapage',key=f'catch{a["id"]}'):
             if not sel: st.error('Sélectionnez au moins un participant absent.')
             else: ns=create_catchup_slot(ENGINE,ss['id'],rd.isoformat(),rs.strftime('%H:%M'),re.strftime('%H:%M'),[opts[x] for x in sel],st.session_state.admin_email);ensure_tokens_and_events(ENGINE,a['id'],BASE_URL,TZ);st.success(f'Rattrapage créé : créneau #{ns}.');rerun()
 
-def quality_tab(a):
-    st.subheader('Évaluations qualité')
-    enabled=[]
-    if a.get('use_quality_hot'): enabled.append('à chaud')
-    if a.get('use_quality_cold'): enabled.append('à froid')
-    if a.get('use_trainer_feedback'): enabled.append('retour intervenant')
-    if not enabled:
-        st.info("Aucun module qualité n'est activé pour cette action. Vous pouvez les activer dans « Paramètres action ».")
+# J2 : one administrative workbench for one canonical Quality case.
+# Called identically from the general dashboard and an action's Quality tab.
+def render_quality_case_workbench(action_id=None, action_ids=None, key='quality', status_filter=None, focus_event_id=None):
+    events=list_quality_events(ENGINE,action_id=action_id)
+    if focus_event_id is not None: events=[event for event in events if event['id']==int(focus_event_id)]
+    if action_ids is not None:
+        permitted=set(action_ids)
+        events=[x for x in events if x.get('action_id') in permitted]
+    if status_filter=='open':
+        events=[x for x in events if x.get('status') not in {'CLOTURE','REFUSE','CLASSE_SANS_SUITE'}]
+    st.markdown('### Fiches Qualité et actions correctives')
+    if not events:
+        st.info('Aucune fiche Qualité dans ce périmètre.')
         return
-    st.caption('Modules activés : '+', '.join(enabled)+'. Les campagnes utilisent les questionnaires standard V2 versionnés et les rubriques analytiques fixes Rxx/Ixx.')
-    try:
-        end_due=standard_quality_due(ENGINE,a['id'],'HOT')
-        ref_end=local_dt(end_due,organization_runtime_config(ENGINE,a['id'])['timezone'])
-        end_date=ref_end.date().isoformat()
-    except ValueError:
-        end_date=None
-    if not end_date:
-        st.warning("Ajoutez un calendrier ou renseignez une date de fin de l'action avant de préparer les campagnes qualité.")
-    else:
-        st.write(f"Date de fin de référence : **{datetime.fromisoformat(end_date).strftime('%d/%m/%Y')}** (dernière séance planifiée lorsqu’un calendrier existe)")
-        if a.get('use_quality_cold'):
-            pt=(a.get('prestation_type') or 'FORMATION').upper();label='M+6' if pt=='BILAN_COMPETENCES' else 'J+90 (ou date spécifique si renseignée)'
-            st.caption(f'Échéance standard à froid : {label}.')
-        if st.button('Préparer les campagnes qualité standard',type='primary',key=f'prepquality{a["id"]}',disabled=not bool(end_date)):
-            try:
-                made=prepare_quality_campaigns(ENGINE,a['id'],BASE_URL,st.session_state.admin_email)
-                if made: st.success(f'{len(made)} campagne(s) créée(s) et planifiée(s).')
-                else: st.info('Toutes les campagnes nécessaires étaient déjà préparées. Les échéances encore en attente ont été réalignées sur le calendrier actuel.')
-                rerun()
-            except ValueError as ex: st.error(str(ex))
-    campaigns=list_quality_campaigns(ENGINE,a['id'])
-    if campaigns:
-        rows=[]
-        tzname=organization_runtime_config(ENGINE,a['id'])['timezone']
-        for c in campaigns:
-            who=c.get('trainer_full_name') or f"{c.get('first_name') or ''} {c.get('last_name') or ''}".strip()
-            due=local_dt(c['due_at'],tzname)
-            rows.append({'ID':c['id'],'Type':c['campaign_kind'],'Questionnaire':c['questionnaire_title'],'Répondant':who,'Échéance':due.strftime('%d/%m/%Y %H:%M'),'Statut':c['status']})
-        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
-        cmap={f"#{c['id']} — {c['campaign_kind']} — {(c.get('trainer_full_name') or ((c.get('first_name') or '')+' '+(c.get('last_name') or '')).strip())}":c for c in campaigns}
-        selected=cmap[st.selectbox('Campagne à consulter',list(cmap),key=f'qcamp{a["id"]}')]
-        st.code(quality_token_url(selected['token'],BASE_URL))
-        c1,c2=st.columns(2)
-        if c1.button('Relancer manuellement ce questionnaire',key=f'qsend{selected["id"]}',disabled=selected['status']=='COMPLETED'):
-            try:
-                queue_quality_manual_reminder(ENGINE,selected['id'],st.session_state.admin_email)
-                st.success('Relance manuelle placée dans la file du worker. Le même questionnaire et le même lien sont réutilisés.');rerun()
-            except ValueError as ex: st.warning(str(ex))
-        if selected['status']=='COMPLETED':
-            try:
-                qpdf=quality_response_pdf(ENGINE,selected['id'])
-                c2.download_button('Télécharger le questionnaire PDF',qpdf,f"{a['action_no']}_questionnaire_{selected['id']}.pdf",'application/pdf',use_container_width=True)
-            except Exception as ex: _ui_incident('pdf_qualite',ex,subject='Le PDF qualité')
-    issues=list_quality_issues(ENGINE,a['id'])
-    st.markdown('#### Difficultés, aléas, réclamations et amélioration')
-    with st.expander('Créer une fiche manuellement'):
-        with st.form(f'issue_new_{a["id"]}'):
-            it=st.selectbox('Type',['DIFFICULTE_ALEA','RECLAMATION','INCIDENT']); title=st.text_input('Titre'); desc=st.text_area('Description'); owner=st.text_input('Responsable'); ok=st.form_submit_button('Créer la fiche')
-        if ok and title.strip(): create_quality_issue(ENGINE,a['id'],it,title.strip(),desc,owner,st.session_state.admin_email);rerun()
-    if issues:
-        imap={f"#{i['id']} — {i['issue_type']} — {i['title']} — {i['status']}":i for i in issues}; il=st.selectbox('Fiche à suivre',list(imap),key=f'issue_sel_{a["id"]}'); ii=imap[il]
-        c1,c2=st.columns(2); ns=c1.selectbox('Statut',['OUVERTE','EN_COURS','CLOTUREE'],index=['OUVERTE','EN_COURS','CLOTUREE'].index(ii['status']) if ii['status'] in ['OUVERTE','EN_COURS','CLOTUREE'] else 0,key=f'is_{ii["id"]}'); own=c2.text_input('Responsable',value=ii.get('owner') or '',key=f'io_{ii["id"]}')
-        if st.button('Mettre à jour la fiche',key=f'iu_{ii["id"]}'): update_quality_issue(ENGINE,ii['id'],ns,own,st.session_state.admin_email);rerun()
-        with st.form(f'imp_new_{ii["id"]}'):
-            tt=st.text_input('Action d’amélioration'); dd=st.text_area('Description de l’action'); oo=st.text_input('Responsable action'); due=st.date_input('Échéance',value=None); addi=st.form_submit_button('Ajouter l’action d’amélioration')
-        if addi and tt.strip(): create_improvement_action(ENGINE,a['id'],tt.strip(),dd,oo,due.isoformat() if due else None,ii['id'],st.session_state.admin_email);rerun()
-    imps=q(ENGINE,'SELECT * FROM improvement_actions WHERE action_id=:a ORDER BY id DESC',{'a':a['id']})
-    if imps:
-        st.markdown("### Plan d'amélioration de l'action")
-        st.dataframe(pd.DataFrame(imps)[['id','title','owner','due_at','status','completed_at']],use_container_width=True,hide_index=True)
-        impmap={f"#{x['id']} — {x['title']} — {x['status']}":x for x in imps}
-        implab=st.selectbox("Action d'amélioration à gérer",list(impmap),key=f"imp_manage_{a['id']}")
-        imp=impmap[implab]
-        with st.expander("Modifier / supprimer l'action d'amélioration"):
-            statuses=['A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE']
-            with st.form(f"imp_edit_{imp['id']}"):
-                ititle=st.text_input('Action',value=imp.get('title') or '')
-                idesc=st.text_area('Description',value=imp.get('description') or '',height=80)
-                iowner=st.text_input('Responsable',value=imp.get('owner') or '')
-                try: idue_default=date.fromisoformat(str(imp.get('due_at') or '')[:10]) if imp.get('due_at') else None
-                except Exception: idue_default=None
-                idue=st.date_input('Échéance',value=idue_default)
-                istatus=st.selectbox('Statut',statuses,index=statuses.index(imp.get('status')) if imp.get('status') in statuses else 0)
-                isave=st.form_submit_button('Enregistrer les modifications')
-            if isave:
+    closed={'CLOTURE','REFUSE','CLASSE_SANS_SUITE'}
+    st.caption('Une fiche commune aux deux niveaux de navigation. Les réponses et les changements de statut restent historisés ; les destinataires concernés reçoivent une notification interne.')
+    st.dataframe(pd.DataFrame([{'Réf.':x['public_id'],'Action':x.get('action_no') or '—',
+        'Origine':x.get('origin') or '—','Nature':x.get('event_type') or '—','Objet':x.get('subject') or '',
+        'Statut':x.get('status') or '—','Responsable':x.get('owner_name') or '—'} for x in events]),use_container_width=True,hide_index=True)
+    labels={f"{ev['public_id']} — {ev.get('action_no') or 'sans action'} — {ev.get('subject') or ''}":ev for ev in events}
+    selected=st.selectbox('Ouvrir une fiche Qualité',list(labels),key=f'{key}_j2_case_select')
+    ev=labels[selected]; case=quality_case(ENGINE,ev['id'])
+    st.markdown(f"#### {ev['public_id']} — {ev.get('subject') or ''}")
+    st.caption(f"Action : {ev.get('action_no') or 'non rattachée'} · Source : {ev.get('origin') or '—'} · Statut : {ev['status']}")
+    st.write(ev.get('description') or 'Aucune description enregistrée.')
+    # J3: concise triage for a questionnaire's R12/I06 comment, same canonical case.
+    if ev.get('family')=='QUESTIONNAIRES' and ev.get('origin') in ('QUESTIONNAIRE_R12_I06','QUESTIONNAIRE_POINT_FAIBLE','QUESTIONNAIRE') and ev.get('status') not in {'CLOTURE','REFUSE','CLASSE_SANS_SUITE'}:
+        with st.expander('Traitement court de cette remarque questionnaire',expanded=False):
+            decisions={'Prendre en compte':'PRISE_EN_COMPTE','Demander des précisions':'RETOUR_DEMANDE',
+                'Classer avec justification':'CLASSE','Ouvrir une action corrective':'PLAN_ACTION'}
+            with st.form(f'{key}_j3_short_event_{ev["id"]}'):
+                decision_label=st.selectbox('Décision rapide',list(decisions))
+                short_comment=st.text_area('Motif / réponse — toujours historisé')
+                submitted=st.form_submit_button('Valider le traitement court')
+            if submitted:
                 try:
-                    update_improvement_action(ENGINE,imp['id'],istatus,st.session_state.admin_email,ititle,idesc or None,iowner or None,idue.isoformat() if idue else None)
-                    st.success("Action d'amélioration mise à jour.");rerun()
+                    quality_short_treatment(ENGINE,st.session_state.admin_email,decisions[decision_label],short_comment,event_id=ev['id'])
+                    st.success('Décision ajoutée à la chronologie. Les notifications internes sont disponibles.');rerun()
+                except ValueError as ex:st.error(str(ex))
+    with st.form(f'{key}_quality_edit_{ev["id"]}'):
+        state_list=list(QUALITY_EVENT_STATUSES)
+        c1,c2,c3=st.columns(3)
+        new_status=c1.selectbox('Statut Qualité',state_list,index=state_list.index(ev['status']) if ev['status'] in state_list else 0)
+        choices=quality_owner_choices(ENGINE)
+        labels_owner=['— Non affecté —']+[x['label'] for x in choices]
+        old_label=next((x['label'] for x in choices if x['owner_name']==(ev.get('owner_name') or '')),'— Non affecté —')
+        selected_owner=c2.selectbox('Responsable',labels_owner,index=labels_owner.index(old_label))
+        old_date=None
+        try:old_date=date.fromisoformat(str(ev.get('due_at') or '')[:10]) if ev.get('due_at') else None
+        except ValueError:pass
+        new_date=c3.date_input('Échéance',value=old_date,format=app_date_input_format())
+        severity=['MINEURE','MAJEURE','CRITIQUE']; urgency=['NORMALE','HAUTE','URGENTE']
+        col1,col2=st.columns(2)
+        new_severity=col1.selectbox('Gravité',severity,index=severity.index(ev['severity']) if ev.get('severity') in severity else 0)
+        new_urgency=col2.selectbox('Urgence',urgency,index=urgency.index(ev['urgency']) if ev.get('urgency') in urgency else 0)
+        qual=st.text_area('Qualification / analyse',value=ev.get('qualification') or '')
+        immediate=st.text_area('Mesure immédiate',value=ev.get('immediate_action') or '')
+        cause=st.text_area('Analyse des causes',value=ev.get('cause_analysis') or '')
+        criteria=st.text_area('Vérification d’efficacité attendue',value=ev.get('effectiveness_criteria') or '')
+        effective=st.text_area('Résultat de la vérification',value=ev.get('effectiveness_result') or '')
+        closure=st.text_area('Décision et motif de clôture / classement',value=ev.get('closure_comment') or '')
+        saved=st.form_submit_button('Enregistrer la fiche Qualité',type='primary')
+    if saved:
+        try:
+            owner=next((x['owner_name'] for x in choices if x['label']==selected_owner),None)
+            updated=update_quality_event(ENGINE,ev['id'],st.session_state.admin_email,status=new_status,
+                owner_name=owner,severity=new_severity,urgency=new_urgency,due_at=new_date.isoformat() if new_date else None,
+                qualification=qual,immediate_action=immediate,cause_analysis=cause,
+                effectiveness_criteria=criteria,effectiveness_result=effective,closure_comment=closure)
+            st.success('Fiche enregistrée, décision historisée.' if updated else 'Aucune modification à enregistrer.');rerun()
+        except ValueError as ex:st.error(str(ex))
+    st.markdown('#### Notes, réponses et historique de correspondance')
+    links=case['sources']
+    directions={'Note interne (administration)':'INTERNE'}
+    if any(x['source_kind']=='TRAINER_REPORT' for x in links):directions['Réponse à l’intervenant']='VERS_INTERVENANT'
+    if any(x['source_kind']=='BENEFICIARY_REPORT' for x in links):directions['Réponse au bénéficiaire']='VERS_BENEFICIAIRE'
+    with st.form(f'{key}_quality_message_{ev["id"]}',clear_on_submit=True):
+        channel_label=st.selectbox('Destinataire de la note / réponse',list(directions))
+        message=st.text_area('Nouveau message — conserve les réponses précédentes')
+        send=st.form_submit_button('Enregistrer le message')
+    if send:
+        try:
+            add_quality_case_message(ENGINE,ev['id'],st.session_state.admin_email,message,directions[channel_label])
+            st.success('Message ajouté à la chronologie de la fiche.');rerun()
+        except ValueError as ex:st.error(str(ex))
+    messages=case['messages']
+    if messages:
+        st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x['created_at']),'Auteur':x['author'],'Type':x['direction'],
+            'Destinataire':x.get('recipient') or '—','Message':x['message']} for x in messages]),use_container_width=True,hide_index=True)
+    else:st.caption('Aucun échange enregistré pour cette fiche.')
+    with st.expander('Historique immuable des décisions et changements',expanded=False):
+        histories=case['history']
+        if histories:
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x['created_at']),'Auteur':x['actor'],'Modification':x['change_kind'],
+               'Avant':x.get('before_json') or '—','Après':x.get('after_json') or '—'} for x in histories]),
+               use_container_width=True,hide_index=True)
+        else:st.caption('Fiche issue d’une version antérieure : historique des changements non encore disponible.')
+        if links:
+            st.caption('Sources d’origine conservées : '+', '.join(f"{x['source_kind']} #{x['source_id']}" for x in links))
+    st.markdown('#### Actions correctives et préventives')
+    capas=case['actions']
+    if capas:
+        st.dataframe(pd.DataFrame([{'N°':x['id'],'Action':x['title'],'Responsable':x.get('owner_name') or '—',
+            'Échéance':format_app_deadline(x.get('due_at')),'Statut':x['status']} for x in capas]),use_container_width=True,hide_index=True)
+        ca_map={f"#{x['id']} — {x['title']}":x for x in capas}
+        csel=st.selectbox('Modifier une action corrective',list(ca_map),key=f'{key}_capa_sel_{ev["id"]}')
+        ca=ca_map[csel]
+        with st.form(f'{key}_capa_update_{ca["id"]}'):
+            capa_statuses=['A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE']
+            c1,c2=st.columns(2)
+            cst=c1.selectbox('Statut CAPA',capa_statuses,index=capa_statuses.index(ca['status']))
+            cowner=c2.text_input('Responsable CAPA',value=ca.get('owner_name') or '')
+            evidence=st.text_input('Référence de preuve',value=ca.get('evidence_ref') or '')
+            effic=st.text_area('Résultat d’efficacité',value=ca.get('effectiveness_result') or '')
+            csave=st.form_submit_button('Enregistrer l’action corrective')
+        if csave:
+            update_quality_event_action(ENGINE,ca['id'],st.session_state.admin_email,status=cst,
+                owner_name=cowner,evidence_ref=evidence,effectiveness_result=effic)
+            st.success('Action corrective mise à jour et historisée.');rerun()
+    with st.expander('Ajouter une action corrective ou préventive',expanded=False):
+        with st.form(f'{key}_new_capa_{ev["id"]}',clear_on_submit=True):
+            title=st.text_input('Action à réaliser')
+            description=st.text_area('Description')
+            responsible=st.text_input('Responsable de l’action')
+            due=st.date_input('Échéance',value=None,format=app_date_input_format())
+            create=st.form_submit_button('Ajouter au plan d’action')
+        if create and title.strip():
+            add_quality_event_action(ENGINE,ev['id'],title.strip(),st.session_state.admin_email,
+               description,owner_name=responsible,due_at=due.isoformat() if due else None)
+            st.success('CAPA ajoutée à la fiche de référence.');rerun()
+
+
+def quality_legacy_reconciliation_widget(action_id=None,scope_ids=None,key='quality_reconcile'):
+    unmatched=quality_unlinked_sources(ENGINE,action_id=action_id)
+    if scope_ids is not None:
+        permitted=set(scope_ids);unmatched=[x for x in unmatched if x.get('action_id') in permitted]
+    if not unmatched:return
+    with st.expander(f'Données Qualité historiques non rapprochées ({len(unmatched)})',expanded=False):
+        st.caption('Ces enregistrements ne sont PAS supprimés ni fusionnés sur une ressemblance. Ils restent consultables ; un rapprochement exige une confirmation explicite.')
+        st.dataframe(pd.DataFrame([{'Type':x['source_kind'],'ID source':x['id'],
+            'Action interne':x.get('action_id'),'Objet':x.get('subject') or x.get('title') or '—',
+            'Statut historique':x.get('status') or '—'} for x in unmatched]),use_container_width=True,hide_index=True)
+        suggestions=suggest_quality_links(ENGINE,action_id=action_id)
+        if scope_ids is not None:suggestions=[x for x in suggestions if x['action_id'] in permitted]
+        if suggestions:
+            m={f"{x['source_kind']} #{x['source_id']} → {x['public_id']}":x for x in suggestions}
+            choice=st.selectbox('Rapprochement exact proposé (à confirmer)',list(m),key=f'{key}_select')
+            selection=m[choice]
+            confirmation=st.checkbox('J’ai comparé les deux références et confirme ce lien',key=f'{key}_confirmed')
+            if st.button('Confirmer le rattachement historique',disabled=not confirmation,key=f'{key}_submit'):
+                try:
+                    link_quality_source(ENGINE,selection['id'],selection['source_kind'],selection['source_id'],st.session_state.admin_email)
+                    st.success('Rattachement historique confirmé sans supprimer les sources.');rerun()
                 except ValueError as ex: st.error(str(ex))
-            iconfirm=st.checkbox("Je confirme la suppression de cette action d'amélioration saisie par erreur",key=f"imp_delete_confirm_{imp['id']}")
-            if st.button("Supprimer cette action d'amélioration",key=f"imp_delete_{imp['id']}",disabled=not iconfirm):
-                try: delete_improvement_action(ENGINE,imp['id'],st.session_state.admin_email);st.success("Action d'amélioration supprimée avec trace d'audit.");rerun()
-                except ValueError as ex: st.error(str(ex))
-    if issues:
-        st.markdown('### Difficultés / aléas / réclamations détectés')
-        st.dataframe(pd.DataFrame(issues),use_container_width=True,hide_index=True)
-    tr_reports=q(ENGINE,"""SELECT r.*,t.full_name source_name FROM trainer_reports r JOIN trainers t ON t.id=r.trainer_id WHERE r.action_id=:a ORDER BY r.created_at DESC""",{'a':a['id']})
-    br_reports=beneficiary_reports(ENGINE,action_id=a['id'])
-    if tr_reports or br_reports:
-        st.markdown('### Signalements liés à cette action')
-        rr=[]; report_map={}
-        for x in tr_reports:
-            row={'Date':x['created_at'][:16].replace('T',' '),'Source':'Intervenant','Personne':x.get('source_name') or '','Objet':x['subject'],'Statut':x['status'],'Réponse administration':x.get('admin_response') or ''}
-            rr.append(row); report_map[f"Intervenant — {row['Personne']} — {row['Objet']} — #{x['id']}"]=('TRAINER',x)
-        for x in br_reports:
-            row={'Date':x['created_at'][:16].replace('T',' '),'Source':'Bénéficiaire','Personne':f"{x.get('beneficiary_first_name') or ''} {x.get('beneficiary_last_name') or ''}".strip(),'Objet':x['subject'],'Statut':x['status'],'Réponse administration':x.get('admin_response') or ''}
-            rr.append(row); report_map[f"Bénéficiaire — {row['Personne']} — {row['Objet']} — #{x['id']}"]=('BENEFICIARY',x)
-        st.dataframe(pd.DataFrame(rr),use_container_width=True,hide_index=True)
-        rlabel=st.selectbox('Signalement à traiter',list(report_map),key=f"quality_action_report_{a['id']}")
-        rkind,report=report_map[rlabel]
-        st.caption(report.get('description') or 'Aucune description.')
-        r1,r2=st.columns([1,2])
-        statuses=['NOUVEAU','EN_COURS','TRAITE','CLOTURE']
-        rstatus=r1.selectbox('Statut',statuses,index=statuses.index(report.get('status')) if report.get('status') in statuses else 0,key=f"quality_action_report_status_{rkind}_{report['id']}")
-        rresponse=r2.text_area("Réponse / traitement de l'administration",value=report.get('admin_response') or '',key=f"quality_action_report_response_{rkind}_{report['id']}")
-        if st.button('ENREGISTRER LE TRAITEMENT DU SIGNALEMENT',key=f"quality_action_report_save_{rkind}_{report['id']}"):
-            ok,msg=update_user_report(ENGINE,rkind,report['id'],rstatus,rresponse,st.session_state.admin_email)
-            if ok: st.success('Signalement mis à jour.');rerun()
-            else: st.warning(msg)
+        else:st.caption('Aucune correspondance unique ne peut être proposée en toute sécurité.')
+
+# J3 - simple, shared survey campaign overview and concise review controls.
+def render_quality_campaign_pilotage(action_id=None,organization_id=None,prestation_type=None,key='quality_j3'):
+    overview=quality_campaign_pilotage(ENGINE,organization_id=organization_id,
+        prestation_type=prestation_type,action_id=action_id)
+    dashboard=quality_dashboard_v31(ENGINE,organization_id=organization_id,
+        prestation_type=prestation_type,action_id=action_id)
+    st.markdown('### Indicateurs questionnaires — échelles séparées')
+    st.caption('Les notes /5 utilisent exclusivement les réponses 1–5 valides. NPS (0–10), N/A et textes ne sont jamais mélangés aux moyennes sur 5.')
+    cols=st.columns(5)
+    groups=[('HOT','À chaud'),('COLD','À froid'),('TRAINER','Intervenant'),('CLIENT','Client / prescripteur'),('OPCO','OPCO')]
+    for col,(kind,label) in zip(cols,groups):
+        record=dashboard['by_kind'].get(kind,{})
+        if kind=='CLIENT':
+            other=dashboard['by_kind'].get('PRESCRIBER',{})
+            first=quality_campaign_pilotage_summary(ENGINE,organization_id,prestation_type,action_id,('CLIENT','PRESCRIBER'))
+            val=first.get('score');completed=first['completed'];total=first['invitations']
+        else:
+            val=record.get('score');completed=record.get('responses',0);total=record.get('invitations',0)
+        col.metric(label, '—' if val is None else f'{val:.2f}/5',f'{completed}/{total} réponse(s)' if total else 'Aucune campagne')
+    st.markdown('### Campagnes, échéances, envois et relances')
+    rows=overview['rows']
+    if not rows:
+        st.info('Aucune campagne qualité pour ce périmètre.')
+    else:
+        formatted=[]
+        for r in rows:
+            formatted.append({'ID':r['id'],'Action':r['action_no'],'Type':r['campaign_kind'],
+              'Questionnaire':r['questionnaire_title'],'Répondant':r.get('respondent') or '—',
+              'Statut':r['status'],'Disponibilité':r['availability'],
+              'Échéance':format_app_deadline(r.get('due_at')),
+              'Envoi initial': 'Oui' if r['initial_sent'] else 'Non',
+              'Relances envoyées':r['sent_reminders'],'Relances en attente':r['pending_reminders'],
+              'Répondu le':str(r.get('completed_at') or '')[:16]})
+        st.dataframe(pd.DataFrame(formatted),use_container_width=True,hide_index=True)
+        selector={f"#{r['id']} — {r['action_no']} — {r['campaign_kind']} — {r.get('respondent') or 'sans nom'}":r for r in rows}
+        choice=st.selectbox('Ouvrir une campagne',list(selector),key=f'{key}_campaign')
+        camp=selector[choice]
+        st.caption(f"Statut : {camp['status']} · Envois : {camp['sent_reminders']} relance(s) réalisée(s) · Échéance : {camp.get('due_at') or '—'}")
+        c1,c2=st.columns(2)
+        if c1.button('Préparer une relance manuelle',key=f'{key}_remind_{camp["id"]}',disabled=camp['status']=='COMPLETED'):
+            try:
+                queue_quality_manual_reminder(ENGINE,camp['id'],st.session_state.admin_email)
+                st.success('Relance placée dans la file du worker ; le même questionnaire est réutilisé.');rerun()
+            except ValueError as ex:st.warning(str(ex))
+        if camp['status']=='COMPLETED':
+            try:
+                pdf=quality_response_pdf(ENGINE,camp['id'])
+                c2.download_button('PDF du questionnaire reçu',pdf,f"{camp['action_no']}_qualite_{camp['id']}.pdf",'application/pdf',key=f'{key}_pdf_{camp["id"]}')
+            except Exception as ex:_ui_incident('pdf_qualite_j3',ex,subject='Le PDF questionnaire')
+        with st.expander('Traçabilité des envois (lecture seule)',expanded=False):
+            hist=quality_campaign_email_history(ENGINE,camp['id'])
+            if hist:st.dataframe(pd.DataFrame([{k:v for k,v in h.items() if k!='last_error'} for h in hist]),use_container_width=True,hide_index=True)
+            else:st.caption('Aucun envoi enregistré.')
+    st.markdown('### Analyses des réponses par rubrique')
+    summary=quality_management_summary(ENGINE,organization_id=organization_id,
+        prestation_type=prestation_type,action_id=action_id)
+    if summary.get('nps_score') is not None:
+        st.caption(f"NPS : {summary['nps_score']:+g} (calculé séparément à partir des réponses de 0 à 10 ; non affiché sur 5).")
+    stats=quality_question_stats(ENGINE,organization_id=organization_id,
+        prestation_type=prestation_type,action_id=action_id)
+    if not stats:st.info('Aucune réponse reçue pour les filtres sélectionnés.')
+    else:
+        groups={}
+        for row in stats:groups.setdefault(row['Rubrique'],[]).append(row)
+        summaries=[]
+        for rubric,records in groups.items():
+            valid=sum(x['Notes valides 1-5'] for x in records)
+            total=sum(x['_sum_1_5'] for x in records)
+            summaries.append({'Thème':rubric,'Questions':len(records),
+                'Réponses enregistrées':sum(x['Réponses'] for x in records),
+                'Notes 1–5':valid,'Moyenne /5':round(total/valid,2) if valid else None})
+        st.dataframe(pd.DataFrame(summaries),use_container_width=True,hide_index=True)
+        selected_rubric=st.selectbox('Explorer un thème',list(groups),key=f'{key}_rubric')
+        with st.expander(f'Détail — {selected_rubric}',expanded=False):
+            data=[{'Question':x['Question'],'Échelle':x['Échelle'],'Réponses':x['Réponses'],
+                'Notes 1–5':x['Notes valides 1-5'],'Moyenne /5':x['Moyenne']} for x in groups[selected_rubric]]
+            st.dataframe(pd.DataFrame(data),use_container_width=True,hide_index=True)
+
+
+def render_quality_short_review(action_id=None,scope_ids=None,key='quality_j3'):
+    pts=quality_review_points(ENGINE,action_id=action_id,open_only=True)
+    if scope_ids is not None:
+        allowed=set(scope_ids);pts=[p for p in pts if p['action_id'] in allowed]
+    st.markdown('### Notes faibles des questionnaires (≤ 3/5)')
+    if not pts:
+        st.success('Aucun point faible en attente de première qualification dans ce périmètre.')
+        return
+    st.dataframe(pd.DataFrame([{'ID':x['id'],'Action':x['action_no'],'Questionnaire':x['campaign_kind'],
+         'Question':x['question_text'],'Note /5':x['score'],'Statut':x['status']} for x in pts]),use_container_width=True,hide_index=True)
+    choices={f"#{x['id']} — {x['action_no']} — {x['campaign_kind']} — {x['score']}/5 — {x['question_text'][:70]}":x for x in pts}
+    option=st.selectbox('Examiner une réponse',list(choices),key=f'{key}_review_select')
+    selected=choices[option]
+    st.caption(f"Origine : campagne #{selected['campaign_id']} · Réponse #{selected.get('response_id') or '—'} · Question : {selected['question_code']}")
+    decisions={"Prendre en compte et suivre":'PRISE_EN_COMPTE',
+        "Demander des précisions":'RETOUR_DEMANDE',
+        "Classer avec justification":'CLASSE',
+        "Créer une action corrective (CAPA)":'PLAN_ACTION'}
+    with st.form(f'{key}_quick_review_form_{selected["id"]}',clear_on_submit=True):
+        label=st.selectbox('Traitement court',list(decisions))
+        reason=st.text_area('Analyse / réponse / justification — conservée dans l’historique')
+        submitted=st.form_submit_button('Enregistrer la décision',type='primary')
+    if submitted:
+        try:
+            quality_short_treatment(ENGINE,st.session_state.admin_email,decisions[label],reason,point_id=selected['id'])
+            st.success('Décision enregistrée dans la fiche Qualité de référence et historisée.');rerun()
+        except ValueError as ex:st.error(str(ex))
+
+
+def render_quality_history(action_id=None,scope_ids=None,key='quality_j3'):
+    st.markdown('### Historique des événements et des décisions')
+    events=list_quality_events(ENGINE,action_id=action_id)
+    if scope_ids is not None:events=[x for x in events if x.get('action_id') in set(scope_ids)]
+    pts=quality_review_points(ENGINE,action_id=action_id,open_only=False)
+    if scope_ids is not None:pts=[x for x in pts if x['action_id'] in set(scope_ids)]
+    if pts:
+        with st.expander(f'Décisions relatives aux notes faibles ({len(pts)})',expanded=False):
+            st.dataframe(pd.DataFrame([{'Action':x['action_no'],'Campagne':x['campaign_kind'],
+                'Question':x['question_text'],'Note /5':x['score'],'Décision':x.get('decision') or 'À examiner',
+                'Commentaire':x.get('decision_comment') or '', 'Traitée par':x.get('reviewed_by') or '—',
+                'Date':format_app_datetime(x.get('reviewed_at'))} for x in pts]),use_container_width=True,hide_index=True)
+    if not events:st.caption('Aucune fiche Qualité historisée dans ce périmètre.');return
+    st.dataframe(pd.DataFrame([{'Référence':x['public_id'],'Action':x.get('action_no') or '—',
+        'Origine':x.get('origin') or '—','Objet':x.get('subject') or '',
+        'Statut':x['status'],'Dernière mise à jour':format_app_datetime(x.get('updated_at'))} for x in events]),use_container_width=True,hide_index=True)
+    choices={f"{x['public_id']} — {x.get('subject') or ''}":x for x in events}
+    selected=choices[st.selectbox('Lire la chronologie de la fiche',list(choices),key=f'{key}_history_select')]
+    case=quality_case(ENGINE,selected['id'])
+    st.caption(f"Fiche {selected['public_id']} · Statut : {selected['status']} · Action : {selected.get('action_no') or '—'}")
+    st.write(selected.get('description') or 'Aucune description.')
+    if case['messages']:
+        st.markdown('**Messages et réponses successifs**')
+        st.dataframe(pd.DataFrame([{'Date':format_app_datetime(m['created_at']),'Auteur':m['author'],
+            'Type':m['direction'],'Message':m['message']} for m in case['messages']]),use_container_width=True,hide_index=True)
+    if case['history']:
+        with st.expander('Journal des décisions et changements',expanded=False):
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(m['created_at']),'Auteur':m['actor'],
+                'Opération':m['change_kind'],'Avant':m.get('before_json') or '',
+                'Après':m.get('after_json') or ''} for m in case['history']]),use_container_width=True,hide_index=True)
+    if case['sources']:
+        st.caption('Sources liées : '+', '.join(f"{x['source_kind']} #{x['source_id']}" for x in case['sources']))
+    if case['actions']:
+        st.dataframe(pd.DataFrame([{'Action CAPA':x['title'],'Statut':x['status'],
+            'Responsable':x.get('owner_name') or '—','Échéance':format_app_deadline(x.get('due_at'))} for x in case['actions']]),use_container_width=True,hide_index=True)
+
+
+def quality_tab(a):
+    st.subheader('Qualité de l’action')
+    enabled=[]
+    if a.get('use_quality_hot'):enabled.append('à chaud')
+    if a.get('use_quality_cold'):enabled.append('à froid')
+    if a.get('use_trainer_feedback'):enabled.append('retour intervenant')
+    st.caption('Modules activés : '+(', '.join(enabled) if enabled else 'aucun')+'. Une même fiche et un même historique sont utilisés dans la Qualité générale et dans cette action.')
+    views=st.tabs(['À traiter','Enquêtes et indicateurs','Historique'])
+    with views[0]:
+        render_quality_short_review(action_id=a['id'],key=f'quality_action_{a["id"]}')
+        # J2 common administrative Quality case; no legacy competing edit screen.
+        render_quality_case_workbench(action_id=a['id'],key=f"quality_action_{a['id']}",status_filter='open')
+    with views[1]:
+        try:
+            due=standard_quality_due(ENGINE,a['id'],'HOT')
+            date_ref=local_dt(due,organization_runtime_config(ENGINE,a['id'])['timezone'])
+            st.caption('Fin de référence : '+date_ref.strftime('%d/%m/%Y'))
+            if a.get('use_quality_cold'):
+                st.caption('Évaluation à froid : M+6 pour le bilan de compétences ; J+90 ou date spécifique pour les autres prestations.')
+            if st.button('Préparer les campagnes qualité standard',key=f'prepquality{a["id"]}',disabled=not bool(enabled)):
+                try:
+                    made=prepare_quality_campaigns(ENGINE,a['id'],BASE_URL,st.session_state.admin_email)
+                    st.success(f'{len(made)} campagne(s) créée(s).' if made else 'Campagnes existantes conservées et échéances vérifiées.');rerun()
+                except ValueError as ex:st.error(str(ex))
+        except ValueError:
+            st.warning('Renseigner la date de fin ou le planning avant de préparer les campagnes standard.')
+        render_quality_campaign_pilotage(action_id=a['id'],key=f'quality_action_{a["id"]}')
+    with views[2]:
+        render_quality_history(action_id=a['id'],key=f'quality_action_{a["id"]}')
+        quality_legacy_reconciliation_widget(action_id=a['id'],key=f"quality_legacy_action_{a['id']}")
+
 
 def documents_tab(a):
     st.subheader('Documents et archivage')
@@ -3314,184 +4090,90 @@ def reminders_screen():
     arows=attendance_regularization_items(ENGINE,organization_id=om[ol])
     if not arows: st.success('Aucun émargement en attente de régularisation.')
     else:
-        st.dataframe(pd.DataFrame([{'Action':r['action_no'],'Date':r['slot_date'],'Horaire':f"{r['start_time']}–{r['end_time']}",'Participant':f"{r['last_name']} {r['first_name']}",'Email':r.get('email') or ''} for r in arows]),use_container_width=True,hide_index=True)
+        st.dataframe(pd.DataFrame([{'Action':r['action_no'],'Date':format_app_date(r['slot_date']),'Horaire':f"{format_app_time(r['start_time'])}–{format_app_time(r['end_time'])}",'Participant':f"{r['last_name']} {r['first_name']}",'Email':r.get('email') or ''} for r in arows]),use_container_width=True,hide_index=True)
         st.caption('La régularisation elle-même reste réalisée dans la fiche de l’action afin de conserver les contrôles de preuve et d’absence existants.')
     footer()
 
 def quality_management_screen():
-    header('Clarté360 — Qualité','Pilotage métier des évaluations, signalements, difficultés et améliorations')
-    orgs=list_organizations(ENGINE,active_only=True); om={'Tous':None,**{o['name']:o['id'] for o in orgs}}
+    header('Clarté360 — Pilotage Qualité','Suivi transversal des enquêtes, difficultés, signalements et plans d’amélioration')
+    direct=st.session_state.get('j4_jump_quality')
+    if direct:
+        case=one(ENGINE,'SELECT id,action_id FROM quality_events WHERE id=:i',{'i':direct})
+        if case:
+            st.info('Ouverture directe de la fiche Qualité depuis une notification ; le dossier reste ouvert jusqu’à sa clôture métier, indépendamment de la notification lue.')
+            if st.button('Retour au pilotage Qualité',key='j4_return_quality'):
+                st.session_state.pop('j4_jump_quality',None);rerun()
+            render_quality_case_workbench(action_id=case.get('action_id'),key='j4_direct',focus_event_id=direct)
+            return
+        st.session_state.pop('j4_jump_quality',None)
+
+    orgs=list_organizations(ENGINE,active_only=True)
+    orgmap={'Tous':None,**{x['name']:x['id'] for x in orgs}}
     c1,c2,c3=st.columns(3)
-    ol=c1.selectbox('Organisme',list(om),key='qm_org')
-    pt=c2.selectbox('Prestation',['Tous','FORMATION','BILAN_COMPETENCES','VAE','COACHING','MENTORAT','AUTRE'],key='qm_pt')
-    aq=q(ENGINE,'SELECT id,action_no,title,organization_id,prestation_type FROM actions ORDER BY action_no')
-    if om[ol]: aq=[x for x in aq if x.get('organization_id')==om[ol]]
-    if pt!='Tous': aq=[x for x in aq if (x.get('prestation_type') or '').upper()==pt]
-    amap={'Toutes les actions':None,**{f"{x['action_no']} — {x['title']}":x['id'] for x in aq}}
-    al=c3.selectbox('Action',list(amap),key='qm_action')
-    action_id=amap[al]
-    filters={'organization_id':om[ol],'prestation_type':None if pt=='Tous' else pt}
-    j2=quality_dashboard_v31(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt,action_id=action_id)
-    scope_ids=[action_id] if action_id else [x['id'] for x in aq]
-    src=quality_source_counts(ENGINE,scope_ids); pc=quality_plan_counts(ENGINE,scope_ids)
-    st.markdown('### Éléments Qualité à examiner / qualifier')
-    r1=st.columns(4); r2=st.columns(4)
-    for col,label,key in [(r1[0],'Points ≤ 3','review_points'),(r1[1],'Difficultés / aléas','difficulties'),(r1[2],'Réclamations','complaints'),(r1[3],'Non-conformités','nonconformities'),(r2[0],'Incidents','incidents'),(r2[1],'Signalements / contacts','reports'),(r2[2],'Suggestions / améliorations','suggestions'),(r2[3],'Autres','other')]:
-        col.metric(label,src[key])
-    st.caption("Ces compteurs représentent les files d'entrée encore à examiner. Un point repris dans le plan d'action quitte sa file d'entrée mais conserve toute sa filiation historique.")
-
-    st.markdown("### PLAN D’ACTION")
-    pcols=st.columns(5)
-    pcols[0].metric('Total',pc['total']); pcols[1].metric('En cours',pc['in_progress']); pcols[2].metric('À vérifier',pc['to_verify']); pcols[3].metric('Clôturées',pc['closed']); pcols[4].metric('En retard',pc['overdue'])
-
-    st.markdown('### Indicateurs questionnaires')
-    score_cols=st.columns(5)
-    for col,(kind,label) in zip(score_cols,[('HOT','À chaud'),('COLD','À froid'),('TRAINER','Intervenant'),('CLIENT','Client / prescripteur'),('OPCO','OPCO')]):
-        x=j2['by_kind'][kind]; score='—' if x['score'] is None else f"{x['score']:.2f}/5"
-        col.metric(label,score,f"{x['responses']}/{x['invitations']} réponse(s)" if x['invitations'] else 'Aucune invitation')
-    qd=quality_management_summary(ENGINE,**filters)
-    qcols=st.columns(2)
-    qcols[0].markdown(f"<div class='c360-kpi'><div class='n'>{qd['campaigns']}</div><div class='l'>Questionnaires prévus</div></div>",unsafe_allow_html=True)
-    qcols[1].markdown(f"<div class='c360-kpi'><div class='n'>{qd['response_rate']}%</div><div class='l'>Taux de réponse</div></div>",unsafe_allow_html=True)
-
-    st.markdown('### Lecture synthétique par thème')
-    stats=quality_question_stats(ENGINE,organization_id=om[ol],prestation_type=None if pt=='Tous' else pt,action_id=action_id)
-    rubrics={}
-    for r in stats:
-        rubrics.setdefault(r['Rubrique'],[]).append(r)
-    if not rubrics:
-        st.info('Aucune réponse exploitable avec ces filtres.')
-    else:
-        summary=[]
-        for rub,items in rubrics.items():
-            vals=[x['Moyenne'] for x in items if x.get('Moyenne') is not None]
-            summary.append({'Thème':rub,'Questions':len(items),'Réponses':sum(int(x.get('Réponses') or 0) for x in items),'Moyenne':round(sum(vals)/len(vals),2) if vals else None})
-        st.dataframe(pd.DataFrame(summary),use_container_width=True,hide_index=True)
-        rub=st.selectbox('Explorer un thème',list(rubrics),key='qm_rubric')
-        with st.expander(f'Détail du thème — {rub}',expanded=False):
-            st.dataframe(pd.DataFrame(rubrics[rub])[['Question','Réponses','Moyenne']],use_container_width=True,hide_index=True)
-
-    if action_id:
-        st.markdown('### Détail de l’action sélectionnée')
-        camps=list_quality_campaigns(ENGINE,action_id)
-        if camps:
-            campaign_rows=[]
-            for x in camps:
-                hist=quality_campaign_email_history(ENGINE,x['id']); sent=[h for h in hist if h.get('sent_at')]
-                campaign_rows.append({'Type':x['campaign_kind'],'Questionnaire':x['questionnaire_title'],'Statut':x['status'],'Disponibilité':quality_campaign_availability(x),'Échéance':x.get('due_at') or '',
-                  'Invitation initiale':next((h.get('sent_at') for h in hist if h['event_type']=='INITIAL' and h.get('sent_at')),'—'),'Dernière relance':next((h.get('sent_at') for h in reversed(hist) if h['event_type'].startswith('MANUAL_') and h.get('sent_at')),'—'),
-                  'Nb relances':sum(1 for h in hist if h['event_type'].startswith('MANUAL_') and h.get('sent_at')),'Réponse':x.get('completed_at') or '—'})
-            st.dataframe(pd.DataFrame(campaign_rows),use_container_width=True,hide_index=True)
-        else: st.info('Aucune campagne qualité sur cette action.')
-
-    st.markdown('### Événements qualité et CAPA')
-    evs=list_quality_events(ENGINE,action_id=action_id) if action_id else list_quality_events(ENGINE)
-    if evs:
-        st.dataframe(pd.DataFrame([{'Réf.':e['public_id'],'Action':e.get('action_no') or '—','Intitulé':e.get('action_title') or '—','Personne / origine':e.get('source_name') or e.get('origin') or '—','Type':e['event_type'],'Objet':e['subject'],'Gravité':e['severity'],'Statut':e['status'],'Responsable':e.get('owner_name') or '','Échéance':e.get('due_at') or ''} for e in evs]),use_container_width=True,hide_index=True)
-        em={f"{e['public_id']} — {e.get('action_no') or 'sans action'} — {e['subject']}":e for e in evs}
-        el=st.selectbox('Ouvrir / traiter une fiche qualité',list(em),key='j2_event_open'); ev=em[el]
-        with st.expander(f"Fiche {ev['public_id']} — traitement jusqu’à clôture",expanded=True):
-            st.caption(f"Action : {ev.get('action_no') or '—'} — {ev.get('action_title') or '—'} · Origine : {ev.get('source_name') or ev.get('origin') or '—'} · Créée : {ev.get('detected_at') or ev.get('created_at')}")
-            st.write(ev.get('description') or 'Aucune description.')
-            statuses=['NOUVEAU','A_ANALYSER','EN_TRAITEMENT','EN_ATTENTE','A_VERIFIER','CLOTURE','CLASSE_SANS_SUITE','REFUSE']
-            c1,c2,c3=st.columns(3)
-            es=c1.selectbox('Statut',statuses,index=statuses.index(ev['status']) if ev['status'] in statuses else 0,key=f"evs_{ev['id']}")
-            owners=quality_owner_choices(ENGINE); owner_labels=['— Non affecté —']+[x['label'] for x in owners]
-            current_owner=next((x['label'] for x in owners if x['owner_name']==(ev.get('owner_name') or '')), '— Non affecté —')
-            owner_label=c2.selectbox('Responsable Clarté360',owner_labels,index=owner_labels.index(current_owner) if current_owner in owner_labels else 0,key=f"evo_{ev['id']}")
-            owner=next((x for x in owners if x['label']==owner_label),None)
-            try: due_default=date.fromisoformat(str(ev.get('due_at') or '')[:10]) if ev.get('due_at') else None
-            except Exception: due_default=None
-            due=c3.date_input('Échéance',value=due_default,key=f"evd_{ev['id']}")
-            qual=st.text_area('Qualification / analyse',value=ev.get('qualification') or '',key=f"evq_{ev['id']}"); imm=st.text_area('Action immédiate',value=ev.get('immediate_action') or '',key=f"evi_{ev['id']}"); cause=st.text_area('Analyse de cause',value=ev.get('cause_analysis') or '',key=f"evc_{ev['id']}")
-            ec=st.text_area("Critères de vérification d'efficacité",value=ev.get('effectiveness_criteria') or '',key=f"evec_{ev['id']}"); er=st.text_area("Résultat de la vérification d'efficacité",value=ev.get('effectiveness_result') or '',key=f"ever_{ev['id']}"); close=st.text_area('Conclusion / motif de clôture ou classement',value=ev.get('closure_comment') or '',key=f"evcl_{ev['id']}")
-            if st.button('ENREGISTRER LA FICHE',type='primary',key=f"evsave_{ev['id']}"):
-                try:
-                    update_quality_event(ENGINE,ev['id'],st.session_state.admin_email,status=es,owner_name=(owner['owner_name'] if owner else None),severity=ev.get('severity'),urgency=ev.get('urgency'),due_at=(due.isoformat() if due else None),qualification=qual,immediate_action=imm,cause_analysis=cause,effectiveness_criteria=ec,effectiveness_result=er,closure_comment=close)
-                    st.success('Fiche qualité enregistrée et historisée.'); rerun()
-                except ValueError as ex: st.error(str(ex))
-            st.markdown('#### Actions correctives / préventives (CAPA)')
-            capas=quality_event_actions(ENGINE,ev['id'])
-            if capas:
-                st.dataframe(pd.DataFrame([{'ID':x['id'],'Type':x['action_kind'],'Action':x['title'],'Responsable':x.get('owner_name') or '','Échéance':x.get('due_at') or '','Statut':x['status'],'Efficacité':x.get('effectiveness_result') or ''} for x in capas]),use_container_width=True,hide_index=True)
-                cm={f"#{x['id']} — {x['title']}":x for x in capas}; cl=st.selectbox('Action CAPA à mettre à jour',list(cm),key=f"capa_sel_{ev['id']}"); ca=cm[cl]
-                c1,c2=st.columns(2); capa_statuses=['A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE']; cas=c1.selectbox('Statut CAPA',capa_statuses,index=capa_statuses.index(ca['status']) if ca['status'] in capa_statuses else 0,key=f"capas_{ca['id']}")
-                owners=quality_owner_choices(ENGINE); capa_owner_labels=['— Non affecté —']+[x['label'] for x in owners]; current_capa_owner=next((x['label'] for x in owners if x['owner_name']==(ca.get('owner_name') or '')), '— Non affecté —'); cao_label=c2.selectbox('Responsable CAPA',capa_owner_labels,index=capa_owner_labels.index(current_capa_owner) if current_capa_owner in capa_owner_labels else 0,key=f"capao_{ca['id']}"); cao=next((x for x in owners if x['label']==cao_label),None)
-                caer=st.text_area("Preuve / résultat d'efficacité CAPA",value=ca.get('effectiveness_result') or '',key=f"capaer_{ca['id']}")
-                if st.button('METTRE À JOUR CETTE ACTION',key=f"capau_{ca['id']}"):
-                    update_quality_event_action(ENGINE,ca['id'],st.session_state.admin_email,status=cas,owner_name=(cao['owner_name'] if cao else None),effectiveness_result=caer); st.success('Action CAPA mise à jour.'); rerun()
-            with st.form(f"new_capa_{ev['id']}",clear_on_submit=True):
-                ct=st.text_input('Nouvelle action corrective / préventive')
-                owners=quality_owner_choices(ENGINE); new_owner_labels=['— Non affecté —']+[x['label'] for x in owners]; co_label=st.selectbox('Responsable Clarté360',new_owner_labels)
-                cd=st.date_input('Échéance',value=None); csub=st.form_submit_button('AJOUTER AU PLAN D’ACTION')
-            if csub and ct.strip():
-                co=next((x for x in owners if x['label']==co_label),None); add_quality_event_action(ENGINE,ev['id'],ct.strip(),st.session_state.admin_email,owner_name=(co['owner_name'] if co else None),due_at=(cd.isoformat() if cd else None)); st.success('Action ajoutée au plan général.'); rerun()
-    else: st.info('Aucun événement qualité avec ces filtres.')
-    with st.expander('Créer un événement qualité',expanded=False):
-        if aq:
-            emap={f"{x['action_no']} — {x['title']}":x['id'] for x in aq}; ea=st.selectbox('Action concernée',list(emap),key='j2_ev_action')
-            fam=st.selectbox('Famille',['EXPRESSION','CONFORMITE','QUESTIONNAIRES','AUDIT','TECHNIQUE','AMELIORATION'],key='j2_ev_family')
-            typ=st.selectbox('Type',['INFORMATION','OBSERVATION','SUGGESTION','DIFFICULTE','RECLAMATION','NON_CONFORMITE','INCIDENT','ECART_DOCUMENTAIRE','ECART_ORGANISATIONNEL','OPPORTUNITE'],key='j2_ev_type')
-            subj=st.text_input('Objet',key='j2_ev_subject');desc=st.text_area('Description factuelle',key='j2_ev_desc');sev=st.selectbox('Gravité',['MINEURE','MAJEURE','CRITIQUE'],key='j2_ev_sev')
-            if st.button('CRÉER LA FICHE QUALITÉ',type='primary',disabled=not subj.strip(),key='j2_ev_create'):
-                create_quality_event(ENGINE,fam,typ,subj.strip(),desc.strip(),st.session_state.admin_email,action_id=emap[ea],severity=sev);st.success('Fiche qualité créée et historisée.');rerun()
-    pts=quality_review_points(ENGINE,action_id=action_id,open_only=True)
-    if pts:
-        st.markdown('#### Points à examiner — notes ≤ 3')
-        st.dataframe(pd.DataFrame([{'ID':p['id'],'Action':p['action_no'],'Intitulé':p.get('action_title') or '','Type':p['campaign_kind'],'Question':p['question_text'],'Note':p['score'],'Statut':p['status']} for p in pts]),use_container_width=True,hide_index=True)
-        pm={f"#{p['id']} — {p['action_no']} — note {p['score']} — {p['question_text'][:60]}":p for p in pts}; pl=st.selectbox('Point à examiner',list(pm),key='review_point_sel'); rp=pm[pl]
-        decisions={'Classer avec observation':'CLASSE',"Reprendre dans le plan d’action":'PLAN_ACTION','Demander un retour':'RETOUR_DEMANDE'}
-        dlabel=st.selectbox('Décision',list(decisions),key=f"rpd_{rp['id']}"); dec=decisions[dlabel]; com=st.text_area('Analyse / motif / retour demandé',key=f"rpc_{rp['id']}")
-        if st.button('VALIDER LA DÉCISION',type='primary',key=f"rps_{rp['id']}"):
-            qev=None
-            if dec=='PLAN_ACTION':
-                qev=create_quality_event(ENGINE,'QUESTIONNAIRES','DIFFICULTE',f"Point à examiner — {rp['question_text'][:100]}",f"Note {rp['score']}/5. {com}",st.session_state.admin_email,action_id=rp['action_id'],campaign_id=rp['campaign_id'],origin='QUESTIONNAIRE')
-                add_quality_event_action(ENGINE,qev,f"Traiter le point ≤3 — {rp['question_text'][:90]}",st.session_state.admin_email,description=f"Origine questionnaire, note {rp['score']}/5. {com}")
-            review_quality_point(ENGINE,rp['id'],dec,com,st.session_state.admin_email,qev); st.success("Décision enregistrée. Le point repris dans le plan d'action n'est pas considéré comme clôturé tant que l'action n'est pas finalisée et vérifiée."); rerun()
-
-    st.markdown('### Signalements à traiter et historique')
-    trainer_rows=q(ENGINE,"""SELECT r.*,a.action_no,a.title action_title,t.full_name source_name FROM trainer_reports r
-      JOIN actions a ON a.id=r.action_id JOIN trainers t ON t.id=r.trainer_id ORDER BY r.created_at DESC""")
-    benef_rows=beneficiary_reports(ENGINE)
-    combined=[]
-    for r in trainer_rows:
-        combined.append({'kind':'TRAINER','id':r['id'],'action_id':r['action_id'],'Action':r['action_no'],'Source':'Intervenant','Personne':r.get('source_name') or '','Nature':r['report_type'],'Objet':r['subject'],'Description':r['description'],'Statut':r['status'],'Réponse':r.get('admin_response') or '','Date':r['created_at']})
-    for r in benef_rows:
-        combined.append({'kind':'BENEFICIARY','id':r['id'],'action_id':r['action_id'],'Action':r['action_no'],'Source':'Bénéficiaire','Personne':f"{r.get('beneficiary_first_name') or ''} {r.get('beneficiary_last_name') or ''}".strip(),'Nature':r['report_type'],'Objet':r['subject'],'Description':r['description'],'Statut':r['status'],'Réponse':r.get('admin_response') or '','Date':r['created_at']})
-    if om[ol]:
-        allowed={x['id'] for x in q(ENGINE,'SELECT id FROM actions WHERE organization_id=:o',{'o':om[ol]})}; combined=[x for x in combined if x['action_id'] in allowed]
-    if pt!='Tous':
-        allowed={x['id'] for x in q(ENGINE,'SELECT id FROM actions WHERE prestation_type=:p',{'p':pt})}; combined=[x for x in combined if x['action_id'] in allowed]
-    if action_id: combined=[x for x in combined if x['action_id']==action_id]
-    status_filter=st.selectbox('Afficher les signalements',['Tous','NOUVEAU','EN_COURS','TRAITE','CLOTURE'],key='qm_report_status')
-    if status_filter!='Tous': combined=[x for x in combined if x['Statut']==status_filter]
-    if not combined:
-        st.info('Aucun signalement avec ces filtres.')
-    else:
-        st.dataframe(pd.DataFrame([{'Date':x['Date'][:16].replace('T',' '),'Action':x['Action'],'Source':x['Source'],'Personne':x['Personne'],'Nature':x['Nature'],'Objet':x['Objet'],'Statut':x['Statut']} for x in combined]),use_container_width=True,hide_index=True)
-        rmap={f"{x['Action']} — {x['Source']} — {x['Objet']} — #{x['id']}":x for x in combined}; rl=st.selectbox('Fiche à traiter',list(rmap),key='qm_report_select'); rr=rmap[rl]
-        st.write(rr['Description'])
-        c1,c2=st.columns([1,2]); ns=c1.selectbox('Statut',['NOUVEAU','EN_COURS','TRAITE','CLOTURE'],index=['NOUVEAU','EN_COURS','TRAITE','CLOTURE'].index(rr['Statut']) if rr['Statut'] in ['NOUVEAU','EN_COURS','TRAITE','CLOTURE'] else 0,key=f"qm_rep_status_{rr['kind']}_{rr['id']}")
-        response=c2.text_area('Réponse / traitement de l’administration',value=rr.get('Réponse') or '',key=f"qm_rep_resp_{rr['kind']}_{rr['id']}")
-        if st.button('ENREGISTRER LE TRAITEMENT',key=f"qm_rep_save_{rr['kind']}_{rr['id']}",type='primary'):
-            ok,msg=update_user_report(ENGINE,rr['kind'],rr['id'],ns,response,st.session_state.admin_email)
-            if ok: st.success('Fiche mise à jour. Elle reste conservée dans l’historique.');rerun()
-            else: st.warning(msg)
-
-    issues=[x for x in (list_quality_issues(ENGINE,action_id) if action_id else list_quality_issues(ENGINE)) if x.get('status')!='MIGRE']
-    if om[ol] and not action_id:
-        aids={x['id'] for x in q(ENGINE,'SELECT id FROM actions WHERE organization_id=:o',{'o':om[ol]})};issues=[x for x in issues if x.get('action_id') in aids]
-    if issues:
-        with st.expander('Éléments historiques encore ouverts (migration)',expanded=False):
-            st.caption("Ces fiches historiques sont conservées en lecture seule. Toute nouvelle correction ou décision doit passer par une fiche Qualité active afin de préserver la traçabilité.")
-            st.dataframe(pd.DataFrame([{'Action':x.get('action_no') or x.get('action_id'),'Nature':x.get('issue_type') or '','Objet':x.get('title') or '','Description':x.get('description') or '','Statut':x.get('status') or '','Responsable':x.get('owner') or '','Créée':x.get('created_at') or ''} for x in issues]),use_container_width=True,hide_index=True)
-    st.markdown("### Suivi du plan d'action général")
-    plan=quality_general_action_plan(ENGINE,action_id=action_id)
-    if plan:
-        st.caption("Vue consolidée du plan d'action. Les actions se modifient dans la fiche Qualité/CAPA correspondante ci-dessus ; la consolidation elle-même reste une restitution.")
-        st.dataframe(pd.DataFrame([{'N°':x['id'],'Événement':x['event_ref'],'Origine':x.get('origin') or '','Date':x.get('detected_at') or '','Action':x.get('action_no') or '—','Intitulé':x.get('action_title') or '—','Personne':x.get('source_name') or '—','Type':x.get('event_type') or '','Point':x.get('subject') or '','Action décidée':x.get('action_title_capa') or '','Responsable':x.get('owner_name') or '','Échéance':x.get('due_at') or '','Statut':x.get('status') or '','Efficacité':x.get('effectiveness_result') or ''} for x in plan]),use_container_width=True,hide_index=True)
-    else: st.info("Aucune action qualité consolidée dans le plan d'action général.")
+    org_label=c1.selectbox('Organisme',list(orgmap),key='qm_org')
+    prestation=c2.selectbox('Prestation',['Tous','FORMATION','BILAN_COMPETENCES','VAE','COACHING','MENTORAT','AUTRE'],key='qm_pt')
+    org_id=orgmap[org_label];kind=None if prestation=='Tous' else prestation
+    actions=q(ENGINE,'SELECT id,action_no,title,organization_id,prestation_type FROM actions ORDER BY action_no')
+    if org_id:actions=[a for a in actions if a.get('organization_id')==org_id]
+    if kind:actions=[a for a in actions if (a.get('prestation_type') or '').upper()==kind]
+    options={'Toutes les actions':None,**{f"{a['action_no']} — {a['title']}":a['id'] for a in actions}}
+    selected=c3.selectbox('Action',list(options),key='qm_action')
+    action_id=options[selected]
+    filtered_ids=[action_id] if action_id is not None else [a['id'] for a in actions]
+    # When no filter is active, allow visibility of historical orphan QE cases in
+    # read-only history (never attach them to an action by assumption).
+    scope_ids=None if action_id is None and org_id is None and kind is None else filtered_ids
+    counts=quality_source_counts(ENGINE,filtered_ids)
+    plan=quality_plan_counts(ENGINE,filtered_ids)
+    if scope_ids is None:
+        orphans=[x for x in list_quality_events(ENGINE) if x.get('action_id') is None]
+        if orphans:
+            st.warning(f'{len(orphans)} fiche(s) Qualité historique(s) sans action : consultables dans Historique. Aucun rattachement automatique.')
+    views=st.tabs(['À traiter','Enquêtes et indicateurs','Historique'])
+    with views[0]:
+        st.markdown('### Points Qualité à traiter')
+        stats=st.columns(4)
+        for col,(label,key) in zip(stats,[('Notes ≤ 3/5','review_points'),('Difficultés / aléas','difficulties'),
+            ('Réclamations','complaints'),('Signalements / contacts','reports')]):col.metric(label,counts[key])
+        stats2=st.columns(4)
+        for col,(label,key) in zip(stats2,[('Non-conformités','nonconformities'),('Incidents','incidents'),
+            ('Suggestions','suggestions'),('Autres','other')]):col.metric(label,counts[key])
+        st.markdown('### Plan d’action Qualité')
+        pcols=st.columns(5)
+        for col,(label,key) in zip(pcols,[('Total','total'),('En cours','in_progress'),('À vérifier','to_verify'),
+            ('Clôturées','closed'),('En retard','overdue')]):col.metric(label,plan[key])
+        render_quality_short_review(action_id=action_id,scope_ids=scope_ids,key='quality_global')
+        # J2 case is identical here and in action Quality; only the scope differs.
+        render_quality_case_workbench(action_id=action_id,action_ids=scope_ids,key='quality_global',status_filter='open')
+        with st.expander('Créer un événement Qualité',expanded=False):
+            if actions:
+                amap={f"{x['action_no']} — {x['title']}":x['id'] for x in actions}
+                selected_action=st.selectbox('Action concernée',list(amap),key='qm_ev_action')
+                family=st.selectbox('Famille',['EXPRESSION','CONFORMITE','QUESTIONNAIRES','AUDIT','TECHNIQUE','AMELIORATION'],key='qm_ev_family')
+                event_type=st.selectbox('Nature',['INFORMATION','OBSERVATION','SUGGESTION','DIFFICULTE','RECLAMATION','NON_CONFORMITE','INCIDENT','ECART_DOCUMENTAIRE','ECART_ORGANISATIONNEL','OPPORTUNITE'],key='qm_ev_type')
+                subject=st.text_input('Objet',key='qm_ev_subject')
+                details=st.text_area('Description',key='qm_ev_details')
+                severity=st.selectbox('Gravité',['MINEURE','MAJEURE','CRITIQUE'],key='qm_ev_severity')
+                if st.button('Créer la fiche Qualité',disabled=not subject.strip(),key='qm_ev_create'):
+                    create_quality_event(ENGINE,family,event_type,subject.strip(),details.strip(),st.session_state.admin_email,action_id=amap[selected_action],severity=severity)
+                    st.success('Fiche créée et historisée.');rerun()
+            else:st.caption('Aucune action dans ce périmètre.')
+    with views[1]:
+        render_quality_campaign_pilotage(action_id=action_id,organization_id=org_id,prestation_type=kind,key='quality_global')
+    with views[2]:
+        render_quality_history(action_id=action_id,scope_ids=scope_ids,key='quality_global')
+        quality_legacy_reconciliation_widget(action_id=action_id,
+            scope_ids=scope_ids,key='quality_legacy_global')
+        plan_rows=quality_general_action_plan(ENGINE,action_id=action_id)
+        if scope_ids is not None and action_id is None:plan_rows=[x for x in plan_rows if x.get('action_no') in {a['action_no'] for a in actions}]
+        if plan_rows:
+            with st.expander("Suivi du plan d'action général — consolidé et preuves",expanded=False):
+                st.dataframe(pd.DataFrame([{'Événement':x['event_ref'],'Action':x.get('action_no') or '—',
+                    'Décision':x.get('action_title_capa') or '', 'Responsable':x.get('owner_name') or '',
+                    'Échéance':format_app_deadline(x.get('due_at')), 'Statut':x.get('status') or '',
+                    'Efficacité':x.get('effectiveness_result') or ''} for x in plan_rows]),use_container_width=True,hide_index=True)
     footer()
+
 
 def studies_screen():
     header('Clarté360 — Études PIP/O*NET','Pilotage méthodologique pseudonymisé')
@@ -3621,7 +4303,7 @@ def crm_screen():
     k1,k2,k3,k4=st.columns(4)
     k1.metric('Statut',(c.get('status') or '—').replace('_',' ')); k2.metric('Marketing','Oui' if c.get('marketing_consent') else 'Non')
     k3.metric('Source',(c.get('source') or '—').replace('_',' ')); k4.metric('Actions liées',len(list_crm_action_links(ENGINE,c['id'])))
-    st.caption(f"Créé : {(c.get('created_at') or '')[:16].replace('T',' ')} · Dernière activité : {(c.get('updated_at') or '')[:16].replace('T',' ')}")
+    st.caption(f"Créé : {format_app_datetime(c.get('created_at'))} · Dernière activité : {format_app_datetime(c.get('updated_at'))}")
 
     tab_fiche,tab_suivi,tab_actions,tab_timeline=st.tabs(['👤 Fiche','📝 Notes & tâches','🔗 Actions liées','🕘 Timeline'])
     with tab_fiche:
@@ -3664,13 +4346,13 @@ def crm_screen():
             if not notes: st.caption('Aucune note.')
             for e,text in notes:
                 with st.container(border=True):
-                    st.write(text); st.caption(f"{(e.get('created_at') or '')[:16].replace('T',' ')} · {e.get('actor') or ''}")
+                    st.write(text); st.caption(f"{format_app_datetime(e.get('created_at'))} · {e.get('actor') or ''}")
                     if st.button('🗑️ Supprimer la note',key=f"crm_note_del_{e['id']}"):
                         delete_crm_note(ENGINE,c['id'],e['id'],st.session_state.admin_email); rerun()
         with right:
             st.markdown('#### Tâches / actions commerciales')
             with st.form(f"crm_task_{c['id']}",clear_on_submit=True):
-                task_title=st.text_input('Nouvelle tâche / action à mener'); due=st.date_input('Échéance',value=None); task_notes=st.text_input('Commentaire')
+                task_title=st.text_input('Nouvelle tâche / action à mener'); due=st.date_input('Échéance',value=None,format=app_date_input_format()); task_notes=st.text_input('Commentaire')
                 task_ok=st.form_submit_button('AJOUTER LA TÂCHE')
             if task_ok:
                 try:
@@ -3682,7 +4364,7 @@ def crm_screen():
                 with st.expander(f"{'✅' if t['status']=='FAIT' else '⬜'} {t['title']} — {t.get('due_at') or 'sans échéance'}"):
                     title=st.text_input('Objet',value=t['title'],key=f"crm_task_title_{t['id']}")
                     due_val=date.fromisoformat(t['due_at']) if t.get('due_at') else None
-                    due2=st.date_input('Échéance',value=due_val,key=f"crm_task_due_{t['id']}")
+                    due2=st.date_input('Échéance',value=due_val,key=f"crm_task_due_{t['id']}",format=app_date_input_format())
                     notes2=st.text_input('Commentaire',value=t.get('notes') or '',key=f"crm_task_notes_{t['id']}")
                     status2=st.selectbox('Statut',['A_FAIRE','FAIT'],index=0 if t['status']=='A_FAIRE' else 1,key=f"crm_task_status_{t['id']}")
                     b1,b2=st.columns(2)
@@ -3719,7 +4401,7 @@ def crm_screen():
                 try: d=json.loads(e.get('details_json') or '{}')
                 except Exception: d={}
                 detail=d.get('note') or d.get('activity') or d.get('title') or ', '.join(f"{k}: {v}" for k,v in d.items() if k not in {'fields'} and v not in (None,''))
-                timeline.append({'Date':(e.get('created_at') or '')[:16].replace('T',' '),'Événement':e['event_type'].replace('_',' '),'Détail':detail or '','Auteur':e.get('actor') or ''})
+                timeline.append({'Date':format_app_datetime(e.get('created_at')),'Événement':e['event_type'].replace('_',' '),'Détail':detail or '','Auteur':e.get('actor') or ''})
             st.dataframe(pd.DataFrame(timeline),use_container_width=True,hide_index=True)
     footer()
 
@@ -3743,7 +4425,7 @@ def contractualization_tab(a):
     if cases:
         st.dataframe(pd.DataFrame([{'Bénéficiaire':f"{x['last_name']} {x['first_name']}",'Statut':x['status'].replace('_',' '),
           'Type':x.get('contract_type') or '','NO_CLAR':x.get('no_clar') or '','PDF':x.get('pdf_ref') or '',
-          'JSON':x.get('json_ref') or '','Mis à jour':x['updated_at'][:16].replace('T',' ')} for x in cases]),use_container_width=True,hide_index=True)
+          'JSON':x.get('json_ref') or '','Mis à jour':format_app_datetime(x['updated_at'])} for x in cases]),use_container_width=True,hide_index=True)
         cmap={f"#{x['id']} — {x['last_name']} {x['first_name']} — {x['status']}":x for x in cases}
         cl=st.selectbox('Dossier à mettre à jour',list(cmap),key=f"contract_case_{a['id']}"); cc=cmap[cl]
         statuses=['A_PREPARER','EN_COURS','GENEREE','SIGNEE','ANNULEE']
@@ -3765,15 +4447,54 @@ def _collaboration_select(label, key, value='A_DEFINIR'):
     return st.selectbox(label,values,index=idx,key=key,format_func=_collaboration_label)
 
 def professionals_screen():
-    header('Clarté360 — Intervenants & partenaires','Dossiers professionnels, candidatures, qualifications, alertes et prestations')
-    sub_intervenants,sub_candidates,sub_matrix,sub_alertes,sub_prestations=st.tabs(['Intervenants','Candidats','Qualifications & recherche','Alertes','Prestations'])
-    with sub_intervenants:
-        st.subheader('Intervenants')
+    header('Clarté360 — Intervenants & partenaires', 'Dossiers professionnels et pilotage transversal')
+    if st.session_state.get('_j2_open_ppid') or st.session_state.get('_j14_open_documents') or st.session_state.get('_j17_focus_service_id') is not None:
+        st.session_state['_j6_next_professional_workspace']='Dossiers professionnels'
+    next_workspace=st.session_state.pop('_j6_next_professional_workspace',None)
+    if next_workspace:st.session_state['j6_professional_workspace']=next_workspace
+    choices=('Accueil intervenants','Dossiers professionnels','Pilotage & référentiels')
+    if st.session_state.get('j6_professional_workspace') not in choices:
+        st.session_state['j6_professional_workspace']='Accueil intervenants'
+    scope=st.radio('Espace de travail',choices,horizontal=True,key='j6_professional_workspace')
+    if scope=='Accueil intervenants':
+        st.markdown('### Accueil Intervenants & Partenaires')
+        c1,c2=st.columns(2)
+        with c1:
+            st.markdown('#### Dossiers professionnels')
+            st.caption('Ouvrir un intervenant ou un candidat, puis consulter ses sept rubriques sans tableau répété.')
+            if st.button('Ouvrir les dossiers',key='j6_prof_enter_list',use_container_width=True):
+                st.session_state.pop('j6_professional_selected',None)
+                st.session_state['_j6_next_professional_workspace']='Dossiers professionnels';rerun()
+        with c2:
+            st.markdown('#### Pilotage & référentiels')
+            st.caption('Candidatures, qualifications humaines, alertes, prestations et suivi transversal.')
+            if st.button('Ouvrir le pilotage',key='j6_prof_enter_pilotage',use_container_width=True):
+                st.session_state['_j6_next_professional_workspace']='Pilotage & référentiels';rerun()
+        dash=professional_dashboard_metrics(ENGINE)
+        cc=st.columns(4)
+        for col,title,key in zip(cc,['Intervenants actifs','Candidats actifs','Qualifications','Alertes actives'],
+                ['active_intervenants','active_candidates','qualified_intervenants','active_alerts']):
+            col.metric(title,dash[key])
+        return
+    if scope=='Dossiers professionnels':
+        _j6_professional_dossiers();return
+    _j6_professional_pilotage()
+
+def _j6_professional_dossiers():
+    st.subheader('Dossiers professionnels')
+    people_all=professional_people_operational_view(ENGINE,include_inactive=True)
+    incoming=st.session_state.pop('_j2_open_ppid',None)
+    if incoming and any(x['professional_person_id']==incoming for x in people_all):
+        st.session_state['j6_professional_selected']=incoming
+    selected=st.session_state.get('j6_professional_selected')
+    if selected and not any(x['professional_person_id']==selected for x in people_all):
+        st.session_state.pop('j6_professional_selected',None);selected=None
+    if not selected:
         dash=professional_dashboard_metrics(ENGINE)
         d1,d2,d3,d4=st.columns(4)
         d1.metric('Intervenants actifs',dash['active_intervenants']); d2.metric('Avec qualification',dash['qualified_intervenants'])
         d3.metric('Candidats actifs',dash['active_candidates']); d4.metric('Alertes actives',dash['active_alerts'])
-        people_all=professional_people_operational_view(ENGINE,include_inactive=True)
+
         c1,c2,c3=st.columns([2,1,1])
         search_person=c1.text_input('Rechercher un intervenant',placeholder='Nom, email, ville...',key='j9_people_search')
         active_filter=c2.selectbox('État',['Actifs','Tous','Inactifs'],key='j9_active_filter')
@@ -3796,7 +4517,7 @@ def professionals_screen():
             alab=st.selectbox('Sélectionner une ligne',list(amap),key='rc2p_people_action'); ap=amap[alab]
             a1,a2,a3=st.columns(3)
             if a1.button('Ouvrir / modifier',key='rc2p_open_person'):
-                st.session_state['_j2_open_ppid']=ap['professional_person_id'];rerun()
+                st.session_state['j6_professional_selected']=ap['professional_person_id'];rerun()
             if ap.get('active'):
                 if a2.button('Inactiver',key='rc2p_inactivate_person'):
                     set_professional_active(ENGINE,ap['professional_person_id'],False,st.session_state.admin_email,'Inactivation depuis la liste');st.success('Dossier inactivé.');rerun()
@@ -3822,7 +4543,7 @@ def professionals_screen():
                 if cadd:
                     try:
                         ppid=create_professional_candidate(ENGINE,cn,ce,cp,cc,st.session_state.admin_email)
-                        st.session_state['_j2_open_ppid']=ppid;st.session_state['_j14_open_documents']=ppid;st.success('Dossier candidat créé. Ajoutez maintenant ses documents.');rerun()
+                        st.session_state['j6_professional_selected']=ppid;st.session_state['_j14_open_documents']=ppid;st.success('Dossier candidat créé. Ajoutez maintenant ses documents.');rerun()
                     except ValueError as ex: st.error(str(ex))
         with ccreate2:
             with st.expander('Ajouter directement un intervenant',expanded=False):
@@ -3834,621 +4555,653 @@ def professionals_screen():
                 if iadd:
                     try:
                         ppid=create_professional_intervenant(ENGINE,inn,ine,inp,inc,st.session_state.admin_email)
-                        st.session_state['_j2_open_ppid']=ppid;st.session_state['_j14_open_documents']=ppid;st.success('Dossier intervenant créé. Ajoutez maintenant ses documents avant l’analyse globale.');rerun()
+                        st.session_state['j6_professional_selected']=ppid;st.session_state['_j14_open_documents']=ppid;st.success('Dossier intervenant créé. Ajoutez maintenant ses documents avant l’analyse globale.');rerun()
                     except ValueError as ex: st.error(str(ex))
-        people_for_open=people_all
-        if people_for_open:
-            pmap={f"{x.get('display_name') or x.get('full_name') or x.get('title') or x['professional_person_id']} — {x['principal_status']} — {x['professional_person_id']}":x for x in people_for_open}
-            default=0
-            wanted=st.session_state.pop('_j2_open_ppid',None)
-            if wanted:
-                for i,x in enumerate(pmap.values()):
-                    if x['professional_person_id']==wanted: default=i;break
-            plab=st.selectbox('Dossier à ouvrir',list(pmap),index=default,key='j2_person_manage');ppid=pmap[plab]['professional_person_id'];prof=get_professional_360(ENGINE,ppid)
-            st.markdown(f"### {prof.get('display_name') or prof.get('full_name') or ppid}")
-            st.caption(f"{prof['principal_status']} · {prof['candidate_work_status'].replace('_',' ')} · {ppid}")
-            # RC2-2-2 P3 : navigation pilotable, indispensable pour les deep-links métier.
-            dossier_screens=['Synthèse','Parcours professionnel','Conformité & collaboration','Analyse IA','Qualifications','Missions / Affectations','CV Clarté360']
-            screen_key=f'rc222_dossier_screen_{ppid}'
-            if st.session_state.pop('_j14_open_documents',None)==ppid:
-                st.session_state[screen_key]='Analyse IA'
-            if st.session_state.get('_j17_focus_service_id') is not None:
-                st.session_state[screen_key]='Qualifications'
-            screen_default=st.session_state.get(screen_key,'Synthèse')
-            if screen_default not in dossier_screens: screen_default='Synthèse'
-            st.sidebar.markdown('#### Dossier intervenant')
-            st.sidebar.caption(str(prof.get('display_name') or prof.get('full_name') or ppid))
-            screen=st.sidebar.radio('Navigation du dossier',dossier_screens,index=dossier_screens.index(screen_default),horizontal=False,key=screen_key,label_visibility='collapsed')
-            ps=screen=='Synthèse'; pex=screen=='Parcours professionnel'; preg=screen=='Conformité & collaboration'; pdocs=screen=='Analyse IA'; pqual=screen=='Qualifications'; pmissions=screen=='Missions / Affectations'; pcv=screen=='CV Clarté360'
-            pwf=ps and prof['principal_status']=='CANDIDAT'; ped=pex; pcert=pex
-            with st.expander('ⓘ Comprendre cet écran'):
-                help_by_screen={
-                  'Synthèse':"Cockpit DRH : identité, état du dossier, conformité, qualifications, alertes et prochaine action. Les décisions restent humaines.",
-                  'Parcours professionnel':"Expériences, spécialités, diplômes, langues, certifications et habilitations. Saisie manuelle ou propositions IA explicitement acceptées.",
-                  'Conformité & collaboration':"Relation avec Clarté360, fournisseur lié et conformité. Ces éléments ne prouvent pas à eux seuls une compétence sur une prestation.",
-                  'Analyse IA':"Déposez les documents, autorisez l’analyse, vérifiez les faits proposés puis instruisez les prestations. L’IA prépare ; elle ne décide pas.",
-                  'Qualifications':"Revue humaine par prestation. Les propositions IA, preuves et points ouverts sont des aides ; le niveau effectif reste humain.",
-                  'Missions / Affectations':"Vue opérationnelle des Actions auxquelles la personne est affectée et de l’état de qualification associé.",
-                  'CV Clarté360':"CV généré depuis le dossier structuré et les qualifications validées humainement."
-                }
-                st.caption(help_by_screen[screen])
-            if ps:
-                cockpit=professional_cockpit_summary(ENGINE,ppid)
-                st.markdown('#### Vue rapide du dossier')
-                c1,c2,c3,c4=st.columns(4)
-                c1.metric('Statut',cockpit['status_label']); c2.metric('Collaboration',cockpit['collaboration_label'])
-                c3.metric('Complétude dossier',f"{cockpit['completion_percent']} %"); c4.metric('Conformité',cockpit['compliance_label'])
-                c1,c2,c3,c4=st.columns(4)
-                c1.metric('Qualifications validées',cockpit['validated_qualifications']); c2.metric('Points à traiter',cockpit['open_points'])
-                c3.metric('Alertes / révisions',cockpit['active_alerts']); c4.metric('Missions',cockpit['mission_count'])
-                if cockpit['assignable_services']:
-                    st.success('Affectable aujourd’hui sur : ' + ', '.join(cockpit['assignable_services'][:6]))
+        return
+    st.caption('Dossier unique : sept rubriques, sans répétition du tableau général.')
+    cback,cselect=st.columns([1,3])
+    if cback.button('← Retour à la liste',key='j6_prof_back_list'):
+        st.session_state.pop('j6_professional_selected',None)
+        st.session_state.pop('_j6_last_selected',None)
+        rerun()
+    people_for_open=people_all
+    pmap={f"{x.get('display_name') or x.get('full_name') or x.get('title') or x['professional_person_id']} — {x['principal_status']} — {x['professional_person_id']}":x for x in people_for_open}
+    keys=list(pmap)
+    current=next((k for k,v in pmap.items() if v['professional_person_id']==selected),keys[0])
+    # Set index from selected dossier without relying on hidden prior list selection.
+    if st.session_state.get('j2_person_manage') not in keys or st.session_state.get('_j6_last_selected')!=selected:
+        st.session_state['j2_person_manage']=current
+        st.session_state['_j6_last_selected']=selected
+    with cselect:
+        plab=st.selectbox('Changer de dossier professionnel',keys,key='j2_person_manage')
+    ppid=pmap[plab]['professional_person_id']
+    if ppid!=selected:st.session_state['j6_professional_selected']=ppid;rerun()
+    prof=get_professional_360(ENGINE,ppid)
+    st.markdown(f"### {prof.get('display_name') or prof.get('full_name') or ppid}")
+    st.caption(f"{prof['principal_status']} · {prof['candidate_work_status'].replace('_',' ')} · {ppid}")
+    # RC2-2-2 P3 : navigation pilotable, indispensable pour les deep-links métier.
+    dossier_screens=['Synthèse','Parcours professionnel','Conformité & collaboration','Analyse IA','Qualifications','Missions / Affectations','CV Clarté360']
+    screen_key=f'rc222_dossier_screen_{ppid}'
+    if st.session_state.pop('_j14_open_documents',None)==ppid:
+        st.session_state[screen_key]='Analyse IA'
+    if st.session_state.get('_j17_focus_service_id') is not None:
+        st.session_state[screen_key]='Qualifications'
+    screen_default=st.session_state.get(screen_key,'Synthèse')
+    if screen_default not in dossier_screens: screen_default='Synthèse'
+    st.markdown('#### Rubriques du dossier professionnel')
+    screen=st.selectbox('Rubrique à consulter',dossier_screens,
+        index=dossier_screens.index(screen_default),key=screen_key)
+    ps=screen=='Synthèse'; pex=screen=='Parcours professionnel'; preg=screen=='Conformité & collaboration'; pdocs=screen=='Analyse IA'; pqual=screen=='Qualifications'; pmissions=screen=='Missions / Affectations'; pcv=screen=='CV Clarté360'
+    pwf=ps and prof['principal_status']=='CANDIDAT'; ped=pex; pcert=pex
+    with st.expander('ⓘ Comprendre cet écran'):
+        help_by_screen={
+          'Synthèse':"Cockpit DRH : identité, état du dossier, conformité, qualifications, alertes et prochaine action. Les décisions restent humaines.",
+          'Parcours professionnel':"Expériences, spécialités, diplômes, langues, certifications et habilitations. Saisie manuelle ou propositions IA explicitement acceptées.",
+          'Conformité & collaboration':"Relation avec Clarté360, fournisseur lié et conformité. Ces éléments ne prouvent pas à eux seuls une compétence sur une prestation.",
+          'Analyse IA':"Déposez les documents, autorisez l’analyse, vérifiez les faits proposés puis instruisez les prestations. L’IA prépare ; elle ne décide pas.",
+          'Qualifications':"Revue humaine par prestation. Les propositions IA, preuves et points ouverts sont des aides ; le niveau effectif reste humain.",
+          'Missions / Affectations':"Vue opérationnelle des Actions auxquelles la personne est affectée et de l’état de qualification associé.",
+          'CV Clarté360':"CV généré depuis le dossier structuré et les qualifications validées humainement."
+        }
+        st.caption(help_by_screen[screen])
+    if ps:
+        cockpit=professional_cockpit_summary(ENGINE,ppid)
+        st.markdown('#### Vue rapide du dossier')
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric('Statut',cockpit['status_label']); c2.metric('Collaboration',cockpit['collaboration_label'])
+        c3.metric('Complétude dossier',f"{cockpit['completion_percent']} %"); c4.metric('Conformité',cockpit['compliance_label'])
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric('Qualifications validées',cockpit['validated_qualifications']); c2.metric('Points à traiter',cockpit['open_points'])
+        c3.metric('Alertes / révisions',cockpit['active_alerts']); c4.metric('Missions',cockpit['mission_count'])
+        if cockpit['assignable_services']:
+            st.success('Affectable aujourd’hui sur : ' + ', '.join(cockpit['assignable_services'][:6]))
+        else:
+            st.info("Aucune prestation n’est actuellement confirmée comme affectable à partir des qualifications humaines enregistrées.")
+        if cockpit['next_actions']:
+            st.markdown('**À faire maintenant**')
+            for item in cockpit['next_actions'][:5]: st.write('• '+item)
+        st.markdown('#### Identité')
+        st.caption('Le nom et le prénom sont des données d’identité distinctes du titre professionnel.')
+        if not (prof.get('first_name') and prof.get('last_name')):
+            st.info(f"Identité historique à structurer : {prof.get('display_name') or prof.get('full_name') or 'non renseignée'}")
+        with st.form(f'rc22_identity_{ppid}'):
+            c1,c2=st.columns(2)
+            first_name=c1.text_input('Prénom *',value=prof.get('first_name') or '')
+            last_name=c2.text_input('Nom *',value=prof.get('last_name') or '')
+            identity_save=st.form_submit_button('Enregistrer le nom et le prénom')
+        if identity_save:
+            try:
+                update_professional_identity(ENGINE,ppid,first_name,last_name,st.session_state.admin_email)
+                st.success('Identité mise à jour. Le titre professionnel reste indépendant.');rerun()
+            except ValueError as ex: st.error(str(ex))
+        st.markdown('#### Profil professionnel')
+        with st.form(f'j2_profile_{ppid}'):
+            c1,c2=st.columns(2); title=c1.text_input('Titre professionnel',value=prof.get('title') or '');coll=_collaboration_select('Type de collaboration avec Clarté360',f'rc222_collab_{ppid}',prof.get('collaboration_type') or 'A_DEFINIR')
+            summary=st.text_area('Résumé professionnel',value=prof.get('summary') or '',height=120)
+            c1,c2=st.columns(2); email=c1.text_input('Email professionnel',value=prof.get('profile_email') or prof.get('trainer_email') or '');phone=c2.text_input('Téléphone',value=prof.get('profile_phone') or prof.get('trainer_phone') or '')
+            c1,c2,c3=st.columns(3); city=c1.text_input('Ville',value=prof.get('city') or '');country=c2.text_input('Pays',value=prof.get('country') or '');website=c3.text_input('Site web',value=prof.get('website') or '')
+            linkedin=st.text_input('LinkedIn',value=prof.get('linkedin_url') or '');notes=st.text_area('Notes internes',value=prof.get('notes_internal') or '',height=90)
+            save=st.form_submit_button('Enregistrer le profil',type='primary')
+        if save:
+            try:update_professional_profile(ENGINE,ppid,{'title':title,'summary':summary,'collaboration_type':coll,'email':email,'phone':phone,'city':city,'country':country,'website':website,'linkedin_url':linkedin,'notes_internal':notes},st.session_state.admin_email);st.success('Profil enregistré.');rerun()
+            except ValueError as ex:st.error(str(ex))
+        with st.expander('Réinitialiser les analyses et les données professionnelles de ce dossier'):
+            preview=professional_reset_preview(ENGINE,ppid)
+            st.warning('Cette opération remet le dossier professionnel à zéro pour une nouvelle instruction. Elle conserve l’identité, le statut CANDIDAT/INTERVENANT, le caractère actif/inactif, les documents déposés, les liaisons fournisseur et les affectations aux actions/plannings.')
+            st.caption(f"Documents conservés : {preview['documents_preserved']} · Analyses IA : {preview['counts'].get('professional_global_ai_runs',0)} · Qualifications : {preview['counts'].get('person_service_qualifications',0)} · Expériences : {preview['counts'].get('professional_experiences',0)} · Diplômes : {preview['counts'].get('professional_education',0)}")
+            reset_phrase=f"REINITIALISER {ppid}"
+            reset_confirm=st.text_input(f"Pour confirmer, saisissez exactement : {reset_phrase}",key=f'rc22_reset_confirm_{ppid}')
+            reset_pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'rc22_reset_pw_{ppid}')
+            if st.button('Purger les analyses et remettre le dossier professionnel à zéro',key=f'rc22_reset_btn_{ppid}',disabled=reset_confirm.strip()!=reset_phrase):
+                try:
+                    info=reset_professional_dossier(ENGINE,ppid,st.session_state.admin_email,reset_pw)
+                    st.success('Dossier professionnel réinitialisé. Les documents, l’identité, le statut et les affectations ont été conservés. Une sauvegarde technique a été créée avant purge.');rerun()
+                except ValueError as ex: st.error(str(ex))
+    if pwf:
+        comp=candidate_completeness(ENGINE,ppid)
+        st.markdown('#### Suivi de la candidature')
+        st.progress(comp['percent']/100.0,text=f"Complétude du dossier : {comp['percent']} % ({comp['done']}/{comp['total']})")
+        cols=st.columns(2)
+        for i,(label,ok) in enumerate(comp['checks'].items()): cols[i%2].write(('✓ ' if ok else '○ ')+label)
+        if prof['principal_status']=='CANDIDAT':
+            st.caption('Le candidat reste non affectable tant qu’une validation humaine explicite ne transforme pas ce même dossier en intervenant.')
+            normal_states=['NOUVEAU','INCOMPLET','EN_ETUDE','ENTRETIEN_A_PREVOIR','PRET_DECISION']
+            current=prof['candidate_work_status'] if prof['candidate_work_status'] in normal_states else 'NOUVEAU'
+            with st.form(f'j3_status_{ppid}'):
+                ns=st.selectbox('État de travail',normal_states,index=normal_states.index(current)); nr=st.text_input('Commentaire / motif'); nsave=st.form_submit_button('Mettre à jour l’état')
+            if nsave:
+                try:set_candidate_work_status(ENGINE,ppid,ns,st.session_state.admin_email,nr or None);st.success('État de candidature mis à jour.');rerun()
+                except ValueError as ex:st.error(str(ex))
+            with st.expander('Demander un complément'):
+                with st.form(f'j3_complement_{ppid}'):
+                    req=st.text_area('Complément demandé *'); reqgo=st.form_submit_button('Enregistrer la demande')
+                if reqgo:
+                    try:request_candidate_complement(ENGINE,ppid,req,st.session_state.admin_email);st.success('Demande de complément enregistrée.');rerun()
+                    except ValueError as ex:st.error(str(ex))
+            requests=candidate_open_requests(ENGINE,ppid)
+            if requests:
+                st.write('**Compléments en attente**')
+                for r in requests:
+                    c1,c2=st.columns([5,1]); c1.write(r['request_text'])
+                    if c2.button('Résolu',key=f"j3_resolve_{r['id']}"):
+                        resolve_candidate_request(ENGINE,r['id'],st.session_state.admin_email);rerun()
+            st.markdown('#### Décision humaine')
+            reason=st.text_area('Motif / commentaire de décision',key=f'j3_decision_reason_{ppid}')
+            c1,c2,c3=st.columns(3)
+            if c1.button('Valider comme intervenant',type='primary',key=f'j3_validate_{ppid}'):
+                try:decide_candidate(ENGINE,ppid,'VALIDER',st.session_state.admin_email,reason or None);st.success('Candidature validée : le même dossier est désormais INTERVENANT.');rerun()
+                except ValueError as ex:st.error(str(ex))
+            if c2.button('Refuser',key=f'j3_refuse_{ppid}'):
+                try:decide_candidate(ENGINE,ppid,'REFUSER',st.session_state.admin_email,reason or None);rerun()
+                except ValueError as ex:st.error(str(ex))
+            if c3.button('Abandonner',key=f'j3_abandon_{ppid}'):
+                try:decide_candidate(ENGINE,ppid,'ABANDONNER',st.session_state.admin_email,reason or None);rerun()
+                except ValueError as ex:st.error(str(ex))
+        else:
+            if prof.get('origin')=='ADMIN_DIRECT_INTERVENANT':
+                st.info("Intervenant créé directement par l’administration : aucun parcours de candidature artificiel. L’adéquation compétences / prestations sera gérée dans l’étape de qualification.")
+            else:
+                st.success('Dossier validé comme intervenant. La candidature est clôturée et l’historique reste conservé.')
+        hist=candidate_workflow_history(ENGINE,ppid)
+        if hist:
+            st.write('**Historique du workflow**')
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x['created_at']),'Événement':x['event_type'],'De':x.get('old_work_status') or '','Vers':x.get('new_work_status') or '','Commentaire':x.get('comment') or '','Auteur':x['actor']} for x in hist]),use_container_width=True,hide_index=True)
+    if preg:
+        reg=prof.get('regulatory_status') or {}
+        st.markdown('#### Entité fournisseur liée')
+        st.caption("Gestion Clients reste la source de vérité de l’entité économique. Ici, on conserve uniquement la liaison avec la personne professionnelle et son historique.")
+        slinks=list_professional_supplier_links(ENGINE,ppid)
+        if slinks:
+            st.dataframe(pd.DataFrame([{'Fournisseur':x['supplier_id'],'Relation':x['relationship_type'],'Début':x.get('valid_from') or '','Fin':x.get('valid_to') or '','Statut':x['status'],'Synchronisation':x['sync_status']} for x in slinks]),use_container_width=True,hide_index=True)
+        with st.expander('Lier / changer d’entité fournisseur'):
+            with st.form(f'j10_supplier_{ppid}'):
+                sid=st.text_input('Identifiant fournisseur Gestion Clients *',help="Identifiant stable fourni par Gestion Clients. La raison sociale et les données économiques ne sont pas recopiées ici.")
+                rt=st.selectbox('Type de relation',['PROFESSIONAL','INDEPENDENT','SALARIE','SOUS_TRAITANT','PARTENAIRE','AUTRE'])
+                c1,c2=st.columns(2); vf=c1.text_input('Début (AAAA-MM-JJ)'); vt=c2.text_input('Fin prévue (AAAA-MM-JJ)')
+                slsave=st.form_submit_button('Enregistrer la liaison',type='primary')
+            if slsave:
+                try:
+                    link_professional_supplier(ENGINE,ppid,sid,rt,vf or None,vt or None,st.session_state.admin_email)
+                    st.success('Liaison enregistrée. Elle pourra être synchronisée avec Gestion Clients sans recopier la fiche fournisseur.');rerun()
+                except ValueError as ex: st.error(str(ex))
+        st.caption("Ces informations décrivent l’activité professionnelle propre de l’intervenant. Lorsqu’elles relèvent d’une entité fournisseur distincte, la source de vérité restera Gestion Clients et sera projetée ici lors du raccordement.")
+        with st.form(f'j21_reg_{ppid}'):
+            own=st.radio('Origine des informations',['Activité propre de l’intervenant','Entité fournisseur liée'],index=1 if reg.get('ownership_mode')=='SUPPLIER_PROJECTION' else 0,horizontal=True)
+            st.markdown('#### Déclaration d’activité (NDA)')
+            c1,c2=st.columns(2); nda=c1.selectbox('Dispose d’un NDA ?',['NON_RENSEIGNE','OUI','NON'],index=['NON_RENSEIGNE','OUI','NON'].index(reg.get('nda_status') or 'NON_RENSEIGNE')); ndanum=c2.text_input('Numéro de déclaration d’activité',value=reg.get('nda_number') or '')
+            c1,c2=st.columns(2); ndareg=c1.text_input('DREETS / région',value=reg.get('nda_region') or ''); ndadate=c2.date_input('Date de déclaration',value=(datetime.fromisoformat(str(reg.get('nda_declared_at'))[:10]).date() if reg.get('nda_declared_at') else None),format=app_date_input_format())
+            ndanotes=st.text_area('Notes NDA',value=reg.get('nda_notes') or '',height=70)
+            st.markdown('#### Certification Qualiopi')
+            c1,c2=st.columns(2); qstat=c1.selectbox('Certification Qualiopi ?',['NON_RENSEIGNE','OUI','NON'],index=['NON_RENSEIGNE','OUI','NON'].index(reg.get('qualiopi_status') or 'NON_RENSEIGNE')); qcert=c2.text_input('Organisme certificateur',value=reg.get('qualiopi_certifier') or '')
+            qref=st.text_input('Référence / n° du certificat',value=reg.get('qualiopi_certificate_ref') or '')
+            c1,c2=st.columns(2); qfrom=c1.date_input('Valide depuis',value=(datetime.fromisoformat(str(reg.get('qualiopi_valid_from'))[:10]).date() if reg.get('qualiopi_valid_from') else None),format=app_date_input_format()); quntil=c2.date_input('Valide jusqu’au',value=(datetime.fromisoformat(str(reg.get('qualiopi_valid_until'))[:10]).date() if reg.get('qualiopi_valid_until') else None),format=app_date_input_format())
+            st.write('**Catégories d’actions couvertes par le certificat**')
+            q1,q2=st.columns(2); scope_training=q1.checkbox('Actions de formation',value=bool(reg.get('qualiopi_scope_training'))); scope_bilan=q2.checkbox('Bilans de compétences',value=bool(reg.get('qualiopi_scope_bilan')))
+            q3,q4=st.columns(2); scope_vae=q3.checkbox('Actions permettant de faire valider les acquis de l’expérience (VAE)',value=bool(reg.get('qualiopi_scope_vae'))); scope_app=q4.checkbox('Actions de formation par apprentissage',value=bool(reg.get('qualiopi_scope_apprentissage')))
+            qnotes=st.text_area('Notes Qualiopi',value=reg.get('qualiopi_notes') or '',height=70)
+            regsave=st.form_submit_button('Enregistrer NDA / Qualiopi',type='primary')
+        if regsave:
+            try:
+                update_professional_regulatory_status(ENGINE,ppid,{'ownership_mode':'SUPPLIER_PROJECTION' if own=='Entité fournisseur liée' else 'PERSONAL_ACTIVITY','nda_status':nda,'nda_number':ndanum,'nda_region':ndareg,'nda_declared_at':ndadate.isoformat() if ndadate else None,'nda_notes':ndanotes,'qualiopi_status':qstat,'qualiopi_certifier':qcert,'qualiopi_certificate_ref':qref,'qualiopi_valid_from':qfrom.isoformat() if qfrom else None,'qualiopi_valid_until':quntil.isoformat() if quntil else None,'qualiopi_scope_training':scope_training,'qualiopi_scope_bilan':scope_bilan,'qualiopi_scope_vae':scope_vae,'qualiopi_scope_apprentissage':scope_app,'qualiopi_notes':qnotes},st.session_state.admin_email)
+                st.success('Informations NDA / Qualiopi enregistrées.');rerun()
+            except ValueError as ex:st.error(str(ex))
+        st.info('Les justificatifs se déposent dans Analyse IA avec les catégories « NDA justificatif » ou « Certificat Qualiopi ».')
+    if pex:
+        if prof['experiences']:
+            st.dataframe(pd.DataFrame(prof['experiences'])[['role_title','organization','start_date','end_date','current_role']],use_container_width=True,hide_index=True)
+            _rc2p_manage_structured_rows(ppid,'professional_experiences',prof['experiences'],'role_title',[('role_title','Fonction','text'),('organization','Organisation','text'),('start_date','Début','text'),('end_date','Fin','text'),('current_role','Poste actuel','bool'),('description','Description','long')],f'rc2p_exp_{ppid}')
+        with st.expander('Ajouter une expérience'):
+            with st.form(f'j2_exp_{ppid}'):
+                c1,c2=st.columns(2); role=c1.text_input('Fonction *');org=c2.text_input('Organisation');desc=st.text_area('Description');expadd=st.form_submit_button('Ajouter')
+            if expadd:
+                try:add_professional_experience(ENGINE,ppid,role,org,description=desc,actor=st.session_state.admin_email);rerun()
+                except ValueError as ex:st.error(str(ex))
+        if prof['specialties']:
+            st.dataframe(pd.DataFrame([{'Spécialité':x['specialty'],'Notes':x.get('notes') or ''} for x in prof['specialties']]),use_container_width=True,hide_index=True)
+            _rc2p_manage_structured_rows(ppid,'professional_specialties',prof['specialties'],'specialty',[('specialty','Spécialité','text'),('notes','Notes','long')],f'rc2p_spec_{ppid}')
+        with st.form(f'j2_spec_{ppid}'):
+            sp=st.text_input('Ajouter une spécialité');spa=st.form_submit_button('Ajouter la spécialité')
+        if spa and sp.strip():add_professional_specialty(ENGINE,ppid,sp,actor=st.session_state.admin_email);rerun()
+    if ped:
+        if prof['education']:
+            st.dataframe(pd.DataFrame(prof['education'])[['diploma_title','institution','field','obtained_date']],use_container_width=True,hide_index=True)
+            _rc2p_manage_structured_rows(ppid,'professional_education',prof['education'],'diploma_title',[('diploma_title','Diplôme / formation','text'),('institution','Établissement','text'),('field','Domaine','text'),('obtained_date','Date obtenue','text'),('description','Description','long')],f'rc2p_edu_{ppid}')
+        with st.expander('Ajouter un diplôme / une formation'):
+            with st.form(f'j2_edu_{ppid}'):
+                c1,c2=st.columns(2); dip=c1.text_input('Diplôme / formation *');inst=c2.text_input('Établissement');field=st.text_input('Domaine');eduadd=st.form_submit_button('Ajouter')
+            if eduadd:
+                try:add_professional_education(ENGINE,ppid,dip,inst,field,actor=st.session_state.admin_email);rerun()
+                except ValueError as ex:st.error(str(ex))
+        if prof['languages']:
+            st.dataframe(pd.DataFrame(prof['languages'])[['language','level','evidence']],use_container_width=True,hide_index=True)
+            _rc2p_manage_structured_rows(ppid,'professional_languages',prof['languages'],'language',[('language','Langue','text'),('level','Niveau','text'),('evidence','Preuve / précision','text')],f'rc2p_lang_{ppid}')
+        with st.form(f'j2_lang_{ppid}'):
+            c1,c2=st.columns(2);lang=c1.text_input('Langue');lvl=c2.text_input('Niveau');ev=st.text_input('Preuve / précision');la=st.form_submit_button('Ajouter / mettre à jour la langue')
+        if la and lang.strip():add_professional_language(ENGINE,ppid,lang,lvl,ev,st.session_state.admin_email);rerun()
+    if pcert:
+        if prof['certifications']:
+            st.dataframe(pd.DataFrame(prof['certifications'])[['certification_type','name','issuer','reference','valid_until']],use_container_width=True,hide_index=True)
+            _rc2p_manage_structured_rows(ppid,'professional_certifications',prof['certifications'],'name',[('certification_type','Type','text'),('name','Nom','text'),('issuer','Organisme émetteur','text'),('reference','Référence','text'),('obtained_date','Date obtenue','text'),('valid_until','Valide jusqu’au','text'),('description','Description','long')],f'rc2p_cert_{ppid}')
+        with st.form(f'j2_cert_{ppid}'):
+            c1,c2=st.columns(2);ctype=c1.selectbox('Type',['CERTIFICATION','HABILITATION','ATTESTATION']);cname=c2.text_input('Nom *');issuer=st.text_input('Organisme émetteur');ref=st.text_input('Référence');ca=st.form_submit_button('Ajouter')
+        if ca:
+            try:add_professional_certification(ENGINE,ppid,cname,ctype,issuer,ref,actor=st.session_state.admin_email);rerun()
+            except ValueError as ex:st.error(str(ex))
+    if pqual:
+        st.markdown('#### Adéquation compétences / prestations Clarté360')
+        st.caption("Évaluation humaine directe, utilisable pour un candidat comme pour un intervenant. L’IA viendra ensuite proposer des éléments sans jamais remplacer une validation humaine verrouillée.")
+        matrix=list_person_service_qualifications(ENGINE,ppid,active_services_only=True)
+        if matrix:
+            matrix_rows=[]
+            for x in matrix:
+                ai_value=x.get('ai_value')
+                ai_evidence=int(x.get('ai_evidence_count') or 0)
+                ai_positive=int(x.get('ai_positive_criteria_count') or 0)
+                if ai_value is None:
+                    ai_reading='Non analysé'
+                elif ai_evidence==0 and ai_positive==0:
+                    ai_reading='Aucun élément repéré'
+                elif int(ai_value or 0)==0:
+                    ai_reading='Éléments repérés — niveau global bloqué'
+                elif int(ai_value)<3:
+                    ai_reading='Rapprochement partiel'
                 else:
-                    st.info("Aucune prestation n’est actuellement confirmée comme affectable à partir des qualifications humaines enregistrées.")
-                if cockpit['next_actions']:
-                    st.markdown('**À faire maintenant**')
-                    for item in cockpit['next_actions'][:5]: st.write('• '+item)
-                st.markdown('#### Identité')
-                st.caption('Le nom et le prénom sont des données d’identité distinctes du titre professionnel.')
-                if not (prof.get('first_name') and prof.get('last_name')):
-                    st.info(f"Identité historique à structurer : {prof.get('display_name') or prof.get('full_name') or 'non renseignée'}")
-                with st.form(f'rc22_identity_{ppid}'):
-                    c1,c2=st.columns(2)
-                    first_name=c1.text_input('Prénom *',value=prof.get('first_name') or '')
-                    last_name=c2.text_input('Nom *',value=prof.get('last_name') or '')
-                    identity_save=st.form_submit_button('Enregistrer le nom et le prénom')
-                if identity_save:
-                    try:
-                        update_professional_identity(ENGINE,ppid,first_name,last_name,st.session_state.admin_email)
-                        st.success('Identité mise à jour. Le titre professionnel reste indépendant.');rerun()
-                    except ValueError as ex: st.error(str(ex))
-                st.markdown('#### Profil professionnel')
-                with st.form(f'j2_profile_{ppid}'):
-                    c1,c2=st.columns(2); title=c1.text_input('Titre professionnel',value=prof.get('title') or '');coll=_collaboration_select('Type de collaboration avec Clarté360',f'rc222_collab_{ppid}',prof.get('collaboration_type') or 'A_DEFINIR')
-                    summary=st.text_area('Résumé professionnel',value=prof.get('summary') or '',height=120)
-                    c1,c2=st.columns(2); email=c1.text_input('Email professionnel',value=prof.get('profile_email') or prof.get('trainer_email') or '');phone=c2.text_input('Téléphone',value=prof.get('profile_phone') or prof.get('trainer_phone') or '')
-                    c1,c2,c3=st.columns(3); city=c1.text_input('Ville',value=prof.get('city') or '');country=c2.text_input('Pays',value=prof.get('country') or '');website=c3.text_input('Site web',value=prof.get('website') or '')
-                    linkedin=st.text_input('LinkedIn',value=prof.get('linkedin_url') or '');notes=st.text_area('Notes internes',value=prof.get('notes_internal') or '',height=90)
-                    save=st.form_submit_button('Enregistrer le profil',type='primary')
-                if save:
-                    try:update_professional_profile(ENGINE,ppid,{'title':title,'summary':summary,'collaboration_type':coll,'email':email,'phone':phone,'city':city,'country':country,'website':website,'linkedin_url':linkedin,'notes_internal':notes},st.session_state.admin_email);st.success('Profil enregistré.');rerun()
-                    except ValueError as ex:st.error(str(ex))
-                with st.expander('Réinitialiser les analyses et les données professionnelles de ce dossier'):
-                    preview=professional_reset_preview(ENGINE,ppid)
-                    st.warning('Cette opération remet le dossier professionnel à zéro pour une nouvelle instruction. Elle conserve l’identité, le statut CANDIDAT/INTERVENANT, le caractère actif/inactif, les documents déposés, les liaisons fournisseur et les affectations aux actions/plannings.')
-                    st.caption(f"Documents conservés : {preview['documents_preserved']} · Analyses IA : {preview['counts'].get('professional_global_ai_runs',0)} · Qualifications : {preview['counts'].get('person_service_qualifications',0)} · Expériences : {preview['counts'].get('professional_experiences',0)} · Diplômes : {preview['counts'].get('professional_education',0)}")
-                    reset_phrase=f"REINITIALISER {ppid}"
-                    reset_confirm=st.text_input(f"Pour confirmer, saisissez exactement : {reset_phrase}",key=f'rc22_reset_confirm_{ppid}')
-                    reset_pw=st.text_input('Votre mot de passe administrateur',type='password',key=f'rc22_reset_pw_{ppid}')
-                    if st.button('Purger les analyses et remettre le dossier professionnel à zéro',key=f'rc22_reset_btn_{ppid}',disabled=reset_confirm.strip()!=reset_phrase):
-                        try:
-                            info=reset_professional_dossier(ENGINE,ppid,st.session_state.admin_email,reset_pw)
-                            st.success('Dossier professionnel réinitialisé. Les documents, l’identité, le statut et les affectations ont été conservés. Une sauvegarde technique a été créée avant purge.');rerun()
-                        except ValueError as ex: st.error(str(ex))
-            if pwf:
-                comp=candidate_completeness(ENGINE,ppid)
-                st.markdown('#### Suivi de la candidature')
-                st.progress(comp['percent']/100.0,text=f"Complétude du dossier : {comp['percent']} % ({comp['done']}/{comp['total']})")
-                cols=st.columns(2)
-                for i,(label,ok) in enumerate(comp['checks'].items()): cols[i%2].write(('✓ ' if ok else '○ ')+label)
-                if prof['principal_status']=='CANDIDAT':
-                    st.caption('Le candidat reste non affectable tant qu’une validation humaine explicite ne transforme pas ce même dossier en intervenant.')
-                    normal_states=['NOUVEAU','INCOMPLET','EN_ETUDE','ENTRETIEN_A_PREVOIR','PRET_DECISION']
-                    current=prof['candidate_work_status'] if prof['candidate_work_status'] in normal_states else 'NOUVEAU'
-                    with st.form(f'j3_status_{ppid}'):
-                        ns=st.selectbox('État de travail',normal_states,index=normal_states.index(current)); nr=st.text_input('Commentaire / motif'); nsave=st.form_submit_button('Mettre à jour l’état')
-                    if nsave:
-                        try:set_candidate_work_status(ENGINE,ppid,ns,st.session_state.admin_email,nr or None);st.success('État de candidature mis à jour.');rerun()
-                        except ValueError as ex:st.error(str(ex))
-                    with st.expander('Demander un complément'):
-                        with st.form(f'j3_complement_{ppid}'):
-                            req=st.text_area('Complément demandé *'); reqgo=st.form_submit_button('Enregistrer la demande')
-                        if reqgo:
-                            try:request_candidate_complement(ENGINE,ppid,req,st.session_state.admin_email);st.success('Demande de complément enregistrée.');rerun()
-                            except ValueError as ex:st.error(str(ex))
-                    requests=candidate_open_requests(ENGINE,ppid)
-                    if requests:
-                        st.write('**Compléments en attente**')
-                        for r in requests:
-                            c1,c2=st.columns([5,1]); c1.write(r['request_text'])
-                            if c2.button('Résolu',key=f"j3_resolve_{r['id']}"):
-                                resolve_candidate_request(ENGINE,r['id'],st.session_state.admin_email);rerun()
-                    st.markdown('#### Décision humaine')
-                    reason=st.text_area('Motif / commentaire de décision',key=f'j3_decision_reason_{ppid}')
-                    c1,c2,c3=st.columns(3)
-                    if c1.button('Valider comme intervenant',type='primary',key=f'j3_validate_{ppid}'):
-                        try:decide_candidate(ENGINE,ppid,'VALIDER',st.session_state.admin_email,reason or None);st.success('Candidature validée : le même dossier est désormais INTERVENANT.');rerun()
-                        except ValueError as ex:st.error(str(ex))
-                    if c2.button('Refuser',key=f'j3_refuse_{ppid}'):
-                        try:decide_candidate(ENGINE,ppid,'REFUSER',st.session_state.admin_email,reason or None);rerun()
-                        except ValueError as ex:st.error(str(ex))
-                    if c3.button('Abandonner',key=f'j3_abandon_{ppid}'):
-                        try:decide_candidate(ENGINE,ppid,'ABANDONNER',st.session_state.admin_email,reason or None);rerun()
-                        except ValueError as ex:st.error(str(ex))
-                else:
-                    if prof.get('origin')=='ADMIN_DIRECT_INTERVENANT':
-                        st.info("Intervenant créé directement par l’administration : aucun parcours de candidature artificiel. L’adéquation compétences / prestations sera gérée dans l’étape de qualification.")
-                    else:
-                        st.success('Dossier validé comme intervenant. La candidature est clôturée et l’historique reste conservé.')
-                hist=candidate_workflow_history(ENGINE,ppid)
-                if hist:
-                    st.write('**Historique du workflow**')
-                    st.dataframe(pd.DataFrame([{'Date':x['created_at'][:16].replace('T',' '),'Événement':x['event_type'],'De':x.get('old_work_status') or '','Vers':x.get('new_work_status') or '','Commentaire':x.get('comment') or '','Auteur':x['actor']} for x in hist]),use_container_width=True,hide_index=True)
-            if preg:
-                reg=prof.get('regulatory_status') or {}
-                st.markdown('#### Entité fournisseur liée')
-                st.caption("Gestion Clients reste la source de vérité de l’entité économique. Ici, on conserve uniquement la liaison avec la personne professionnelle et son historique.")
-                slinks=list_professional_supplier_links(ENGINE,ppid)
-                if slinks:
-                    st.dataframe(pd.DataFrame([{'Fournisseur':x['supplier_id'],'Relation':x['relationship_type'],'Début':x.get('valid_from') or '','Fin':x.get('valid_to') or '','Statut':x['status'],'Synchronisation':x['sync_status']} for x in slinks]),use_container_width=True,hide_index=True)
-                with st.expander('Lier / changer d’entité fournisseur'):
-                    with st.form(f'j10_supplier_{ppid}'):
-                        sid=st.text_input('Identifiant fournisseur Gestion Clients *',help="Identifiant stable fourni par Gestion Clients. La raison sociale et les données économiques ne sont pas recopiées ici.")
-                        rt=st.selectbox('Type de relation',['PROFESSIONAL','INDEPENDENT','SALARIE','SOUS_TRAITANT','PARTENAIRE','AUTRE'])
-                        c1,c2=st.columns(2); vf=c1.text_input('Début (AAAA-MM-JJ)'); vt=c2.text_input('Fin prévue (AAAA-MM-JJ)')
-                        slsave=st.form_submit_button('Enregistrer la liaison',type='primary')
-                    if slsave:
-                        try:
-                            link_professional_supplier(ENGINE,ppid,sid,rt,vf or None,vt or None,st.session_state.admin_email)
-                            st.success('Liaison enregistrée. Elle pourra être synchronisée avec Gestion Clients sans recopier la fiche fournisseur.');rerun()
-                        except ValueError as ex: st.error(str(ex))
-                st.caption("Ces informations décrivent l’activité professionnelle propre de l’intervenant. Lorsqu’elles relèvent d’une entité fournisseur distincte, la source de vérité restera Gestion Clients et sera projetée ici lors du raccordement.")
-                with st.form(f'j21_reg_{ppid}'):
-                    own=st.radio('Origine des informations',['Activité propre de l’intervenant','Entité fournisseur liée'],index=1 if reg.get('ownership_mode')=='SUPPLIER_PROJECTION' else 0,horizontal=True)
-                    st.markdown('#### Déclaration d’activité (NDA)')
-                    c1,c2=st.columns(2); nda=c1.selectbox('Dispose d’un NDA ?',['NON_RENSEIGNE','OUI','NON'],index=['NON_RENSEIGNE','OUI','NON'].index(reg.get('nda_status') or 'NON_RENSEIGNE')); ndanum=c2.text_input('Numéro de déclaration d’activité',value=reg.get('nda_number') or '')
-                    c1,c2=st.columns(2); ndareg=c1.text_input('DREETS / région',value=reg.get('nda_region') or ''); ndadate=c2.date_input('Date de déclaration',value=(datetime.fromisoformat(str(reg.get('nda_declared_at'))[:10]).date() if reg.get('nda_declared_at') else None),format='DD/MM/YYYY')
-                    ndanotes=st.text_area('Notes NDA',value=reg.get('nda_notes') or '',height=70)
-                    st.markdown('#### Certification Qualiopi')
-                    c1,c2=st.columns(2); qstat=c1.selectbox('Certification Qualiopi ?',['NON_RENSEIGNE','OUI','NON'],index=['NON_RENSEIGNE','OUI','NON'].index(reg.get('qualiopi_status') or 'NON_RENSEIGNE')); qcert=c2.text_input('Organisme certificateur',value=reg.get('qualiopi_certifier') or '')
-                    qref=st.text_input('Référence / n° du certificat',value=reg.get('qualiopi_certificate_ref') or '')
-                    c1,c2=st.columns(2); qfrom=c1.date_input('Valide depuis',value=(datetime.fromisoformat(str(reg.get('qualiopi_valid_from'))[:10]).date() if reg.get('qualiopi_valid_from') else None),format='DD/MM/YYYY'); quntil=c2.date_input('Valide jusqu’au',value=(datetime.fromisoformat(str(reg.get('qualiopi_valid_until'))[:10]).date() if reg.get('qualiopi_valid_until') else None),format='DD/MM/YYYY')
-                    st.write('**Catégories d’actions couvertes par le certificat**')
-                    q1,q2=st.columns(2); scope_training=q1.checkbox('Actions de formation',value=bool(reg.get('qualiopi_scope_training'))); scope_bilan=q2.checkbox('Bilans de compétences',value=bool(reg.get('qualiopi_scope_bilan')))
-                    q3,q4=st.columns(2); scope_vae=q3.checkbox('Actions permettant de faire valider les acquis de l’expérience (VAE)',value=bool(reg.get('qualiopi_scope_vae'))); scope_app=q4.checkbox('Actions de formation par apprentissage',value=bool(reg.get('qualiopi_scope_apprentissage')))
-                    qnotes=st.text_area('Notes Qualiopi',value=reg.get('qualiopi_notes') or '',height=70)
-                    regsave=st.form_submit_button('Enregistrer NDA / Qualiopi',type='primary')
-                if regsave:
-                    try:
-                        update_professional_regulatory_status(ENGINE,ppid,{'ownership_mode':'SUPPLIER_PROJECTION' if own=='Entité fournisseur liée' else 'PERSONAL_ACTIVITY','nda_status':nda,'nda_number':ndanum,'nda_region':ndareg,'nda_declared_at':ndadate.isoformat() if ndadate else None,'nda_notes':ndanotes,'qualiopi_status':qstat,'qualiopi_certifier':qcert,'qualiopi_certificate_ref':qref,'qualiopi_valid_from':qfrom.isoformat() if qfrom else None,'qualiopi_valid_until':quntil.isoformat() if quntil else None,'qualiopi_scope_training':scope_training,'qualiopi_scope_bilan':scope_bilan,'qualiopi_scope_vae':scope_vae,'qualiopi_scope_apprentissage':scope_app,'qualiopi_notes':qnotes},st.session_state.admin_email)
-                        st.success('Informations NDA / Qualiopi enregistrées.');rerun()
-                    except ValueError as ex:st.error(str(ex))
-                st.info('Les justificatifs se déposent dans Analyse IA avec les catégories « NDA justificatif » ou « Certificat Qualiopi ».')
-            if pex:
-                if prof['experiences']:
-                    st.dataframe(pd.DataFrame(prof['experiences'])[['role_title','organization','start_date','end_date','current_role']],use_container_width=True,hide_index=True)
-                    _rc2p_manage_structured_rows(ppid,'professional_experiences',prof['experiences'],'role_title',[('role_title','Fonction','text'),('organization','Organisation','text'),('start_date','Début','text'),('end_date','Fin','text'),('current_role','Poste actuel','bool'),('description','Description','long')],f'rc2p_exp_{ppid}')
-                with st.expander('Ajouter une expérience'):
-                    with st.form(f'j2_exp_{ppid}'):
-                        c1,c2=st.columns(2); role=c1.text_input('Fonction *');org=c2.text_input('Organisation');desc=st.text_area('Description');expadd=st.form_submit_button('Ajouter')
-                    if expadd:
-                        try:add_professional_experience(ENGINE,ppid,role,org,description=desc,actor=st.session_state.admin_email);rerun()
-                        except ValueError as ex:st.error(str(ex))
-                if prof['specialties']:
-                    st.dataframe(pd.DataFrame([{'Spécialité':x['specialty'],'Notes':x.get('notes') or ''} for x in prof['specialties']]),use_container_width=True,hide_index=True)
-                    _rc2p_manage_structured_rows(ppid,'professional_specialties',prof['specialties'],'specialty',[('specialty','Spécialité','text'),('notes','Notes','long')],f'rc2p_spec_{ppid}')
-                with st.form(f'j2_spec_{ppid}'):
-                    sp=st.text_input('Ajouter une spécialité');spa=st.form_submit_button('Ajouter la spécialité')
-                if spa and sp.strip():add_professional_specialty(ENGINE,ppid,sp,actor=st.session_state.admin_email);rerun()
-            if ped:
-                if prof['education']:
-                    st.dataframe(pd.DataFrame(prof['education'])[['diploma_title','institution','field','obtained_date']],use_container_width=True,hide_index=True)
-                    _rc2p_manage_structured_rows(ppid,'professional_education',prof['education'],'diploma_title',[('diploma_title','Diplôme / formation','text'),('institution','Établissement','text'),('field','Domaine','text'),('obtained_date','Date obtenue','text'),('description','Description','long')],f'rc2p_edu_{ppid}')
-                with st.expander('Ajouter un diplôme / une formation'):
-                    with st.form(f'j2_edu_{ppid}'):
-                        c1,c2=st.columns(2); dip=c1.text_input('Diplôme / formation *');inst=c2.text_input('Établissement');field=st.text_input('Domaine');eduadd=st.form_submit_button('Ajouter')
-                    if eduadd:
-                        try:add_professional_education(ENGINE,ppid,dip,inst,field,actor=st.session_state.admin_email);rerun()
-                        except ValueError as ex:st.error(str(ex))
-                if prof['languages']:
-                    st.dataframe(pd.DataFrame(prof['languages'])[['language','level','evidence']],use_container_width=True,hide_index=True)
-                    _rc2p_manage_structured_rows(ppid,'professional_languages',prof['languages'],'language',[('language','Langue','text'),('level','Niveau','text'),('evidence','Preuve / précision','text')],f'rc2p_lang_{ppid}')
-                with st.form(f'j2_lang_{ppid}'):
-                    c1,c2=st.columns(2);lang=c1.text_input('Langue');lvl=c2.text_input('Niveau');ev=st.text_input('Preuve / précision');la=st.form_submit_button('Ajouter / mettre à jour la langue')
-                if la and lang.strip():add_professional_language(ENGINE,ppid,lang,lvl,ev,st.session_state.admin_email);rerun()
-            if pcert:
-                if prof['certifications']:
-                    st.dataframe(pd.DataFrame(prof['certifications'])[['certification_type','name','issuer','reference','valid_until']],use_container_width=True,hide_index=True)
-                    _rc2p_manage_structured_rows(ppid,'professional_certifications',prof['certifications'],'name',[('certification_type','Type','text'),('name','Nom','text'),('issuer','Organisme émetteur','text'),('reference','Référence','text'),('obtained_date','Date obtenue','text'),('valid_until','Valide jusqu’au','text'),('description','Description','long')],f'rc2p_cert_{ppid}')
-                with st.form(f'j2_cert_{ppid}'):
-                    c1,c2=st.columns(2);ctype=c1.selectbox('Type',['CERTIFICATION','HABILITATION','ATTESTATION']);cname=c2.text_input('Nom *');issuer=st.text_input('Organisme émetteur');ref=st.text_input('Référence');ca=st.form_submit_button('Ajouter')
-                if ca:
-                    try:add_professional_certification(ENGINE,ppid,cname,ctype,issuer,ref,actor=st.session_state.admin_email);rerun()
-                    except ValueError as ex:st.error(str(ex))
-            if pqual:
-                st.markdown('#### Adéquation compétences / prestations Clarté360')
-                st.caption("Évaluation humaine directe, utilisable pour un candidat comme pour un intervenant. L’IA viendra ensuite proposer des éléments sans jamais remplacer une validation humaine verrouillée.")
-                matrix=list_person_service_qualifications(ENGINE,ppid,active_services_only=True)
-                if matrix:
-                    matrix_rows=[]
-                    for x in matrix:
-                        ai_value=x.get('ai_value')
-                        ai_evidence=int(x.get('ai_evidence_count') or 0)
-                        ai_positive=int(x.get('ai_positive_criteria_count') or 0)
-                        if ai_value is None:
-                            ai_reading='Non analysé'
-                        elif ai_evidence==0 and ai_positive==0:
-                            ai_reading='Aucun élément repéré'
-                        elif int(ai_value or 0)==0:
-                            ai_reading='Éléments repérés — niveau global bloqué'
-                        elif int(ai_value)<3:
-                            ai_reading='Rapprochement partiel'
-                        else:
-                            ai_reading='Rapprochement fort'
-                        human_value=x.get('human_value')
-                        matrix_rows.append({
-                            'Prestation':x['service_name'],'Univers':x.get('family') or '',
-                            'Décision humaine':(f"{human_value} — {QUALIFICATION_LEVEL_LABELS.get(human_value,'')}" if human_value is not None else 'Non évalué'),
-                            'Preuves validées':x.get('evidence_count') or 0,
-                            'Lecture IA':ai_reading,
-                            'Proposition IA':(f"{ai_value} — {QUALIFICATION_LEVEL_LABELS.get(ai_value,'')}" if ai_value is not None else '—'),
-                            'Confiance analyse':(f"{float(x.get('ai_confidence') or 0):.0%}" if ai_value is not None else '—'),
-                            'Critères IA':(f"{x.get('ai_criteria_count') or 0}/{x.get('criteria_count') or 0}" if ai_value is not None else '—'),
-                            'Preuves IA':ai_evidence,
-                            'Révision':x.get('review_due_at') or ''
-                        })
-                    st.dataframe(pd.DataFrame(matrix_rows),use_container_width=True,hide_index=True)
-                    st.caption("La décision humaine est prioritaire. Lorsqu'elle existe, l'analyse IA reste une aide et un historique de préparation ; elle ne remplace jamais le niveau validé.")
-                    qmap={f"{x['service_name']} — {x.get('family') or 'Sans univers'}":x for x in matrix}
-                    focus_sid=st.session_state.pop('_j17_focus_service_id',None)
-                    qlabels=list(qmap); qidx=0
-                    if focus_sid is not None:
-                        qidx=next((i for i,k in enumerate(qlabels) if int(qmap[k]['service_id'])==int(focus_sid)),0)
-                        st.info('Qualification ouverte depuis une action : vérifiez les preuves et critères puis prenez la décision humaine.')
-                    qlab=st.selectbox('Prestation à évaluer',qlabels,index=qidx,key=f'j4_service_{ppid}'); qrow=qmap[qlab]
-                    qdetail=get_person_service_qualification(ENGINE,ppid,qrow['service_id']); qcurrent=qdetail.get('qualification') or {}
-                    summary=qualification_adequacy_summary(ENGINE,ppid,qrow['service_id'])
-                    c1,c2,c3,c4=st.columns(4)
-                    c1.metric('Critères évalués',f"{summary['criteria_assessed']}/{summary['criteria_total']}")
-                    c2.metric('Obligatoires au niveau attendu',f"{summary['required_ok']}/{summary['required_total']}")
-                    c3.metric('Preuves',summary['evidence_count'])
-                    c4.metric('Niveau final',qcurrent.get('human_value') if qcurrent.get('human_value') is not None else '—')
+                    ai_reading='Rapprochement fort'
+                human_value=x.get('human_value')
+                matrix_rows.append({
+                    'Prestation':x['service_name'],'Univers':x.get('family') or '',
+                    'Décision humaine':(f"{human_value} — {QUALIFICATION_LEVEL_LABELS.get(human_value,'')}" if human_value is not None else 'Non évalué'),
+                    'Preuves validées':x.get('evidence_count') or 0,
+                    'Lecture IA':ai_reading,
+                    'Proposition IA':(f"{ai_value} — {QUALIFICATION_LEVEL_LABELS.get(ai_value,'')}" if ai_value is not None else '—'),
+                    'Confiance analyse':(f"{float(x.get('ai_confidence') or 0):.0%}" if ai_value is not None else '—'),
+                    'Critères IA':(f"{x.get('ai_criteria_count') or 0}/{x.get('criteria_count') or 0}" if ai_value is not None else '—'),
+                    'Preuves IA':ai_evidence,
+                    'Révision':x.get('review_due_at') or ''
+                })
+            st.dataframe(pd.DataFrame(matrix_rows),use_container_width=True,hide_index=True)
+            st.caption("La décision humaine est prioritaire. Lorsqu'elle existe, l'analyse IA reste une aide et un historique de préparation ; elle ne remplace jamais le niveau validé.")
+            qmap={f"{x['service_name']} — {x.get('family') or 'Sans univers'}":x for x in matrix}
+            focus_sid=st.session_state.pop('_j17_focus_service_id',None)
+            qlabels=list(qmap); qidx=0
+            if focus_sid is not None:
+                qidx=next((i for i,k in enumerate(qlabels) if int(qmap[k]['service_id'])==int(focus_sid)),0)
+                st.info('Qualification ouverte depuis une action : vérifiez les preuves et critères puis prenez la décision humaine.')
+            qlab=st.selectbox('Prestation à évaluer',qlabels,index=qidx,key=f'j4_service_{ppid}'); qrow=qmap[qlab]
+            qdetail=get_person_service_qualification(ENGINE,ppid,qrow['service_id']); qcurrent=qdetail.get('qualification') or {}
+            summary=qualification_adequacy_summary(ENGINE,ppid,qrow['service_id'])
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric('Critères évalués',f"{summary['criteria_assessed']}/{summary['criteria_total']}")
+            c2.metric('Obligatoires au niveau attendu',f"{summary['required_ok']}/{summary['required_total']}")
+            c3.metric('Preuves',summary['evidence_count'])
+            c4.metric('Niveau final',qcurrent.get('human_value') if qcurrent.get('human_value') is not None else '—')
 
-                    st.markdown('##### Analyse IA assistée')
-                    st.caption("Cette zone exploite directement la dernière analyse globale lancée depuis l’onglet Analyse IA. Il n’est plus nécessaire de refaire tourner l’IA prestation par prestation : critères, preuves et niveau proposé sont matérialisés ici à partir du même passage IA. Pour réanalyser après ajout de nouvelles pièces, relancez simplement l’analyse globale dans Analyse IA.")
-                    if qcurrent.get('ai_value') is not None:
-                        ai_evidence=[]; ai_missing=[]
-                        try: ai_evidence=json.loads(qcurrent.get('ai_evidence_json') or '[]')
-                        except Exception: pass
-                        try: ai_missing=json.loads(qcurrent.get('ai_missing_json') or '[]')
-                        except Exception: pass
-                        a1,a2,a3=st.columns(3);a1.metric('Proposition IA',f"{qcurrent.get('ai_value')} — {QUALIFICATION_LEVEL_LABELS.get(qcurrent.get('ai_value'),'')}");a2.metric('Confiance',f"{float(qcurrent.get('ai_confidence') or 0):.0%}");a3.metric('Analyse',str(qcurrent.get('ai_updated_at') or '')[:16].replace('T',' '))
-                        st.write('**Justification IA :** '+(qcurrent.get('ai_rationale') or 'Non renseignée'))
-                        if ai_evidence:
-                            st.write('**Preuves repérées par l’IA — à décider humainement**')
-                            st.caption("Ces éléments sont des propositions IA. Ils ne sont comptés comme preuves validées qu’après acceptation humaine.")
-                            ep=list_ai_evidence_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True)
-                            if ep:
-                                for pev in ep:
-                                    label=(pev.get('criterion_label') or 'Preuve générale')+' — '+(pev.get('document_name') or pev.get('source_label') or 'source IA')
-                                    with st.expander(label):
-                                        st.write(pev.get('evidence_text') or '')
-                                        st.caption(f"Identité : {pev.get('identity_status')} · Niveau soutenu : {pev.get('supports_level')} · Statut : {pev.get('status')}")
-                                        if pev.get('identity_status')=='INCOHERENT': st.error("Identité incohérente : cette pièce ne peut pas être validée comme preuve tant que l’anomalie n’est pas résolue.")
-                                        if pev.get('status')=='PROPOSEE':
-                                            ec1,ec2=st.columns(2)
-                                            if ec1.button('Accepter comme preuve',key=f'j16_ev_accept_{pev["id"]}',disabled=pev.get('identity_status')=='INCOHERENT'):
-                                                try: decide_ai_evidence_proposal(ENGINE,pev['id'],True,st.session_state.admin_email);st.success('Preuve acceptée humainement.');rerun()
-                                                except ValueError as ex: st.error(str(ex))
-                                            if ec2.button('Rejeter cette preuve',key=f'j16_ev_reject_{pev["id"]}'):
-                                                decide_ai_evidence_proposal(ENGINE,pev['id'],False,st.session_state.admin_email);st.info('Preuve rejetée.');rerun()
-                            else:
-                                st.dataframe(pd.DataFrame([{'Source':x.get('source',''),'Élément factuel':x.get('fact',''),'Niveau soutenu':x.get('supports_level','')} for x in ai_evidence]),use_container_width=True,hide_index=True)
-                        if ai_missing:
-                            st.write('**Points manquants / à vérifier :**')
-                            for x in ai_missing: st.write('• '+str(x))
-                        if qdetail.get('review_points'):
-                            st.markdown('##### Points à vérifier — décision humaine')
-                            for rp in qdetail['review_points']:
-                                status=rp.get('status') or 'OUVERT'
-                                with st.expander(f"{rp.get('label') or 'Point à vérifier'} — {status.replace('_',' ').title()}"):
-                                    if rp.get('human_comment'): st.caption('Commentaire : '+str(rp['human_comment']))
-                                    with st.form(f'rc222_review_point_{rp["id"]}'):
-                                        opts=['OUVERT','LEVE','CONFIRME','NON_PERTINENT']
-                                        choice=st.selectbox('Statut',opts,index=opts.index(status) if status in opts else 0,format_func=lambda x:{'OUVERT':'À vérifier','LEVE':'Levé','CONFIRME':'Confirmé','NON_PERTINENT':'Non pertinent'}[x])
-                                        rcomment=st.text_area('Commentaire humain',value=rp.get('human_comment') or '',height=70)
-                                        rsave=st.form_submit_button('Enregistrer la décision')
-                                    if rsave:
-                                        (reopen_qualification_review_point(ENGINE,rp['id'],st.session_state.admin_email,rcomment or None) if choice=='OUVERT' else decide_qualification_review_point(ENGINE,rp['id'],choice,st.session_state.admin_email,rcomment or None));st.success('Point mis à jour.');rerun()
-                        if qcurrent.get('human_value') is not None and qcurrent.get('human_locked'):
-                            st.info("Une validation humaine existe : cette proposition IA est conservée pour comparaison et ne peut pas la remplacer automatiquement.")
-                        pending_criteria=[x for x in list_ai_criterion_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True) if x.get('status')=='PROPOSEE']
-                        pending_evidence=[x for x in list_ai_evidence_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True) if x.get('status')=='PROPOSEE' and x.get('identity_status')!='INCOHERENT']
-                        if pending_criteria or pending_evidence:
-                            st.caption(f"Pré-instruction IA disponible : {len(pending_criteria)} critère(s) proposé(s) et {len(pending_evidence)} preuve(s) à examiner. Utilisez le préremplissage ci-dessous pour préparer la grille ; cela ne constitue pas une validation humaine.")
-
-                    st.markdown('##### Évaluation humaine par critère')
-                    if qdetail['criteria']:
-                        cp={int(x['criterion_id']):x for x in list_ai_criterion_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True)}
-                        st.caption("Une seule grille de décision : la proposition IA prépare la lecture ; le niveau retenu reste une décision humaine de 0 à 4.")
-                        prefill_key=f'rc222_prefill_{ppid}_{qrow["service_id"]}'
-                        if st.button('Préremplir l’évaluation à partir de l’analyse IA',key=f'rc222_prefill_btn_{ppid}_{qrow["service_id"]}'):
-                            st.session_state[prefill_key]=True
-                        retained={}; comments={}
-                        for cr in qdetail['criteria']:
-                            pr=cp.get(int(cr['id'])) or {}
-                            proposed=int(pr.get('proposed_level') or 0)
-                            current=cr.get('assessment_value')
-                            initial=int(current) if current is not None else (proposed if st.session_state.get(prefill_key) else 0)
-                            st.markdown(f"**{cr['label']}**" + (' *' if cr.get('required') else ''))
-                            c1,c2,c3=st.columns([2,2,4])
-                            c1.write(f"IA : {proposed}/4" if pr else 'IA : —')
-                            retained[cr['id']]=c2.selectbox('Niveau retenu humain',[0,1,2,3,4],index=initial,key=f'rc222_level_{ppid}_{cr["id"]}',label_visibility='collapsed')
-                            comments[cr['id']]=c3.text_input('Commentaire',value=cr.get('assessment_comment') or '',key=f'rc222_comment_{ppid}_{cr["id"]}',label_visibility='collapsed',placeholder='Commentaire / point à vérifier')
-                            evlinks=[e for e in qdetail.get('evidence_links',[]) if e.get('criterion_id')==cr['id']]
-                            if evlinks: st.caption('Preuves associées : ' + ' · '.join(str(e.get('document_name') or e.get('source_label') or e.get('relevance_comment') or 'preuve') for e in evlinks))
-                            if pr.get('rationale'): st.caption('Justification IA : '+str(pr['rationale']))
-                        st.caption('Ces niveaux sont enregistrés avec la validation finale ci-dessous : une seule action humaine valide la grille et la prestation.')
+            st.markdown('##### Analyse IA assistée')
+            st.caption("Cette zone exploite directement la dernière analyse globale lancée depuis l’onglet Analyse IA. Il n’est plus nécessaire de refaire tourner l’IA prestation par prestation : critères, preuves et niveau proposé sont matérialisés ici à partir du même passage IA. Pour réanalyser après ajout de nouvelles pièces, relancez simplement l’analyse globale dans Analyse IA.")
+            if qcurrent.get('ai_value') is not None:
+                ai_evidence=[]; ai_missing=[]
+                try: ai_evidence=json.loads(qcurrent.get('ai_evidence_json') or '[]')
+                except Exception: pass
+                try: ai_missing=json.loads(qcurrent.get('ai_missing_json') or '[]')
+                except Exception: pass
+                a1,a2,a3=st.columns(3);a1.metric('Proposition IA',f"{qcurrent.get('ai_value')} — {QUALIFICATION_LEVEL_LABELS.get(qcurrent.get('ai_value'),'')}");a2.metric('Confiance',f"{float(qcurrent.get('ai_confidence') or 0):.0%}");a3.metric('Analyse',format_app_datetime(qcurrent.get('ai_updated_at')))
+                st.write('**Justification IA :** '+(qcurrent.get('ai_rationale') or 'Non renseignée'))
+                if ai_evidence:
+                    st.write('**Preuves repérées par l’IA — à décider humainement**')
+                    st.caption("Ces éléments sont des propositions IA. Ils ne sont comptés comme preuves validées qu’après acceptation humaine.")
+                    ep=list_ai_evidence_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True)
+                    if ep:
+                        for pev in ep:
+                            label=(pev.get('criterion_label') or 'Preuve générale')+' — '+(pev.get('document_name') or pev.get('source_label') or 'source IA')
+                            with st.expander(label):
+                                st.write(pev.get('evidence_text') or '')
+                                st.caption(f"Identité : {pev.get('identity_status')} · Niveau soutenu : {pev.get('supports_level')} · Statut : {pev.get('status')}")
+                                if pev.get('identity_status')=='INCOHERENT': st.error("Identité incohérente : cette pièce ne peut pas être validée comme preuve tant que l’anomalie n’est pas résolue.")
+                                if pev.get('status')=='PROPOSEE':
+                                    ec1,ec2=st.columns(2)
+                                    if ec1.button('Accepter comme preuve',key=f'j16_ev_accept_{pev["id"]}',disabled=pev.get('identity_status')=='INCOHERENT'):
+                                        try: decide_ai_evidence_proposal(ENGINE,pev['id'],True,st.session_state.admin_email);st.success('Preuve acceptée humainement.');rerun()
+                                        except ValueError as ex: st.error(str(ex))
+                                    if ec2.button('Rejeter cette preuve',key=f'j16_ev_reject_{pev["id"]}'):
+                                        decide_ai_evidence_proposal(ENGINE,pev['id'],False,st.session_state.admin_email);st.info('Preuve rejetée.');rerun()
                     else:
-                        st.warning("Aucun critère n’est défini pour cette prestation. Créez la grille dans Intervenants / Partenaires > Prestations avant de valider une adéquation détaillée.")
-                    st.markdown('##### Preuves de qualification')
-                    if qdetail['evidence']:
-                        st.dataframe(pd.DataFrame([{'Date':e['created_at'][:10],'Type':e['evidence_type'],'Critère':next((c['label'] for c in qdetail['criteria'] if c['id']==e.get('criterion_id')),''),'Document':e.get('document_name') or '','Preuve':e.get('evidence_text') or e.get('source_label') or ''} for e in qdetail['evidence']]),use_container_width=True,hide_index=True)
-                        emap={f"#{e['id']} — {e.get('document_name') or e.get('evidence_text') or e.get('source_label') or e['evidence_type']}":e for e in qdetail['evidence']}
-                        elab=st.selectbox('Preuve à gérer',list(emap),key=f'rc21_evidence_manage_{ppid}_{qrow["service_id"]}'); ee=emap[elab]
-                        with st.expander('Modifier / retirer la preuve'):
-                            criteria_options=[('Preuve générale',None)]+[(cr['label'],cr['id']) for cr in qdetail['criteria']]
-                            docs=prof.get('documents') or []; doc_options={'Aucun document':None}; doc_options.update({f"{d['display_name']} — {d['category']}":d['id'] for d in docs})
-                            criterion_labels=[x[0] for x in criteria_options]; current_criterion=next((x[0] for x in criteria_options if x[1]==ee.get('criterion_id')),'Preuve générale')
-                            doc_labels=list(doc_options); current_doc=next((lab for lab,val in doc_options.items() if val==ee.get('professional_document_id')),'Aucun document')
-                            with st.form(f'rc21_evidence_edit_{ee["id"]}'):
-                                etype=st.selectbox('Type',QUALIFICATION_EVIDENCE_TYPES,index=QUALIFICATION_EVIDENCE_TYPES.index(ee.get('evidence_type')) if ee.get('evidence_type') in QUALIFICATION_EVIDENCE_TYPES else 0)
-                                ecrit=st.selectbox('Critère',criterion_labels,index=criterion_labels.index(current_criterion))
-                                edoclab2=st.selectbox('Document',doc_labels,index=doc_labels.index(current_doc))
-                                etxt2=st.text_area('Description / preuve',value=ee.get('evidence_text') or '',height=80)
-                                esource2=st.text_input('Source / libellé',value=ee.get('source_label') or '')
-                                esave=st.form_submit_button('Enregistrer les modifications')
-                            if esave:
+                        st.dataframe(pd.DataFrame([{'Source':x.get('source',''),'Élément factuel':x.get('fact',''),'Niveau soutenu':x.get('supports_level','')} for x in ai_evidence]),use_container_width=True,hide_index=True)
+                if ai_missing:
+                    st.write('**Points manquants / à vérifier :**')
+                    for x in ai_missing: st.write('• '+str(x))
+                if qdetail.get('review_points'):
+                    st.markdown('##### Points à vérifier — décision humaine')
+                    for rp in qdetail['review_points']:
+                        status=rp.get('status') or 'OUVERT'
+                        with st.expander(f"{rp.get('label') or 'Point à vérifier'} — {status.replace('_',' ').title()}"):
+                            if rp.get('human_comment'): st.caption('Commentaire : '+str(rp['human_comment']))
+                            with st.form(f'rc222_review_point_{rp["id"]}'):
+                                opts=['OUVERT','LEVE','CONFIRME','NON_PERTINENT']
+                                choice=st.selectbox('Statut',opts,index=opts.index(status) if status in opts else 0,format_func=lambda x:{'OUVERT':'À vérifier','LEVE':'Levé','CONFIRME':'Confirmé','NON_PERTINENT':'Non pertinent'}[x])
+                                rcomment=st.text_area('Commentaire humain',value=rp.get('human_comment') or '',height=70)
+                                rsave=st.form_submit_button('Enregistrer la décision')
+                            if rsave:
+                                (reopen_qualification_review_point(ENGINE,rp['id'],st.session_state.admin_email,rcomment or None) if choice=='OUVERT' else decide_qualification_review_point(ENGINE,rp['id'],choice,st.session_state.admin_email,rcomment or None));st.success('Point mis à jour.');rerun()
+                if qcurrent.get('human_value') is not None and qcurrent.get('human_locked'):
+                    st.info("Une validation humaine existe : cette proposition IA est conservée pour comparaison et ne peut pas la remplacer automatiquement.")
+                pending_criteria=[x for x in list_ai_criterion_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True) if x.get('status')=='PROPOSEE']
+                pending_evidence=[x for x in list_ai_evidence_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True) if x.get('status')=='PROPOSEE' and x.get('identity_status')!='INCOHERENT']
+                if pending_criteria or pending_evidence:
+                    st.caption(f"Pré-instruction IA disponible : {len(pending_criteria)} critère(s) proposé(s) et {len(pending_evidence)} preuve(s) à examiner. Utilisez le préremplissage ci-dessous pour préparer la grille ; cela ne constitue pas une validation humaine.")
+
+            st.markdown('##### Évaluation humaine par critère')
+            if qdetail['criteria']:
+                cp={int(x['criterion_id']):x for x in list_ai_criterion_proposals(ENGINE,ppid,qrow['service_id'],latest_only=True)}
+                st.caption("Une seule grille de décision : la proposition IA prépare la lecture ; le niveau retenu reste une décision humaine de 0 à 4.")
+                prefill_key=f'rc222_prefill_{ppid}_{qrow["service_id"]}'
+                if st.button('Préremplir l’évaluation à partir de l’analyse IA',key=f'rc222_prefill_btn_{ppid}_{qrow["service_id"]}'):
+                    st.session_state[prefill_key]=True
+                retained={}; comments={}
+                for cr in qdetail['criteria']:
+                    pr=cp.get(int(cr['id'])) or {}
+                    proposed=int(pr.get('proposed_level') or 0)
+                    current=cr.get('assessment_value')
+                    initial=int(current) if current is not None else (proposed if st.session_state.get(prefill_key) else 0)
+                    st.markdown(f"**{cr['label']}**" + (' *' if cr.get('required') else ''))
+                    c1,c2,c3=st.columns([2,2,4])
+                    c1.write(f"IA : {proposed}/4" if pr else 'IA : —')
+                    retained[cr['id']]=c2.selectbox('Niveau retenu humain',[0,1,2,3,4],index=initial,key=f'rc222_level_{ppid}_{cr["id"]}',label_visibility='collapsed')
+                    comments[cr['id']]=c3.text_input('Commentaire',value=cr.get('assessment_comment') or '',key=f'rc222_comment_{ppid}_{cr["id"]}',label_visibility='collapsed',placeholder='Commentaire / point à vérifier')
+                    evlinks=[e for e in qdetail.get('evidence_links',[]) if e.get('criterion_id')==cr['id']]
+                    if evlinks: st.caption('Preuves associées : ' + ' · '.join(str(e.get('document_name') or e.get('source_label') or e.get('relevance_comment') or 'preuve') for e in evlinks))
+                    if pr.get('rationale'): st.caption('Justification IA : '+str(pr['rationale']))
+                st.caption('Ces niveaux sont enregistrés avec la validation finale ci-dessous : une seule action humaine valide la grille et la prestation.')
+            else:
+                st.warning("Aucun critère n’est défini pour cette prestation. Créez la grille dans Intervenants / Partenaires > Prestations avant de valider une adéquation détaillée.")
+            st.markdown('##### Preuves de qualification')
+            if qdetail['evidence']:
+                st.dataframe(pd.DataFrame([{'Date':format_app_date(e['created_at']),'Type':e['evidence_type'],'Critère':next((c['label'] for c in qdetail['criteria'] if c['id']==e.get('criterion_id')),''),'Document':e.get('document_name') or '','Preuve':e.get('evidence_text') or e.get('source_label') or ''} for e in qdetail['evidence']]),use_container_width=True,hide_index=True)
+                emap={f"#{e['id']} — {e.get('document_name') or e.get('evidence_text') or e.get('source_label') or e['evidence_type']}":e for e in qdetail['evidence']}
+                elab=st.selectbox('Preuve à gérer',list(emap),key=f'rc21_evidence_manage_{ppid}_{qrow["service_id"]}'); ee=emap[elab]
+                with st.expander('Modifier / retirer la preuve'):
+                    criteria_options=[('Preuve générale',None)]+[(cr['label'],cr['id']) for cr in qdetail['criteria']]
+                    docs=prof.get('documents') or []; doc_options={'Aucun document':None}; doc_options.update({f"{d['display_name']} — {d['category']}":d['id'] for d in docs})
+                    criterion_labels=[x[0] for x in criteria_options]; current_criterion=next((x[0] for x in criteria_options if x[1]==ee.get('criterion_id')),'Preuve générale')
+                    doc_labels=list(doc_options); current_doc=next((lab for lab,val in doc_options.items() if val==ee.get('professional_document_id')),'Aucun document')
+                    with st.form(f'rc21_evidence_edit_{ee["id"]}'):
+                        etype=st.selectbox('Type',QUALIFICATION_EVIDENCE_TYPES,index=QUALIFICATION_EVIDENCE_TYPES.index(ee.get('evidence_type')) if ee.get('evidence_type') in QUALIFICATION_EVIDENCE_TYPES else 0)
+                        ecrit=st.selectbox('Critère',criterion_labels,index=criterion_labels.index(current_criterion))
+                        edoclab2=st.selectbox('Document',doc_labels,index=doc_labels.index(current_doc))
+                        etxt2=st.text_area('Description / preuve',value=ee.get('evidence_text') or '',height=80)
+                        esource2=st.text_input('Source / libellé',value=ee.get('source_label') or '')
+                        esave=st.form_submit_button('Enregistrer les modifications')
+                    if esave:
+                        try:
+                            update_qualification_evidence(ENGINE,ee['id'],st.session_state.admin_email,etype,etxt2 or None,dict(criteria_options)[ecrit],doc_options[edoclab2],esource2 or None)
+                            st.success('Preuve modifiée.');rerun()
+                        except ValueError as ex: st.error(str(ex))
+                    confirm_remove=st.checkbox('Je confirme le retrait de cette preuve de la qualification',key=f'rc21_evidence_remove_confirm_{ee["id"]}')
+                    if st.button('Retirer / supprimer cette preuve',key=f'rc21_evidence_remove_{ee["id"]}',disabled=not confirm_remove):
+                        try: delete_qualification_evidence(ENGINE,ee['id'],st.session_state.admin_email);st.success('Preuve retirée avec traçabilité.');rerun()
+                        except ValueError as ex: st.error(str(ex))
+            with st.expander('Ajouter une preuve'):
+                docs=prof.get('documents') or []; doc_options={'Aucun document':None}; doc_options.update({f"{d['display_name']} — {d['category']}":d['id'] for d in docs})
+                edoclab=st.selectbox('Document du dossier',list(doc_options),key=f'rc21_add_evidence_doc_{ppid}_{qrow["service_id"]}'); edoc=doc_options[edoclab]
+                selected_doc=next((d for d in docs if d['id']==edoc),None)
+                inferred=(selected_doc.get('category') if selected_doc else 'AUTRE') or 'AUTRE'
+                inferred=inferred.upper()
+                if inferred not in QUALIFICATION_EVIDENCE_TYPES:
+                    inferred='DOCUMENT' if edoc else 'AUTRE'
+                with st.form(f'j4_evidence_{ppid}_{qrow["service_id"]}'):
+                    et=st.selectbox('Type de preuve',QUALIFICATION_EVIDENCE_TYPES,index=QUALIFICATION_EVIDENCE_TYPES.index(inferred) if inferred in QUALIFICATION_EVIDENCE_TYPES else 0)
+                    criteria_options=[('Preuve générale',None)]+[(cr['label'],cr['id']) for cr in qdetail['criteria']]
+                    ecl=st.selectbox('Rattacher à un critère',[x[0] for x in criteria_options]); ecid=dict(criteria_options)[ecl]
+                    etxt=st.text_area('Description / autre preuve',height=80); ego=st.form_submit_button('Ajouter la preuve')
+                if ego:
+                    try:add_qualification_evidence(ENGINE,ppid,qrow['service_id'],st.session_state.admin_email,et,etxt or None,ecid,edoc);st.success('Preuve ajoutée.');rerun()
+                    except ValueError as ex:st.error(str(ex))
+            st.markdown('##### Validation humaine de la prestation')
+            current_level=int(qcurrent.get('human_value') or 0)
+            summary_live=qualification_adequacy_summary(ENGINE,ppid,qrow['service_id'])
+            pending_required=[]
+            if qdetail['criteria']:
+                for cr in qdetail['criteria']:
+                    if cr.get('required') and int(retained.get(cr['id'],0)) < int(cr.get('minimum_level') or 0): pending_required.append(cr)
+            if pending_required:
+                st.warning('Critères obligatoires sous le niveau minimal : ' + ', '.join(str(x.get('label')) for x in pending_required))
+            with st.form(f'j4_service_form_{ppid}_{qrow["service_id"]}'):
+                hv=st.selectbox('Niveau global validé',[0,1,2,3,4],index=current_level,format_func=lambda x:f"{x} — {QUALIFICATION_LEVEL_LABELS[x]}")
+                hc=st.text_area('Commentaire de validation',value=qcurrent.get('human_comment') or '',height=90)
+                rd=st.date_input('Date de révision prévue (facultatif)',value=(datetime.fromisoformat(str(qcurrent.get('review_due_at'))[:10]).date() if qcurrent.get('review_due_at') else None),format=app_date_input_format())
+                exception_reason=st.text_area('Motif de dérogation (obligatoire si un critère obligatoire reste insuffisant)',height=70,disabled=not bool(pending_required))
+                hsave=st.form_submit_button('Valider la qualification',type='primary')
+            if hsave:
+                try:
+                    for cr in qdetail['criteria']:
+                        set_human_criterion_assessment(ENGINE,ppid,cr['id'],retained[cr['id']],st.session_state.admin_email,comments[cr['id']] or None,True)
+                    set_human_service_qualification(ENGINE,ppid,qrow['service_id'],hv,st.session_state.admin_email,hc or None,True,rd.isoformat() if rd else None,exception_reason or None,True)
+                    st.session_state.pop(prefill_key,None)
+                    # Le retour Action relira l'éligibilité depuis la base : aucun statut n'est mis en cache.
+                    mark_qualification_saved_for_action(st.session_state,ppid)
+                    st.success('Grille et qualification humaine enregistrées en une seule validation.');rerun()
+                except ValueError as ex:st.error(str(ex))
+            return_action_id=st.session_state.get('_rc222_return_action_id')
+            return_ppid=st.session_state.get('_rc222_return_action_ppid')
+            return_sid=st.session_state.get('_rc222_return_action_service_id')
+            if return_action_id and return_ppid==ppid and (return_sid is None or int(return_sid)==int(qrow['service_id'])):
+                refreshed=action_professional_eligibility(ENGINE,int(return_action_id),ppid)
+                if st.session_state.pop('_rc222_qualification_saved_for_action',False):
+                    if refreshed.get('eligible'):
+                        st.success('Qualification enregistrée : cette personne répond maintenant aux exigences humaines de l’action d’origine.')
+                    else:
+                        st.warning('Qualification enregistrée. L’éligibilité de l’action a été recalculée : '+str(refreshed.get('reason') or 'des exigences restent à traiter.'))
+                st.markdown('##### Retour à l’action d’origine')
+                st.caption('Éligibilité recalculée maintenant : '+str(refreshed.get('status') or 'A_VERIFIER')+' — '+str(refreshed.get('reason') or ''))
+                if st.button('← Retour à l’action et à ses intervenants',key=f'rc222_return_action_{return_action_id}_{ppid}_{qrow["service_id"]}'):
+                    prepare_return_to_action(
+                        st.session_state, return_action_id, bool(refreshed.get('eligible')),
+                        refreshed.get('reason'), refreshed.get('status'),
+                    )
+                    rerun()
+            if qdetail['history']:
+                with st.expander('Historique de qualification'):
+                    st.dataframe(pd.DataFrame([{'Date':format_app_datetime(h['created_at']),'Événement':h['event_type'],'Ancien niveau':h.get('old_human_value'),'Nouveau niveau':h.get('new_human_value'),'Commentaire':h.get('comment') or '','Auteur':h['actor']} for h in qdetail['history']]),use_container_width=True,hide_index=True)
+        else:
+            st.info('Aucune prestation active dans le référentiel.')
+    if pmissions:
+        st.markdown('#### Missions / Affectations')
+        st.caption("Vue opérationnelle des actions auxquelles cette personne est affectée. La qualification utilisée reste contrôlée par les règles de l’action.")
+        missions=professional_missions_view(ENGINE,ppid)
+        st.caption('Historique des lettres de mission / engagements : références consultables ; aucune émission ni signature dans Gestion des Actions.')
+        prow=one(ENGINE,'SELECT trainer_id FROM professional_persons WHERE professional_person_id=:p',{'p':ppid})
+        if prow and prow.get('trainer_id'):
+            j8_history=list_trainer_missions(ENGINE,prow['trainer_id'])
+            if j8_history:
+                st.dataframe(pd.DataFrame([{'Action':m['action_no'],'Mission':m['mission_id'],
+                    'État':m['status'],'Document':m.get('document_ref') or '—',
+                    'Version':m.get('document_version') or '—','Période':(m.get('period_start') or '')+' / '+(m.get('period_end') or ''),
+                    'En cours':'Oui' if m['active'] else 'Non'} for m in j8_history]),use_container_width=True,hide_index=True)
+        if missions:
+            st.dataframe(pd.DataFrame([{'Action':m.get('action_no') or '', 'Intitulé':m.get('title') or '', 'Dates':m.get('dates') or '', 'Prestation':m.get('service_name') or 'À définir', 'Rôle':m.get('role') or '', 'Référent':'Oui' if m.get('is_referent') else 'Non', 'Qualification':m.get('eligibility_status') or '', 'Niveau humain':m.get('human_value') if m.get('human_value') is not None else '—'} for m in missions]),use_container_width=True,hide_index=True)
+        else:
+            st.info('Aucune mission ou affectation active enregistrée pour cette personne.')
+    if pcv:
+        st.markdown('#### CV Clarté360')
+        st.caption("Le CV est généré uniquement à partir du dossier professionnel et des qualifications validées humainement. Aucune compétence n’est inventée ou déduite.")
+        cv_status_internal=professional_cv_status(ENGINE,ppid,'INTERNE')
+        cv_status_client=professional_cv_status(ENGINE,ppid,'CLIENT')
+        cvi,cvc=st.columns(2)
+        with cvi:
+            st.markdown('**Version interne**')
+            st.caption(cv_status_internal['label'])
+            st.caption('Dossier complet : coordonnées professionnelles, informations de collaboration et éléments internes utiles à Clarté360.')
+            if st.button('Préparer le CV interne',key=f'j8_cv_internal_{ppid}'):
+                data=professional_cv_pdf(ENGINE,ppid,'INTERNE'); name=f"CV_CLARTE360_INTERNE_{ppid}.pdf"; ver=record_professional_cv_generation(ENGINE,ppid,'INTERNE',name,data,st.session_state.admin_email); st.session_state[f'j8_cv_data_{ppid}_INTERNE']=(data,name,ver)
+            if st.session_state.get(f'j8_cv_data_{ppid}_INTERNE'):
+                data,name,ver=st.session_state[f'j8_cv_data_{ppid}_INTERNE']; st.download_button(f'Télécharger le CV interne - version {ver}',data,name,'application/pdf',key=f'j8_dl_internal_{ppid}')
+        with cvc:
+            st.markdown('**Version client**')
+            st.caption(cv_status_client['label'])
+            st.caption('Version de présentation : les coordonnées personnelles, notes internes et informations administratives non nécessaires ne sont pas diffusées.')
+            if st.button('Préparer le CV client',key=f'j8_cv_client_{ppid}',type='primary'):
+                data=professional_cv_pdf(ENGINE,ppid,'CLIENT'); name=f"CV_CLARTE360_CLIENT_{ppid}.pdf"; ver=record_professional_cv_generation(ENGINE,ppid,'CLIENT',name,data,st.session_state.admin_email); st.session_state[f'j8_cv_data_{ppid}_CLIENT']=(data,name,ver)
+            if st.session_state.get(f'j8_cv_data_{ppid}_CLIENT'):
+                data,name,ver=st.session_state[f'j8_cv_data_{ppid}_CLIENT']; st.download_button(f'Télécharger le CV client - version {ver}',data,name,'application/pdf',key=f'j8_dl_client_{ppid}')
+        hist=professional_cv_history(ENGINE,ppid)
+        if hist:
+            st.markdown('##### Historique des générations')
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x.get('generated_at')),'Version':x['version_no'],'Audience':'Interne' if x['audience']=='INTERNE' else 'Client','Fichier':x['file_name'],'Généré par':x['generated_by']} for x in hist]),use_container_width=True,hide_index=True)
+    if pdocs:
+        if prof['documents']:
+            st.dataframe(pd.DataFrame([{'Document':x['display_name'],'Catégorie':x['category'],'Valide jusqu’au':format_app_date(x.get('valid_until')),'Ajouté le':format_app_date(x['created_at'])} for x in prof['documents']]),use_container_width=True,hide_index=True)
+            with st.expander('Ouvrir / modifier un document du tableau'):
+                dmap={f"{d['display_name']} — {d['category']}":d for d in prof['documents']}; dlab=st.selectbox('Document à gérer',list(dmap),key=f'rc2p_doc_manage_{ppid}'); dm=dmap[dlab]
+                try:
+                    with open(dm['storage_path'],'rb') as fh: st.download_button('Ouvrir / télécharger le document',fh.read(),file_name=dm['display_name'],mime=dm.get('mime_type') or 'application/octet-stream',key=f'rc2p_doc_open_{ppid}_{dm["id"]}')
+                except Exception: st.caption('Le fichier physique n’est pas accessible depuis cette session.')
+                with st.form(f'rc2p_doc_edit_{ppid}_{dm["id"]}'):
+                    dn=st.text_input('Nom affiché',value=dm['display_name']); dc=st.selectbox('Catégorie',PROFESSIONAL_DOCUMENT_CATEGORIES,index=PROFESSIONAL_DOCUMENT_CATEGORIES.index(dm['category'])); dv=st.date_input('Valide jusqu’au',value=(datetime.fromisoformat(str(dm.get('valid_until'))[:10]).date() if dm.get('valid_until') else None),format=app_date_input_format()); dx=st.text_area('Notes',value=dm.get('notes') or '')
+                    dsave=st.form_submit_button('Enregistrer les modifications')
+                if dsave:
+                    update_professional_document_metadata(ENGINE,ppid,dm['id'],dn,dc,dv.isoformat() if dv else None,dx,st.session_state.admin_email);st.success('Document modifié.');rerun()
+                st.caption('Visibilité du document : INTERNE par défaut. Le partage avec l’intervenant nécessite une décision explicite.')
+                current_shared=(dm.get('visibility')=='INTERVENANT')
+                share=st.checkbox('Partager ce document dans l’espace personnel de cet intervenant',value=current_shared,key=f'j6_share_prof_doc_{ppid}_{dm["id"]}')
+                if share!=current_shared and st.button('Enregistrer la visibilité',key=f'j6_share_save_{ppid}_{dm["id"]}'):
+                    set_professional_document_visibility(ENGINE,ppid,dm['id'],'INTERVENANT' if share else 'INTERNE',st.session_state.admin_email)
+                    st.success('Visibilité actualisée.');rerun()
+        with st.form(f'j2_doc_{ppid}'):
+            up=st.file_uploader('Ajouter un document',type=['pdf','doc','docx','jpg','jpeg','png','webp']);cat=st.selectbox('Catégorie',PROFESSIONAL_DOCUMENT_CATEGORIES);valid=st.date_input('Valide jusqu’au (si applicable)',value=None,format=app_date_input_format());da=st.form_submit_button('Ajouter le document',type='primary')
+        if da and up:
+            try:store_professional_document(ENGINE,ppid,up.getvalue(),up.name,cat,st.session_state.admin_email,valid_until=valid.isoformat() if valid else None);st.success('Document ajouté.');rerun()
+            except ValueError as ex:st.error(str(ex))
+        if prof['documents']:
+            st.markdown('#### Analyse globale du dossier')
+            st.caption("Analyse de l'ensemble des pièces disponibles pour préparer le dossier professionnel et repérer les prestations pertinentes. L'IA propose ; vous validez ou rejetez chaque proposition.")
+            j14_model=str(secret('openai','model','gpt-5-mini') or 'gpt-5-mini'); j14_key=str(secret('openai','api_key',os.environ.get('OPENAI_API_KEY','')) or '')
+            j14_gateway=GlobalDossierAIGateway(j14_key,j14_model)
+            ai_state=professional_global_ai_reanalysis_state(ENGINE,ppid)
+            if ai_state.get('latest_run'):
+                st.caption(f"Empreintes SHA-256 : {len(ai_state['unchanged_documents'])} document(s) inchangé(s) ne seront pas retransmis à l'IA ; {len(ai_state['to_analyze_documents'])} nouveau(x) ou modifié(s) ; {len(ai_state['removed_documents'])} retiré(s) depuis la dernière analyse.")
+            if ai_state.get('duplicate_active_documents'):
+                st.info(f"{len(ai_state['duplicate_active_documents'])} doublon(s) binaire(s) détecté(s) : une seule copie par empreinte SHA-256 sera utilisée par l'analyse.")
+            if ai_state.get('new_versions'):
+                for ver in ai_state['new_versions']:
+                    st.info(f"Nouvelle version détectée : {ver['current'].get('display_name')} — l'empreinte SHA-256 diffère de la version analysée précédemment.")
+            candidates=ai_state['to_analyze_documents'] if ai_state.get('latest_run') else ai_state['active_unique_documents']
+            j14_doc_map={f"{d['display_name']} — {d['category']} — {str(d.get('sha256') or '')[:12]}…":d for d in candidates if (d.get('extension') or '').lower().lstrip('.') in ('pdf','docx','txt','md','csv','jpg','jpeg','png','webp')}
+            if ai_state.get('latest_run') and not j14_doc_map and not ai_state.get('removed_documents'):
+                st.success("Aucun document nouveau, modifié ou retiré depuis la dernière analyse : relancer l'IA serait inutile et n'est pas proposé.")
+            j14_sel=st.multiselect('Documents nouveaux ou modifiés à analyser' if ai_state.get('latest_run') else 'Documents à analyser globalement',list(j14_doc_map),default=list(j14_doc_map),key=f'j14_global_docs_{ppid}')
+            if ai_state.get('removed_documents'):
+                st.caption("Le retrait de document(s) sera aussi pris en compte : les faits qui provenaient exclusivement de ces pièces seront retirés de la base factuelle avant recalcul des 26 prestations.")
+            j14_consent=st.checkbox("Je confirme que cette analyse IA est autorisée et que les documents nouveaux ou modifiés sélectionnés peuvent être transmis pour préparer le dossier.",key=f'j14_global_consent_{ppid}')
+            can_analyze=bool(j14_gateway.ready and j14_consent and (j14_sel or ai_state.get('removed_documents') or not ai_state.get('latest_run')))
+            if st.button('Analyser globalement le dossier',type='primary',key=f'j14_global_analyze_{ppid}',disabled=not can_analyze):
+                try:
+                    delta_ids=[j14_doc_map[x]['id'] for x in j14_sel]
+                    payload=build_global_professional_ai_payload(ENGINE,ppid,delta_ids); safe=[]; images=[]; files=[]
+                    for label in j14_sel:
+                        d=j14_doc_map[label]; ext=(d.get('extension') or '').lower().lstrip('.')
+                        if ext in ('jpg','jpeg','png','webp'):
+                            try:
+                                raw=open(d.get('storage_path') or '','rb').read()
+                                mime={'jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','webp':'image/webp'}[ext]
+                                images.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'data_url':f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"})
+                                safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':'[IMAGE TRANSMISE AU MODELE]'})
+                            except Exception:
+                                safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':'[IMAGE NON LISIBLE - A VERIFIER]'})
+                        elif ext=='pdf':
+                            pdf_info=inspect_pdf_for_ai(d.get('storage_path') or '',18000)
+                            txt=pdf_info.get('text') or ''
+                            marker='[PDF TEXTE]'
+                            if pdf_info.get('is_hybrid'):
+                                marker='[PDF HYBRIDE : TEXTE EXTRAIT + PAGES VISUELLES TRANSMISES AU MODELE]'
+                            elif pdf_info.get('needs_multimodal'):
+                                marker='[PDF SCANNE TRANSMIS AU MODELE COMME FICHIER]'
+                            safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':(marker+'\n'+txt).strip()})
+                            if pdf_info.get('needs_multimodal'):
                                 try:
-                                    update_qualification_evidence(ENGINE,ee['id'],st.session_state.admin_email,etype,etxt2 or None,dict(criteria_options)[ecrit],doc_options[edoclab2],esource2 or None)
-                                    st.success('Preuve modifiée.');rerun()
-                                except ValueError as ex: st.error(str(ex))
-                            confirm_remove=st.checkbox('Je confirme le retrait de cette preuve de la qualification',key=f'rc21_evidence_remove_confirm_{ee["id"]}')
-                            if st.button('Retirer / supprimer cette preuve',key=f'rc21_evidence_remove_{ee["id"]}',disabled=not confirm_remove):
-                                try: delete_qualification_evidence(ENGINE,ee['id'],st.session_state.admin_email);st.success('Preuve retirée avec traçabilité.');rerun()
-                                except ValueError as ex: st.error(str(ex))
-                    with st.expander('Ajouter une preuve'):
-                        docs=prof.get('documents') or []; doc_options={'Aucun document':None}; doc_options.update({f"{d['display_name']} — {d['category']}":d['id'] for d in docs})
-                        edoclab=st.selectbox('Document du dossier',list(doc_options),key=f'rc21_add_evidence_doc_{ppid}_{qrow["service_id"]}'); edoc=doc_options[edoclab]
-                        selected_doc=next((d for d in docs if d['id']==edoc),None)
-                        inferred=(selected_doc.get('category') if selected_doc else 'AUTRE') or 'AUTRE'
-                        inferred=inferred.upper()
-                        if inferred not in QUALIFICATION_EVIDENCE_TYPES:
-                            inferred='DOCUMENT' if edoc else 'AUTRE'
-                        with st.form(f'j4_evidence_{ppid}_{qrow["service_id"]}'):
-                            et=st.selectbox('Type de preuve',QUALIFICATION_EVIDENCE_TYPES,index=QUALIFICATION_EVIDENCE_TYPES.index(inferred) if inferred in QUALIFICATION_EVIDENCE_TYPES else 0)
-                            criteria_options=[('Preuve générale',None)]+[(cr['label'],cr['id']) for cr in qdetail['criteria']]
-                            ecl=st.selectbox('Rattacher à un critère',[x[0] for x in criteria_options]); ecid=dict(criteria_options)[ecl]
-                            etxt=st.text_area('Description / autre preuve',height=80); ego=st.form_submit_button('Ajouter la preuve')
-                        if ego:
-                            try:add_qualification_evidence(ENGINE,ppid,qrow['service_id'],st.session_state.admin_email,et,etxt or None,ecid,edoc);st.success('Preuve ajoutée.');rerun()
-                            except ValueError as ex:st.error(str(ex))
-                    st.markdown('##### Validation humaine de la prestation')
-                    current_level=int(qcurrent.get('human_value') or 0)
-                    summary_live=qualification_adequacy_summary(ENGINE,ppid,qrow['service_id'])
-                    pending_required=[]
-                    if qdetail['criteria']:
-                        for cr in qdetail['criteria']:
-                            if cr.get('required') and int(retained.get(cr['id'],0)) < int(cr.get('minimum_level') or 0): pending_required.append(cr)
-                    if pending_required:
-                        st.warning('Critères obligatoires sous le niveau minimal : ' + ', '.join(str(x.get('label')) for x in pending_required))
-                    with st.form(f'j4_service_form_{ppid}_{qrow["service_id"]}'):
-                        hv=st.selectbox('Niveau global validé',[0,1,2,3,4],index=current_level,format_func=lambda x:f"{x} — {QUALIFICATION_LEVEL_LABELS[x]}")
-                        hc=st.text_area('Commentaire de validation',value=qcurrent.get('human_comment') or '',height=90)
-                        rd=st.date_input('Date de révision prévue (facultatif)',value=(datetime.fromisoformat(str(qcurrent.get('review_due_at'))[:10]).date() if qcurrent.get('review_due_at') else None),format='DD/MM/YYYY')
-                        exception_reason=st.text_area('Motif de dérogation (obligatoire si un critère obligatoire reste insuffisant)',height=70,disabled=not bool(pending_required))
-                        hsave=st.form_submit_button('Valider la qualification',type='primary')
-                    if hsave:
-                        try:
-                            for cr in qdetail['criteria']:
-                                set_human_criterion_assessment(ENGINE,ppid,cr['id'],retained[cr['id']],st.session_state.admin_email,comments[cr['id']] or None,True)
-                            set_human_service_qualification(ENGINE,ppid,qrow['service_id'],hv,st.session_state.admin_email,hc or None,True,rd.isoformat() if rd else None,exception_reason or None,True)
-                            st.session_state.pop(prefill_key,None)
-                            # Le retour Action relira l'éligibilité depuis la base : aucun statut n'est mis en cache.
-                            mark_qualification_saved_for_action(st.session_state,ppid)
-                            st.success('Grille et qualification humaine enregistrées en une seule validation.');rerun()
-                        except ValueError as ex:st.error(str(ex))
-                    return_action_id=st.session_state.get('_rc222_return_action_id')
-                    return_ppid=st.session_state.get('_rc222_return_action_ppid')
-                    return_sid=st.session_state.get('_rc222_return_action_service_id')
-                    if return_action_id and return_ppid==ppid and (return_sid is None or int(return_sid)==int(qrow['service_id'])):
-                        refreshed=action_professional_eligibility(ENGINE,int(return_action_id),ppid)
-                        if st.session_state.pop('_rc222_qualification_saved_for_action',False):
-                            if refreshed.get('eligible'):
-                                st.success('Qualification enregistrée : cette personne répond maintenant aux exigences humaines de l’action d’origine.')
-                            else:
-                                st.warning('Qualification enregistrée. L’éligibilité de l’action a été recalculée : '+str(refreshed.get('reason') or 'des exigences restent à traiter.'))
-                        st.markdown('##### Retour à l’action d’origine')
-                        st.caption('Éligibilité recalculée maintenant : '+str(refreshed.get('status') or 'A_VERIFIER')+' — '+str(refreshed.get('reason') or ''))
-                        if st.button('← Retour à l’action et à ses intervenants',key=f'rc222_return_action_{return_action_id}_{ppid}_{qrow["service_id"]}'):
-                            prepare_return_to_action(
-                                st.session_state, return_action_id, bool(refreshed.get('eligible')),
-                                refreshed.get('reason'), refreshed.get('status'),
-                            )
-                            rerun()
-                    if qdetail['history']:
-                        with st.expander('Historique de qualification'):
-                            st.dataframe(pd.DataFrame([{'Date':h['created_at'][:16].replace('T',' '),'Événement':h['event_type'],'Ancien niveau':h.get('old_human_value'),'Nouveau niveau':h.get('new_human_value'),'Commentaire':h.get('comment') or '','Auteur':h['actor']} for h in qdetail['history']]),use_container_width=True,hide_index=True)
-                else:
-                    st.info('Aucune prestation active dans le référentiel.')
-            if pmissions:
-                st.markdown('#### Missions / Affectations')
-                st.caption("Vue opérationnelle des actions auxquelles cette personne est affectée. La qualification utilisée reste contrôlée par les règles de l’action.")
-                missions=professional_missions_view(ENGINE,ppid)
-                if missions:
-                    st.dataframe(pd.DataFrame([{'Action':m.get('action_no') or '', 'Intitulé':m.get('title') or '', 'Dates':m.get('dates') or '', 'Prestation':m.get('service_name') or 'À définir', 'Rôle':m.get('role') or '', 'Référent':'Oui' if m.get('is_referent') else 'Non', 'Qualification':m.get('eligibility_status') or '', 'Niveau humain':m.get('human_value') if m.get('human_value') is not None else '—'} for m in missions]),use_container_width=True,hide_index=True)
-                else:
-                    st.info('Aucune mission ou affectation active enregistrée pour cette personne.')
-            if pcv:
-                st.markdown('#### CV Clarté360')
-                st.caption("Le CV est généré uniquement à partir du dossier professionnel et des qualifications validées humainement. Aucune compétence n’est inventée ou déduite.")
-                cv_status_internal=professional_cv_status(ENGINE,ppid,'INTERNE')
-                cv_status_client=professional_cv_status(ENGINE,ppid,'CLIENT')
-                cvi,cvc=st.columns(2)
-                with cvi:
-                    st.markdown('**Version interne**')
-                    st.caption(cv_status_internal['label'])
-                    st.caption('Dossier complet : coordonnées professionnelles, informations de collaboration et éléments internes utiles à Clarté360.')
-                    if st.button('Préparer le CV interne',key=f'j8_cv_internal_{ppid}'):
-                        data=professional_cv_pdf(ENGINE,ppid,'INTERNE'); name=f"CV_CLARTE360_INTERNE_{ppid}.pdf"; ver=record_professional_cv_generation(ENGINE,ppid,'INTERNE',name,data,st.session_state.admin_email); st.session_state[f'j8_cv_data_{ppid}_INTERNE']=(data,name,ver)
-                    if st.session_state.get(f'j8_cv_data_{ppid}_INTERNE'):
-                        data,name,ver=st.session_state[f'j8_cv_data_{ppid}_INTERNE']; st.download_button(f'Télécharger le CV interne - version {ver}',data,name,'application/pdf',key=f'j8_dl_internal_{ppid}')
-                with cvc:
-                    st.markdown('**Version client**')
-                    st.caption(cv_status_client['label'])
-                    st.caption('Version de présentation : les coordonnées personnelles, notes internes et informations administratives non nécessaires ne sont pas diffusées.')
-                    if st.button('Préparer le CV client',key=f'j8_cv_client_{ppid}',type='primary'):
-                        data=professional_cv_pdf(ENGINE,ppid,'CLIENT'); name=f"CV_CLARTE360_CLIENT_{ppid}.pdf"; ver=record_professional_cv_generation(ENGINE,ppid,'CLIENT',name,data,st.session_state.admin_email); st.session_state[f'j8_cv_data_{ppid}_CLIENT']=(data,name,ver)
-                    if st.session_state.get(f'j8_cv_data_{ppid}_CLIENT'):
-                        data,name,ver=st.session_state[f'j8_cv_data_{ppid}_CLIENT']; st.download_button(f'Télécharger le CV client - version {ver}',data,name,'application/pdf',key=f'j8_dl_client_{ppid}')
-                hist=professional_cv_history(ENGINE,ppid)
-                if hist:
-                    st.markdown('##### Historique des générations')
-                    st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x.get('generated_at')),'Version':x['version_no'],'Audience':'Interne' if x['audience']=='INTERNE' else 'Client','Fichier':x['file_name'],'Généré par':x['generated_by']} for x in hist]),use_container_width=True,hide_index=True)
-            if pdocs:
-                if prof['documents']:
-                    st.dataframe(pd.DataFrame([{'Document':x['display_name'],'Catégorie':x['category'],'Valide jusqu’au':x.get('valid_until') or '','Ajouté le':x['created_at'][:10]} for x in prof['documents']]),use_container_width=True,hide_index=True)
-                    with st.expander('Ouvrir / modifier un document du tableau'):
-                        dmap={f"{d['display_name']} — {d['category']}":d for d in prof['documents']}; dlab=st.selectbox('Document à gérer',list(dmap),key=f'rc2p_doc_manage_{ppid}'); dm=dmap[dlab]
-                        try:
-                            with open(dm['storage_path'],'rb') as fh: st.download_button('Ouvrir / télécharger le document',fh.read(),file_name=dm['display_name'],mime=dm.get('mime_type') or 'application/octet-stream',key=f'rc2p_doc_open_{ppid}_{dm["id"]}')
-                        except Exception: st.caption('Le fichier physique n’est pas accessible depuis cette session.')
-                        with st.form(f'rc2p_doc_edit_{ppid}_{dm["id"]}'):
-                            dn=st.text_input('Nom affiché',value=dm['display_name']); dc=st.selectbox('Catégorie',PROFESSIONAL_DOCUMENT_CATEGORIES,index=PROFESSIONAL_DOCUMENT_CATEGORIES.index(dm['category'])); dv=st.date_input('Valide jusqu’au',value=(datetime.fromisoformat(str(dm.get('valid_until'))[:10]).date() if dm.get('valid_until') else None),format='DD/MM/YYYY'); dx=st.text_area('Notes',value=dm.get('notes') or '')
-                            dsave=st.form_submit_button('Enregistrer les modifications')
-                        if dsave:
-                            update_professional_document_metadata(ENGINE,ppid,dm['id'],dn,dc,dv.isoformat() if dv else None,dx,st.session_state.admin_email);st.success('Document modifié.');rerun()
-                with st.form(f'j2_doc_{ppid}'):
-                    up=st.file_uploader('Ajouter un document',type=['pdf','doc','docx','jpg','jpeg','png','webp']);cat=st.selectbox('Catégorie',PROFESSIONAL_DOCUMENT_CATEGORIES);valid=st.date_input('Valide jusqu’au (si applicable)',value=None,format='DD/MM/YYYY');da=st.form_submit_button('Ajouter le document',type='primary')
-                if da and up:
-                    try:store_professional_document(ENGINE,ppid,up.getvalue(),up.name,cat,st.session_state.admin_email,valid_until=valid.isoformat() if valid else None);st.success('Document ajouté.');rerun()
-                    except ValueError as ex:st.error(str(ex))
-                if prof['documents']:
-                    st.markdown('#### Analyse globale du dossier')
-                    st.caption("Analyse de l'ensemble des pièces disponibles pour préparer le dossier professionnel et repérer les prestations pertinentes. L'IA propose ; vous validez ou rejetez chaque proposition.")
-                    j14_model=str(secret('openai','model','gpt-5-mini') or 'gpt-5-mini'); j14_key=str(secret('openai','api_key',os.environ.get('OPENAI_API_KEY','')) or '')
-                    j14_gateway=GlobalDossierAIGateway(j14_key,j14_model)
-                    ai_state=professional_global_ai_reanalysis_state(ENGINE,ppid)
+                                    raw=open(d.get('storage_path') or '','rb').read()
+                                    files.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'data_url':f"data:application/pdf;base64,{base64.b64encode(raw).decode('ascii')}",'pdf_mode':'HYBRIDE' if pdf_info.get('is_hybrid') else 'SCANNE'})
+                                except Exception:
+                                    safe[-1]['text'] += '\n[PARTIE VISUELLE NON LISIBLE - A VERIFIER]'
+                        else:
+                            safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':extract_document_text(d.get('storage_path') or '',d.get('extension') or '',18000)})
+                    payload['document_contents']=safe; payload['document_images']=images; payload['document_files']=files; payload['documents']=[{k:v for k,v in d.items() if k!='storage_path'} for d in payload['documents']]
                     if ai_state.get('latest_run'):
-                        st.caption(f"Empreintes SHA-256 : {len(ai_state['unchanged_documents'])} document(s) inchangé(s) ne seront pas retransmis à l'IA ; {len(ai_state['to_analyze_documents'])} nouveau(x) ou modifié(s) ; {len(ai_state['removed_documents'])} retiré(s) depuis la dernière analyse.")
-                    if ai_state.get('duplicate_active_documents'):
-                        st.info(f"{len(ai_state['duplicate_active_documents'])} doublon(s) binaire(s) détecté(s) : une seule copie par empreinte SHA-256 sera utilisée par l'analyse.")
-                    if ai_state.get('new_versions'):
-                        for ver in ai_state['new_versions']:
-                            st.info(f"Nouvelle version détectée : {ver['current'].get('display_name')} — l'empreinte SHA-256 diffère de la version analysée précédemment.")
-                    candidates=ai_state['to_analyze_documents'] if ai_state.get('latest_run') else ai_state['active_unique_documents']
-                    j14_doc_map={f"{d['display_name']} — {d['category']} — {str(d.get('sha256') or '')[:12]}…":d for d in candidates if (d.get('extension') or '').lower().lstrip('.') in ('pdf','docx','txt','md','csv','jpg','jpeg','png','webp')}
-                    if ai_state.get('latest_run') and not j14_doc_map and not ai_state.get('removed_documents'):
-                        st.success("Aucun document nouveau, modifié ou retiré depuis la dernière analyse : relancer l'IA serait inutile et n'est pas proposé.")
-                    j14_sel=st.multiselect('Documents nouveaux ou modifiés à analyser' if ai_state.get('latest_run') else 'Documents à analyser globalement',list(j14_doc_map),default=list(j14_doc_map),key=f'j14_global_docs_{ppid}')
-                    if ai_state.get('removed_documents'):
-                        st.caption("Le retrait de document(s) sera aussi pris en compte : les faits qui provenaient exclusivement de ces pièces seront retirés de la base factuelle avant recalcul des 26 prestations.")
-                    j14_consent=st.checkbox("Je confirme que cette analyse IA est autorisée et que les documents nouveaux ou modifiés sélectionnés peuvent être transmis pour préparer le dossier.",key=f'j14_global_consent_{ppid}')
-                    can_analyze=bool(j14_gateway.ready and j14_consent and (j14_sel or ai_state.get('removed_documents') or not ai_state.get('latest_run')))
-                    if st.button('Analyser globalement le dossier',type='primary',key=f'j14_global_analyze_{ppid}',disabled=not can_analyze):
-                        try:
-                            delta_ids=[j14_doc_map[x]['id'] for x in j14_sel]
-                            payload=build_global_professional_ai_payload(ENGINE,ppid,delta_ids); safe=[]; images=[]; files=[]
-                            for label in j14_sel:
-                                d=j14_doc_map[label]; ext=(d.get('extension') or '').lower().lstrip('.')
-                                if ext in ('jpg','jpeg','png','webp'):
-                                    try:
-                                        raw=open(d.get('storage_path') or '','rb').read()
-                                        mime={'jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','webp':'image/webp'}[ext]
-                                        images.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'data_url':f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"})
-                                        safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':'[IMAGE TRANSMISE AU MODELE]'})
-                                    except Exception:
-                                        safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':'[IMAGE NON LISIBLE - A VERIFIER]'})
-                                elif ext=='pdf':
-                                    pdf_info=inspect_pdf_for_ai(d.get('storage_path') or '',18000)
-                                    txt=pdf_info.get('text') or ''
-                                    marker='[PDF TEXTE]'
-                                    if pdf_info.get('is_hybrid'):
-                                        marker='[PDF HYBRIDE : TEXTE EXTRAIT + PAGES VISUELLES TRANSMISES AU MODELE]'
-                                    elif pdf_info.get('needs_multimodal'):
-                                        marker='[PDF SCANNE TRANSMIS AU MODELE COMME FICHIER]'
-                                    safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':(marker+'\n'+txt).strip()})
-                                    if pdf_info.get('needs_multimodal'):
-                                        try:
-                                            raw=open(d.get('storage_path') or '','rb').read()
-                                            files.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'data_url':f"data:application/pdf;base64,{base64.b64encode(raw).decode('ascii')}",'pdf_mode':'HYBRIDE' if pdf_info.get('is_hybrid') else 'SCANNE'})
-                                        except Exception:
-                                            safe[-1]['text'] += '\n[PARTIE VISUELLE NON LISIBLE - A VERIFIER]'
-                                else:
-                                    safe.append({'document_id':d['id'],'name':d['display_name'],'category':d['category'],'text':extract_document_text(d.get('storage_path') or '',d.get('extension') or '',18000)})
-                            payload['document_contents']=safe; payload['document_images']=images; payload['document_files']=files; payload['documents']=[{k:v for k,v in d.items() if k!='storage_path'} for d in payload['documents']]
-                            if ai_state.get('latest_run'):
-                                payload['_base_facts']=ai_state.get('base_facts')
-                            res=j14_gateway.analyze(payload)
-                            covered_ids=[int(d['id']) for d in ai_state.get('unchanged_documents') or []]+[int(x) for x in delta_ids]
-                            save_global_professional_ai_analysis(ENGINE,ppid,res['result'],st.session_state.admin_email,res['provider'],res['model'],res['prompt_version'],res['request_hash'],res.get('usage'),covered_ids,res.get('run_metrics'))
-                            st.session_state.pop(f'rc21_ai_failed_{ppid}',None)
-                            st.success("Analyse globale enregistrée. Les documents dont l'empreinte était inchangée n'ont pas été retransmis ; leurs faits antérieurs ont été réutilisés. Les 26 prestations ont ensuite été recalculées sur la base factuelle consolidée.");rerun()
-                        except Exception as ex:
-                            st.session_state[f'rc21_ai_failed_{ppid}']=str(ex)
-                            st.error(f"L'analyse globale n'a pas pu aboutir. Aucun résultat partiel n'a été enregistré. Les documents restent conservés. Détail : {ex}")
-                    grun=latest_global_professional_ai_run(ENGINE,ppid)
-                    if st.session_state.get(f'rc21_ai_failed_{ppid}') and grun:
-                        st.warning("La dernière tentative d'analyse a échoué. Les résultats affichés ci-dessous proviennent de la dernière analyse réussie et peuvent être antérieurs aux documents actuellement sélectionnés.")
-                    if grun:
-                        gout=json.loads(grun.get('output_json') or '{}'); alerts=gout.get('identity_alerts') or []
-                        if alerts:
-                            st.error('Points d’identité à vérifier : ' + ' | '.join(str(x) for x in alerts))
-                        created=str(grun.get('created_at') or '')
-                        st.caption(f"Dernière analyse réussie : {created[:16].replace('T',' ')} — modèle {grun.get('model') or '—'} — prompt {grun.get('prompt_version') or '—'}")
-                        with st.expander('Détails techniques IA — analyse'):
-                            c1,c2,c3,c4=st.columns(4)
-                            c1.metric('Durée',f"{float(grun.get('duration_seconds') or 0):.1f} s")
-                            c2.metric('Appels API',int(grun.get('api_call_count') or 0))
-                            c3.metric('Retries',int(grun.get('retry_count') or 0))
-                            c4.metric('Statut',grun.get('status') or 'SUCCESS')
-                            c1,c2,c3=st.columns(3)
-                            c1.metric('Tokens entrée',int(grun.get('input_tokens') or 0))
-                            c2.metric('Tokens sortie',int(grun.get('output_tokens') or 0))
-                            c3.metric('Tokens total',int(grun.get('total_tokens') or 0))
-                            if grun.get('estimated_cost') is not None: st.caption(f"Coût estimé : ${float(grun['estimated_cost']):.4f}")
-                            try: sent_ids=[int(x) for x in json.loads(grun.get('selected_document_ids_json') or '[]')]
-                            except Exception: sent_ids=[]
-                            sent_docs=[d.get('display_name') for d in (prof.get('documents') or []) if int(d.get('id') or 0) in sent_ids]
-                            st.write('Documents réellement transmis : ' + (', '.join(sent_docs) if sent_docs else 'aucun / non disponible'))
-                            st.caption('Les dates sont affichées dans le fuseau local configuré de l’application ; les secrets et clés techniques ne sont jamais exposés.')
-                        svc_names={int(s['id']):s['name'] for s in list_services(ENGINE,active_only=True)}
-                        svc_rows=[]
-                        for data in gout.get('service_candidates') or []:
-                            sid=int(data.get('service_id') or 0); level=int(data.get('service_level') or 0)
-                            evn=len(data.get('evidence') or []); positive=sum(1 for c in (data.get('criteria') or []) if int(c.get('proposed_level') or 0)>0)
-                            if evn==0 and positive==0: lecture='Aucun élément repéré'
-                            elif level==0: lecture='Éléments repérés — niveau global bloqué'
-                            elif level<3: lecture='Rapprochement partiel'
-                            else: lecture='Rapprochement fort'
-                            below=data.get('required_criteria_below_min') or []
-                            svc_rows.append({'Prestation':svc_names.get(sid,f'Prestation #{sid}'),'Lecture IA':lecture,
-                              'Critères avec éléments':f"{positive}/{len(data.get('criteria') or [])}",
-                              'Obligatoires à vérifier':len(below),'Preuves repérées':evn,'Points ouverts':len(data.get('missing_points') or []),
-                              'Niveau IA indicatif':f"{level}/4",'Confiance analyse':f"{float(data.get('confidence') or 0):.0%}"})
-                        if svc_rows:
-                            st.markdown('##### Résultat IA sur l’ensemble des prestations')
-                            st.caption("Les 26 prestations sont directement disponibles dans l’onglet Qualifications. Il n’y a plus d’étape « Retenir pour instruction ». Un niveau 0/4 n’est plus assimilé automatiquement à une absence de rapprochement lorsqu’il existe des éléments probants.")
-                            st.dataframe(pd.DataFrame(svc_rows),use_container_width=True,hide_index=True)
-                        pending=[x for x in grun.get('suggestions',[]) if x.get('status')=='PROPOSE' and x.get('suggestion_type')!='SERVICE_CANDIDATE']
-                        if pending:
-                            labels={'PROFILE':'Profil','SPECIALTY':'Spécialité','EXPERIENCE':'Expérience','EDUCATION':'Diplôme / formation','CERTIFICATION':'Certification / habilitation','LANGUAGE':'Langue','IDENTITY_ALERT':'Alerte identité','MISSING_POINT':'Point à vérifier'}
-                            for sug in pending:
-                                data=json.loads(sug.get('payload_json') or '{}'); st.markdown(f"**{labels.get(sug['suggestion_type'],sug['suggestion_type'])}** — {json.dumps(data,ensure_ascii=False)}")
-                                cacc,crej=st.columns(2)
-                                if cacc.button('Accepter',key=f"j14_acc_{sug['id']}",disabled=sug['suggestion_type'] in ('IDENTITY_ALERT','MISSING_POINT')):
-                                    review_professional_ai_suggestion(ENGINE,sug['id'],'ACCEPTE',st.session_state.admin_email);rerun()
-                                if crej.button('Rejeter / classer',key=f"j14_rej_{sug['id']}"):
-                                    review_professional_ai_suggestion(ENGINE,sug['id'],'REJETE',st.session_state.admin_email);rerun()
-                if prof['documents']:
-                    with st.expander('Archiver un document obsolète'):
-                        amap={f"{d['display_name']} — {d['category']}":d['id'] for d in prof['documents']}
-                        alab=st.selectbox('Document à archiver',list(amap),key=f'j7_archive_doc_{ppid}')
-                        aconfirm=st.checkbox('Je confirme que ce document doit quitter le dossier actif',key=f'j7_archive_confirm_{ppid}')
-                        if st.button('Archiver le document',key=f'j7_archive_btn_{ppid}',disabled=not aconfirm):
-                            try:archive_professional_document(ENGINE,ppid,amap[alab],st.session_state.admin_email);st.success('Document archivé.');rerun()
-                            except ValueError as ex:st.error(str(ex))
-        st.caption("Les signalements et remontées des intervenants sont traités dans l'écran Qualité, qui constitue le point de gestion unique de ces événements.")
+                        payload['_base_facts']=ai_state.get('base_facts')
+                    res=j14_gateway.analyze(payload)
+                    covered_ids=[int(d['id']) for d in ai_state.get('unchanged_documents') or []]+[int(x) for x in delta_ids]
+                    save_global_professional_ai_analysis(ENGINE,ppid,res['result'],st.session_state.admin_email,res['provider'],res['model'],res['prompt_version'],res['request_hash'],res.get('usage'),covered_ids,res.get('run_metrics'))
+                    st.session_state.pop(f'rc21_ai_failed_{ppid}',None)
+                    st.success("Analyse globale enregistrée. Les documents dont l'empreinte était inchangée n'ont pas été retransmis ; leurs faits antérieurs ont été réutilisés. Les 26 prestations ont ensuite été recalculées sur la base factuelle consolidée.");rerun()
+                except Exception as ex:
+                    st.session_state[f'rc21_ai_failed_{ppid}']=str(ex)
+                    st.error(f"L'analyse globale n'a pas pu aboutir. Aucun résultat partiel n'a été enregistré. Les documents restent conservés. Détail : {ex}")
+            grun=latest_global_professional_ai_run(ENGINE,ppid)
+            if st.session_state.get(f'rc21_ai_failed_{ppid}') and grun:
+                st.warning("La dernière tentative d'analyse a échoué. Les résultats affichés ci-dessous proviennent de la dernière analyse réussie et peuvent être antérieurs aux documents actuellement sélectionnés.")
+            if grun:
+                gout=json.loads(grun.get('output_json') or '{}'); alerts=gout.get('identity_alerts') or []
+                if alerts:
+                    st.error('Points d’identité à vérifier : ' + ' | '.join(str(x) for x in alerts))
+                created=str(grun.get('created_at') or '')
+                st.caption(f"Dernière analyse réussie : {format_app_datetime(created)} — modèle {grun.get('model') or '—'} — prompt {grun.get('prompt_version') or '—'}")
+                with st.expander('Détails techniques IA — analyse'):
+                    c1,c2,c3,c4=st.columns(4)
+                    c1.metric('Durée',f"{float(grun.get('duration_seconds') or 0):.1f} s")
+                    c2.metric('Appels API',int(grun.get('api_call_count') or 0))
+                    c3.metric('Retries',int(grun.get('retry_count') or 0))
+                    c4.metric('Statut',grun.get('status') or 'SUCCESS')
+                    c1,c2,c3=st.columns(3)
+                    c1.metric('Tokens entrée',int(grun.get('input_tokens') or 0))
+                    c2.metric('Tokens sortie',int(grun.get('output_tokens') or 0))
+                    c3.metric('Tokens total',int(grun.get('total_tokens') or 0))
+                    if grun.get('estimated_cost') is not None: st.caption(f"Coût estimé : ${float(grun['estimated_cost']):.4f}")
+                    try: sent_ids=[int(x) for x in json.loads(grun.get('selected_document_ids_json') or '[]')]
+                    except Exception: sent_ids=[]
+                    sent_docs=[d.get('display_name') for d in (prof.get('documents') or []) if int(d.get('id') or 0) in sent_ids]
+                    st.write('Documents réellement transmis : ' + (', '.join(sent_docs) if sent_docs else 'aucun / non disponible'))
+                    st.caption('Les dates sont affichées dans le fuseau local configuré de l’application ; les secrets et clés techniques ne sont jamais exposés.')
+                svc_names={int(s['id']):s['name'] for s in list_services(ENGINE,active_only=True)}
+                svc_rows=[]
+                for data in gout.get('service_candidates') or []:
+                    sid=int(data.get('service_id') or 0); level=int(data.get('service_level') or 0)
+                    evn=len(data.get('evidence') or []); positive=sum(1 for c in (data.get('criteria') or []) if int(c.get('proposed_level') or 0)>0)
+                    if evn==0 and positive==0: lecture='Aucun élément repéré'
+                    elif level==0: lecture='Éléments repérés — niveau global bloqué'
+                    elif level<3: lecture='Rapprochement partiel'
+                    else: lecture='Rapprochement fort'
+                    below=data.get('required_criteria_below_min') or []
+                    svc_rows.append({'Prestation':svc_names.get(sid,f'Prestation #{sid}'),'Lecture IA':lecture,
+                      'Critères avec éléments':f"{positive}/{len(data.get('criteria') or [])}",
+                      'Obligatoires à vérifier':len(below),'Preuves repérées':evn,'Points ouverts':len(data.get('missing_points') or []),
+                      'Niveau IA indicatif':f"{level}/4",'Confiance analyse':f"{float(data.get('confidence') or 0):.0%}"})
+                if svc_rows:
+                    st.markdown('##### Résultat IA sur l’ensemble des prestations')
+                    st.caption("Les 26 prestations sont directement disponibles dans l’onglet Qualifications. Il n’y a plus d’étape « Retenir pour instruction ». Un niveau 0/4 n’est plus assimilé automatiquement à une absence de rapprochement lorsqu’il existe des éléments probants.")
+                    st.dataframe(pd.DataFrame(svc_rows),use_container_width=True,hide_index=True)
+                pending=[x for x in grun.get('suggestions',[]) if x.get('status')=='PROPOSE' and x.get('suggestion_type')!='SERVICE_CANDIDATE']
+                if pending:
+                    labels={'PROFILE':'Profil','SPECIALTY':'Spécialité','EXPERIENCE':'Expérience','EDUCATION':'Diplôme / formation','CERTIFICATION':'Certification / habilitation','LANGUAGE':'Langue','IDENTITY_ALERT':'Alerte identité','MISSING_POINT':'Point à vérifier'}
+                    for sug in pending:
+                        data=json.loads(sug.get('payload_json') or '{}'); st.markdown(f"**{labels.get(sug['suggestion_type'],sug['suggestion_type'])}** — {json.dumps(data,ensure_ascii=False)}")
+                        cacc,crej=st.columns(2)
+                        if cacc.button('Accepter',key=f"j14_acc_{sug['id']}",disabled=sug['suggestion_type'] in ('IDENTITY_ALERT','MISSING_POINT')):
+                            review_professional_ai_suggestion(ENGINE,sug['id'],'ACCEPTE',st.session_state.admin_email);rerun()
+                        if crej.button('Rejeter / classer',key=f"j14_rej_{sug['id']}"):
+                            review_professional_ai_suggestion(ENGINE,sug['id'],'REJETE',st.session_state.admin_email);rerun()
+        if prof['documents']:
+            with st.expander('Archiver un document obsolète'):
+                amap={f"{d['display_name']} — {d['category']}":d['id'] for d in prof['documents']}
+                alab=st.selectbox('Document à archiver',list(amap),key=f'j7_archive_doc_{ppid}')
+                aconfirm=st.checkbox('Je confirme que ce document doit quitter le dossier actif',key=f'j7_archive_confirm_{ppid}')
+                if st.button('Archiver le document',key=f'j7_archive_btn_{ppid}',disabled=not aconfirm):
+                    try:archive_professional_document(ENGINE,ppid,amap[alab],st.session_state.admin_email);st.success('Document archivé.');rerun()
+                    except ValueError as ex:st.error(str(ex))
+    st.caption("Les signalements et remontées des intervenants sont traités dans l'écran Qualité, qui constitue le point de gestion unique de ces événements.")
+
+
+def _j6_professional_pilotage():
+    st.subheader('Pilotage & référentiels des intervenants')
+    st.caption('Candidatures, qualifications et recherche, alertes et référentiel des prestations.')
+    sub_candidates,sub_matrix,sub_alertes,sub_prestations=st.tabs(['Candidats','Qualifications & recherche','Alertes','Prestations'])
     with sub_candidates:
         st.subheader('Candidats')
         st.caption('Vue de pilotage des candidatures. La décision de transformer un candidat en intervenant reste humaine et se réalise dans son dossier professionnel.')
@@ -4461,7 +5214,7 @@ def professionals_screen():
             if nq and nq not in hay: continue
             shown.append(x)
         if shown:
-            st.dataframe(pd.DataFrame([{'Candidat':x['display_name'],'Origine':x.get('origin') or '—','État':x['candidate_work_status'].replace('_',' ').title(),'Complétude':f"{x.get('completion_percent') or 0} %",'Manquants':x.get('missing_items') or '—','Prestations revendiquées':x.get('claimed_services') or 'Non renseigné','Dernière activité':str(x.get('last_activity') or '')[:16].replace('T',' '),'À faire':x.get('next_action') or 'Étudier'} for x in shown]),use_container_width=True,hide_index=True)
+            st.dataframe(pd.DataFrame([{'Candidat':x['display_name'],'Origine':x.get('origin') or '—','État':x['candidate_work_status'].replace('_',' ').title(),'Complétude':f"{x.get('completion_percent') or 0} %",'Manquants':x.get('missing_items') or '—','Prestations revendiquées':x.get('claimed_services') or 'Non renseigné','Dernière activité':format_app_datetime(x.get('last_activity')),'À faire':x.get('next_action') or 'Étudier'} for x in shown]),use_container_width=True,hide_index=True)
             cmap={f"{x['display_name']} — {x['candidate_work_status'].replace('_',' ')}":x for x in shown}; clab=st.selectbox('Candidat à gérer',list(cmap),key='rc2p_candidate_action'); cp=cmap[clab]
             ca1,ca2,ca3=st.columns(3)
             if ca1.button('Ouvrir / étudier',key='rc2p_candidate_open'):
@@ -4496,7 +5249,7 @@ def professionals_screen():
             amap={f"{x['name']} — {x['service_name']} — {status_labels.get(x['management_status'],x['management_status'])}":x for x in shown}
             alab=st.selectbox('Qualification à traiter',list(amap),key='p4_open_qualification'); ar=amap[alab]
             if st.button('Ouvrir le dossier sur cette qualification',key='p4_open_qualification_btn'):
-                st.session_state['_j2_open_ppid']=ar['professional_person_id']; st.session_state['_rc222_dossier_screen']='Qualifications'; st.session_state['_j17_focus_service_id']=ar['service_id']; st.session_state['j9_status_filter']='Tous'; rerun()
+                st.session_state['_j2_open_ppid']=ar['professional_person_id']; st.session_state['_rc222_dossier_screen']='Qualifications';st.session_state['_j6_next_professional_workspace']='Dossiers professionnels'; st.session_state['_j17_focus_service_id']=ar['service_id']; st.session_state['j9_status_filter']='Tous'; rerun()
         else:
             st.info('Aucune qualification ne correspond aux filtres.')
         st.markdown('#### Rechercher un intervenant pour une prestation')
@@ -4689,7 +5442,7 @@ def professionals_screen():
                     except ValueError as ex: st.error(str(ex))
             with st.expander('Historique des versions de la prestation'):
                 versions=service_versions(ENGINE,svc['id'])
-                if versions: st.dataframe(pd.DataFrame([{'Version':x['version_no'],'Date':x['created_at'][:16].replace('T',' '),'Par':x['changed_by'],'Motif':x.get('change_reason') or '','Actif':'Oui' if x['active'] else 'Non'} for x in versions]),use_container_width=True,hide_index=True)
+                if versions: st.dataframe(pd.DataFrame([{'Version':x['version_no'],'Date':format_app_datetime(x['created_at']),'Par':x['changed_by'],'Motif':x.get('change_reason') or '','Actif':'Oui' if x['active'] else 'Non'} for x in versions]),use_container_width=True,hide_index=True)
     with sub_alertes:
         st.subheader('Alertes & maintien des qualifications')
         st.caption("Surveillance des échéances du dossier professionnel. Une alerte n'annule jamais automatiquement une qualification humaine : elle signale qu'une vérification ou une décision est nécessaire.")
@@ -4717,10 +5470,55 @@ def professionals_screen():
 
 
 
+
 def settings_screen():
     header('Clarté360 — Paramètres','Administration de l’application')
     tabg,tabo,tabag,tabi,taba,tabdiag=st.tabs(['Général','Organisme','Agences / établissements','Imports','Administrateurs','Diagnostic I9'])
     with tabg:
+        st.subheader('Paramètres régionaux et horaires')
+        st.caption('Les formats de date/heure changent seulement l’affichage. Les preuves restent UTC et les heures de planning ne sont pas décalées. Les délais des rappels Teams pilotent réellement leur programmation.')
+        orgs_reg=list_organizations(ENGINE)
+        if orgs_reg:
+            labels={f"{o['name']} — #{o['id']}":o for o in orgs_reg}
+            selected_reg=st.selectbox('Organisme concerné',list(labels),key='regional_org')
+            regional_org=labels[selected_reg]
+            current_reg=get_regional_preferences(ENGINE)
+            from regional_settings import preferences_from_org,online_reminders_from_org
+            current_reg=preferences_from_org(regional_org)
+            current_reminders=online_reminders_from_org(regional_org)
+            with st.form(f'regional_settings_{regional_org["id"]}'):
+                common=['Europe/Paris','Europe/Budapest','Europe/London','UTC','America/New_York']
+                known=regional_org.get('timezone') or 'Europe/Paris'
+                zone_options=common + (['Autre fuseau IANA…'] if known in common else ['Autre fuseau IANA…'])
+                selection=st.selectbox('Fuseau horaire de référence',zone_options,index=common.index(known) if known in common else len(common))
+                tz_custom=st.text_input('Fuseau IANA personnalisé',value=known if known not in common else '',disabled=selection!='Autre fuseau IANA…')
+                c1,c2=st.columns(2)
+                dd=c1.selectbox('Format de la date',['FR','ISO','US'],index=['FR','ISO','US'].index(current_reg['display_date_format']),
+                    format_func=lambda k:{'FR':'JJ/MM/AAAA','ISO':'AAAA-MM-JJ','US':'MM/JJ/AAAA'}[k])
+                hh=c2.selectbox('Format de l’heure',['24H','12H'],index=['24H','12H'].index(current_reg['display_time_format']),
+                    format_func=lambda k:'24 heures' if k=='24H' else '12 heures (AM/PM)')
+                language=st.selectbox('Langue de présentation régionale',['fr','en'],
+                    index=['fr','en'].index(current_reg['display_language']),
+                    format_func=lambda k:'Français' if k=='fr' else 'Anglais (traduction complète non disponible)')
+                st.markdown('#### Programmation des rappels – formations en ligne (Teams)')
+                st.caption('Délais en minutes avant chaque séance. 120 = 2 heures ; 15 = 15 minutes. Les valeurs sont communes aux séances Teams de cet organisme.')
+                c1,c2=st.columns(2)
+                first_reminder=c1.number_input('Premier rappel (minutes avant)',min_value=1,max_value=10080,step=1,
+                    value=current_reminders['online_reminder_first_minutes'],key=f'online_reminder_first_{regional_org["id"]}')
+                second_reminder=c2.number_input('Deuxième rappel (minutes avant)',min_value=1,max_value=10080,step=1,
+                    value=current_reminders['online_reminder_second_minutes'],key=f'online_reminder_second_{regional_org["id"]}')
+                st.caption('Pour essayer : 5 et 2 minutes, puis remettre manuellement 120 et 15. Aucun retour automatique aux valeurs habituelles.')
+                apply_reg=st.form_submit_button('Enregistrer les paramètres régionaux',type='primary')
+            if apply_reg:
+                try:
+                    save_regional_preferences(ENGINE,regional_org['id'],timezone_name=tz_custom if selection=='Autre fuseau IANA…' else selection,
+                        date_format=dd,time_format=hh,language=language,actor=st.session_state.admin_email,
+                        first_reminder_minutes=first_reminder,second_reminder_minutes=second_reminder)
+                    st.success('Paramètres régionaux et rappels Teams enregistrés. Le worker actualise les prochaines échéances.');rerun()
+                except ValueError as exc:st.error(str(exc))
+            st.caption('Aperçu : '+regional_timestamp('2026-10-10T11:02:00+00:00',current_reg))
+            if current_reg['display_language']=='en':
+                st.info('Le réglage EN concerne le format régional et le futur raccordement des traductions ; les écrans métier restent actuellement en français.')
         st.write(f"URL publique configurée : `{BASE_URL}`")
         smtp_enabled=bool(mail_cfg().get('enabled'));st.write('Email automatique (secret MAIL) :', '✅ activé' if smtp_enabled else '⚠️ non activé')
         st.markdown(privacy_notice_html(),unsafe_allow_html=True)
@@ -4739,7 +5537,7 @@ def settings_screen():
             address=st.text_input('Adresse du siège',value=org.get('address') or ''); c1,c2,c3=st.columns(3); postal=c1.text_input('Code postal',value=org.get('postal_code') or ''); city=c2.text_input('Ville',value=org.get('city') or ''); country=c3.text_input('Pays',value=org.get('country') or 'France')
             c1,c2,c3,c4=st.columns(4); siret=c1.text_input('SIRET',value=org.get('siret') or ''); rcs=c2.text_input('RCS',value=org.get('rcs') or ''); naf=c3.text_input('NAF',value=org.get('naf') or ''); vat=c4.text_input('TVA / Id CEE',value=org.get('vat_id') or '')
             c1,c2,c3=st.columns(3); nda=c1.text_input('NDA',value=org.get('nda') or ''); website=c2.text_input('Site web',value=org.get('website') or ''); phone=c3.text_input('Téléphone',value=org.get('phone') or '')
-            c1,c2=st.columns(2); general_email=c1.text_input('Email général',value=org.get('general_email') or ''); tz=c2.text_input('Fuseau horaire IANA',value=org.get('timezone') or 'Europe/Paris')
+            c1,c2=st.columns(2); general_email=c1.text_input('Email général',value=org.get('general_email') or ''); tz=c2.text_input('Fuseau horaire IANA (modifier dans Général)',value=org.get('timezone') or 'Europe/Paris',disabled=True)
             c1,c2=st.columns(2); privacy_contact=c1.text_input('Contact RGPD',value=org.get('privacy_contact') or ''); retention=c2.number_input('Conservation indicative (mois)',min_value=0,step=1,value=int(org.get('retention_months') or 0))
             privacy_notice=st.text_area('Notice RGPD',value=org.get('privacy_notice') or '',height=130)
             c1,c2=st.columns(2); from_name=c1.text_input('Nom affiché expéditeur',value=org.get('email_from_name') or ''); from_address=c2.text_input('Adresse expéditeur (si différente du secret SMTP)',value=org.get('email_from_address') or '')
@@ -4984,12 +5782,19 @@ def client_portal_page():
     except PermissionError:
         _logout_persistent('CLIENT',['client_portal_id','p4_client_action_id','p3_screen_client']);return
     header('Clarté360 — Espace Client / DRH', f"Bienvenue {identity['first_name']} {identity['last_name']}")
+    _j4_notification_drawer('CLIENT',account_id)
     c1,c2=st.columns([4,1])
     c1.caption('Suivi des seules actions pour lesquelles votre accès a été explicitement autorisé.')
     if c2.button('Se déconnecter',key='client_logout',use_container_width=True):
         _logout_persistent('CLIENT',['client_portal_id','p4_client_action_id','p3_screen_client'])
     acts=list_client_actions(ENGINE,account_id)
     allowed={int(a['id']):a for a in acts}
+    if '_j7_client_open_action' in st.session_state:
+        wanted=st.session_state.pop('_j7_client_open_action')
+        authorized=authorized_action_choice(allowed,wanted)
+        if authorized is not None:
+            st.session_state['p4_client_action_id']=authorized
+            st.session_state[f'p3_screen_client_{authorized}']='actions'
     candidate=authorized_action_choice(allowed,st.session_state.get('p4_client_action_id'))
     if st.session_state.get('p4_client_action_id')!=candidate:
         st.session_state['p4_client_action_id']=candidate
@@ -4999,16 +5804,28 @@ def client_portal_page():
     section=_p3_sidebar_section('CLIENT',action_id=selected_action_id,
         action_no=allowed[selected_action_id]['action_no'] if selected_action_id else None)
     if section=='home':
-        st.markdown('#### Vue d’ensemble de mes prestations')
-        d1,d2=st.columns(2)
-        d1.metric('Actions autorisées',len(acts))
-        d2.metric('Actions en cours',len([a for a in acts if str(a.get('status') or '').upper() in ('EN_COURS','ACTIVE','ACTIF','PLANIFIEE','PLANIFIE')]))
+        st.markdown('#### Mon tableau de bord Client / DRH')
+        dashboard=client_dashboard(ENGINE,account_id)
+        d1,d2,d3=st.columns(3)
+        d1.metric('Actions autorisées',len(dashboard['actions']))
+        d2.metric('Actions en cours',dashboard['active_actions'])
+        d3.metric('Documents explicitement partagés',dashboard['shared_documents'])
+        st.markdown('##### Mes prestations')
+        st.caption('Vue de restitution en lecture seule ; les habilitations se gèrent uniquement par l’administrateur.')
         if acts:
-            # Tableau de restitution en lecture seule; accès et édition par commandes métiers dédiées.
             st.dataframe(pd.DataFrame([{'Référence':a['action_no'],'Prestation':a['title'],
                 'Statut':a['status'],'Période':f"{a.get('start_date') or '—'} / {a.get('end_date') or '—'}",
-                'Rôle':a['role']} for a in acts]),use_container_width=True,hide_index=True)
+                'Rôle':a['role']} for a in dashboard['actions']]),use_container_width=True,hide_index=True)
+            st.markdown('##### Ouvrir un dossier autorisé')
+            for action in dashboard['actions']:
+                left,right=st.columns([5,1]);left.write(f"**{action['action_no']} — {action['title']}**")
+                if right.button('Ouvrir',key=f"j7_client_open_{action['id']}"):
+                    st.session_state['_j7_client_open_action']=action['id'];rerun()
+            if dashboard['collective_sessions']:
+                st.markdown('##### Prochains créneaux collectifs communicables')
+                st.dataframe(pd.DataFrame(dashboard['collective_sessions']),use_container_width=True,hide_index=True)
         else:st.info('Aucune action ne vous est actuellement attribuée.')
+        st.caption('Votre tableau ne donne jamais accès aux résultats individuels, réponses BC, scores ou documents non habilités.')
     if section=='profile':
         st.markdown('#### Mon identité de contact')
         st.write(f"**{identity['first_name']} {identity['last_name']}**")
@@ -5031,7 +5848,7 @@ def client_portal_page():
         else:
             slots=client_public_schedule(ENGINE,account_id,selected_action_id)
             # Tableau de restitution en lecture seule; accès et édition par commandes métiers dédiées.
-            if slots:st.dataframe(pd.DataFrame([{'Date':x['slot_date'],'Début':x['start_time'],'Fin':x['end_time']} for x in slots]),use_container_width=True,hide_index=True)
+            if slots:st.dataframe(pd.DataFrame([{'Date':format_app_date(x['slot_date']),'Début':format_app_time(x['start_time']),'Fin':format_app_time(x['end_time'])} for x in slots]),use_container_width=True,hide_index=True)
             else:st.info('Aucun calendrier collectif communicable pour cette action.')
     if section=='documents':
         if selected_action_id is None:st.info('Sélectionnez une action.')
@@ -5058,7 +5875,7 @@ def client_portal_page():
                 if submitted:
                     st.markdown('##### Mes pièces transmises')
                     # Tableau de restitution en lecture seule; accès et édition par commandes métiers dédiées.
-                    st.dataframe(pd.DataFrame([{'Document':r['display_name'],'Date':r['created_at'][:16],
+                    st.dataframe(pd.DataFrame([{'Document':r['display_name'],'Date':format_app_datetime(r['created_at']),
                         'Traitement':'Reçu / en revue' if r['validation_status']=='A_VERIFIER' else 'Vérifié'} for r in submitted]),use_container_width=True,hide_index=True)
     if section=='quality':
         if selected_action_id is None:st.info('Sélectionnez une action.')
@@ -5138,6 +5955,10 @@ def admin_client_portal_screen():
             if not actions:st.info('Aucune action à habiliter.')
             else:
                 choices={f"{x['action_no']} — {x['title']}":x for x in actions}
+                focus_id=st.session_state.pop('p4_access_action_id',None)
+                if focus_id is not None:
+                    match=next((label for label,row in choices.items() if int(row['id'])==int(focus_id)),None)
+                    if match:st.session_state['p4_access_action']=match
                 selected=st.selectbox('Action / dossier',list(choices),key='p4_access_action');a=choices[selected]
                 acct={f"#{x['id']} · {x['email']} ({x['company'] or 'Particulier'})":x for x in accounts if x['active']}
                 if acct:
@@ -5255,9 +6076,26 @@ if params.get('slot_token'):
 
 if not setup_or_login(): st.stop()
 if '_next_nav' in st.session_state:
-    st.session_state['nav'] = st.session_state.pop('_next_nav')
+    next_route=st.session_state.pop('_next_nav')
+    st.session_state['admin_workspace']=workspace_for_route(next_route)
+    st.session_state['nav']=next_route
+    if next_route=='Actions':
+        next_view=st.session_state.pop('_next_action_view',None)
+        if next_view in ('detail','list'):
+            st.session_state['admin_actions_view']=next_view
+        else:
+            requested=st.session_state.get('p3_admin_action_id') or st.session_state.get('selected_action')
+            authorized=authorized_action_choice([x['id'] for x in q(ENGINE,'SELECT id FROM actions')],requested)
+            if authorized is not None:
+                st.session_state['p3_admin_action_id']=authorized
+            st.session_state['admin_actions_view']='detail' if authorized is not None else 'list'
 page=sidebar()
-if page=='Tableau de bord': _run_ui_module('dashboard',dashboard)
+if page=='__home__': _run_ui_module('administration_accueil',_admin_workspace_home)
+elif page=='Tableau de bord':
+    if st.session_state.get('admin_workspace')==WORKSPACE_ACTIONS:
+        _run_ui_module('dashboard',dashboard)
+    else:
+        _run_ui_module('dashboard_general',admin_general_dashboard)
 elif page=='Nouvelle action':
     if st.session_state.get('import_create_active'):
         _run_ui_module('nouvelle_action_import',lambda: create_action_screen(st.session_state.get('import_prefill'),st.session_state.get('import_parts')))

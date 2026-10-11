@@ -396,6 +396,24 @@ I9G_SCHEMA = [
 )"""
 ]
 
+J7_CUSTOMER_SCHEMA = [
+"""CREATE TABLE IF NOT EXISTS action_ordering_clients (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ action_id INTEGER NOT NULL UNIQUE,
+ crm_contact_id INTEGER,
+ customer_ref TEXT NOT NULL,
+ link_source TEXT NOT NULL DEFAULT 'CRM0',
+ display_name TEXT NOT NULL,
+ created_by TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE,
+ FOREIGN KEY(crm_contact_id) REFERENCES crm_contacts(id) ON DELETE SET NULL
+)""",
+"CREATE INDEX IF NOT EXISTS ix_j7_customer_ref ON action_ordering_clients(customer_ref)",
+"CREATE INDEX IF NOT EXISTS ix_j7_customer_contact ON action_ordering_clients(crm_contact_id)",
+]
+
 CRM0_SCHEMA = [
 """CREATE TABLE IF NOT EXISTS crm_tasks (
  id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, title TEXT NOT NULL, due_at TEXT, status TEXT NOT NULL DEFAULT 'A_FAIRE',
@@ -802,11 +820,50 @@ I9J2_SCHEMA = [
 ]
 
 
+# P5-RC2/J1 : explicitly certified fictitious-action purge and crash-recovery journal.
+J1_PURGE_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS action_purge_certifications (
+      action_id INTEGER PRIMARY KEY, action_no TEXT NOT NULL, actor TEXT NOT NULL,
+      evidence TEXT NOT NULL, certified_at TEXT NOT NULL, snapshot_fingerprint TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY(action_id) REFERENCES actions(id) ON DELETE CASCADE)""",
+    """CREATE TABLE IF NOT EXISTS action_purge_journal (
+      id TEXT PRIMARY KEY, action_id INTEGER NOT NULL, action_no TEXT NOT NULL, actor TEXT NOT NULL,
+      status TEXT NOT NULL, manifest_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT)""",
+]
+
+# P5-RC2 / J2 : canonical Quality links and append-only revision ledger.
+# Historical source data is never rewritten by this migration.
+J2_QUALITY_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS quality_source_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, quality_event_id INTEGER NOT NULL,
+      source_kind TEXT NOT NULL, source_id INTEGER NOT NULL, linked_by TEXT NOT NULL, linked_at TEXT NOT NULL,
+      UNIQUE(source_kind,source_id),
+      FOREIGN KEY(quality_event_id) REFERENCES quality_events(id) ON DELETE CASCADE)""",
+    """CREATE TABLE IF NOT EXISTS quality_event_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, quality_event_id INTEGER NOT NULL,
+      change_kind TEXT NOT NULL, actor TEXT NOT NULL, before_json TEXT, after_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(quality_event_id) REFERENCES quality_events(id) ON DELETE CASCADE)""",
+    """CREATE TABLE IF NOT EXISTS quality_capa_source_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, quality_event_action_id INTEGER NOT NULL,
+      source_kind TEXT NOT NULL, source_id INTEGER NOT NULL, linked_by TEXT NOT NULL, linked_at TEXT NOT NULL,
+      UNIQUE(source_kind,source_id),
+      FOREIGN KEY(quality_event_action_id) REFERENCES quality_event_actions(id) ON DELETE CASCADE)""",
+    "CREATE INDEX IF NOT EXISTS ix_quality_sources_event ON quality_source_links(quality_event_id,source_kind)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_quality_source_report_per_event ON quality_source_links(quality_event_id,source_kind) WHERE source_kind IN ('TRAINER_REPORT','BENEFICIARY_REPORT')",
+    "CREATE INDEX IF NOT EXISTS ix_quality_history_event ON quality_event_history(quality_event_id,created_at,id)",
+    "CREATE INDEX IF NOT EXISTS ix_quality_capa_source_action ON quality_capa_source_links(quality_event_action_id)",
+]
+
+# J4 shared notification schema; additive and idempotent.
 def init_db(engine: Engine):
+    from workspace_notifications import NOTIFICATION_SCHEMA
     with engine.begin() as c:
         for sql in SCHEMA:
             c.execute(text(sql))
         for sql in P2_DOCUMENT_SCHEMA:
+            c.execute(text(sql))
+        for sql in NOTIFICATION_SCHEMA:
             c.execute(text(sql))
         for sql in V2_SCHEMA:
             c.execute(text(sql))
@@ -826,6 +883,18 @@ def init_db(engine: Engine):
             c.execute(text(sql))
         for sql in CRM0_SCHEMA:
             c.execute(text(sql))
+        for sql in J7_CUSTOMER_SCHEMA:
+            c.execute(text(sql))
+        # Existing actions: backfill only if exactly ONE CRM0 CLIENT contact is linked.
+        # Multiple clients are ambiguous and remain pending human selection.
+        c.execute(text("""INSERT INTO action_ordering_clients
+            (action_id,crm_contact_id,customer_ref,link_source,display_name,created_by,created_at,updated_at)
+          SELECT l.action_id, MIN(l.contact_id), 'CRM0:'||MIN(c.public_id),'CRM0',
+            COALESCE(NULLIF(TRIM(MIN(c.company)),''),MIN(c.first_name||' '||c.last_name)),
+            'MIGRATION_J7',MIN(l.created_at),MIN(l.created_at)
+          FROM crm_action_links l JOIN crm_contacts c ON c.id=l.contact_id
+          WHERE l.role='CLIENT' AND l.action_id NOT IN (SELECT action_id FROM action_ordering_clients)
+          GROUP BY l.action_id HAVING COUNT(DISTINCT l.contact_id)=1"""))
         for sql in CLIENT_PORTAL_SCHEMA:
             c.execute(text(sql))
         for sql in INTERVENANTS_J0_SCHEMA:
@@ -898,6 +967,11 @@ def init_db(engine: Engine):
             "ALTER TABLE organizations ADD COLUMN email_from_name TEXT",
             "ALTER TABLE organizations ADD COLUMN email_from_address TEXT",
             "ALTER TABLE organizations ADD COLUMN retention_months INTEGER",
+            "ALTER TABLE organizations ADD COLUMN display_date_format TEXT NOT NULL DEFAULT 'FR'",
+            "ALTER TABLE organizations ADD COLUMN display_time_format TEXT NOT NULL DEFAULT '24H'",
+            "ALTER TABLE organizations ADD COLUMN display_language TEXT NOT NULL DEFAULT 'fr'",
+            "ALTER TABLE organizations ADD COLUMN online_reminder_first_minutes INTEGER NOT NULL DEFAULT 120",
+            "ALTER TABLE organizations ADD COLUMN online_reminder_second_minutes INTEGER NOT NULL DEFAULT 15",
             "ALTER TABLE email_events ADD COLUMN claimed_at TEXT",
             "ALTER TABLE email_events ADD COLUMN claim_token TEXT",
             "ALTER TABLE actions ADD COLUMN start_date TEXT",
@@ -1560,6 +1634,11 @@ def init_db(engine: Engine):
             "CREATE INDEX IF NOT EXISTS ix_prof_maintenance_person_key ON professional_maintenance_actions(professional_person_id,alert_key,created_at)",
         ]
         for sql in indexes: c.execute(text(sql))
+        for sql in J1_PURGE_SCHEMA: c.execute(text(sql))
+        for sql in J2_QUALITY_SCHEMA: c.execute(text(sql))
+        # J8 - mission assignment proof, separate from legal/economic master applications.
+        from mission_engagements import MISSION_SCHEMA
+        for sql in MISSION_SCHEMA: c.execute(text(sql))
 
 def q(engine, sql, params=None):
     with engine.connect() as c:

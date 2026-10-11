@@ -1,0 +1,14 @@
+{
+  "tool_id": "gestion-actions",
+  "app_name": "Clarté360 — Gestion des Actions / Émargements",
+  "target_url": "https://emargements.clarte360.com",
+  "internal_port": 8501,
+  "deployment_status": "existing-production / P5-RC2-recette-pending",
+  "service": "clarte360-emargements.service",
+  "worker_service": "clarte360-emargements-worker.service",
+  "vps_directory": "/opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0/",
+  "secrets_master": "/opt/clarte360/secrets/secrets.toml",
+  "persistent_data": "/opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0/data/",
+  "framework_vps": "V1.4",
+  "recette_package": "P5-RECETTE-RC2 J11"
+}

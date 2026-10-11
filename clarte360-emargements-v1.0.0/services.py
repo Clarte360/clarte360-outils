@@ -7,6 +7,8 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit, parse_qsl
 from sqlalchemy import text, inspect
 from sqlalchemy.exc import IntegrityError
 from db import q, one, execute, audit, new_token, utcnow_iso
+from workspace_notifications import (quality_created as _notify_quality_created, quality_changed as _notify_quality_changed,
+    document_available as _notify_document_available, document_needs_review as _notify_document_needs_review, notify_admins as _notify_admins)
 from security import hash_password, verify_password, seal_short_secret, open_short_secret
 from input_validation import (
     validate_action_payload, validate_participant_payload, validate_trainer_payload,
@@ -98,6 +100,116 @@ def create_action(engine, d, actor):
     VALUES(:action_no,:title,:subtitle,:nature,:mode,:delivery_mode,:client_name,:client_type,:group_code,:planned_hours,:expected_participants,'BROUILLON',:admin_email,:trainer_name,:trainer_email,:location,:notes,:source,:created_at,:updated_at)""",{**d,"created_at":now,"updated_at":now})
     audit(engine,'ACTION_CREATED',aid,actor,'action',aid,d); return aid
 
+def action_ordering_client(engine, action_id):
+    """Stable, non-permission-bearing ordering-client link for one action."""
+    return one(engine, """SELECT l.*,c.public_id AS crm_public_id,c.company,c.email
+        FROM action_ordering_clients l LEFT JOIN crm_contacts c ON c.id=l.crm_contact_id
+        WHERE l.action_id=:a""", {'a':int(action_id)})
+
+
+def link_action_ordering_client(engine, action_id, crm_contact_id, actor='admin'):
+    """Explicitly select the ordering contact; NEVER invite or grant a Client portal role."""
+    aid=int(action_id);cid=int(crm_contact_id)
+    with engine.begin() as conn:
+        a=conn.execute(text('SELECT id FROM actions WHERE id=:a'),{'a':aid}).mappings().first()
+        c=conn.execute(text('SELECT * FROM crm_contacts WHERE id=:c'),{'c':cid}).mappings().first()
+        if not a or not c:raise ValueError('Action ou contact donneur d’ordre introuvable.')
+        if str(c.get('status') or '').upper()=='ARCHIVE':raise ValueError('Contact CRM archivé.')
+        current=conn.execute(text('SELECT * FROM action_ordering_clients WHERE action_id=:a'),{'a':aid}).mappings().first()
+        if current and int(current['crm_contact_id'] or 0)!=cid:
+            raise ValueError('Un donneur d’ordre différent est déjà lié : arbitrage manuel nécessaire.')
+        if current:return dict(current)
+        now=utcnow_iso();name=(c.get('company') or f"{c['first_name']} {c['last_name']}").strip()
+        conn.execute(text("""INSERT INTO action_ordering_clients(action_id,crm_contact_id,customer_ref,link_source,
+            display_name,created_by,created_at,updated_at) VALUES(:a,:c,:r,'CRM0',:name,:by,:n,:n)"""),
+            {'a':aid,'c':cid,'r':'CRM0:'+c['public_id'],'name':name,'by':actor,'n':now})
+        conn.execute(text("""INSERT INTO crm_action_links(contact_id,action_id,role,created_by,created_at)
+            SELECT :c,:a,'CLIENT',:by,:n WHERE NOT EXISTS(SELECT 1 FROM crm_action_links
+            WHERE contact_id=:c AND action_id=:a AND role='CLIENT')"""),{'c':cid,'a':aid,'by':actor,'n':now})
+        conn.execute(text("""UPDATE crm_contacts SET status=CASE WHEN status IN
+            ('NOUVEAU','A_CONTACTER','CONTACTE','A_RELANCER','OPPORTUNITE') THEN 'CLIENT'
+            ELSE status END,updated_at=:n WHERE id=:c"""),{'n':now,'c':cid})
+        conn.execute(text("""INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at)
+            VALUES(:c,'ACTION_LINKED',:by,:dt,:n)"""),
+            {'c':cid,'by':actor,'dt':json.dumps({'action_id':aid,'role':'CLIENT'},ensure_ascii=False),'n':now})
+        conn.execute(text("""INSERT INTO audit_log(action_id,actor,event_type,entity_type,entity_id,details_json,created_at)
+            VALUES(:a,:by,'ACTION_CUSTOMER_BOUND','action',:aid,:details,:n)"""),
+            {'a':aid,'by':actor,'aid':str(aid),'details':json.dumps({'customer_ref':'CRM0:'+c['public_id']},ensure_ascii=False),'n':now})
+    return action_ordering_client(engine,aid)
+
+
+def create_action_with_client(engine, data, actor, *, crm_contact_id=None, new_crm_contact=None):
+    """J7: all-or-nothing creation of action and stable customer identity.
+
+    Linking a Client is NOT an invitation and NEVER grants client_action_grants.
+    Existing GDA actions cannot be silently overwritten by a repeat import NO_CLAR.
+    """
+    if (crm_contact_id is None)==(new_crm_contact is None):
+        raise ValueError('Sélectionnez un client CRM ou renseignez un nouveau contact donneur d’ordre.')
+    d=validate_action_payload(data);now=utcnow_iso()
+    prestation=d.get('prestation_type') or d.get('nature') or 'FORMATION'
+    d['delivery_mode']=normalize_delivery_mode(d.get('delivery_mode'),prestation)
+    normalized=None
+    if new_crm_contact is not None:
+        normalized=validate_crm_payload(new_crm_contact.get('first_name'),new_crm_contact.get('last_name'),
+            new_crm_contact.get('email'),new_crm_contact.get('phone'),new_crm_contact.get('job_title'),
+            new_crm_contact.get('company'))
+    with engine.begin() as conn:
+        exists=conn.execute(text('SELECT id FROM actions WHERE action_no=:n'),{'n':d['action_no']}).first()
+        if exists:raise ValueError('Ce numéro d’action existe déjà. Aucun nouvel import ni lien ajouté.')
+        if normalized is not None:
+            collision=conn.execute(text('SELECT id FROM crm_contacts WHERE LOWER(TRIM(email))=:e LIMIT 1'),
+                {'e':normalized['email'].lower()}).first()
+            if collision:
+                raise ValueError('Ce contact existe déjà dans le CRM : sélectionnez sa fiche, sans créer de doublon.')
+            from secrets import token_urlsafe
+            public_id='CRM-'+token_urlsafe(9).upper()
+            result=conn.execute(text("""INSERT INTO crm_contacts(public_id,source,first_name,last_name,email,phone,job_title,
+                company,marketing_consent,status,created_at,updated_at)
+                VALUES(:pid,'ACTION_J7',:f,:l,:e,:p,:j,:company,0,'NOUVEAU',:n,:n)"""),
+                {'pid':public_id,'f':normalized['first_name'],'l':normalized['last_name'],
+                 'e':normalized['email'],'p':normalized['phone'],'j':normalized['job_title'],
+                 'company':normalized['company'],'n':now})
+            cid=result.lastrowid
+            c={'id':cid,'public_id':public_id,**normalized}
+            conn.execute(text("""INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at)
+                VALUES(:c,'CREATE',:by,:dt,:n)"""),{'c':cid,'by':actor,'dt':'{"source":"ACTION_J7"}','n':now})
+        else:
+            c=conn.execute(text('SELECT * FROM crm_contacts WHERE id=:i'),{'i':int(crm_contact_id)}).mappings().first()
+            if c is None:raise ValueError('Client CRM introuvable : création refusée.')
+            c=dict(c);cid=int(c['id'])
+            if str(c.get('status') or '').upper()=='ARCHIVE':raise ValueError('Contact CRM archivé.')
+        name=(c.get('company') or f"{c['first_name']} {c['last_name']}").strip()
+        d['client_name']=validate_short_text(name,'Client / entreprise',required=True,max_len=200)
+        d['client_type']='Professionnel' if c.get('company') else 'Particulier'
+        action=conn.execute(text("""INSERT INTO actions(action_no,title,subtitle,nature,mode,delivery_mode,client_name,
+            client_type,group_code,planned_hours,expected_participants,status,admin_email,trainer_name,trainer_email,
+            location,notes,source,created_at,updated_at)
+            VALUES(:action_no,:title,:subtitle,:nature,:mode,:delivery_mode,:client_name,:client_type,:group_code,
+            :planned_hours,:expected_participants,'BROUILLON',:admin_email,:trainer_name,:trainer_email,:location,
+            :notes,:source,:created_at,:updated_at)"""),{**d,'created_at':now,'updated_at':now})
+        aid=int(action.lastrowid);ref='CRM0:'+c['public_id']
+        # J8: new actions are prepared as drafts but cannot be activated without
+        # verified mission coverage; historic actions are not silently blocked.
+        conn.execute(text("""INSERT INTO action_mission_policy(action_id,control_mode,enabled_by,enabled_at)
+            VALUES(:a,'ENFORCE',:by,:n)"""),{'a':aid,'by':actor,'n':now})
+        conn.execute(text("""INSERT INTO action_ordering_clients(action_id,crm_contact_id,customer_ref,link_source,
+            display_name,created_by,created_at,updated_at) VALUES(:a,:c,:r,'CRM0',:nm,:by,:n,:n)"""),
+            {'a':aid,'c':cid,'r':ref,'nm':name,'by':actor,'n':now})
+        conn.execute(text("""INSERT INTO crm_action_links(contact_id,action_id,role,created_by,created_at)
+            VALUES(:c,:a,'CLIENT',:by,:n)"""),{'c':cid,'a':aid,'by':actor,'n':now})
+        conn.execute(text("""UPDATE crm_contacts SET status=CASE WHEN status IN
+            ('NOUVEAU','A_CONTACTER','CONTACTE','A_RELANCER','OPPORTUNITE') THEN 'CLIENT'
+            ELSE status END,updated_at=:n WHERE id=:c"""),{'n':now,'c':cid})
+        conn.execute(text("""INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at)
+            VALUES(:c,'ACTION_LINKED',:by,:details,:n)"""),
+            {'c':cid,'by':actor,'details':json.dumps({'action_id':aid,'role':'CLIENT'},ensure_ascii=False),'n':now})
+        conn.execute(text("""INSERT INTO audit_log(action_id,actor,event_type,entity_type,entity_id,details_json,created_at)
+            VALUES(:a,:by,'ACTION_CREATED','action',:entity,:d,:n)"""),
+            {'a':aid,'by':actor,'entity':str(aid),'d':json.dumps({'action_no':d['action_no'],'customer_ref':ref},ensure_ascii=False),'n':now})
+    return aid
+
+
 def update_action(engine, aid, d, actor):
     d=dict(d); current=one(engine,'SELECT prestation_type,nature,delivery_mode FROM actions WHERE id=:a',{'a':aid}) or {}
     prestation=d.get('prestation_type') or current.get('prestation_type') or d.get('nature') or current.get('nature') or 'FORMATION'
@@ -132,6 +244,8 @@ def add_participant(engine, aid, d, actor):
     a=one(engine,'SELECT status FROM actions WHERE id=:a',{'a':aid}) or {}
     if str(a.get('status') or '').upper() in ('ACTIVE','A_CLOTURER') and (d.get('email') or '').strip():
         queue_communication(engine,aid,'PLANNING_CONFIRMATION',(d.get('email') or '').strip(),participant_id=pid,trigger_mode='AUTO',idempotency_key=f'planning:new-participant:{aid}:{pid}')
+    if str(a.get('status') or '').upper() in ('ACTIVE','A_CLOTURER') and action_module_enabled(engine,aid,'TEAMS'):
+        synchronize_teams_reminders(engine,action_id=aid,actor=actor)
     return pid,pin
 
 def delete_participant(engine,pid,actor):
@@ -191,7 +305,10 @@ def add_slot(engine, aid, date_s,start_s,end_s,actor,send=-10,r1=20,r2=120,close
             refresh_teams_occurrences(engine,aid,actor)
         except Exception:
             pass
-    audit(engine,'SLOT_ADDED',aid,actor,'slot',sid,{'date':date_s,'start':start_s,'end':end_s});return sid
+    audit(engine,'SLOT_ADDED',aid,actor,'slot',sid,{'date':date_s,'start':start_s,'end':end_s})
+    if action_module_enabled(engine,aid,'TEAMS'):
+        synchronize_teams_reminders(engine,action_id=aid,actor=actor)
+    return sid
 
 def update_slot(engine,sid,d,actor):
     d=dict(d); d['send_offset_min'],d['close_offset_min']=validate_slot_offsets(d.get('send_offset_min',-10),d.get('close_offset_min',1440))
@@ -199,7 +316,11 @@ def update_slot(engine,sid,d,actor):
     if not old:return
     d['slot_date'],d['start_time'],d['end_time']=validate_slot(d.get('slot_date'),d.get('start_time'),d.get('end_time'))
     validate_no_action_slot_overlap(engine,old['action_id'],d['slot_date'],d['start_time'],d['end_time'],exclude_slot_id=sid)
-    execute(engine,"""UPDATE slots SET slot_date=:slot_date,start_time=:start_time,end_time=:end_time,send_offset_min=:send_offset_min,reminder1_offset_min=:reminder1_offset_min,reminder2_offset_min=:reminder2_offset_min,close_offset_min=:close_offset_min,updated_at=:u WHERE id=:id""",{**d,'u':utcnow_iso(),'id':sid})
+    changed=any(str(old.get(f) or '')!=str(d.get(f) or '') for f in ('slot_date','start_time','end_time'))
+    execute(engine,"""UPDATE slots SET slot_date=:slot_date,start_time=:start_time,end_time=:end_time,send_offset_min=:send_offset_min,reminder1_offset_min=:reminder2_offset_min,close_offset_min=:close_offset_min,updated_at=:u WHERE id=:id""",{**d,'u':utcnow_iso(),'id':sid})
+    if changed:
+        neutralize_slot_messages(engine,sid,actor,'SLOT_UPDATED')
+        synchronize_teams_reminders(engine,action_id=old['action_id'],actor=actor)
     if action_module_enabled(engine,old['action_id'],'TEAMS'):
         try:
             queue_teams_sync(engine,old['action_id'],sid,'SLOT_UPDATED',actor,{'slot_id':sid})
@@ -225,7 +346,10 @@ def delete_slot(engine,sid,actor):
 
 def ensure_tokens_and_events(engine, aid, base_url,tz_name='Europe/Paris'):
     participants=q(engine,'SELECT * FROM participants WHERE action_id=:a AND active=1',{'a':aid})
-    slots=q(engine,'SELECT * FROM slots WHERE action_id=:a',{'a':aid})
+    # An already reported/replaced/cancelled slot remains in history, never in the sending queue.
+    execute(engine,"""UPDATE email_events SET status='SKIPPED',last_error='R27: créneau annulé, reporté ou remplacé'
+        WHERE status='PENDING' AND slot_id IN (SELECT id FROM slots WHERE action_id=:a AND COALESCE(status,'PREVU') IN ('ANNULE','REPORTE','REMPLACE'))""",{'a':aid})
+    slots=q(engine,"SELECT * FROM slots WHERE action_id=:a AND COALESCE(status,'PREVU') NOT IN ('ANNULE','REPORTE','REMPLACE')",{'a':aid})
     for p in participants:
       for s in slots:
         tok=one(engine,'SELECT * FROM signature_tokens WHERE participant_id=:p AND slot_id=:s',{'p':p['id'],'s':s['id']})
@@ -260,6 +384,11 @@ def activate_action(engine, aid, actor):
     if bool(a.get('use_attendance',1)):
         missing=[f"{x['first_name']} {x['last_name']}" for x in participants if not (x.get('email') or '').strip()]
         if missing: issues.append('Email manquant pour : '+', '.join(missing))
+    # J8: enforce only on explicitly controlled actions. Legacy dossiers retain
+    # the historic activation route until migrated with deliberate admin consent.
+    from mission_engagements import action_mission_coverage
+    coverage=action_mission_coverage(engine,aid)
+    if coverage['mode']=='ENFORCE': issues.extend(coverage['issues'])
     if issues: return False,issues
     execute(engine,"UPDATE actions SET status='ACTIVE',updated_at=:u WHERE id=:a",{'u':utcnow_iso(),'a':aid})
     audit(engine,'ACTION_ACTIVATED',aid,actor,'action',aid,{'participants':len(participants),'slots':len(slots)})
@@ -531,10 +660,15 @@ def report_slot(engine,sid,date_s,start_s,end_s,actor,reason='Report'):
     if not old: return None
     evidence=one(engine,"SELECT (SELECT COUNT(*) FROM signatures WHERE slot_id=:s)+(SELECT COUNT(*) FROM attendance_status WHERE slot_id=:s AND status='ABSENT')+(SELECT COUNT(*) FROM trainer_countersignatures_v3 WHERE slot_id=:s) n",{'s':sid})['n']
     if evidence: return None
+    # Validate before changing the old slot, so invalid replacements cannot strand a report.
+    date_s,start_s,end_s=validate_slot(date_s,start_s,end_s)
+    validate_no_action_slot_overlap(engine,old['action_id'],date_s,start_s,end_s,exclude_slot_id=sid)
     execute(engine,"UPDATE slots SET status='REPORTE',change_reason=:r,updated_at=:u WHERE id=:s",{'r':reason,'u':utcnow_iso(),'s':sid})
+    neutralize_slot_messages(engine,sid,actor,'SLOT_REPORTED')
     ns=add_slot(engine,old['action_id'],date_s,start_s,end_s,actor,old['send_offset_min'],old['reminder1_offset_min'],old['reminder2_offset_min'],old['close_offset_min'])
     execute(engine,"UPDATE slots SET parent_slot_id=:p,slot_kind='REPORT',change_reason=:r WHERE id=:s",{'p':sid,'r':reason,'s':ns})
     _copy_slot_trainer_assignments(engine,sid,ns,actor,'Report : '+str(reason or ''))
+    synchronize_teams_reminders(engine,action_id=old['action_id'],actor=actor)
     audit(engine,'SLOT_REPORTED',old['action_id'],actor,'slot',ns,{'from_slot_id':sid,'reason':reason})
     return ns
 
@@ -637,23 +771,15 @@ def purge_participant(engine,pid,actor):
     return True,''
 
 
-def purge_action(engine,aid,actor):
-    a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':aid})
-    if not a:return False,'Action introuvable.'
-    sigs=q(engine,'SELECT x.signature_path FROM signatures x JOIN participants p ON p.id=x.participant_id WHERE p.action_id=:a',{'a':aid})
-    for r in sigs:
-        try:
-            fp=Path(r.get('signature_path') or '')
-            if fp.is_file(): fp.unlink()
-        except Exception: pass
-    issue_ids=[x['id'] for x in q(engine,'SELECT id FROM quality_issues WHERE action_id=:a',{'a':aid})]
-    for iid in issue_ids: execute(engine,'DELETE FROM improvement_actions WHERE issue_id=:i',{'i':iid})
-    execute(engine,'DELETE FROM improvement_actions WHERE action_id=:a',{'a':aid})
-    execute(engine,'DELETE FROM quality_issues WHERE action_id=:a',{'a':aid})
-    execute(engine,'DELETE FROM audit_log WHERE action_id=:a',{'a':aid})
-    execute(engine,'DELETE FROM actions WHERE id=:a',{'a':aid})
-    audit(engine,'ACTION_PURGED',None,actor,'action',aid,{'deleted_action_id':aid})
-    return True,''
+def purge_action(engine,aid,actor,*,confirmation=None,preview_fingerprint=None,data_root=None):
+    """J1: no action may be purged without prior *explicit test certification*.
+
+    Strong typed confirmation and a current preflight fingerprint are mandatory.
+    The operation is journaled and its files quarantined before SQL deletion.
+    """
+    from purge_guard import purge_certified_action
+    return purge_certified_action(engine,aid,actor,confirmation=confirmation,
+        preview_fingerprint=preview_fingerprint,data_root=data_root)
 
 
 def list_trainers(engine,active_only=False):
@@ -767,6 +893,8 @@ def assign_action_trainer(engine, action_id, trainer_id, actor, role='INTERVENAN
             execute(engine,"UPDATE action_trainers SET is_referent=0,role=CASE WHEN role='REFERENT' THEN 'INTERVENANT' ELSE role END,updated_at=:u WHERE id=:i",{'u':now,'i':old['id']})
             _log_assignment(engine,'ACTION',action_id,old['trainer_id'],'REFERENT_CHANGED',actor,
                             old_role=old.get('role'),new_role='INTERVENANT',old_status='ACTIVE',new_status='ACTIVE',reason=reason)
+            from mission_engagements import sync_mission_assignment
+            sync_mission_assignment(engine,action_id,old['trainer_id'],actor)
     old=one(engine,'SELECT * FROM action_trainers WHERE action_id=:a AND trainer_id=:t',{'a':action_id,'t':trainer_id})
     execute(engine,"""INSERT INTO action_trainers(action_id,trainer_id,role,is_referent,active,created_at,updated_at)
       VALUES(:a,:t,:r,:ref,1,:n,:n)
@@ -778,6 +906,8 @@ def assign_action_trainer(engine, action_id, trainer_id, actor, role='INTERVENAN
         execute(engine,'UPDATE actions SET trainer_id=:i,trainer_name=:n,trainer_email=:e,updated_at=:u WHERE id=:a',
                 {'i':trainer_id,'n':t['full_name'],'e':t.get('email'),'u':now,'a':action_id})
     audit(engine,'ACTION_TRAINER_ASSIGNED',action_id,actor,'trainer',trainer_id,{'role':role,'is_referent':bool(is_referent),'reason':reason})
+    from mission_engagements import sync_mission_assignment
+    sync_mission_assignment(engine,action_id,trainer_id,actor)
     return True,''
 
 
@@ -791,6 +921,8 @@ def unassign_action_trainer(engine, action_id, trainer_id, actor, reason=None):
     if row.get('is_referent'):
         execute(engine,'UPDATE actions SET trainer_id=NULL,trainer_name=NULL,trainer_email=NULL,updated_at=:u WHERE id=:a AND trainer_id=:t',{'u':now,'a':action_id,'t':trainer_id})
     audit(engine,'ACTION_TRAINER_UNASSIGNED',action_id,actor,'trainer',trainer_id,{'reason':reason})
+    from mission_engagements import suspend_missions_for_trainer
+    suspend_missions_for_trainer(engine,action_id,trainer_id,actor,reason=reason or 'Retrait de mission')
     return True,''
 
 
@@ -1085,6 +1217,11 @@ def propagate_planning_change(engine, action_id, slot_id, change_type, actor, *,
       {'a':action_id,'s':slot_id,'c':change_type,'by':actor,'p':participants,'t':trainers,'att':attendance_synced,'q':quality_synced,
        'tr':1 if teams_required else 0,'ts':'PENDING_I7' if teams_required else 'NOT_ENABLED','d':json.dumps(payload,ensure_ascii=False,default=str),'n':utcnow_iso()})
     audit(engine,'PLANNING_CHANGE_PROPAGATED',action_id,actor,'slot',slot_id,{'change_type':change_type,'event_id':eid,'attendance':bool(attendance_synced),'quality':bool(quality_synced),'teams':'PENDING_I7' if teams_required else 'NOT_ENABLED'})
+    # In-app notices do not depend on SMTP availability or e-mail opt-ins.
+    record=one(engine,'SELECT status FROM actions WHERE id=:a',{'a':action_id})
+    if record and normalize_action_status(record['status']) not in ('BROUILLON','PLANIFIEE'):
+        from workspace_notifications import schedule_changed
+        schedule_changed(engine,action_id,slot_id,eid)
     return eid
 
 
@@ -1148,6 +1285,160 @@ def action_calendar_ics(engine, action_id, *, trainer_id=None, beneficiary_id=No
     return ('\r\n'.join(lines)+'\r\n').encode('utf-8')
 
 
+# J2 : unique Quality case with explicit links to historical sources.
+# Only the administrator may reconcile an old ambiguous event; no fuzzy auto-merge.
+QUALITY_FINAL_STATUSES={'CLOTURE','REFUSE','CLASSE_SANS_SUITE'}
+QUALITY_EVENT_STATUSES=('NOUVEAU','A_ANALYSER','EN_TRAITEMENT','EN_ATTENTE','A_VERIFIER','CLOTURE','CLASSE_SANS_SUITE','REFUSE')
+_QUALITY_SOURCE_TABLES={'TRAINER_REPORT':'trainer_reports','BENEFICIARY_REPORT':'beneficiary_reports','QUALITY_ISSUE':'quality_issues'}
+
+def _quality_report_status(status):
+    return {'NOUVEAU':'NOUVEAU','CLOTURE':'CLOTURE','CLASSE_SANS_SUITE':'TRAITE','REFUSE':'TRAITE','A_VERIFIER':'TRAITE'}.get(status,'EN_COURS')
+
+def _quality_source_type(report_kind):
+    return {'TRAINER':'TRAINER_REPORT','BENEFICIARY':'BENEFICIARY_REPORT'}.get(report_kind)
+
+def quality_case_history(engine,event_id):
+    return q(engine,'SELECT * FROM quality_event_history WHERE quality_event_id=:e ORDER BY id',{'e':event_id})
+
+def quality_case_messages(engine,event_id):
+    return q(engine,'SELECT * FROM quality_event_messages WHERE quality_event_id=:e ORDER BY created_at,id',{'e':event_id})
+
+def quality_case_sources(engine,event_id):
+    return q(engine,'SELECT source_kind,source_id,linked_at,linked_by FROM quality_source_links WHERE quality_event_id=:e ORDER BY id',{'e':event_id})
+
+def quality_case(engine,event_id):
+    ev=one(engine,'SELECT * FROM quality_events WHERE id=:i',{'i':event_id})
+    if not ev: raise ValueError('Fiche qualité introuvable.')
+    return {'event':ev,'sources':quality_case_sources(engine,event_id),'history':quality_case_history(engine,event_id),
+            'messages':quality_case_messages(engine,event_id),'actions':quality_event_actions(engine,event_id)}
+
+def _quality_revision_tx(conn,event_id,change_kind,actor,before=None,after=None):
+    conn.execute(text("""INSERT INTO quality_event_history(quality_event_id,change_kind,actor,before_json,after_json,created_at)
+      VALUES(:e,:k,:a,:b,:n,:t)"""),{'e':event_id,'k':change_kind,'a':actor,
+      'b':json.dumps(before,ensure_ascii=False,default=str) if before is not None else None,
+      'n':json.dumps(after,ensure_ascii=False,default=str) if after is not None else None,'t':utcnow_iso()})
+
+def _quality_link_tx(conn,event_id,source_kind,source_id,actor):
+    if source_kind not in _QUALITY_SOURCE_TABLES: raise ValueError('Type de source Qualité inconnu.')
+    tab=_QUALITY_SOURCE_TABLES[source_kind]
+    row=conn.execute(text(f'SELECT * FROM {tab} WHERE id=:i'),{'i':source_id}).mappings().first()
+    ev=conn.execute(text('SELECT * FROM quality_events WHERE id=:i'),{'i':event_id}).mappings().first()
+    if not row or not ev: raise ValueError('Fiche Qualité ou source introuvable.')
+    if row.get('action_id')!=ev.get('action_id') or ev.get('action_id') is None:
+        raise ValueError('Rattachement Qualité interdit entre actions différentes ou non identifiées.')
+    if source_kind=='TRAINER_REPORT' and (ev.get('trainer_id')!=row.get('trainer_id') or ev.get('origin')!='SIGNALEMENT_INTERVENANT'):
+        raise ValueError('Intervenant ou origine incompatible.')
+    if source_kind=='BENEFICIARY_REPORT' and (ev.get('beneficiary_id')!=row.get('beneficiary_id') or ev.get('origin')!='SIGNALEMENT_BENEFICIAIRE'):
+        raise ValueError('Bénéficiaire ou origine incompatible.')
+    if source_kind=='QUALITY_ISSUE' and row.get('campaign_id') and ev.get('campaign_id')!=row.get('campaign_id'):
+        raise ValueError('Campagne Qualité incompatible.')
+    if source_kind in {'TRAINER_REPORT','BENEFICIARY_REPORT','QUALITY_ISSUE'}:
+        if (row.get('subject') or row.get('title'))!=ev.get('subject') or (row.get('description') or '')!=(ev.get('description') or ''):
+            raise ValueError('Objet ou description de la source incompatibles avec la fiche Qualité.')
+    if source_kind in {'TRAINER_REPORT','BENEFICIARY_REPORT'}:
+        previous=conn.execute(text('SELECT source_id FROM quality_source_links WHERE quality_event_id=:e AND source_kind=:k'),
+           {'e':event_id,'k':source_kind}).mappings().first()
+        if previous and previous['source_id']!=source_id:
+            raise ValueError('Cette fiche est déjà liée à un autre signalement de même origine.')
+    existing=conn.execute(text('SELECT quality_event_id FROM quality_source_links WHERE source_kind=:k AND source_id=:s'),{'k':source_kind,'s':source_id}).mappings().first()
+    if existing:
+        if existing['quality_event_id']!=event_id: raise ValueError('Source déjà rattachée à une autre fiche Qualité.')
+        return False
+    conn.execute(text("""INSERT INTO quality_source_links(quality_event_id,source_kind,source_id,linked_by,linked_at)
+      VALUES(:e,:k,:i,:a,:n)"""),{'e':event_id,'k':source_kind,'i':source_id,'a':actor,'n':utcnow_iso()})
+    _quality_revision_tx(conn,event_id,'SOURCE_LIEE',actor,after={'source_kind':source_kind,'source_id':source_id})
+    return True
+
+def link_quality_source(engine,event_id,source_kind,source_id,actor):
+    """Explicit, validated mapping. Never deduce a link by title or by a person's name."""
+    with engine.begin() as conn:
+        return _quality_link_tx(conn,event_id,source_kind,source_id,actor)
+
+def quality_unlinked_sources(engine,action_id=None):
+    found=[]
+    for kind,table in _QUALITY_SOURCE_TABLES.items():
+        cond=' AND src.action_id=:a' if action_id is not None else ''
+        rows=q(engine,f"""SELECT src.* FROM {table} src
+          LEFT JOIN quality_source_links lk ON lk.source_kind=:k AND lk.source_id=src.id
+          WHERE lk.id IS NULL{cond} ORDER BY src.id DESC""",{'k':kind,**({'a':action_id} if action_id is not None else {})})
+        for row in rows: found.append({'source_kind':kind,**row})
+    return found
+
+def suggest_quality_links(engine,action_id=None):
+    """Propose ONLY strictly matching report/event pairs; never auto-link them."""
+    proposals=[]
+    for src in quality_unlinked_sources(engine,action_id):
+        kind=src['source_kind']
+        if kind not in {'TRAINER_REPORT','BENEFICIARY_REPORT'}: continue
+        participant='trainer_id' if kind=='TRAINER_REPORT' else 'beneficiary_id'
+        origin='SIGNALEMENT_INTERVENANT' if kind=='TRAINER_REPORT' else 'SIGNALEMENT_BENEFICIAIRE'
+        candidates=q(engine,"""SELECT qe.id,qe.public_id FROM quality_events qe
+          WHERE qe.action_id=:a AND qe.origin=:o AND qe.subject=:s AND COALESCE(qe.description,'')=:d
+          AND qe."""+participant+"""=:p ORDER BY qe.id""",{'a':src['action_id'],'o':origin,'s':src['subject'],
+          'd':src.get('description') or '','p':src[participant]})
+        available=[]
+        for cand in candidates:
+            assigned=one(engine,'SELECT id FROM quality_source_links WHERE quality_event_id=:e AND source_kind=:k',{'e':cand['id'],'k':kind})
+            if not assigned:available.append(cand)
+        if len(available)==1:proposals.append({'source_kind':kind,'source_id':src['id'],'action_id':src['action_id'],**available[0]})
+    # Two historically identical submissions can never be resolved by title alone.
+    pair_counts={}
+    for proposal in proposals:
+        key=(proposal['source_kind'],proposal['id'])
+        pair_counts[key]=pair_counts.get(key,0)+1
+    return [p for p in proposals if pair_counts[(p['source_kind'],p['id'])]==1]
+
+def add_quality_case_message(engine,event_id,actor,message,direction='INTERNE',recipient=None):
+    message=(message or '').strip()
+    if not message: raise ValueError('Le contenu du message est obligatoire.')
+    if len(message)>10000: raise ValueError('Message trop long.')
+    directions={'INTERNE','VERS_INTERVENANT','VERS_BENEFICIAIRE'}
+    if direction not in directions: raise ValueError('Type de message invalide.')
+    ev=one(engine,'SELECT * FROM quality_events WHERE id=:i',{'i':event_id})
+    if not ev: raise ValueError('Événement qualité introuvable.')
+    sources=quality_case_sources(engine,event_id)
+    kind={'VERS_INTERVENANT':'TRAINER_REPORT','VERS_BENEFICIAIRE':'BENEFICIARY_REPORT'}.get(direction)
+    if kind and not any(x['source_kind']==kind for x in sources):
+        raise ValueError('Réponse externe impossible sans signalement explicitement rattaché.')
+    now=utcnow_iso()
+    with engine.begin() as conn:
+        conn.execute(text("""INSERT INTO quality_event_messages(quality_event_id,direction,author,recipient,message,channel,created_at)
+         VALUES(:e,:d,:a,:r,:m,:c,:n)"""),{'e':event_id,'d':direction,'a':actor,
+             'r':recipient or ('Intervenant' if direction=='VERS_INTERVENANT' else 'Bénéficiaire' if direction=='VERS_BENEFICIAIRE' else None),
+             'm':message,'c':'REPONSE_ADMIN' if kind else 'NOTE','n':now})
+        if kind:
+            for source in sources:
+                if source['source_kind']==kind:
+                    table=_QUALITY_SOURCE_TABLES[kind]
+                    conn.execute(text(f'UPDATE {table} SET admin_response=:m,updated_at=:n WHERE id=:i'),
+                                 {'m':message,'n':now,'i':source['source_id']})
+        _quality_revision_tx(conn,event_id,'MESSAGE',actor,after={'direction':direction,'recipient':recipient,'message':message})
+        j4_mid=conn.execute(text('SELECT MAX(id) FROM quality_event_messages WHERE quality_event_id=:e'),{'e':event_id}).scalar()
+    if kind:
+        _notify_quality_changed(engine,event_id,'reply',j4_mid)
+    return True
+
+def quality_portal_thread(engine,event_id,role,subject_id):
+    """Public-facing part of a case only: no internal analysis or admin notes."""
+    role=str(role or '').upper()
+    if role not in ('TRAINER','BENEFICIARY'):raise PermissionError('Espace non autorisé.')
+    ev=one(engine,'SELECT id,action_id,status,public_id,trainer_id,beneficiary_id,updated_at FROM quality_events WHERE id=:i',{'i':event_id})
+    if not ev:raise PermissionError('Dossier non accessible.')
+    column='trainer_id' if role=='TRAINER' else 'beneficiary_id'
+    if ev.get(column)!=int(subject_id):raise PermissionError('Dossier non autorisé.')
+    kind='TRAINER_REPORT' if role=='TRAINER' else 'BENEFICIARY_REPORT'
+    if not one(engine,'SELECT id FROM quality_source_links WHERE quality_event_id=:e AND source_kind=:k',{'e':event_id,'k':kind}):
+        raise PermissionError('Aucune demande personnelle vérifiée.')
+    if role=='TRAINER':
+        if not trainer_action_authorized(engine,int(subject_id),ev['action_id']):raise PermissionError('Action non autorisée.')
+    else:
+        if not one(engine,'SELECT id FROM participants WHERE action_id=:a AND beneficiary_id=:b AND active=1',{'a':ev['action_id'],'b':int(subject_id)}):
+            raise PermissionError('Action non autorisée.')
+    direction='VERS_INTERVENANT' if role=='TRAINER' else 'VERS_BENEFICIAIRE'
+    messages=q(engine,'''SELECT created_at,message FROM quality_event_messages
+             WHERE quality_event_id=:e AND direction=:d ORDER BY created_at,id''',{'e':event_id,'d':direction})
+    return {'public_id':ev['public_id'],'status':ev['status'],'updated_at':ev['updated_at'],'messages':messages}
+
 def _report_type_to_quality_event_type(report_type):
     raw=(report_type or 'INFORMATION').upper().replace('É','E').replace('È','E').replace(' ','_')
     mapping={'OBSERVATION':'OBSERVATION','DIFFICULTE':'DIFFICULTE','INCIDENT':'INCIDENT','PROBLEME_LOGISTIQUE':'INCIDENT','BESOIN_DE_CONTACT':'INFORMATION','BESOIN_CONTACT':'INFORMATION','AUTRE':'INFORMATION','RECLAMATION':'RECLAMATION','SUGGESTION':'SUGGESTION'}
@@ -1161,8 +1452,10 @@ def create_trainer_report(engine,action_id,trainer_id,report_type,subject,descri
     now=utcnow_iso(); rid=execute(engine,"""INSERT INTO trainer_reports(action_id,trainer_id,report_type,subject,description,status,quality_relevant,attachment_path,attachment_name,created_at,updated_at)
       VALUES(:a,:t,:rt,:s,:d,'NOUVEAU',:q,:ap,:an,:c,:c)""",{'a':action_id,'t':trainer_id,'rt':report_type,'s':subject,'d':description,'q':1 if quality_relevant else 0,'ap':attachment_path,'an':attachment_name,'c':now})
     if quality_relevant:
-        create_quality_event(engine,'EXPRESSION',_report_type_to_quality_event_type(report_type),subject,description,f'trainer:{trainer_id}',action_id=action_id,trainer_id=trainer_id,origin='SIGNALEMENT_INTERVENANT')
-        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at) VALUES(:a,'SIGNALEMENT_INTERVENANT',:t,:d,'MIGRE','Administration',:c,'INTERVENANT',:r,:c)""",{'a':action_id,'t':subject,'d':description,'c':now,'r':str(rid)})
+        event_id=create_quality_event(engine,'EXPRESSION',_report_type_to_quality_event_type(report_type),subject,description,f'trainer:{trainer_id}',action_id=action_id,trainer_id=trainer_id,origin='SIGNALEMENT_INTERVENANT')
+        issue_id=execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at) VALUES(:a,'SIGNALEMENT_INTERVENANT',:t,:d,'MIGRE','Administration',:c,'INTERVENANT',:r,:c)""",{'a':action_id,'t':subject,'d':description,'c':now,'r':str(rid)})
+        link_quality_source(engine,event_id,'TRAINER_REPORT',rid,f'trainer:{trainer_id}')
+        link_quality_source(engine,event_id,'QUALITY_ISSUE',issue_id,'system')
     audit(engine,'TRAINER_REPORT_CREATED',action_id,f'trainer:{trainer_id}','trainer_report',rid,{'report_type':report_type,'quality_relevant':bool(quality_relevant),'attachment_name':attachment_name})
     return rid
 
@@ -1177,8 +1470,10 @@ def create_beneficiary_report(engine,action_id,beneficiary_id,report_type,subjec
     now=utcnow_iso(); rid=execute(engine,"""INSERT INTO beneficiary_reports(action_id,beneficiary_id,report_type,subject,description,status,quality_relevant,attachment_path,attachment_name,created_at,updated_at)
       VALUES(:a,:b,:rt,:s,:d,'NOUVEAU',:q,:ap,:an,:c,:c)""",{'a':action_id,'b':beneficiary_id,'rt':report_type,'s':subject,'d':description,'q':1 if quality_relevant else 0,'ap':attachment_path,'an':attachment_name,'c':now})
     if quality_relevant:
-        create_quality_event(engine,'EXPRESSION',_report_type_to_quality_event_type(report_type),subject,description,f'beneficiary:{beneficiary_id}',action_id=action_id,beneficiary_id=beneficiary_id,origin='SIGNALEMENT_BENEFICIAIRE')
-        execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at) VALUES(:a,'SIGNALEMENT_BENEFICIAIRE',:t,:d,'MIGRE','Administration',:c,'BENEFICIAIRE',:r,:c)""",{'a':action_id,'t':subject,'d':description,'c':now,'r':str(rid)})
+        event_id=create_quality_event(engine,'EXPRESSION',_report_type_to_quality_event_type(report_type),subject,description,f'beneficiary:{beneficiary_id}',action_id=action_id,beneficiary_id=beneficiary_id,origin='SIGNALEMENT_BENEFICIAIRE')
+        issue_id=execute(engine,"""INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at,source_role,source_ref,updated_at) VALUES(:a,'SIGNALEMENT_BENEFICIAIRE',:t,:d,'MIGRE','Administration',:c,'BENEFICIAIRE',:r,:c)""",{'a':action_id,'t':subject,'d':description,'c':now,'r':str(rid)})
+        link_quality_source(engine,event_id,'BENEFICIARY_REPORT',rid,f'beneficiary:{beneficiary_id}')
+        link_quality_source(engine,event_id,'QUALITY_ISSUE',issue_id,'system')
     audit(engine,'BENEFICIARY_REPORT_CREATED',action_id,f'beneficiary:{beneficiary_id}','beneficiary_report',rid,{'report_type':report_type,'quality_relevant':bool(quality_relevant)})
     return rid
 
@@ -1193,14 +1488,32 @@ def beneficiary_reports(engine, action_id=None, beneficiary_id=None):
 
 
 def update_user_report(engine, report_kind, report_id, status, admin_response, actor='admin'):
-    table='trainer_reports' if report_kind=='TRAINER' else 'beneficiary_reports'
+    """Legacy portal compatibility; a mapped report follows its canonical Quality status."""
+    kind=_quality_source_type(report_kind)
+    if kind is None:return False,'Type de signalement invalide.'
+    table=_QUALITY_SOURCE_TABLES[kind]
     row=one(engine,f'SELECT * FROM {table} WHERE id=:i',{'i':report_id})
     if not row:return False,'Signalement introuvable.'
-    st=(status or 'NOUVEAU').upper(); allowed={'NOUVEAU','EN_COURS','TRAITE','CLOTURE'}
-    if st not in allowed:return False,'Statut invalide.'
-    now=utcnow_iso(); closed=now if st=='CLOTURE' else None
-    execute(engine,f'UPDATE {table} SET status=:s,admin_response=:r,updated_at=:u,closed_at=:c WHERE id=:i',{'s':st,'r':admin_response or None,'u':now,'c':closed,'i':report_id})
-    audit(engine,'USER_REPORT_UPDATED',row.get('action_id'),actor,report_kind.lower()+'_report',report_id,{'status':st})
+    st=(status or 'NOUVEAU').upper()
+    if st not in {'NOUVEAU','EN_COURS','TRAITE','CLOTURE'}:return False,'Statut invalide.'
+    linked=one(engine,'SELECT quality_event_id FROM quality_source_links WHERE source_kind=:k AND source_id=:s',{'k':kind,'s':report_id})
+    if linked:
+        event_id=linked['quality_event_id']
+        # The fine-grained status belongs to quality_events, not to report tables.
+        status_to_event={'NOUVEAU':'NOUVEAU','EN_COURS':'EN_TRAITEMENT','TRAITE':'A_VERIFIER','CLOTURE':'CLOTURE'}
+        kwargs={'status':status_to_event[st]}
+        if st=='CLOTURE' and (admin_response or '').strip(): kwargs['closure_comment']=(admin_response or '').strip()
+        update_quality_event(engine,event_id,actor,**kwargs)
+        if (admin_response or '').strip() and (admin_response or '').strip()!=(row.get('admin_response') or '').strip():
+            direction='VERS_INTERVENANT' if kind=='TRAINER_REPORT' else 'VERS_BENEFICIAIRE'
+            add_quality_case_message(engine,event_id,actor,admin_response,direction=direction)
+        # Keep the source view in sync with the canonical status projection.
+        return True,''
+    now=utcnow_iso();closed=now if st=='CLOTURE' else None
+    execute(engine,f'UPDATE {table} SET status=:s,admin_response=:r,updated_at=:u,closed_at=:c WHERE id=:i',
+            {'s':st,'r':admin_response or None,'u':now,'c':closed,'i':report_id})
+    audit(engine,'USER_REPORT_UPDATED_UNLINKED',row.get('action_id'),actor,report_kind.lower()+'_report',report_id,
+          {'status':st,'needs_quality_reconciliation':True})
     return True,''
 
 def purge_slot(engine,sid,actor):
@@ -1277,9 +1590,21 @@ def create_quality_campaign(engine, action_id, template_id, campaign_kind, due_a
       VALUES(:a,:p,:tr,:t,:k,:d,:x,:c)""",{'a':action_id,'p':participant_id,'tr':trainer_id,'t':template_id,'k':campaign_kind,'d':due_at,'x':token,'c':utcnow_iso()})
     audit(engine,'QUALITY_CAMPAIGN_CREATED',action_id,actor,'quality_campaign',cid,{'kind':campaign_kind}); return cid,token
 
+def _validate_quality_answer(response_type,answer):
+    """J3: input guard. Legacy SCALE/CHOICE/TEXT snapshots remain compatible."""
+    if response_type=='SCALE_1_5' and answer is not None and answer!='':
+        if answer=='N/A':return
+        if isinstance(answer,bool) or not isinstance(answer,(int,float)) or not float(answer).is_integer() or not 1<=answer<=5:
+            raise ValueError('La note sur 5 doit être un entier de 1 à 5 (ou N/A).')
+    if response_type=='NPS_0_10' and answer is not None and answer!='':
+        if isinstance(answer,bool) or not isinstance(answer,(int,float)) or not float(answer).is_integer() or not 0<=answer<=10:
+            raise ValueError('La note NPS doit être un entier de 0 à 10.')
+
+
 def save_quality_response(engine,campaign_id,question_id,answer,actor='beneficiary'):
     qu=one(engine,'SELECT * FROM questionnaire_questions WHERE id=:q',{'q':question_id}); camp=one(engine,'SELECT * FROM quality_campaigns WHERE id=:c',{'c':campaign_id})
     if not qu or not camp: raise ValueError('Campagne ou question introuvable')
+    _validate_quality_answer(qu.get('response_type'),answer)
     execute(engine,"""INSERT INTO quality_responses(campaign_id,question_id,rubric_code,response_type,question_text_snapshot,answer_json,answered_at)
       VALUES(:c,:q,:r,:t,:x,:a,:d) ON CONFLICT(campaign_id,question_id) DO UPDATE SET answer_json=excluded.answer_json,answered_at=excluded.answered_at""",{'c':campaign_id,'q':question_id,'r':qu['rubric_code'],'t':qu['response_type'],'x':qu['question_text'],'a':json.dumps(answer,ensure_ascii=False),'d':utcnow_iso()})
     audit(engine,'QUALITY_RESPONSE_SAVED',camp['action_id'],actor,'quality_campaign',campaign_id,{'rubric_code':qu['rubric_code']})
@@ -1489,6 +1814,55 @@ def safe_set_action_modules(engine, aid, prestation_type, attendance, hot, cold,
         changed = int(bool(hot))!=int(a.get('use_quality_hot') or 0) or int(bool(cold))!=int(a.get('use_quality_cold') or 0) or int(bool(trainer_feedback))!=int(a.get('use_trainer_feedback') or 0) or pt!=(a.get('prestation_type') or 'FORMATION')
         if changed: raise ValueError("Impossible de modifier les modules qualité ou le type de prestation après l'envoi d'une campagne qualité.")
     set_action_modules(engine,aid,pt,attendance,hot,cold,trainer_feedback,organization_id,agency_id,actor)
+
+def get_regional_preferences(engine, action_id=None):
+    from regional_settings import preferences_from_org
+    return preferences_from_org(organization_runtime_config(engine,action_id).get('organization'))
+
+
+def get_online_reminder_preferences(engine, action_id=None):
+    from regional_settings import online_reminders_from_org
+    return online_reminders_from_org(organization_runtime_config(engine,action_id).get('organization'))
+
+
+def online_reminder_offsets_for_action(engine, action_id):
+    """Stable event types but configurable deadlines, scoped to the action's organisation."""
+    prefs=get_online_reminder_preferences(engine,action_id)
+    return {'TEAMS_REMINDER_H2':timedelta(minutes=prefs['online_reminder_first_minutes']),
+            'TEAMS_REMINDER_H15':timedelta(minutes=prefs['online_reminder_second_minutes'])}
+
+
+def save_regional_preferences(engine, org_id, *, timezone_name, date_format, time_format, language, actor,
+                              first_reminder_minutes=None, second_reminder_minutes=None):
+    from regional_settings import validate_preferences,validate_online_reminders,online_reminders_from_org
+    prefs=validate_preferences(timezone_name=timezone_name, date_format=date_format,
+                               time_format=time_format, language=language)
+    org=one(engine,'SELECT * FROM organizations WHERE id=:o',{'o':org_id})
+    if not org:
+        raise ValueError('Organisme introuvable.')
+    old_reminders=online_reminders_from_org(org)
+    reminder_prefs=validate_online_reminders(
+        old_reminders['online_reminder_first_minutes'] if first_reminder_minutes is None else first_reminder_minutes,
+        old_reminders['online_reminder_second_minutes'] if second_reminder_minutes is None else second_reminder_minutes)
+    # Existing callers that save only regional formats preserve the two current delays.
+    execute(engine,"""UPDATE organizations SET timezone=:timezone,
+        display_date_format=:display_date_format,display_time_format=:display_time_format,
+        display_language=:display_language,
+        online_reminder_first_minutes=:online_reminder_first_minutes,
+        online_reminder_second_minutes=:online_reminder_second_minutes,
+        updated_at=:now WHERE id=:org""",
+        {**prefs,**reminder_prefs,'org':org_id,'now':utcnow_iso()})
+    audit(engine,'REGIONAL_SETTINGS_CHANGED',actor=actor,entity_type='organization',entity_id=org_id,
+          details={'timezone':prefs['timezone'],'date_format':prefs['display_date_format'],
+                   'time_format':prefs['display_time_format'],'language':prefs['display_language'],
+                   'online_reminder_first_minutes':reminder_prefs['online_reminder_first_minutes'],
+                   'online_reminder_second_minutes':reminder_prefs['online_reminder_second_minutes']})
+    # Recalculate all active queues (including legacy actions without explicit org_id).
+    # The background worker will also retry this step on its next cycle.
+    if (old_reminders!=reminder_prefs or (org.get('timezone') or 'Europe/Paris')!=prefs['timezone']):
+        synchronize_teams_reminders(engine,actor=actor)
+    return prefs
+
 
 def organization_runtime_config(engine, action_id=None):
     org=None; agency=None
@@ -1701,10 +2075,14 @@ def complete_quality_campaign(engine,campaign_id,answers,actor='beneficiary'):
         label=due.astimezone(ZoneInfo('Europe/Paris')).strftime('%d/%m/%Y à %H:%M') if due else 'la date prévue'
         raise ValueError(f'Ce questionnaire sera disponible à partir du {label}.')
     questions=quality_questions(engine,campaign_id)
+    # Validate the entire submitted questionnaire before writing any answer.
     for qu in questions:
         ans=answers.get(qu['id'])
         if qu.get('required') and (ans is None or ans=='' or ans==[]):
             raise ValueError('Merci de répondre à toutes les questions obligatoires.')
+        _validate_quality_answer(qu.get('response_type'),ans)
+    for qu in questions:
+        ans=answers.get(qu['id'])
         if ans is not None and ans!='':
             save_quality_response(engine,campaign_id,qu['id'],ans,actor)
             if qu.get('response_type')=='SCALE_1_5' and isinstance(ans,(int,float)) and float(ans)<=3:
@@ -1727,7 +2105,7 @@ def _create_issue_from_quality(engine,campaign_id,answers,actor):
         if not qu or qu.get('rubric_code') not in ('R12','I06'): continue
         text=json.dumps(ans,ensure_ascii=False) if not isinstance(ans,str) else ans
         low=text.lower().strip()
-        if low and low not in ('non','aucun','aucune','non applicable','n/a'):
+        if low and low not in ('non','aucun','aucune','non applicable','n/a','ras','r.a.s.','néant'):
             flagged.append((qu,text))
     if not flagged:return
     exists=one(engine,'SELECT id FROM quality_issues WHERE campaign_id=:c AND status<>"CLOTUREE"',{'c':campaign_id})
@@ -1736,6 +2114,10 @@ def _create_issue_from_quality(engine,campaign_id,answers,actor):
     desc='\n'.join(f"{qu['question_code']} — {t}" for qu,t in flagged)
     iid=execute(engine,"""INSERT INTO quality_issues(action_id,campaign_id,issue_type,title,description,status,created_at)
       VALUES(:a,:c,:t,:x,:d,'OUVERTE',:n)""",{'a':camp['action_id'],'c':campaign_id,'t':issue_type,'x':'Signalement issu d’un questionnaire qualité','d':desc,'n':utcnow_iso()})
+    eid=create_quality_event(engine,'QUESTIONNAIRES',_report_type_to_quality_event_type(issue_type),
+        'Signalement issu d’un questionnaire qualité',desc,actor,action_id=camp['action_id'],
+        campaign_id=campaign_id,origin='QUESTIONNAIRE_R12_I06')
+    link_quality_source(engine,eid,'QUALITY_ISSUE',iid,actor)
     audit(engine,'QUALITY_ISSUE_CREATED',camp['action_id'],actor,'quality_issue',iid,{'source':'questionnaire'})
 
 def list_quality_campaigns(engine,action_id):
@@ -1754,50 +2136,88 @@ def list_quality_issues(engine,action_id=None):
     if action_id is not None: sql+=' WHERE action_id=:a';p['a']=action_id
     return q(engine,sql+' ORDER BY id DESC',p)
 
+# P5-RC2/J3: separate 1-5 satisfaction, NPS 0-10, and textual responses.
+def _quality_numeric_answer(raw, response_type):
+    import math
+    if response_type not in {'SCALE_1_5','NPS_0_10'}:
+        return None
+    try:
+        v=json.loads(raw or 'null')
+    except (ValueError,TypeError):
+        return None
+    if isinstance(v,bool) or not isinstance(v,(int,float)):
+        return None
+    v=float(v)
+    if not math.isfinite(v): return None
+    low,high=(1,5) if response_type=='SCALE_1_5' else (0,10)
+    return v if low<=v<=high else None
+
+
 # ---- V2 increment 3: quality steering, issues and improvement actions ----
-def quality_dashboard(engine, organization_id=None, agency_id=None, prestation_type=None, date_from=None, date_to=None):
+def quality_dashboard(engine, organization_id=None, agency_id=None, prestation_type=None, date_from=None, date_to=None, action_id=None):
     wh=[];p={}
     if organization_id: wh.append('a.organization_id=:o');p['o']=organization_id
     if agency_id: wh.append('a.agency_id=:g');p['g']=agency_id
     if prestation_type: wh.append('a.prestation_type=:pt');p['pt']=prestation_type
     if date_from: wh.append('COALESCE(a.end_date,a.start_date,a.created_at)>=:df');p['df']=date_from
     if date_to: wh.append('COALESCE(a.start_date,a.end_date,a.created_at)<=:dt');p['dt']=date_to
+    if action_id is not None: wh.append('a.id=:aid');p['aid']=action_id
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
-    actions=q(engine,'SELECT a.* FROM actions a'+where,p); aids=[a['id'] for a in actions]
-    if not aids:return {'actions':0,'campaigns':0,'completed':0,'response_rate':0,'issues_open':0,'improvements_open':0,'scores':[],'nps':[]}
+    actions=q(engine,'SELECT a.id FROM actions a'+where,p); aids=[a['id'] for a in actions]
+    empty={'actions':0,'campaigns':0,'completed':0,'response_rate':0,'issues_open':0,'improvements_open':0,'scores':[],'nps':[]}
+    if not aids:return empty
     marks=','.join(':a'+str(i) for i in range(len(aids))); pp={f'a{i}':v for i,v in enumerate(aids)}
-    camps=q(engine,f'SELECT * FROM quality_campaigns WHERE action_id IN ({marks})',pp); completed=sum(c['status']=='COMPLETED' for c in camps)
-    responses=q(engine,f'''SELECT r.*,qq.question_code FROM quality_responses r JOIN quality_campaigns c ON c.id=r.campaign_id JOIN questionnaire_questions qq ON qq.id=r.question_id WHERE c.action_id IN ({marks})''',pp)
+    camps=q(engine,f'SELECT id,status FROM quality_campaigns WHERE action_id IN ({marks})',pp)
+    completed=sum(c['status']=='COMPLETED' for c in camps)
+    responses=q(engine,f"""SELECT r.answer_json,r.response_type FROM quality_responses r JOIN quality_campaigns c ON c.id=r.campaign_id WHERE c.action_id IN ({marks})""",pp)
     scores=[];nps=[]
     for r in responses:
-        try: val=json.loads(r.get('answer_json') or 'null')
-        except: val=None
-        if isinstance(val,(int,float)):
-            (nps if r.get('response_type')=='NPS' else scores).append(float(val))
-    issues=one(engine,f"SELECT COUNT(*) n FROM quality_issues WHERE action_id IN ({marks}) AND status<>'CLOTUREE'",pp)['n']
+        val=_quality_numeric_answer(r.get('answer_json'),r.get('response_type'))
+        if val is None:continue
+        if r.get('response_type')=='SCALE_1_5':scores.append(val)
+        elif r.get('response_type')=='NPS_0_10':nps.append(val)
+    issues=one(engine,f"""SELECT COUNT(*) n FROM quality_issues qi WHERE qi.action_id IN ({marks}) AND qi.status<>'CLOTUREE'
+      AND NOT EXISTS (SELECT 1 FROM quality_source_links lk WHERE lk.source_kind='QUALITY_ISSUE' AND lk.source_id=qi.id)""",pp)['n']
     improvements=one(engine,f"SELECT COUNT(*) n FROM improvement_actions WHERE action_id IN ({marks}) AND status<>'TERMINEE'",pp)['n']
-    return {'actions':len(actions),'campaigns':len(camps),'completed':completed,'response_rate':round(100*completed/len(camps),1) if camps else 0,'issues_open':issues,'improvements_open':improvements,'scores':scores,'nps':nps}
+    return {'actions':len(actions),'campaigns':len(camps),'completed':completed,
+      'response_rate':round(100*completed/len(camps),1) if camps else 0,'issues_open':issues,
+      'improvements_open':improvements,'scores':scores,'nps':nps}
 
-def quality_question_stats(engine, organization_id=None, agency_id=None, prestation_type=None, action_id=None):
+def quality_question_stats(engine, organization_id=None, agency_id=None, prestation_type=None, action_id=None, campaign_kinds=None):
     wh=[];p={}
     if organization_id: wh.append('a.organization_id=:o');p['o']=organization_id
     if agency_id: wh.append('a.agency_id=:g');p['g']=agency_id
     if prestation_type: wh.append('a.prestation_type=:pt');p['pt']=prestation_type
-    if action_id: wh.append('a.id=:aid');p['aid']=action_id
+    if action_id is not None: wh.append('a.id=:aid');p['aid']=action_id
+    if campaign_kinds:
+        allowed={'HOT','COLD','TRAINER','CLIENT','PRESCRIBER','OPCO'}
+        if any(k not in allowed for k in campaign_kinds):raise ValueError('Type de campagne Qualité inconnu.')
+        holders=','.join(f':type_{i}' for i in range(len(campaign_kinds)))
+        wh.append(f'c.campaign_kind IN ({holders})')
+        p.update({f'type_{i}':kind for i,kind in enumerate(campaign_kinds)})
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
-    rows=q(engine,"""SELECT qq.question_code,qq.rubric_code,qq.question_text,r.response_type,r.answer_json FROM quality_responses r JOIN questionnaire_questions qq ON qq.id=r.question_id JOIN quality_campaigns c ON c.id=r.campaign_id JOIN actions a ON a.id=c.action_id"""+where,p)
+    rows=q(engine,"""SELECT qq.question_code,qq.rubric_code,qq.question_text,r.response_type,r.answer_json FROM quality_responses r
+      JOIN questionnaire_questions qq ON qq.id=r.question_id JOIN quality_campaigns c ON c.id=r.campaign_id
+      JOIN actions a ON a.id=c.action_id"""+where,p)
     rubric_labels={'R01':'Information et objectifs','R02':'Organisation','R03':'Moyens et environnement','R04':'Supports et ressources','R05':'Intervenant / animation','R06':'Adaptation et accompagnement','R07':'Accessibilité','R08':'Atteinte des objectifs','R09':'Utilité / transfert','R10':'Satisfaction globale','R11':'Recommandation','R12':'Difficultés / réclamations','I01':'Information, préparation et coordination','I02':'Locaux, accès et moyens techniques','I03':'Ressources, supports et traçabilité','I04':'Organisation et conditions de réalisation','I05':'Adaptation et accessibilité','I06':'Difficultés / aléas','I07':'Améliorations proposées'}
     agg={}
     for r in rows:
-      k=(r['rubric_code'],r['question_code']); x=agg.setdefault(k,{'Rubrique':rubric_labels.get(k[0],k[0]),'Code rubrique':k[0],'Question':r.get('question_text') or k[1],'Code question':k[1],'Réponses':0,'Moyenne':None,'_vals':[]})
-      try:v=json.loads(r.get('answer_json') or 'null')
-      except:v=None
-      if v is not None:x['Réponses']+=1
-      if isinstance(v,(int,float)):x['_vals'].append(float(v))
-    out=[]
+        k=(r['rubric_code'],r['question_code'],r.get('response_type'))
+        x=agg.setdefault(k,{'Rubrique':rubric_labels.get(k[0],k[0]),'Code rubrique':k[0],
+            'Question':r.get('question_text') or k[1],'Code question':k[1],
+            'Échelle':{'SCALE_1_5':'1-5','NPS_0_10':'NPS 0-10'}.get(k[2],'Texte / choix'),
+            'Réponses':0,'Notes valides 1-5':0,'Moyenne':None,'_sum_1_5':0.0})
+        try:ans=json.loads(r.get('answer_json') or 'null')
+        except (ValueError,TypeError):ans=None
+        if ans is not None and ans!='' and ans!=[]:x['Réponses']+=1
+        v=_quality_numeric_answer(r.get('answer_json'),r.get('response_type'))
+        if v is not None and r.get('response_type')=='SCALE_1_5':
+            x['Notes valides 1-5']+=1;x['_sum_1_5']+=v
+    result=[]
     for x in agg.values():
-      vals=x.pop('_vals'); x['Moyenne']=round(sum(vals)/len(vals),2) if vals else None; out.append(x)
-    return sorted(out,key=lambda x:(x['Code rubrique'],x['Code question']))
+        n=x['Notes valides 1-5']; x['Moyenne']=round(x['_sum_1_5']/n,2) if n else None
+        result.append(x)
+    return sorted(result,key=lambda x:(x['Code rubrique'],x['Code question'],x['Échelle']))
 
 def quality_reminders(engine, organization_id=None, agency_id=None, action_id=None, trainer_id=None, kind=None):
     wh=["c.status<>'COMPLETED'"]; p={}
@@ -1827,14 +2247,37 @@ def attendance_regularization_items(engine, organization_id=None, agency_id=None
     return out
 
 def create_quality_issue(engine, action_id, issue_type, title, description='', owner=None, actor='system'):
-    iid=execute(engine,"INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at) VALUES(:a,:t,:x,:d,'OUVERTE',:o,:c)",{'a':action_id,'t':issue_type,'x':title,'d':description or None,'o':owner or None,'c':utcnow_iso()});audit(engine,'QUALITY_ISSUE_CREATED',action_id,actor,'quality_issue',iid,{'manual':True});return iid
+    # V2 callers stay compatible; new views only render the canonical QE reference.
+    now=utcnow_iso()
+    iid=execute(engine,"INSERT INTO quality_issues(action_id,issue_type,title,description,status,owner,created_at) VALUES(:a,:t,:x,:d,'OUVERTE',:o,:c)",
+        {'a':action_id,'t':issue_type,'x':title,'d':description or None,'o':owner or None,'c':now})
+    eid=create_quality_event(engine,'EXPRESSION',_report_type_to_quality_event_type(issue_type),title,description,actor,
+       action_id=action_id,owner_name=owner,origin='FICHE_HISTORIQUE_V2')
+    link_quality_source(engine,eid,'QUALITY_ISSUE',iid,actor)
+    audit(engine,'QUALITY_ISSUE_CREATED',action_id,actor,'quality_issue',iid,{'manual':True,'quality_event_id':eid})
+    return iid
 
 def update_quality_issue(engine, issue_id, status, owner=None, actor='system'):
-    i=one(engine,'SELECT * FROM quality_issues WHERE id=:i',{'i':issue_id}); closed=utcnow_iso() if status=='CLOTUREE' else None
-    execute(engine,'UPDATE quality_issues SET status=:s,owner=:o,closed_at=:c WHERE id=:i',{'s':status,'o':owner or None,'c':closed,'i':issue_id});audit(engine,'QUALITY_ISSUE_UPDATED',i.get('action_id') if i else None,actor,'quality_issue',issue_id,{'status':status})
+    issue=one(engine,'SELECT * FROM quality_issues WHERE id=:i',{'i':issue_id})
+    if not issue: raise ValueError('Fiche historique introuvable.')
+    if status not in {'OUVERTE','EN_COURS','CLOTUREE','MIGRE'}: raise ValueError('Statut historique invalide.')
+    linked=one(engine,"SELECT quality_event_id FROM quality_source_links WHERE source_kind='QUALITY_ISSUE' AND source_id=:i",{'i':issue_id})
+    if linked and issue['status']!=status:
+        mapstatus={'OUVERTE':'A_ANALYSER','EN_COURS':'EN_TRAITEMENT','CLOTUREE':'CLOTURE','MIGRE':'A_ANALYSER'}
+        update_quality_event(engine,linked['quality_event_id'],actor,status=mapstatus[status],owner_name=owner)
+    closed=utcnow_iso() if status=='CLOTUREE' else None
+    execute(engine,'UPDATE quality_issues SET status=:s,owner=:o,closed_at=:c,updated_at=:n WHERE id=:i',
+        {'s':status,'o':owner or None,'c':closed,'n':utcnow_iso(),'i':issue_id})
+    audit(engine,'QUALITY_ISSUE_UPDATED',issue.get('action_id'),actor,'quality_issue',issue_id,{'status':status})
 
 def create_improvement_action(engine, action_id, title, description='', owner=None, due_at=None, issue_id=None, actor='system'):
-    iid=execute(engine,"INSERT INTO improvement_actions(issue_id,action_id,title,description,owner,due_at,status,created_at) VALUES(:i,:a,:t,:d,:o,:due,'A_FAIRE',:c)",{'i':issue_id,'a':action_id,'t':title,'d':description or None,'o':owner or None,'due':due_at or None,'c':utcnow_iso()});audit(engine,'IMPROVEMENT_ACTION_CREATED',action_id,actor,'improvement_action',iid,{});return iid
+    iid=execute(engine,"INSERT INTO improvement_actions(issue_id,action_id,title,description,owner,due_at,status,created_at) VALUES(:i,:a,:t,:d,:o,:due,'A_FAIRE',:c)",{'i':issue_id,'a':action_id,'t':title,'d':description or None,'o':owner or None,'due':due_at or None,'c':utcnow_iso()});linked=one(engine,"SELECT quality_event_id FROM quality_source_links WHERE source_kind='QUALITY_ISSUE' AND source_id=:i",{'i':issue_id}) if issue_id else None
+    if linked:
+        capa_id=add_quality_event_action(engine,linked['quality_event_id'],title,actor,description,owner,due_at)
+        execute(engine,"INSERT INTO quality_capa_source_links(quality_event_action_id,source_kind,source_id,linked_by,linked_at) VALUES(:c,'IMPROVEMENT_ACTION',:s,:a,:n)",
+            {'c':capa_id,'s':iid,'a':actor,'n':utcnow_iso()})
+    audit(engine,'IMPROVEMENT_ACTION_CREATED',action_id,actor,'improvement_action',iid,{'capa_mirror':bool(linked)})
+    return iid
 
 def update_improvement_action(engine, improvement_id, status, actor='system', title=None, description=None, owner=None, due_at=None):
     x=one(engine,'SELECT * FROM improvement_actions WHERE id=:i',{'i':improvement_id})
@@ -1853,12 +2296,18 @@ def update_improvement_action(engine, improvement_id, status, actor='system', ti
         try: datetime.fromisoformat(str(vals['due'])[:10])
         except Exception: raise ValueError("Échéance invalide (AAAA-MM-JJ).")
     execute(engine,'UPDATE improvement_actions SET title=:t,description=:x,owner=:o,due_at=:due,status=:s,completed_at=:d WHERE id=:i',vals)
+    link=one(engine,"SELECT quality_event_action_id FROM quality_capa_source_links WHERE source_kind='IMPROVEMENT_ACTION' AND source_id=:i",{'i':improvement_id})
+    if link:
+        update_quality_event_action(engine,link['quality_event_action_id'],actor,status=status,owner_name=vals['o'],due_at=vals['due'])
     audit(engine,'IMPROVEMENT_ACTION_UPDATED',x.get('action_id'),actor,'improvement_action',improvement_id,{'status':status,'title':vals['t'],'owner':vals['o'],'due_at':vals['due']})
 
 
 def delete_improvement_action(engine, improvement_id, actor='system'):
     x=one(engine,'SELECT * FROM improvement_actions WHERE id=:i',{'i':improvement_id})
     if not x: raise ValueError("Action d'amélioration introuvable.")
+    link=one(engine,"SELECT quality_event_action_id FROM quality_capa_source_links WHERE source_kind='IMPROVEMENT_ACTION' AND source_id=:i",{'i':improvement_id})
+    if link:
+        update_quality_event_action(engine,link['quality_event_action_id'],actor,status='ANNULEE')
     execute(engine,'DELETE FROM improvement_actions WHERE id=:i',{'i':improvement_id})
     audit(engine,'IMPROVEMENT_ACTION_DELETED',x.get('action_id'),actor,'improvement_action',improvement_id,{'title':x.get('title'),'issue_id':x.get('issue_id')})
     return True
@@ -1871,6 +2320,215 @@ def queue_communication(engine, action_id, communication_type, recipient_email, 
         if existing:return existing['id']
     return execute(engine,"""INSERT INTO communication_events(action_id,participant_id,trainer_id,slot_id,communication_type,recipient_email,trigger_mode,status,due_at,metadata_json,idempotency_key,created_at,updated_at)
       VALUES(:a,:p,:t,:s,:ct,:e,:tm,'A_ENVOYER',:d,:m,:k,:n,:n)""",{'a':action_id,'p':participant_id,'t':trainer_id,'s':slot_id,'ct':communication_type,'e':recipient_email or None,'tm':trigger_mode,'d':due,'m':json.dumps(metadata or {},ensure_ascii=False,default=str),'k':idempotency_key,'n':now})
+
+# J10-R27: reminder planning is durable, independent of any manual MAJ WORKER click.
+# Keep these two historical identifiers for queue compatibility; deadlines come
+# from the organisation's saved parameters, not hardcoded H-2/H-15 offsets.
+TEAMS_REMINDER_OFFSETS={'TEAMS_REMINDER_H2':timedelta(hours=2),'TEAMS_REMINDER_H15':timedelta(minutes=15)}
+TEAMS_REMINDER_GRACE=timedelta(seconds=150)  # worker polling every 60 seconds; never send stale H-2/H-15 notices.
+
+
+def neutralize_slot_messages(engine,slot_id,actor='system',reason='SLOT_REPORTED'):
+    """Preserve sent mail history, but remove unsent work tied to an obsolete slot."""
+    now=utcnow_iso(); sl=one(engine,'SELECT action_id FROM slots WHERE id=:s',{'s':slot_id})
+    if not sl:return 0
+    if reason=='SLOT_UPDATED':
+        # Same slot ID: preserve its attendance request, recompute due_at, never abandon it.
+        slot=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':slot_id})
+        tz=organization_runtime_config(engine,sl['action_id'])['timezone']
+        due=email_event_due_utc(slot,'INITIAL',tz).isoformat()
+        pending=execute(engine,"""UPDATE email_events SET due_at=:due,last_error=NULL
+            WHERE slot_id=:s AND event_type='INITIAL' AND status='PENDING'""",
+            {'s':slot_id,'due':due})
+    else:
+        pending=execute(engine,"""UPDATE email_events SET status='SKIPPED',last_error=:why
+            WHERE slot_id=:s AND status='PENDING'""",{'s':slot_id,'why':'R27: '+reason})
+    removed=execute(engine,"""UPDATE communication_events SET status='ANNULE',claim_token=NULL,claimed_at=NULL,
+        last_error=:why,updated_at=:n WHERE slot_id=:s AND status IN ('A_ENVOYER','EN_FILE')
+        AND communication_type IN ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15','COUNTERSIGN_REQUEST')""",
+        {'s':slot_id,'n':now,'why':'R27: '+reason})
+    audit(engine,'SLOT_PENDING_MAIL_NEUTRALIZED',sl['action_id'],actor,'slot',slot_id,{'reason':reason})
+    return pending+removed if isinstance(pending,int) and isinstance(removed,int) else 0
+
+
+def teams_reminder_event_state(engine,event,*,now=None,enforce_due=True):
+    """Recheck scheduling and recipients against live data just before worker SMTP delivery.
+
+    Return (allowed, reason, expected_due_utc). No secrets or identity are logged.
+    """
+    typ=event.get('communication_type')
+    if typ not in TEAMS_REMINDER_OFFSETS:return True,'NOT_A_REMINDER',None
+    current=now or datetime.now(ZoneInfo('UTC'))
+    if current.tzinfo is None:current=current.replace(tzinfo=ZoneInfo('UTC'))
+    current=current.astimezone(ZoneInfo('UTC'))
+    aid=event.get('action_id');sid=event.get('slot_id')
+    action=one(engine,'SELECT status FROM actions WHERE id=:a',{'a':aid})
+    if not action or action.get('status') not in ('ACTIVE','A_CLOTURER'):return False,'ACTION_INACTIVE',None
+    if not action_module_enabled(engine,aid,'TEAMS'):return False,'TEAMS_DISABLED',None
+    slot=one(engine,'SELECT * FROM slots WHERE id=:s',{'s':sid})
+    if not slot or int(slot['action_id'])!=int(aid) or str(slot.get('status') or 'PREVU').upper() in ('ANNULE','REPORTE','REMPLACE'):
+        return False,'SLOT_OBSOLETE',None
+    pid=event.get('participant_id');tid=event.get('trainer_id')
+    if pid is not None and tid is None:
+        person=one(engine,'SELECT email FROM participants WHERE id=:p AND action_id=:a AND active=1',{'p':pid,'a':aid})
+    elif tid is not None and pid is None:
+        person=one(engine,"""SELECT t.email FROM slot_trainers st JOIN trainers t ON t.id=st.trainer_id
+            WHERE st.slot_id=:s AND st.trainer_id=:t AND st.active=1 AND st.assignment_status='ACTIVE' AND t.active=1""",
+            {'s':sid,'t':tid})
+    else:
+        return False,'RECIPIENT_IDENTITY_INVALID',None
+    actual=(person or {}).get('email') or ''
+    if not actual.strip() or actual.strip().casefold()!=(event.get('recipient_email') or '').strip().casefold():
+        return False,'RECIPIENT_REVOKED_OR_CHANGED',None
+    try:
+        tz_name=organization_runtime_config(engine,aid)['timezone']
+        start,_=slot_start_end(slot,tz_name)
+        start_utc=start.astimezone(ZoneInfo('UTC'))
+        due=start_utc-online_reminder_offsets_for_action(engine,aid)[typ]
+        old_due=datetime.fromisoformat(str(event.get('due_at') or ''))
+        if old_due.tzinfo is None:old_due=old_due.replace(tzinfo=ZoneInfo('UTC'))
+        old_due=old_due.astimezone(ZoneInfo('UTC'))
+    except (ValueError,TypeError,KeyError,OverflowError):
+        return False,'INVALID_DATE_OR_ZONE',None
+    if abs((old_due-due).total_seconds())>1:return False,'SCHEDULE_CHANGED',due
+    if start_utc<=current:return False,'SLOT_ALREADY_STARTED',due
+    # When the first/second reminders are only one minute apart, do not deliver
+    # a delayed first reminder at or after the second one's deadline.
+    if typ=='TEAMS_REMINDER_H2' and current >= start_utc-online_reminder_offsets_for_action(engine,aid)['TEAMS_REMINDER_H15']:
+        return False,'SUPERSEDED_BY_SECOND_REMINDER',due
+    # A 5-minute trial must not be emailed two minutes late as « dans 5 minutes ».
+    # Polling normally occurs every 60s; allow at least 65s and at most 150s.
+    window=min(TEAMS_REMINDER_GRACE,timedelta(seconds=max(65,int((start_utc-due).total_seconds()//5))))
+    if current>due+window:return False,'REMINDER_EXPIRED',due
+    if enforce_due and current<due:return False,'NOT_DUE',due
+    return True,'CURRENT',due
+
+
+def synchronize_teams_reminders(engine, *, action_id=None, now=None, actor='worker', lookahead=None):
+    """Prepare/cancel durable reminders without SMTP and without replaying sent mail.
+
+    Runs automatically from worker.run_once, and after edits. H-2 already expired
+    is NEVER sent as an H-2 reminder at H-30; H-15 is still prepared normally.
+    """
+    current=now or datetime.now(ZoneInfo('UTC'))
+    if current.tzinfo is None:current=current.replace(tzinfo=ZoneInfo('UTC'))
+    current=current.astimezone(ZoneInfo('UTC'))
+    stats={'prepared':0,'cancelled':0,'pending':0,'failed':0,'expired':0,'actions':0}
+    params={'a':int(action_id)} if action_id is not None else {}
+    action_clause=' AND action_id=:a' if action_id is not None else ''
+    # Clean all queued obsolete reminders, including the ones tied to inactive actions or disabled TEAMS.
+    rows=q(engine,"""SELECT * FROM communication_events WHERE communication_type IN
+      ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15') AND status IN ('A_ENVOYER','EN_FILE')"""+action_clause,params)
+    for event in rows:
+        valid,why,_=teams_reminder_event_state(engine,event,now=current,enforce_due=False)
+        if valid:continue
+        execute(engine,"""UPDATE communication_events SET status='ANNULE',claim_token=NULL,claimed_at=NULL,
+          last_error=:why,updated_at=:n WHERE id=:id AND status IN ('A_ENVOYER','EN_FILE')""",
+          {'id':event['id'],'why':'R27: '+why,'n':utcnow_iso()})
+        stats['cancelled']+=1
+        if why=='REMINDER_EXPIRED':stats['expired']+=1
+    if action_id is None:
+        actions=q(engine,"SELECT id FROM actions WHERE status IN ('ACTIVE','A_CLOTURER')")
+    else:
+        actions=q(engine,"SELECT id FROM actions WHERE id=:a AND status IN ('ACTIVE','A_CLOTURER')",params)
+
+    def upsert(aid,slot,typ,email,pid=None,tid=None,*,due,start_utc,offset):
+        if not (email or '').strip():return 0
+        emails=(email or '').strip()
+        older=q(engine,"""SELECT id,recipient_email,due_at,status,last_error,metadata_json FROM communication_events
+          WHERE action_id=:a AND slot_id=:s AND communication_type=:ct
+            AND COALESCE(participant_id,0)=COALESCE(:p,0) AND COALESCE(trainer_id,0)=COALESCE(:t,0)
+          ORDER BY id DESC""",{'a':aid,'s':slot['id'],'ct':typ,'p':pid,'t':tid})
+        # A reminder already SENT for the same session start is never replayed
+        # solely because the administrator changes the configured advance notice.
+        # A genuinely moved session (new start UTC) is eligible for a new reminder.
+        for previous in older:
+            if previous['status']!='ENVOYE' or (previous.get('recipient_email') or '').strip().casefold()!=emails.casefold():
+                continue
+            try:
+                meta=json.loads(previous.get('metadata_json') or '{}')
+                seen=datetime.fromisoformat(str(meta.get('start_utc') or ''))
+                if seen.tzinfo is None:seen=seen.replace(tzinfo=ZoneInfo('UTC'))
+                if abs((seen.astimezone(ZoneInfo('UTC'))-start_utc).total_seconds())<=1:
+                    return 0
+            except (ValueError,TypeError,KeyError,OverflowError):
+                pass
+        # Legacy pre-support events may have an invalid stored due date. Reactivate only
+        # this explicit historical failure, never a real SMTP failure or manual cancellation.
+        legacy=next((x for x in older if x['status']=='ANNULE' and
+            'Type de communication non géré' in str(x.get('last_error') or '')),None)
+        if legacy:
+            already_sent=any(x['status']=='ENVOYE' and x.get('recipient_email','').strip().casefold()==emails.casefold()
+                and x.get('due_at')==due.isoformat() for x in older)
+            if not already_sent:
+                execute(engine,"""UPDATE communication_events SET status='ANNULE',claimed_at=NULL,claim_token=NULL,
+                    last_error='R27: doublon remplacé par ancienne communication restaurée',updated_at=:now
+                    WHERE action_id=:a AND slot_id=:s AND communication_type=:ct AND id<>:old
+                    AND COALESCE(participant_id,0)=COALESCE(:p,0) AND COALESCE(trainer_id,0)=COALESCE(:t,0)
+                    AND status IN ('A_ENVOYER','EN_FILE')""",
+                    {'a':aid,'s':slot['id'],'ct':typ,'old':legacy['id'],'p':pid,'t':tid,'now':utcnow_iso()})
+                execute(engine,"""UPDATE communication_events SET status='A_ENVOYER',recipient_email=:email,
+                    due_at=:due,claim_token=NULL,claimed_at=NULL,last_error=NULL,updated_at=:now
+                    WHERE id=:id AND status='ANNULE'""",
+                    {'id':legacy['id'],'email':emails,'due':due.isoformat(),'now':utcnow_iso()})
+                return 1
+        for existing in older:
+            try:
+                x=datetime.fromisoformat(str(existing.get('due_at') or ''))
+                if x.tzinfo is None:x=x.replace(tzinfo=ZoneInfo('UTC'))
+                same_due=abs((x.astimezone(ZoneInfo('UTC'))-due).total_seconds())<=1
+            except (ValueError,TypeError):same_due=False
+            if not same_due or emails.casefold()!=(existing.get('recipient_email') or '').strip().casefold():
+                continue
+            status=existing['status']
+            if status in ('ENVOYE','A_ENVOYER','EN_FILE','ECHEC','UNKNOWN_DELIVERY'):
+                return 0
+            # Compatibility: old unsupported-type events are safe to rearm before due; do not rearm manual cancellations.
+            if status=='ANNULE' and (str(existing.get('last_error') or '').startswith('R27:')
+                   or 'Type de communication non géré' in str(existing.get('last_error') or '')):
+                execute(engine,"""UPDATE communication_events SET status='A_ENVOYER',claim_token=NULL,claimed_at=NULL,
+                  last_error=NULL,updated_at=:n WHERE id=:id AND status='ANNULE'""",{'id':existing['id'],'n':utcnow_iso()})
+                return 1
+            return 0
+        from hashlib import sha256
+        email_tag=sha256(emails.casefold().encode('utf-8')).hexdigest()[:12]
+        key=f"teams-reminder:{typ}:{slot['id']}:{pid or 0}:{tid or 0}:{due.isoformat()}:{email_tag}"
+        queue_communication(engine,aid,typ,emails,participant_id=pid,trainer_id=tid,
+            slot_id=slot['id'],trigger_mode='AUTO',due_at=due.isoformat(),
+            metadata={'start_utc':start_utc.isoformat(),
+                'reminder_offset_minutes':int(offset.total_seconds()//60),'r27_version':'J11'},idempotency_key=key)
+        return 1
+
+    for a in actions:
+        aid=a['id'];stats['actions']+=1
+        if not action_module_enabled(engine,aid,'TEAMS'):continue
+        tz=organization_runtime_config(engine,aid)['timezone']
+        offsets=online_reminder_offsets_for_action(engine,aid)
+        people=q(engine,'SELECT id,email FROM participants WHERE action_id=:a AND active=1',{'a':aid})
+        slots=q(engine,"""SELECT * FROM slots WHERE action_id=:a AND COALESCE(status,'PREVU') NOT IN ('ANNULE','REPORTE','REMPLACE')
+            ORDER BY slot_date,start_time""",{'a':aid})
+        for slot in slots:
+            try:
+                start,_=slot_start_end(slot,tz)
+                start_utc=start.astimezone(ZoneInfo('UTC'))
+            except (ValueError,TypeError,KeyError):continue
+            if start_utc<=current or (lookahead is not None and start_utc>current+lookahead):continue
+            for typ,offset in offsets.items():
+                due=start_utc-offset
+                if current>due+TEAMS_REMINDER_GRACE:continue
+                for p in people:
+                    stats['prepared']+=upsert(aid,slot,typ,p.get('email'),pid=p['id'],due=due,start_utc=start_utc,offset=offset)
+                for tr in list_slot_trainers(engine,slot['id']):
+                    if not tr.get('trainer_active'):continue
+                    stats['prepared']+=upsert(aid,slot,typ,tr.get('email'),tid=tr['trainer_id'],due=due,start_utc=start_utc,offset=offset)
+    totals=q(engine,"""SELECT status,COUNT(*) n FROM communication_events WHERE
+        communication_type IN ('TEAMS_REMINDER_H2','TEAMS_REMINDER_H15')"""+action_clause+" GROUP BY status",params)
+    stats['pending']=sum(r['n'] for r in totals if r['status']=='A_ENVOYER')
+    stats['failed']=sum(r['n'] for r in totals if r['status'] in ('ECHEC','UNKNOWN_DELIVERY'))
+    if stats['prepared'] or stats['cancelled']:
+        audit(engine,'TEAMS_REMINDER_QUEUE_SYNCHRONIZED',action_id,actor,'reminder',action_id,stats)
+    return stats
+
 
 def mark_communication(engine,event_id,status,*,sent_at=None,last_error=None):
     execute(engine,'UPDATE communication_events SET status=:s,sent_at=COALESCE(:at,sent_at),last_error=:er,updated_at=:u WHERE id=:i',{'s':status,'at':sent_at,'er':last_error,'u':utcnow_iso(),'i':event_id})
@@ -1945,26 +2603,6 @@ def refresh_all_worker_events(engine, base_url, tz_name='Europe/Paris', actor='a
     actions=q(engine,"SELECT id FROM actions WHERE status IN ('ACTIVE','A_CLOTURER') ORDER BY id")
     stats={'actions':0,'attendance':0,'quality':0,'teams_reminders':0,'countersignatures':0}
 
-    def _upsert_reminder(aid, slot, typ, email, *, participant_id=None, trainer_id=None, due_at=None):
-        if not (email or '').strip():
-            return 0
-        existing=one(engine,"""SELECT * FROM communication_events
-          WHERE action_id=:a AND slot_id=:s AND communication_type=:ct
-            AND COALESCE(participant_id,0)=COALESCE(:p,0) AND COALESCE(trainer_id,0)=COALESCE(:t,0)
-          ORDER BY id DESC LIMIT 1""",{'a':aid,'s':slot['id'],'ct':typ,'p':participant_id,'t':trainer_id})
-        now_iso=utcnow_iso()
-        if existing:
-            if existing.get('status')=='ENVOYE':
-                return 0
-            execute(engine,"""UPDATE communication_events SET recipient_email=:e,status='A_ENVOYER',due_at=:d,
-              last_error=NULL,claimed_at=NULL,claim_token=NULL,updated_at=:u WHERE id=:i""",
-              {'e':email.strip(),'d':due_at,'u':now_iso,'i':existing['id']})
-            return 1
-        queue_communication(engine,aid,typ,email.strip(),participant_id=participant_id,trainer_id=trainer_id,
-          slot_id=slot['id'],trigger_mode='AUTO',due_at=due_at,
-          idempotency_key=f"teams-reminder:{typ}:{slot['id']}:{participant_id or 0}:{trainer_id or 0}")
-        return 1
-
     for a in actions:
         aid=a['id']; stats['actions']+=1
         runtime=organization_runtime_config(engine,aid); local_tz=runtime.get('timezone') or tz_name or 'Europe/Paris'
@@ -1977,24 +2615,11 @@ def refresh_all_worker_events(engine, base_url, tz_name='Europe/Paris', actor='a
         except Exception as ex:
             audit(engine,'WORKER_REFRESH_QUALITY_FAILED',aid,actor,'action',aid,{'error':str(ex)[:500]})
 
-        if action_module_enabled(engine,aid,'TEAMS'):
-            slots=q(engine,"""SELECT * FROM slots WHERE action_id=:a AND COALESCE(status,'PREVU') NOT IN ('ANNULE','REPORTE','REMPLACE')
-              ORDER BY slot_date,start_time""",{'a':aid})
-            participants=q(engine,"SELECT id,email FROM participants WHERE action_id=:a AND active=1",{'a':aid})
-            for sl in slots:
-                try:
-                    start,_=slot_start_end(sl,local_tz); start_utc=start.astimezone(ZoneInfo('UTC'))
-                except Exception:
-                    continue
-                if start_utc <= current_utc:
-                    continue
-                h2=(start_utc-timedelta(hours=2)).isoformat(); h15=(start_utc-timedelta(minutes=15)).isoformat()
-                for p in participants:
-                    stats['teams_reminders'] += _upsert_reminder(aid,sl,'TEAMS_REMINDER_H2',p.get('email'),participant_id=p['id'],due_at=h2)
-                    stats['teams_reminders'] += _upsert_reminder(aid,sl,'TEAMS_REMINDER_H15',p.get('email'),participant_id=p['id'],due_at=h15)
-                for tr in list_slot_trainers(engine,sl['id']):
-                    stats['teams_reminders'] += _upsert_reminder(aid,sl,'TEAMS_REMINDER_H2',tr.get('email'),trainer_id=tr['trainer_id'],due_at=h2)
-                    stats['teams_reminders'] += _upsert_reminder(aid,sl,'TEAMS_REMINDER_H15',tr.get('email'),trainer_id=tr['trainer_id'],due_at=h15)
+    reminders=synchronize_teams_reminders(engine,actor=actor,now=current_utc)
+    stats['teams_reminders']=reminders['prepared']
+    stats['teams_pending']=reminders['pending']
+    stats['teams_cancelled']=reminders['cancelled']
+    stats['teams_failed']=reminders['failed']
     try:
         stats['countersignatures']=refresh_countersign_communications(engine,now=current_utc)
     except Exception as ex:
@@ -2345,7 +2970,11 @@ def store_document(engine,data:bytes,display_name,category,actor='system',action
           {'sha256':digest,'deduplicated':bool(physical),'display_name':display_name,
            'version':old_version+1,'supersedes':row_current['id'] if row_current else None,
            'source_kind':_document_source_kind(actor),'publication':'PUBLIE' if publish else 'BROUILLON'})
-    if publish: _create_document_notifications(engine,rid,actor)
+    if publish:
+        _create_document_notifications(engine,rid,actor)
+        from workspace_notifications import document_received
+        document_received(engine,rid,action_id,actor)
+    else: _notify_document_needs_review(engine,rid,action_id,actor)
     stage('Dépôt terminé',1.0)
     return rid,digest,bool(physical)
 
@@ -2574,6 +3203,7 @@ def _create_document_notifications(engine,reference_id,actor):
         result += int(bool(execute(engine,'''INSERT OR IGNORE INTO document_notifications(document_reference_id,action_id,recipient_type,recipient_id,status,created_at,email_status)
           VALUES(:d,:a,:r,:id,'NON_LUE',:t,:em)''',{'d':reference_id,'a':d['action_id'],'r':role,'id':rid,'t':utcnow_iso(),
            'em':'A_ENVOYER' if pref.get('email_opt_in') else 'NON_DEMANDE'})))
+    _notify_document_available(engine,reference_id,actor)
     return result
 
 
@@ -2786,16 +3416,21 @@ def generate_due_final_bundles(engine, actor='worker'):
     return done
 
 def quality_management_summary(engine, **filters):
-    base=quality_dashboard(engine,**filters); stats=quality_question_stats(engine,filters.get('organization_id'),filters.get('agency_id'),filters.get('prestation_type'))
-    rubric={}
+    base=quality_dashboard(engine,**filters)
+    stats=quality_question_stats(engine,filters.get('organization_id'),filters.get('agency_id'),
+        filters.get('prestation_type'),filters.get('action_id'))
+    counts={};totals={}
     for r in stats:
-        label=r.get('Rubrique') or 'Autre'; rubric.setdefault(label,[])
-        if r.get('Moyenne') is not None: rubric[label].append(float(r['Moyenne']))
-    rubric_avg={k:round(sum(v)/len(v),2) for k,v in rubric.items() if v}
-    nps=base.get('nps') or []; nps_score=None
-    if nps: nps_score=round(100*(sum(x>=9 for x in nps)-sum(x<=6 for x in nps))/len(nps),1)
-    weak=sorted([{'Rubrique':k,'Moyenne':v} for k,v in rubric_avg.items()],key=lambda x:x['Moyenne'])[:5]
-    return {**base,'rubric_averages':rubric_avg,'nps_score':nps_score,'weak_points':weak}
+        group=r.get('Rubrique') or 'Autre'
+        n=int(r.get('Notes valides 1-5') or 0)
+        if n:
+            counts[group]=counts.get(group,0)+n
+            totals[group]=totals.get(group,0)+float(r.get('_sum_1_5') or 0)
+    rubric_avg={k:round(totals[k]/n,2) for k,n in counts.items() if n}
+    nps=base.get('nps') or []
+    nps_score=round(100*(sum(x>=9 for x in nps)-sum(x<=6 for x in nps))/len(nps),1) if nps else None
+    weak=sorted([{'Rubrique':k,'Moyenne':v,'Notes valides':counts[k]} for k,v in rubric_avg.items()],key=lambda x:x['Moyenne'])[:5]
+    return {**base,'rubric_averages':rubric_avg,'rubric_counts':counts,'nps_score':nps_score,'weak_points':weak}
 
 def configure_final_transmission(engine, action_id, enabled=False, to_quality=True, to_training=True, other_first_name=None, other_last_name=None, other_email=None, actor='system'):
     aa=one(engine,'SELECT nature FROM actions WHERE id=:a',{'a':action_id})
@@ -2866,7 +3501,7 @@ def action_module_enabled(engine, action_id, module_code):
 def next_future_slot(engine, action_id, now=None):
     tz_name=organization_runtime_config(engine,action_id)['timezone']
     now=now or datetime.now(ZoneInfo(tz_name))
-    rows=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REMPLACE') ORDER BY slot_date,start_time,id",{'a':action_id})
+    rows=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE','REMPLACE') ORDER BY slot_date,start_time,id",{'a':action_id})
     for sl in rows:
         start,_=slot_start_end(sl,tz_name)
         if start>now:
@@ -2907,6 +3542,7 @@ def set_generic_action_module(engine, action_id, module_code, enabled, actor='sy
         else:
             # Existing room/reports are historical evidence; only future automation stops.
             execute(engine,"UPDATE teams_occurrences SET status='DISABLED',updated_at=:u WHERE action_id=:a AND status='PLANNED'",{'u':now,'a':action_id})
+        synchronize_teams_reminders(engine,action_id=action_id,actor=actor)
     audit(engine,'ACTION_MODULE_TOGGLED',action_id,actor,'action_module',code,{'enabled':bool(enabled),'effective_from':eff})
     return eff
 
@@ -2949,7 +3585,7 @@ def _teams_effective_slots(engine, action_id):
     if not mod or not mod.get('enabled'):return []
     eff=mod.get('effective_from')
     tz_name=organization_runtime_config(engine,action_id)['timezone']
-    rows=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REMPLACE') ORDER BY slot_date,start_time,id",{'a':action_id})
+    rows=q(engine,"SELECT * FROM slots WHERE action_id=:a AND status NOT IN ('ANNULE','REPORTE','REMPLACE') ORDER BY slot_date,start_time,id",{'a':action_id})
     out=[]; now_local=datetime.now(ZoneInfo(tz_name)); e=None
     if eff:
         e=datetime.fromisoformat(eff)
@@ -3502,6 +4138,8 @@ def cancel_tool_prescription_owned(engine, prescription_id, requester_type, requ
     row=one(engine,'SELECT * FROM tool_prescriptions WHERE prescription_id=:p',{'p':prescription_id})
     if not row: return False,'Prescription introuvable.'
     if row.get('status')=='ANNULE': return True,''
+    if row.get('status') in ('TERMINE','REVU_EN_SEANCE'):
+        return False,'Une prescription finalisée ne peut pas être annulée sans procédure corrective.'
     if str(row.get('prescriber_type') or '').upper()!=str(requester_type or '').upper() or str(row.get('prescriber_id') or '')!=str(requester_id or ''):
         return False,"Vous pouvez supprimer uniquement une prescription que vous avez vous-même créée."
     update_tool_prescription_status(engine,prescription_id,'ANNULE',actor,{'reason':'suppression_par_createur'})
@@ -4402,6 +5040,8 @@ def unlink_crm_contact_action(engine, contact_id, action_id, actor='admin'):
     if not row: raise ValueError('Liaison action introuvable.')
     now=utcnow_iso()
     execute(engine,'DELETE FROM crm_action_links WHERE contact_id=:c AND action_id=:a',{'c':contact_id,'a':action_id})
+    execute(engine,'DELETE FROM action_ordering_clients WHERE action_id=:a AND crm_contact_id=:c',
+            {'a':action_id,'c':contact_id})
     execute(engine,"INSERT INTO crm_events(contact_id,event_type,actor,details_json,created_at) VALUES(:c,'ACTION_UNLINKED',:by,:d,:n)",
       {'c':contact_id,'by':actor,'d':json.dumps({'action_id':action_id},ensure_ascii=False),'n':now})
     execute(engine,'UPDATE crm_contacts SET updated_at=:n WHERE id=:i',{'n':now,'i':contact_id})
@@ -4429,6 +5069,10 @@ def link_crm_contact_action(engine, contact_id, action_id, role='CLIENT', actor=
     if not one(engine,'SELECT id FROM crm_contacts WHERE id=:i',{'i':contact_id}): raise ValueError('Contact introuvable.')
     if not one(engine,'SELECT id FROM actions WHERE id=:i',{'i':action_id}): raise ValueError('Action introuvable.')
     now=utcnow_iso(); role=(str(role or 'CLIENT').strip().upper() or 'CLIENT')[:40]
+    # CRM0 may have multiple client contacts; only the first *explicit* primary
+    # reference is retained. Other links are not automatically given portal rights.
+    if role=='CLIENT' and not action_ordering_client(engine,action_id):
+        link_action_ordering_client(engine,action_id,contact_id,actor)
     try:
         lid=execute(engine,"INSERT INTO crm_action_links(contact_id,action_id,role,created_by,created_at) VALUES(:c,:a,:r,:by,:n)",
           {'c':contact_id,'a':action_id,'r':role,'by':actor,'n':now})
@@ -4563,13 +5207,19 @@ def quality_campaign_email_history(engine,campaign_id):
 
 def _quality_public_id(): return 'QE-' + new_token(8).replace('-', '').replace('_', '').upper()[:10]
 
+# J2 : canonical event creation, never a second editable source record.
 def create_quality_event(engine,family,event_type,subject,description='',actor='system',action_id=None,campaign_id=None,beneficiary_id=None,trainer_id=None,
                          origin='MANUEL',severity='MINEURE',urgency='NORMALE',theme=None,owner_name=None,due_at=None):
     now=utcnow_iso(); public_id=_quality_public_id()
-    eid=execute(engine,"""INSERT INTO quality_events(public_id,action_id,campaign_id,beneficiary_id,trainer_id,family,event_type,status,detected_at,origin,subject,description,theme,severity,urgency,owner_name,due_at,created_by,created_at,updated_at)
-      VALUES(:p,:a,:c,:b,:t,:f,:e,'NOUVEAU',:n,:o,:s,:d,:th,:sev,:u,:own,:due,:by,:n,:n)""",
-      {'p':public_id,'a':action_id,'c':campaign_id,'b':beneficiary_id,'t':trainer_id,'f':family,'e':event_type,'n':now,'o':origin,'s':subject,'d':description,'th':theme,'sev':severity,'u':urgency,'own':owner_name,'due':due_at,'by':actor})
+    params={'p':public_id,'a':action_id,'c':campaign_id,'b':beneficiary_id,'t':trainer_id,'f':family,'e':event_type,
+            'n':now,'o':origin,'s':subject,'d':description,'th':theme,'sev':severity,'u':urgency,'own':owner_name,'due':due_at,'by':actor}
+    with engine.begin() as conn:
+        res=conn.execute(text("""INSERT INTO quality_events(public_id,action_id,campaign_id,beneficiary_id,trainer_id,family,event_type,status,detected_at,origin,subject,description,theme,severity,urgency,owner_name,due_at,created_by,created_at,updated_at)
+          VALUES(:p,:a,:c,:b,:t,:f,:e,'NOUVEAU',:n,:o,:s,:d,:th,:sev,:u,:own,:due,:by,:n,:n)"""),params)
+        eid=res.lastrowid
+        _quality_revision_tx(conn,eid,'CREATION',actor,after={'public_id':public_id,'family':family,'event_type':event_type,'action_id':action_id,'status':'NOUVEAU','origin':origin})
     audit(engine,'QUALITY_EVENT_CREATED',action_id,actor,'quality_event',eid,{'public_id':public_id,'family':family,'event_type':event_type})
+    _notify_quality_created(engine,eid)
     return eid
 
 def list_quality_events(engine,action_id=None,status=None):
@@ -4584,43 +5234,110 @@ def list_quality_events(engine,action_id=None,status=None):
       LEFT JOIN external_quality_contacts eqc ON eqc.id=qe.external_contact_id"""+where+
       " ORDER BY CASE qe.severity WHEN 'CRITIQUE' THEN 0 WHEN 'MAJEURE' THEN 1 ELSE 2 END, qe.created_at DESC",p)
 
+
 def update_quality_event(engine,event_id,actor,status=None,owner_name=None,severity=None,urgency=None,due_at=None,qualification=None,immediate_action=None,cause_analysis=None,
                          effectiveness_criteria=None,effectiveness_result=None,closure_comment=None):
-    ev=one(engine,'SELECT * FROM quality_events WHERE id=:i',{'i':event_id})
-    if not ev: raise ValueError('Événement qualité introuvable.')
-    allowed={'NOUVEAU','A_ANALYSER','EN_TRAITEMENT','EN_ATTENTE','A_VERIFIER','CLOTURE','REFUSE','CLASSE_SANS_SUITE'}
-    if status and status not in allowed: raise ValueError('Statut qualité invalide.')
-    if status in {'REFUSE','CLASSE_SANS_SUITE'} and not (closure_comment or '').strip(): raise ValueError('Un motif est obligatoire pour classer/refuser.')
-    vals={'s':status or ev['status'],'o':owner_name if owner_name is not None else ev.get('owner_name'),'sev':severity or ev.get('severity'),'u':urgency or ev.get('urgency'),
-          'due':due_at if due_at is not None else ev.get('due_at'),'q':qualification if qualification is not None else ev.get('qualification'),'ia':immediate_action if immediate_action is not None else ev.get('immediate_action'),
-          'ca':cause_analysis if cause_analysis is not None else ev.get('cause_analysis'),'ec':effectiveness_criteria if effectiveness_criteria is not None else ev.get('effectiveness_criteria'),
-          'er':effectiveness_result if effectiveness_result is not None else ev.get('effectiveness_result'),'cc':closure_comment if closure_comment is not None else ev.get('closure_comment'),'n':utcnow_iso(),'i':event_id}
-    closing=vals['s'] in {'CLOTURE','REFUSE','CLASSE_SANS_SUITE'}
-    execute(engine,"""UPDATE quality_events SET status=:s,owner_name=:o,severity=:sev,urgency=:u,due_at=:due,qualification=:q,immediate_action=:ia,cause_analysis=:ca,
-      effectiveness_criteria=:ec,effectiveness_result=:er,closure_comment=:cc,closed_at=CASE WHEN :cl=1 THEN COALESCE(closed_at,:n) ELSE NULL END,
-      closed_by=CASE WHEN :cl=1 THEN :by ELSE NULL END,updated_at=:n WHERE id=:i""",{**vals,'cl':1 if closing else 0,'by':actor})
-    audit(engine,'QUALITY_EVENT_UPDATED',ev.get('action_id'),actor,'quality_event',event_id,{'old_status':ev['status'],'new_status':vals['s']})
+    """Atomic Quality case update and source status propagation; append-only revisions.
+
+    A historical source has only four statuses. Its coarse status is a projection,
+    never an alternative authority over the canonical event status.
+    """
+    with engine.begin() as conn:
+        ev=conn.execute(text('SELECT * FROM quality_events WHERE id=:i'),{'i':event_id}).mappings().first()
+        if not ev: raise ValueError('Événement qualité introuvable.')
+        if status and status not in QUALITY_EVENT_STATUSES: raise ValueError('Statut qualité invalide.')
+        if status in {'REFUSE','CLASSE_SANS_SUITE'} and not (closure_comment or ev.get('closure_comment') or '').strip():
+            raise ValueError('Un motif est obligatoire pour classer/refuser.')
+        vals={'status':status or ev['status'],
+              'owner_name':owner_name if owner_name is not None else ev.get('owner_name'),
+              'severity':severity or ev.get('severity'),'urgency':urgency or ev.get('urgency'),
+              'due_at':due_at if due_at is not None else ev.get('due_at'),
+              'qualification':qualification if qualification is not None else ev.get('qualification'),
+              'immediate_action':immediate_action if immediate_action is not None else ev.get('immediate_action'),
+              'cause_analysis':cause_analysis if cause_analysis is not None else ev.get('cause_analysis'),
+              'effectiveness_criteria':effectiveness_criteria if effectiveness_criteria is not None else ev.get('effectiveness_criteria'),
+              'effectiveness_result':effectiveness_result if effectiveness_result is not None else ev.get('effectiveness_result'),
+              'closure_comment':closure_comment if closure_comment is not None else ev.get('closure_comment')}
+        changes={k:(ev.get(k),v) for k,v in vals.items() if ev.get(k)!=v}
+        if not changes:return False
+        now=utcnow_iso()
+        param={k:vals[k] for k in vals};param.update({'i':event_id,'at':now,'by':actor,'cl':1 if vals['status'] in QUALITY_FINAL_STATUSES else 0})
+        assignments=', '.join(f'{k}=:{k}' for k in vals)
+        conn.execute(text(f'''UPDATE quality_events SET {assignments},
+           closed_at=CASE WHEN :cl=1 THEN COALESCE(closed_at,:at) ELSE NULL END,
+           closed_by=CASE WHEN :cl=1 THEN :by ELSE NULL END,
+           updated_at=:at WHERE id=:i'''),param)
+        _quality_revision_tx(conn,event_id,'MODIFICATION',actor,
+           before={k:old for k,(old,new) in changes.items()},
+           after={k:new for k,(old,new) in changes.items()})
+        if 'status' in changes:
+            sources=conn.execute(text('SELECT source_kind,source_id FROM quality_source_links WHERE quality_event_id=:e'),{'e':event_id}).mappings()
+            for source in sources:
+                kind=source['source_kind']; tab=_QUALITY_SOURCE_TABLES.get(kind)
+                if kind in {'TRAINER_REPORT','BENEFICIARY_REPORT'}:
+                    projection=_quality_report_status(vals['status'])
+                    conn.execute(text(f'''UPDATE {tab} SET status=:s,updated_at=:n,
+                      closed_at=CASE WHEN :s='CLOTURE' THEN COALESCE(closed_at,:n) ELSE NULL END WHERE id=:i'''),
+                      {'s':projection,'n':now,'i':source['source_id']})
+                elif kind=='QUALITY_ISSUE':
+                    projected='CLOTUREE' if vals['status'] in QUALITY_FINAL_STATUSES else 'OUVERTE'
+                    conn.execute(text('UPDATE quality_issues SET status=:s,closed_at=:c,updated_at=:n WHERE id=:i'),
+                      {'s':projected,'c':now if projected=='CLOTUREE' else None,'n':now,'i':source['source_id']})
+    audit(engine,'QUALITY_EVENT_UPDATED',ev.get('action_id'),actor,'quality_event',event_id,
+          {'old_status':ev['status'],'new_status':vals['status'],'fields':sorted(changes)})
+    if 'status' in changes:
+        j4_rev=one(engine,'SELECT MAX(id) AS id FROM quality_event_history WHERE quality_event_id=:e',{'e':event_id})['id']
+        _notify_quality_changed(engine,event_id,'status',j4_rev)
+    return True
 
 def add_quality_event_action(engine,event_id,title,actor,description='',owner_name=None,due_at=None,action_kind='CORRECTIVE'):
-    now=utcnow_iso(); aid=execute(engine,"""INSERT INTO quality_event_actions(quality_event_id,action_kind,title,description,owner_name,due_at,status,created_by,created_at,updated_at)
-      VALUES(:e,:k,:t,:d,:o,:due,'A_FAIRE',:a,:n,:n)""",{'e':event_id,'k':action_kind,'t':title,'d':description,'o':owner_name,'due':due_at,'a':actor,'n':now})
-    ev=one(engine,'SELECT action_id FROM quality_events WHERE id=:e',{'e':event_id}) or {};audit(engine,'QUALITY_CAPA_CREATED',ev.get('action_id'),actor,'quality_event_action',aid,{'quality_event_id':event_id});return aid
+    now=utcnow_iso()
+    with engine.begin() as conn:
+        if not conn.execute(text('SELECT id FROM quality_events WHERE id=:i'),{'i':event_id}).first():
+            raise ValueError('Événement qualité introuvable.')
+        res=conn.execute(text('''INSERT INTO quality_event_actions(quality_event_id,action_kind,title,description,owner_name,due_at,status,created_by,created_at,updated_at)
+          VALUES(:e,:k,:t,:d,:o,:due,'A_FAIRE',:a,:n,:n)'''),{'e':event_id,'k':action_kind,'t':title,'d':description,'o':owner_name,'due':due_at,'a':actor,'n':now})
+        aid=res.lastrowid
+        _quality_revision_tx(conn,event_id,'CAPA_CREEE',actor,after={'capa_id':aid,'title':title,'kind':action_kind})
+    ev=one(engine,'SELECT action_id FROM quality_events WHERE id=:e',{'e':event_id}) or {}
+    audit(engine,'QUALITY_CAPA_CREATED',ev.get('action_id'),actor,'quality_event_action',aid,{'quality_event_id':event_id})
+    _notify_admins(engine,f'quality:capa:{aid}',ev.get('action_id'),'CAPA',aid,'QUALITY_CAPA',display='Action corrective à examiner')
+    return aid
 
-def quality_event_actions(engine,event_id): return q(engine,'SELECT * FROM quality_event_actions WHERE quality_event_id=:e ORDER BY id',{'e':event_id})
-
+def quality_event_actions(engine,event_id):
+    return q(engine,'SELECT * FROM quality_event_actions WHERE quality_event_id=:e ORDER BY id',{'e':event_id})
 
 def update_quality_event_action(engine, action_id, actor, status=None, owner_name=None, due_at=None, evidence_ref=None, effectiveness_result=None):
-    row=one(engine,'SELECT qa.*,qe.action_id parent_action_id FROM quality_event_actions qa JOIN quality_events qe ON qe.id=qa.quality_event_id WHERE qa.id=:i',{'i':action_id})
-    if not row: raise ValueError('Action CAPA introuvable.')
-    allowed={'A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE'}
-    ns=status or row['status']
-    if ns not in allowed: raise ValueError('Statut CAPA invalide.')
-    now=utcnow_iso()
-    execute(engine,"""UPDATE quality_event_actions SET status=:s,owner_name=:o,due_at=:d,evidence_ref=:e,effectiveness_result=:r,
-      completed_at=CASE WHEN :s='TERMINEE' THEN COALESCE(completed_at,:n) ELSE NULL END,updated_at=:n WHERE id=:i""",
-      {'s':ns,'o':owner_name if owner_name is not None else row.get('owner_name'),'d':due_at if due_at is not None else row.get('due_at'),
-       'e':evidence_ref if evidence_ref is not None else row.get('evidence_ref'),'r':effectiveness_result if effectiveness_result is not None else row.get('effectiveness_result'),'n':now,'i':action_id})
-    audit(engine,'QUALITY_CAPA_UPDATED',row.get('parent_action_id'),actor,'quality_event_action',action_id,{'old_status':row['status'],'new_status':ns})
+    with engine.begin() as conn:
+        row=conn.execute(text('''SELECT qa.*,qe.action_id parent_action_id FROM quality_event_actions qa
+          JOIN quality_events qe ON qe.id=qa.quality_event_id WHERE qa.id=:i'''),{'i':action_id}).mappings().first()
+        if not row: raise ValueError('Action CAPA introuvable.')
+        allowed={'A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE'}
+        ns=status or row['status']
+        if ns not in allowed:raise ValueError('Statut CAPA invalide.')
+        vals={'status':ns,'owner_name':owner_name if owner_name is not None else row.get('owner_name'),
+              'due_at':due_at if due_at is not None else row.get('due_at'),
+              'evidence_ref':evidence_ref if evidence_ref is not None else row.get('evidence_ref'),
+              'effectiveness_result':effectiveness_result if effectiveness_result is not None else row.get('effectiveness_result')}
+        changes={k:(row.get(k),v) for k,v in vals.items() if row.get(k)!=v}
+        if not changes:return False
+        now=utcnow_iso();param={**vals,'n':now,'i':action_id}
+        assignments=', '.join(f'{k}=:{k}' for k in vals)
+        conn.execute(text(f'''UPDATE quality_event_actions SET {assignments},
+          completed_at=CASE WHEN :status='TERMINEE' THEN COALESCE(completed_at,:n) ELSE NULL END,
+          updated_at=:n WHERE id=:i'''),param)
+        _quality_revision_tx(conn,row['quality_event_id'],'CAPA_MODIFIEE',actor,
+          before={'capa_id':action_id,**{k:v[0] for k,v in changes.items()}},
+          after={'capa_id':action_id,**{k:v[1] for k,v in changes.items()}})
+        if 'status' in changes:
+            source=conn.execute(text('SELECT source_id FROM quality_capa_source_links WHERE source_kind=\'IMPROVEMENT_ACTION\' AND quality_event_action_id=:e'),{'e':action_id}).mappings().first()
+            if source:
+                legacy_status={'ANNULEE':'ANNULEE','TERMINEE':'TERMINEE','A_VERIFIER':'A_VERIFIER'}.get(ns,'EN_COURS')
+                conn.execute(text('UPDATE improvement_actions SET status=:s,completed_at=:c WHERE id=:i'),
+                  {'s':legacy_status,'c':now if legacy_status=='TERMINEE' else None,'i':source['source_id']})
+    audit(engine,'QUALITY_CAPA_UPDATED',row.get('parent_action_id'),actor,'quality_event_action',action_id,
+          {'old_status':row['status'],'new_status':ns})
+    return True
 
 def quality_general_action_plan(engine, action_id=None):
     wh=' WHERE qe.action_id=:a' if action_id is not None else ''
@@ -4635,6 +5352,89 @@ def review_quality_point(engine,point_id,decision,comment,actor,quality_event_id
     allowed={'CLASSE','EVENEMENT_CREE','PLAN_ACTION','RATTACHE','RETOUR_DEMANDE'}
     if decision not in allowed: raise ValueError('Décision de revue invalide.')
     now=utcnow_iso(); new_status='REPRIS_PLAN_ACTION' if decision=='PLAN_ACTION' else 'EXAMINE'; execute(engine,"UPDATE quality_review_points SET status=:st,decision=:d,decision_comment=:c,quality_event_id=:e,reviewed_at=:n,reviewed_by=:a WHERE id=:i",{'st':new_status,'d':decision,'c':comment,'e':quality_event_id,'n':now,'a':actor,'i':point_id})
+
+def quality_short_treatment(engine,actor,decision,comment,point_id=None,event_id=None):
+    """J3: concise, auditable triage for a low 1-5 score or questionnaire R12/I06.
+
+    No external mail/notification in J3; J4 will route replies to their rightful recipients.
+    """
+    decisions={'PRISE_EN_COMPTE':'EN_TRAITEMENT','RETOUR_DEMANDE':'EN_ATTENTE',
+               'CLASSE':'CLASSE_SANS_SUITE','PLAN_ACTION':'EN_TRAITEMENT'}
+    if decision not in decisions:raise ValueError('Décision Qualité invalide.')
+    if (point_id is None)==(event_id is None):raise ValueError('Indiquer exactement une fiche ou un point faible.')
+    actor=str(actor or '').strip();comment=str(comment or '').strip()
+    if not actor:raise ValueError('Responsable du traitement requis.')
+    if not comment:raise ValueError('Renseignez le motif, la réponse ou l’action prévue.')
+    with engine.begin() as conn:
+        point=None
+        if point_id is not None:
+            point=conn.execute(text("""SELECT rp.*,qq.question_text,qq.question_code,c.campaign_kind FROM quality_review_points rp
+              JOIN questionnaire_questions qq ON qq.id=rp.question_id
+              JOIN quality_campaigns c ON c.id=rp.campaign_id WHERE rp.id=:i"""),{'i':point_id}).mappings().first()
+            if not point:raise ValueError('Point faible introuvable.')
+            if point['status']!='A_EXAMINER':raise ValueError('Ce point faible a déjà été examiné.')
+            if not (isinstance(point['score'],(int,float)) and 1<=point['score']<=3):
+                raise ValueError('La note associée n’est pas un point faible valide.')
+            event_id=point.get('quality_event_id')
+            if not event_id:
+                public_id=_quality_public_id();now=utcnow_iso()
+                subject='Note à examiner — '+(point['question_text'] or '')[:160]
+                description=f"{point['campaign_kind']} — {point['question_code']} — note {point['score']}/5"
+                event_id=conn.execute(text("""INSERT INTO quality_events(public_id,action_id,campaign_id,family,event_type,status,
+                  detected_at,origin,subject,description,severity,urgency,created_by,created_at,updated_at)
+                  VALUES(:pid,:a,:c,'QUESTIONNAIRES','DIFFICULTE','NOUVEAU',:n,'QUESTIONNAIRE_POINT_FAIBLE',:s,:d,
+                  'MINEURE','NORMALE',:by,:n,:n)"""),{
+                  'pid':public_id,'a':point['action_id'],'c':point['campaign_id'],'n':now,'s':subject,'d':description,'by':actor}).lastrowid
+                _quality_revision_tx(conn,event_id,'CREATION',actor,after={'public_id':public_id,
+                    'action_id':point['action_id'],'campaign_id':point['campaign_id'],'review_point_id':point_id})
+        ev=conn.execute(text('SELECT * FROM quality_events WHERE id=:i'),{'i':event_id}).mappings().first()
+        if not ev:raise ValueError('Fiche Qualité introuvable.')
+        if point is not None and (ev['action_id']!=point['action_id'] or ev['campaign_id']!=point['campaign_id']):
+            raise ValueError('Lien entre action, questionnaire et fiche Qualité incohérent.')
+        if point is None and not (ev['family']=='QUESTIONNAIRES' and ev['origin'] in {'QUESTIONNAIRE_R12_I06','QUESTIONNAIRE_POINT_FAIBLE','QUESTIONNAIRE'}):
+            raise ValueError('Traitement court réservé aux événements issus de questionnaires.')
+        if ev['status'] in QUALITY_FINAL_STATUSES:raise ValueError('La fiche est déjà clôturée ou classée.')
+        now=utcnow_iso();next_status=decisions[decision]
+        before={'status':ev['status'],'closure_comment':ev.get('closure_comment')}
+        closure=comment if decision=='CLASSE' else ev.get('closure_comment')
+        conn.execute(text("""UPDATE quality_events SET status=:s,closure_comment=:cm,
+             closed_at=:closed,closed_by=:by,updated_at=:n WHERE id=:i"""),{
+             's':next_status,'cm':closure,'closed':now if decision=='CLASSE' else None,
+             'by':actor if decision=='CLASSE' else None,'n':now,'i':event_id})
+        _quality_revision_tx(conn,event_id,'TRAITEMENT_COURT',actor,before=before,
+            after={'status':next_status,'decision':decision,'comment':comment,'review_point_id':point_id})
+        # Retain the J2 source-status projection within this same transaction.
+        sources=conn.execute(text('SELECT source_kind,source_id FROM quality_source_links WHERE quality_event_id=:e'),
+            {'e':event_id}).mappings().all()
+        for source in sources:
+            typ=source['source_kind'];sid=source['source_id']
+            if typ=='QUALITY_ISSUE':
+                projected='CLOTUREE' if next_status in QUALITY_FINAL_STATUSES else 'OUVERTE'
+                conn.execute(text('UPDATE quality_issues SET status=:s,closed_at=:closed,updated_at=:n WHERE id=:i'),
+                    {'s':projected,'closed':now if projected=='CLOTUREE' else None,'n':now,'i':sid})
+            elif typ in {'TRAINER_REPORT','BENEFICIARY_REPORT'}:
+                tab=_QUALITY_SOURCE_TABLES[typ]
+                conn.execute(text(f'''UPDATE {tab} SET status=:s,updated_at=:n,
+                    closed_at=CASE WHEN :s='CLOTURE' THEN COALESCE(closed_at,:n) ELSE NULL END WHERE id=:i'''),
+                    {'s':_quality_report_status(next_status),'n':now,'i':sid})
+        conn.execute(text("""INSERT INTO quality_event_messages(quality_event_id,direction,author,message,channel,created_at)
+          VALUES(:e,'INTERNE',:a,:m,'NOTE',:n)"""),{'e':event_id,'a':actor,'m':comment,'n':now})
+        if point is not None:
+            conn.execute(text("""UPDATE quality_review_points SET status=:s,decision=:d,decision_comment=:c,
+              quality_event_id=:e,reviewed_at=:n,reviewed_by=:by WHERE id=:i"""),{
+              's':'REPRIS_PLAN_ACTION' if decision=='PLAN_ACTION' else 'EXAMINE','d':decision,'c':comment,
+              'e':event_id,'n':now,'by':actor,'i':point_id})
+        if decision=='PLAN_ACTION':
+            title=('Traiter le point faible : '+point['question_text'][:100]) if point is not None else ('Traiter la remarque : '+ev['subject'][:100])
+            capa_id=conn.execute(text("""INSERT INTO quality_event_actions(quality_event_id,action_kind,title,description,
+             status,created_by,created_at,updated_at)
+             VALUES(:e,'CORRECTIVE',:t,:d,'A_FAIRE',:by,:n,:n)"""),{
+              'e':event_id,'t':title,'d':comment,'by':actor,'n':now}).lastrowid
+            _quality_revision_tx(conn,event_id,'CAPA_CREEE',actor,after={'capa_id':capa_id,'title':title,'decision':'PLAN_ACTION'})
+    audit(engine,'QUALITY_SHORT_TREATMENT',ev['action_id'],actor,'quality_event',event_id,
+        {'decision':decision,'point_id':point_id,'origin':ev['origin']})
+    return event_id
+
 
 def quality_review_points(engine,action_id=None,open_only=False):
     wh=[];p={}
@@ -4664,7 +5464,10 @@ def quality_source_counts(engine, action_ids):
     mapping={'DIFFICULTE':'difficulties','RECLAMATION':'complaints','NON_CONFORMITE':'nonconformities','INCIDENT':'incidents','SUGGESTION':'suggestions','OPPORTUNITE':'suggestions','INFORMATION':'reports','OBSERVATION':'reports'}
     for r in rows:
         k=mapping.get((r.get('event_type') or '').upper(),'other'); keys[k]+=int(r['n'])
-    legacy=q(engine,f"SELECT issue_type,COUNT(*) n FROM quality_issues WHERE action_id IN ({marks}) AND status NOT IN ('CLOTUREE','CLOTURE','FERMEE','MIGRE') GROUP BY issue_type",p)
+    legacy=q(engine,f"""SELECT issue_type,COUNT(*) n FROM quality_issues qi WHERE qi.action_id IN ({marks})
+      AND qi.status NOT IN ('CLOTUREE','CLOTURE','FERMEE','MIGRE')
+      AND NOT EXISTS (SELECT 1 FROM quality_source_links lk WHERE lk.source_kind='QUALITY_ISSUE' AND lk.source_id=qi.id)
+      GROUP BY qi.issue_type""",p)
     for r in legacy:
         typ=(r.get('issue_type') or '').upper()
         if 'RECLAM' in typ:k='complaints'
@@ -4692,6 +5495,72 @@ def quality_plan_counts(engine, action_ids):
         if st!='TERMINEE' and r.get('due_at') and str(r['due_at'])[:10] < today:out['overdue']+=1
     return out
 
+def quality_campaign_pilotage(engine, organization_id=None, agency_id=None, prestation_type=None, action_id=None):
+    """J3: one administrative read-only source for HOT/COLD/TRAINER/CLIENT/PRESCRIBER/OPCO.
+
+    Uses existing campaigns and email events; never schedules or dispatches mail.
+    """
+    conditions=[];params={}
+    if organization_id:conditions.append('a.organization_id=:org');params['org']=organization_id
+    if agency_id:conditions.append('a.agency_id=:agency');params['agency']=agency_id
+    if prestation_type:conditions.append('a.prestation_type=:kind');params['kind']=prestation_type
+    if action_id is not None:conditions.append('a.id=:aid');params['aid']=action_id
+    where=(' WHERE '+' AND '.join(conditions)) if conditions else ''
+    rows=q(engine,"""SELECT c.id,c.action_id,a.action_no,a.title action_title,c.campaign_kind,c.status,c.due_at,c.sent_at,c.completed_at,
+        c.manual_reminder_count,c.last_manual_reminder_at,qt.title questionnaire_title,
+        COALESCE(NULLIF(TRIM(p.first_name||' '||p.last_name),''),t.full_name,c.external_recipient_name,'') respondent
+      FROM quality_campaigns c JOIN actions a ON a.id=c.action_id
+      JOIN questionnaire_templates qt ON qt.id=c.template_id
+      LEFT JOIN participants p ON p.id=c.participant_id LEFT JOIN trainers t ON t.id=c.trainer_id"""+where+' ORDER BY c.due_at,c.id',params)
+    ids=[x['id'] for x in rows];hist={}
+    if ids:
+        marks=','.join(':h'+str(i) for i in range(len(ids)))
+        for e in q(engine,f"""SELECT campaign_id,event_type,status,sent_at,created_at FROM quality_email_events
+           WHERE campaign_id IN ({marks}) ORDER BY id""",{f'h{i}':id for i,id in enumerate(ids)}):
+            item=hist.setdefault(e['campaign_id'],{'initial_sent':False,'sent_reminders':0,'pending_reminders':0,'last_reminder_sent_at':None})
+            if e.get('sent_at') and e['event_type']=='INITIAL':item['initial_sent']=True
+            if e['event_type'].startswith(('MANUAL_','REMINDER_')):
+                if e.get('sent_at'):
+                    item['sent_reminders']+=1;item['last_reminder_sent_at']=e['sent_at']
+                elif e.get('status') in {'PENDING','SENDING'}:item['pending_reminders']+=1
+    now=datetime.now(ZoneInfo('UTC'))
+    kinds=['HOT','COLD','TRAINER','CLIENT','PRESCRIBER','OPCO']
+    by_kind={k:{'invitations':0,'completed':0,'pending':0,'initial_sent':0,'sent_reminders':0} for k in kinds}
+    out=[]
+    for r in rows:
+        detail=hist.get(r['id'],{})
+        is_done=r['status']=='COMPLETED'
+        due=None
+        try:
+            due=datetime.fromisoformat(r['due_at']) if r.get('due_at') else None
+            if due and due.tzinfo is None:due=due.replace(tzinfo=ZoneInfo('UTC'))
+        except (ValueError,TypeError):pass
+        stage='Répondu' if is_done else 'À venir' if due and now<due else 'Sans réponse'
+        row={**r,'availability':stage,'initial_sent':bool(detail.get('initial_sent') or r.get('sent_at')),
+             'sent_reminders':detail.get('sent_reminders',0),'pending_reminders':detail.get('pending_reminders',0),
+             'last_reminder_sent_at':detail.get('last_reminder_sent_at')}
+        out.append(row)
+        k=r['campaign_kind'];value=by_kind.setdefault(k,{'invitations':0,'completed':0,'pending':0,'initial_sent':0,'sent_reminders':0})
+        value['invitations']+=1; value['completed']+=int(is_done); value['pending']+=int(not is_done)
+        value['initial_sent']+=int(bool(row['initial_sent']));value['sent_reminders']+=row['sent_reminders']
+    return {'rows':out,'by_kind':by_kind,'total':len(out),'completed':sum(x['status']=='COMPLETED' for x in out)}
+
+
+def quality_campaign_pilotage_summary(engine,organization_id=None,prestation_type=None,action_id=None,kinds=('CLIENT','PRESCRIBER')):
+    """A combined average weighted by valid 1-5 answers, not an average of averages."""
+    view=quality_campaign_pilotage(engine,organization_id=organization_id,
+        prestation_type=prestation_type,action_id=action_id)
+    selected=[r for r in view['rows'] if r['campaign_kind'] in kinds]
+    ids=[r['id'] for r in selected];scores=[]
+    if ids:
+        marks=','.join(':i'+str(i) for i in range(len(ids)))
+        for row in q(engine,f"SELECT response_type,answer_json FROM quality_responses WHERE campaign_id IN ({marks})",{f'i{i}':v for i,v in enumerate(ids)}):
+            val=_quality_numeric_answer(row['answer_json'],row['response_type'])
+            if val is not None and row['response_type']=='SCALE_1_5':scores.append(val)
+    return {'invitations':len(selected),'completed':sum(r['status']=='COMPLETED' for r in selected),
+        'score':round(sum(scores)/len(scores),2) if scores else None,'valid_scores':len(scores)}
+
+
 def quality_dashboard_v31(engine, organization_id=None, agency_id=None, prestation_type=None, action_id=None):
     wh=[];p={}
     if organization_id: wh.append('a.organization_id=:o');p['o']=organization_id
@@ -4713,8 +5582,8 @@ def quality_dashboard_v31(engine, organization_id=None, agency_id=None, prestati
             for r in rs:
                 if r['response_type']=='SCALE_1_5':
                     try:
-                        v=json.loads(r['answer_json']);
-                        if isinstance(v,(int,float)): vals.append(float(v))
+                        v=_quality_numeric_answer(r.get('answer_json'),'SCALE_1_5')
+                        if v is not None: vals.append(v)
                     except Exception: pass
         completed=sum(c['status']=='COMPLETED' for c in camps);out['by_kind'][k]={'score':round(sum(vals)/len(vals),2) if vals else None,'responses':completed,'invitations':len(camps),'response_rate':round(100*completed/len(camps),1) if camps else None}
     out['events_open']=one(engine,f"SELECT COUNT(*) n FROM quality_events WHERE action_id IN ({marks}) AND status NOT IN ('CLOTURE','REFUSE','CLASSE_SANS_SUITE')",pp)['n']
@@ -6801,3 +7670,92 @@ def professional_missions_view(engine, ppid):
         dates=start if start==end or not end else f'{start} -> {end}'
         out.append({**row,'dates':dates,'eligibility_status':ev.get('status'),'eligibility_reason':ev.get('reason'),'human_value':ev.get('human_value')})
     return out
+
+
+# J6 - Intervenant's personal workspace and controlled tool follow-up.
+# The seven-section administrative dossier is still the unique source of truth.
+PROFESSIONAL_DOCUMENT_VISIBILITY = ('INTERNE', 'INTERVENANT')
+TRAINER_FOLLOWUP_STATUSES = ('A_REVOIR_EN_SEANCE', 'REVU_EN_SEANCE')
+
+
+def set_professional_document_visibility(engine, ppid, document_id, visibility, actor='admin'):
+    if visibility not in PROFESSIONAL_DOCUMENT_VISIBILITY:
+        raise ValueError('Visibilité documentaire invalide.')
+    d = one(engine, '''SELECT id,visibility FROM professional_documents
+        WHERE id=:i AND professional_person_id=:p AND archived_at IS NULL''', {'i':int(document_id),'p':ppid})
+    if not d: raise ValueError('Document du dossier introuvable ou archivé.')
+    if d['visibility'] == visibility: return True
+    execute(engine, 'UPDATE professional_documents SET visibility=:v WHERE id=:i AND professional_person_id=:p',
+            {'v':visibility,'i':int(document_id),'p':ppid})
+    audit(engine,'PROFESSIONAL_DOCUMENT_VISIBILITY_CHANGED',actor=actor,entity_type='professional_document',
+          entity_id=int(document_id),details={'professional_person_id':ppid,'from':d['visibility'],'to':visibility})
+    trainer=one(engine,'SELECT trainer_id FROM professional_persons WHERE professional_person_id=:p',{'p':ppid})
+    if visibility=='INTERVENANT' and trainer and trainer.get('trainer_id'):
+        from workspace_notifications import professional_document_shared
+        professional_document_shared(engine,document_id,trainer['trainer_id'])
+    elif visibility=='INTERNE' and trainer and trainer.get('trainer_id'):
+        # A withdrawn share must not leave a stale unread alert which can revive later.
+        execute(engine, '''UPDATE workspace_notifications SET read_at=COALESCE(read_at,:n)
+            WHERE recipient_role='TRAINER' AND recipient_key=:t
+              AND target_kind='PROFESSIONAL_DOCUMENT' AND target_id=:d''',
+            {'n':utcnow_iso(),'t':str(trainer['trainer_id']),'d':str(document_id)})
+    return True
+
+
+def trainer_shared_professional_documents(engine, trainer_id):
+    '''Only an active trainer's own active dossier and explicitly shared documents.'''
+    person=one(engine, '''SELECT pp.professional_person_id FROM professional_persons pp
+        JOIN trainers t ON t.id=pp.trainer_id
+        WHERE t.id=:t AND t.active=1 AND pp.active=1 AND pp.principal_status='INTERVENANT' ''', {'t':int(trainer_id)})
+    if not person: return []
+    return q(engine, '''SELECT d.id,d.display_name,d.category,d.valid_until,d.created_at,sf.size_bytes
+        FROM professional_documents d JOIN stored_files sf ON sf.id=d.stored_file_id
+        WHERE d.professional_person_id=:p AND d.archived_at IS NULL AND d.visibility='INTERVENANT'
+        ORDER BY d.created_at DESC,d.id DESC''', {'p':person['professional_person_id']})
+
+
+def trainer_shared_professional_document_bytes(engine, trainer_id, document_id):
+    '''Enforce authorization again at the moment of download (no raw paths in UI).'''
+    person=one(engine, '''SELECT pp.professional_person_id FROM professional_persons pp
+        JOIN trainers t ON t.id=pp.trainer_id
+        WHERE t.id=:t AND t.active=1 AND pp.active=1 AND pp.principal_status='INTERVENANT' ''', {'t':int(trainer_id)})
+    if not person: raise PermissionError('Dossier professionnel non autorisé.')
+    row=one(engine, '''SELECT d.display_name,sf.storage_path,sf.mime_type FROM professional_documents d
+       JOIN stored_files sf ON sf.id=d.stored_file_id
+       WHERE d.id=:i AND d.professional_person_id=:p AND d.visibility='INTERVENANT' AND d.archived_at IS NULL''',
+       {'i':int(document_id),'p':person['professional_person_id']})
+    if not row: raise PermissionError('Document non partagé avec cet intervenant.')
+    path=Path(row['storage_path'])
+    if not path.is_file(): raise FileNotFoundError('Fichier indisponible.')
+    audit(engine,'TRAINER_PROFESSIONAL_DOCUMENT_READ',actor=f'trainer:{trainer_id}',entity_type='professional_document',
+          entity_id=int(document_id),details={'professional_person_id':person['professional_person_id']})
+    return {'name':row['display_name'],'mime_type':row['mime_type'],'data':path.read_bytes()}
+
+
+def trainer_tool_followup_choices(engine, trainer_id, prescription_id):
+    '''Only manual pedagogical follow-up, never engine/connector status or termination.
+
+    A trainer can follow up another creator's prescription only when action-level
+    prescribing rights remain enabled. A provider-connected tool is immutable here.
+    '''
+    pr=one(engine, '''SELECT tp.*,tc.connector_status,tc.launch_type,tc.active tool_active,
+        tc.prescription_allowed FROM tool_prescriptions tp JOIN tool_catalog tc ON tc.id=tp.tool_id
+        WHERE tp.prescription_id=:p''', {'p':prescription_id})
+    if not pr or not trainer_can_prescribe_tools(engine,trainer_id,pr['action_id']): return ()
+    if not trainer_action_authorized(engine,trainer_id,pr['action_id']):return ()
+    if not pr['tool_active'] or not pr['prescription_allowed'] or not action_tool_is_allowed(engine,pr['action_id'],pr['tool_code']):return ()
+    # Provider-connected signed tools control their own lifecycle and results.
+    if (pr.get('connector_status') or '').upper()=='CONNECTED' or (pr.get('launch_type') or '').upper()=='EXTERNAL_SIGNED':return ()
+    if pr['status'] in ('TERMINE','ANNULE'):return ()
+    # Review markers only; ENVOYE/CONSULTE/EN_COURS/TERMINE remain connector-/beneficiary-managed.
+    if pr['status']=='A_REVOIR_EN_SEANCE':return ('REVU_EN_SEANCE',)
+    if pr['status']=='REVU_EN_SEANCE':return ('A_REVOIR_EN_SEANCE',)
+    return TRAINER_FOLLOWUP_STATUSES
+
+
+def trainer_update_tool_followup(engine, trainer_id, prescription_id, new_status, actor=None):
+    choices=trainer_tool_followup_choices(engine,trainer_id,prescription_id)
+    if new_status not in choices:
+        raise PermissionError('Modification du statut non autorisée pour cette prescription.')
+    return update_tool_prescription_status(engine,prescription_id,new_status,
+        actor or f'trainer:{int(trainer_id)}',{'source':'trainer_followup_j6','trainer_id':int(trainer_id)})

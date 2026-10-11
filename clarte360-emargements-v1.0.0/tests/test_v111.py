@@ -41,7 +41,16 @@ def test_hard_purge_slot_removes_evidence(tmp_path):
 
 def test_hard_purge_action_removes_children(tmp_path):
     e,aid,pid,sid=seed(tmp_path); add_sig(e,pid,sid)
-    ok,msg=purge_action(e,aid,'admin'); assert ok,msg
+    from security import hash_password
+    from purge_guard import certify_test_action,preview_action_purge
+    actor='admin@j1.invalid'; password='FAKE-PASSWORD-123'
+    execute(e,'INSERT INTO admins(email,password_hash,created_at) VALUES(:e,:h,:n)',
+        {'e':actor,'h':hash_password(password),'n':utcnow_iso()})
+    yes,reason=certify_test_action(e,aid,actor,evidence='Scenario completement fictif de non regression purge action.',
+        confirmation='JE CERTIFIE ESSAI V111-1',password=password)
+    assert yes,reason
+    preview=preview_action_purge(e,aid)
+    ok,msg=purge_action(e,aid,actor,confirmation='SUPPRIMER ESSAI V111-1',preview_fingerprint=preview['fingerprint']); assert ok,msg
     assert one(e,'SELECT id FROM actions WHERE id=:a',{'a':aid}) is None
     assert one(e,'SELECT id FROM participants WHERE action_id=:a',{'a':aid}) is None
     assert one(e,'SELECT id FROM slots WHERE action_id=:a',{'a':aid}) is None

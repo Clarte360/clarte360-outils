@@ -30,5 +30,9 @@ def test_j9_no_ai_proposal_counts_as_human_qualification():
 
 def test_j9_ui_has_operational_tabs_and_filters():
     src=open('app.py',encoding='utf-8').read()
-    assert "['Intervenants','Candidats','Qualifications & recherche','Alertes','Prestations']" in src
+    # J6 replaces the mixed top-level five-tab area with separate dossier and pilotage doors.
+    # Preserve every operational section and search filter in their new contexts.
+    assert "('Accueil intervenants','Dossiers professionnels','Pilotage & référentiels')" in src
+    assert "['Candidats','Qualifications & recherche','Alertes','Prestations']" in src
+    assert "'Synthèse','Parcours professionnel','Conformité & collaboration','Analyse IA','Qualifications','Missions / Affectations','CV Clarté360'" in src
     assert 'Rechercher un intervenant' in src and 'Rechercher un candidat' in src

@@ -153,7 +153,11 @@ def test_global_gateway_sends_scanned_pdf_as_input_file():
 def test_rc22_ui_promotes_human_decision_and_menu_entry():
     from pathlib import Path
     src=(Path(__file__).resolve().parents[1]/'app.py').read_text(encoding='utf-8')
-    assert "'Intervenants / Partenaires','Paramètres'" in src
+    # J5 now hosts these routes under the separate general administration space.
+    from admin_navigation import GENERAL_PAGES
+    assert 'Intervenants / Partenaires' in GENERAL_PAGES
+    assert 'Paramètres' in GENERAL_PAGES
+    assert "elif page=='Intervenants / Partenaires':" in src
     assert "'Décision humaine'" in src
     assert 'Éléments repérés — niveau global bloqué' in src
     assert "button('Retenir pour instruction'" not in src
