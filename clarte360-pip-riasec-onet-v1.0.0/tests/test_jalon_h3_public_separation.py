@@ -146,4 +146,4 @@ def test_h3_keeps_h2_report_before_feeling_intent():
     src = Path("clarte360_pip/ui/pages.py").read_text(encoding="utf-8")
     assert "_render_pip_report_preview_before_feeling" in src
     assert "pdf_pages_as_png(pdf_bytes, 3, 4)" in src
-    assert "J’ai consulté ma synthèse — donner mon ressenti" in src
+    assert "J’ai consulté mes résultats — donner mon ressenti" in src

@@ -6,7 +6,7 @@ from email.message import EmailMessage
 from .config import SmtpSettings
 
 
-def send_email(settings: SmtpSettings, subject: str, body: str, to_email: str | None = None) -> tuple[bool, str]:
+def send_email(settings: SmtpSettings, subject: str, body: str, to_email: str | None = None, attachments: list[tuple[str, bytes, str]] | None = None) -> tuple[bool, str]:
     if not settings.configured:
         return False, "Configuration SMTP absente."
     recipient = to_email or settings.to_email
@@ -17,6 +17,9 @@ def send_email(settings: SmtpSettings, subject: str, body: str, to_email: str | 
     msg["From"] = settings.from_email
     msg["To"] = recipient
     msg.set_content(body)
+    for filename, content, mime_type in attachments or []:
+        maintype, _, subtype = str(mime_type or "application/octet-stream").partition("/")
+        msg.add_attachment(content, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
     try:
         with smtplib.SMTP_SSL(settings.server, settings.port, timeout=15) as smtp:
             smtp.login(settings.username, settings.password)

@@ -1,3 +1,15 @@
+
+## H3.3-C — 24/09/2026 — Étude comparative PIP ↔ O*NET
+- Base exclusive : H3.3-B. Aucun changement du questionnaire PIP, scoring, ROME, O*NET ou rapports individuels.
+- Ajout d'un moteur d'analyse descriptive de concordance dans l'intégration Gestion des Actions.
+- Population séparée : PIP réalisé, PIP + O*NET complet, PIP seul, ressenti exploitable.
+- Concordance individuelle stricte : 0 à 6 positions identiques, avec n/N et pourcentages.
+- Calcul de la moyenne du nombre de positions identiques sur 6.
+- Concordance de chacune des positions 1 à 6, avec n/N et pourcentages.
+- Synthèse du ressenti fondée uniquement sur les questions réellement enregistrées.
+- Compatibilité des données historiques : un ancien completed_at sans ressenti ne suffit plus à classer une étude TERMINE.
+- Le tableau de qualité des items n'est plus dans la restitution principale ; il reste accessible dans un espace technique replié.
+- Aucune identité n'est utilisée par le moteur statistique ; la restitution reste collective et pseudonymisée.
 ## Jalon E - 2026-09-18
 - Rapport PDF professionnel Clarté360 PIP-RPT-1.0.
 - Restitution PIP : classement, graphique, code Holland non forcé, descriptions dominantes et limites.
@@ -252,3 +264,27 @@
 - Conservation stricte du flux H3.1 : banque 72 items, scoring, ROME, O*NET, CRM, étude pseudonymisée et ACCOMPAGNEMENT inchangés.
 - Ajout de tests de non-régression H3.2.
 - Recette automatisée : 196 tests réussis, 0 échec.
+
+## H3.3-A — 2026-09-24 — Entrée PUBLIC / consentements / reprise mobile
+- Base exclusive : H3.2 vérifié.
+- Premier écran PUBLIC : choix explicite entre nouvelle passation et reprise d'une passation existante.
+- Reprise JSON accessible dans l'écran principal, sans dépendre du menu latéral ; restauration automatique après sélection d'un fichier valide.
+- Reprise à la dernière étape utile avec message explicite et conservation du `public_study_id`.
+- Parcours PUBLIC : traitement nécessaire + utilisation pseudonymisée pour l'étude requis avant l'envoi du code d'accès.
+- Consentement marketing maintenu facultatif et indépendant ; il n'entre pas dans le verrou d'envoi du code.
+- Version du texte RGPD portée à `RGPD-Clarte360-PIP-v0.3-2026-09-H3.3` pour refléter cette règle.
+- Mode ACCOMPAGNEMENT non modifié fonctionnellement.
+- Métadonnées de jalon alignées H3.3-A ; port de référence VPS aligné sur le Framework VPS V1.3 (8503), sans déploiement.
+- 200 tests automatisés réussis, 0 échec.
+
+
+## H3.3-B — 2026-09-24
+- Restitution avant ressenti clarifiée : écrans Clarté360, sans obligation d'ouvrir le PDF.
+- Ressenti verrouillé si les écrans de restitution ne peuvent pas être générés.
+- Garde-fous reprise JSON/F5 contre le contournement restitution → ressenti → fin.
+- PUBLIC réellement TERMINE seulement après restitution, ressenti obligatoire et génération du rapport final.
+- Enregistrement étude autorisé avant ressenti mais statut EN_COURS ; TERMINE seulement à la vraie clôture.
+- Envoi automatique idempotent du/des PDF finaux à l'adresse e-mail vérifiée ; échec SMTP non bloquant.
+- Téléchargements PDF maintenus.
+- Invitation sobre et coordonnées Clarté360 ajoutées à la fin PUBLIC et au rapport PIP PUBLIC.
+- SMTP étendu aux pièces jointes PDF.

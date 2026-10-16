@@ -44,7 +44,7 @@ def test_h31_snapshot_persists_and_restores_public_study_id(monkeypatch, tmp_pat
 
     restored = {}
     restore_snapshot(snap, restored)
-    assert restored["navigation_page"] == "finished"
+    assert restored["navigation_page"] == "pip_results_gate"  # H3.3-C: legacy snapshot cannot bypass restitution gate
     assert len(restored["pip_state"]["answers"]) == 72
     assert restored["public_study_id"] == first_id
 

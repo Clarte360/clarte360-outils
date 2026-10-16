@@ -9,9 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_final_version():
-    assert APP_VERSION == "1.0.10-l1-vps-hub-ready-guard-accompagnement"
-    assert BUILD_INCREMENT == "L1-H3.1-STUDY-ID-RESUME-IDEMPOTENCE"
-    assert FRAMEWORK_VPS_VERSION == "1.0"
+    assert APP_VERSION == "H3.3-D-RC1"
+    assert BUILD_INCREMENT == "H3.3-D-RC1-RESSENTI-PIP-RAPPORTS"
+    assert FRAMEWORK_VPS_VERSION == "1.3"
 
 
 def test_runtime_bank_final_integrity():

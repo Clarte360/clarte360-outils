@@ -21,6 +21,7 @@ from clarte360_pip.framework.server_store import save_accompanied_snapshot
 from clarte360_pip.connectors.gestion_actions import GestionActionsPort, persist_report_document
 from clarte360_pip.connectors.onet import OnetPort, OnetApiError, normalize_onet_results, ONET_INSTRUMENT, ONET_API_VERSION, ONET_LANGUAGE
 from clarte360_pip.framework.public_access import (validate_public_identity, validated_public_identity, issue_public_code, verify_public_code, save_public_lead, save_public_study_record)
+from clarte360_pip.framework.smtp import send_email
 from clarte360_pip.reporting import build_pip_report_pdf, build_onet_report_pdf, PIP_REPORT_VERSION, ONET_REPORT_VERSION, REPORT_VERSION
 from clarte360_pip.pdf_preview import pdf_pages_as_png
 from clarte360_pip.version import APP_VERSION
@@ -138,9 +139,17 @@ def _render_logo() -> None:
         st.image(str(logo), width=230)
 
 
-def _restore_uploaded(uploaded) -> None:
-    payload = json.load(uploaded)
+def _restore_uploaded(uploaded) -> str:
+    """Restore a PUBLIC JSON immediately and return the useful destination."""
+    payload = decode_snapshot_bytes(uploaded.getvalue())
     restore_snapshot(payload, st.session_state)
+    if not st.session_state.get("public_access_verified"):
+        raise ValueError("La sauvegarde ne contient pas d’accès public vérifié.")
+    mark_public_work_saved(st.session_state)
+    target = infer_resume_page(dict(st.session_state))
+    st.session_state.navigation_page = target
+    st.session_state.public_home_choice = "resume"
+    return target
 
 
 def render_home(launch: LaunchContext) -> None:
@@ -173,9 +182,51 @@ Le PIP Clarté360 explore, au travers de 72 activités professionnelles, les act
             st.rerun()
         return
 
-    if not rgpd_is_current(st.session_state):
+    # H3.3-A: the first PUBLIC screen makes the two entry paths explicit,
+    # including on mobile where the Streamlit sidebar is normally collapsed.
+    home_choice = st.session_state.get("public_home_choice")
+    has_public_progress = bool(st.session_state.get("public_access_verified") or st.session_state.get("pip_state", {}).get("order"))
+    if not home_choice and not has_public_progress:
+        st.markdown("## Comment souhaitez-vous continuer ?")
+        if st.button("Commencer une nouvelle passation", type="primary", use_container_width=True):
+            st.session_state.public_home_choice = "new"
+            st.rerun()
+        if st.button("Reprendre une passation déjà commencée", use_container_width=True):
+            st.session_state.public_home_choice = "resume"
+            st.rerun()
+        return
+
+    if home_choice == "resume" and not has_public_progress:
+        st.markdown("## Reprendre une passation déjà commencée")
+        st.caption("Sélectionnez le fichier JSON téléchargé lors de votre précédente session. La reprise est automatique après sélection.")
+        uploaded = st.file_uploader("Sélectionnez votre sauvegarde JSON", type=["json"], key="home_resume_json")
+        if uploaded is not None:
+            upload_key = (uploaded.name, getattr(uploaded, "size", None))
+            if st.session_state.get("home_resume_processed") != upload_key:
+                try:
+                    target = _restore_uploaded(uploaded)
+                    st.session_state.home_resume_processed = upload_key
+                    pip = st.session_state.get("pip_state", {}) or {}
+                    if target == "pip_questionnaire":
+                        index = int(pip.get("index", 0)) + 1
+                        total = len(pip.get("order") or []) or 72
+                        st.session_state.resume_notice = f"Votre session a été restaurée — reprise à la question {index} sur {total}."
+                    else:
+                        st.session_state.resume_notice = "Votre session a été restaurée — reprise à la dernière étape utile."
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Sauvegarde incompatible : {exc}")
+        if st.button("Retour", use_container_width=True):
+            st.session_state.public_home_choice = None
+            st.session_state.pop("home_resume_processed", None)
+            st.rerun()
+        return
+
+    acceptance = dict(st.session_state.get("rgpd_acceptance") or {})
+    public_consents_current = bool(rgpd_is_current(st.session_state) and acceptance.get("study_consent") is True and st.session_state.get("study_consent") is True)
+    if not public_consents_current:
         st.markdown("## Avant de commencer")
-        st.info("Prenez d’abord connaissance des informations RGPD. Cette validation ne vous sera demandée qu’une fois pour cette version du texte.")
+        st.info("Prenez d’abord connaissance des informations RGPD et validez les deux consentements obligatoires du parcours PUBLIC.")
         if st.button("Lire les informations RGPD", type="primary", use_container_width=True):
             st.session_state.rgpd_return_page = "accueil"
             st.session_state.navigation_page = "rgpd"
@@ -207,7 +258,15 @@ Le PIP Clarté360 explore, au travers de 72 activités professionnelles, les act
     marketing=st.checkbox("Je souhaite recevoir les actualités, ressources et offres Clarté360. (facultatif et indépendant de mes centres d’intérêt)", value=bool(st.session_state.get("public_marketing_opt_in",False)))
     current={"first_name":first,"last_name":last,"job_title":job,"company":company,"phone":phone,"email":email}
     if not st.session_state.get("public_access_verified"):
-        if st.button("Recevoir mon code d’accès", type="primary", use_container_width=True):
+        acceptance = dict(st.session_state.get("rgpd_acceptance") or {})
+        mandatory_consents_ok = bool(
+            acceptance.get("consentement") is True
+            and acceptance.get("study_consent") is True
+            and st.session_state.get("study_consent") is True
+        )
+        if not mandatory_consents_ok:
+            st.warning("Les deux consentements obligatoires doivent être acceptés avant l’envoi du code d’accès.")
+        if st.button("Recevoir mon code d’accès", type="primary", use_container_width=True, disabled=not mandatory_consents_ok):
             errors=validate_public_identity(current)
             if errors:
                 for e in errors: st.error(e)
@@ -334,32 +393,30 @@ def render_pip_questionnaire() -> None:
 
 
 
-def _render_pip_report_preview_before_feeling() -> None:
-    """Show substantive PIP report pages before asking the participant to rate the profile."""
+def _render_pip_report_preview_before_feeling() -> bool:
+    """Render the restitution screens required before feeling; the PDF itself is not a prerequisite."""
     try:
         pdf_bytes = build_pip_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png")
         preview_pages = pdf_pages_as_png(pdf_bytes, 3, 4)
+        if not preview_pages:
+            raise RuntimeError("aucun écran de restitution généré")
     except Exception as exc:
-        st.warning(f"La prévisualisation du rapport n’a pas pu être générée : {exc}")
-        return
-    st.markdown("### Prenez connaissance de votre synthèse avant de donner votre ressenti")
+        st.session_state.restitution_presented = False
+        st.warning(f"Les écrans de restitution n’ont pas pu être générés : {exc}")
+        st.info("Le ressenti reste verrouillé tant que la restitution n’a pas pu être présentée correctement.")
+        return False
+    st.markdown("### Prenez connaissance de vos résultats avant de donner votre ressenti")
     st.markdown(
-        "Consultez ci-dessous les pages essentielles de votre rapport PIP : le **profil global**, "
+        "Les éléments essentiels de votre restitution sont affichés directement dans Clarté360 : le **profil global**, "
         "l’**interprétation de vos dimensions dominantes** et les **facettes qui nuancent votre profil**. "
-        "Elles sont affichées directement dans Clarté360 afin d’éviter les blocages des lecteurs PDF intégrés aux navigateurs."
+        "Vous n’avez pas besoin d’ouvrir ni de consulter le PDF avant de répondre au questionnaire de ressenti."
     )
     for page_number, image_bytes in enumerate(preview_pages, start=3):
-        st.caption(f"Rapport PIP — page {page_number}")
+        st.caption(f"Restitution PIP — écran {page_number - 2}")
         st.image(image_bytes, use_container_width=True)
-    st.download_button(
-        "Ouvrir / télécharger la synthèse PIP complète en PDF",
-        data=pdf_bytes,
-        file_name="rapport_pip_riasec_clarte360.pdf",
-        mime="application/pdf",
-        use_container_width=True,
-        key="download_pip_preview_before_feeling",
-    )
-    st.info("Après avoir pris connaissance de cette synthèse, vous pourrez donner votre ressenti sur le profil présenté.")
+    st.session_state.restitution_presented = True
+    st.info("Après avoir pris connaissance de ces écrans de restitution, vous pouvez donner votre ressenti.")
+    return True
 
 
 def render_pip_results() -> None:
@@ -387,14 +444,32 @@ def render_pip_results() -> None:
             st.session_state.onet_selected_timing="POST_PIP_RESULTS"
             st.session_state.navigation_page="onet_intro"; st.rerun()
     st.markdown("---")
-    _render_pip_report_preview_before_feeling()
-    if st.button("J’ai consulté ma synthèse — donner mon ressenti", type="primary", use_container_width=True):
+    restitution_ok = _render_pip_report_preview_before_feeling()
+    if restitution_ok and st.button("J’ai consulté mes résultats — donner mon ressenti", type="primary", use_container_width=True):
+        st.session_state.restitution_presented = True
         st.session_state.navigation_page = "feeling"; st.rerun()
 
 
 def render_feeling() -> None:
-    st.subheader("Votre ressenti sur le profil")
-    st.caption("Vous avez maintenant consulté une restitution détaillée de votre profil. Ce questionnaire fermé compare votre ressenti à cette restitution sans modifier le scoring PIP.")
+    if not bool(st.session_state.get("restitution_presented")):
+        st.warning("Votre ressenti sera accessible après la présentation complète des écrans de restitution.")
+        st.session_state.navigation_page = "combined_results" if st.session_state.get("onet_state", {}).get("completed") else "pip_results_gate"
+        st.rerun()
+        return
+    st.subheader("Mon ressenti sur mon profil PIP RIASEC")
+    st.caption("Vous avez maintenant consulté une restitution détaillée de votre profil. Le ressenti concerne uniquement le PIP Clarté360 : il ne modifie aucun score et ne porte pas sur O*NET.")
+    st.info("Vous pouvez consulter les pages de votre restitution ci-dessous pendant que vous répondez. Vos réponses déjà saisies restent en place.")
+    with st.expander("📖 Consulter mon rapport PIP pendant mon ressenti", expanded=True):
+        try:
+            preview_pdf = build_pip_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png")
+            for page_number, image_bytes in enumerate(pdf_pages_as_png(preview_pdf, 3, 4), start=3):
+                st.caption(f"Restitution PIP — page {page_number}")
+                st.image(image_bytes, use_container_width=True)
+            st.download_button("Conserver cet aperçu PIP (sans ressenti final)", data=preview_pdf, file_name="apercu_pip_non_definitif.pdf", mime="application/pdf", use_container_width=True)
+        except Exception as exc:
+            st.warning(f"L'aperçu est temporairement indisponible : {exc}")
+            st.caption("Revenez à la restitution avant de valider votre ressenti.")
+    st.markdown("### Ce que je reconnais ou souhaite nuancer")
     answers = {}
     scale = [1, 2, 3, 4, 5]
     labels = {1:"Pas du tout",2:"Plutôt non",3:"Partagé(e)",4:"Plutôt oui",5:"Tout à fait"}
@@ -449,13 +524,31 @@ def render_feeling() -> None:
         st.session_state.navigation_page = "finished"; st.rerun()
 
 
+def _finalization_requirements_met(state: dict) -> bool:
+    """No final report/status until the selected questionnaire(s) and PIP feedback are complete."""
+    pip = state.get("pip_state") or {}
+    scoring = state.get("pip_scoring") or {}
+    onet = state.get("onet_state") or {}
+    feeling = state.get("feeling") or {}
+    answers = feeling.get("answers") or {}
+    if not pip.get("completed") or not scoring.get("complete") or not state.get("restitution_presented"):
+        return False
+    if any(answers.get(key) not in (1, 2, 3, 4, 5) for key in ("global", "dominants", "nuances", "useful")):
+        return False
+    if state.get("journey") != "PIP_SEUL" and not onet.get("completed"):
+        return False
+    return True
+
+
 def render_finished() -> None:
-    st.success("Votre parcours PIP est terminé.")
+    if not _finalization_requirements_met(dict(st.session_state)):
+        st.error("Rapport final indisponible : terminez le parcours choisi et validez votre ressenti PIP.")
+        return
     launch = st.session_state.get("launch_context")
     try:
         pdf_bytes = build_pip_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png")
         st.session_state.report_version = PIP_REPORT_VERSION
-        st.download_button("Télécharger mon rapport PIP RIASEC Clarté360", data=pdf_bytes, file_name="rapport_pip_riasec_clarte360.pdf", mime="application/pdf", type="primary", use_container_width=True)
+        st.download_button("Télécharger mon rapport PIP RIASEC Clarté360 — avec mon ressenti", data=pdf_bytes, file_name="rapport_pip_riasec_clarte360.pdf", mime="application/pdf", type="primary", use_container_width=True)
         onet_pdf = None
         if st.session_state.get("onet_state", {}).get("completed"):
             onet_pdf = build_onet_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png")
@@ -467,20 +560,56 @@ def render_finished() -> None:
             if not st.session_state.get("completed_at"):
                 st.session_state.completed_at = _utcnow()
             refs = list(st.session_state.get("report_documents") or [])
-            if not refs:
+            existing_names = {ref.get("file_name") for ref in refs}
+            if "rapport_pip_riasec_clarte360.pdf" not in existing_names:
                 refs.append(persist_report_document(st.session_state.passation_id, "rapport_pip_riasec_clarte360.pdf", pdf_bytes))
-                if onet_pdf is not None:
-                    refs.append(persist_report_document(st.session_state.passation_id, "rapport_onet_interest_profiler.pdf", onet_pdf))
-                st.session_state.report_documents = refs
+            if onet_pdf is not None and "rapport_onet_interest_profiler.pdf" not in existing_names:
+                refs.append(persist_report_document(st.session_state.passation_id, "rapport_onet_interest_profiler.pdf", onet_pdf))
+            st.session_state.report_documents = refs
             if not st.session_state.get("final_event_published"):
                 GestionActionsPort(None).publish_event("TERMINE", _accompanied_final_payload(refs))
                 st.session_state.final_event_published = True
             _save_if_accompanied()
-            st.markdown("Votre profil, votre ressenti et le ou les rapports sont disponibles dans votre parcours Clarté360.")
+            st.success("Parcours terminé : les documents PDF ont été enregistrés et leur transmission à Gestion des actions a été demandée.")
+            st.caption("La visibilité effective dans Gestion des actions doit être confirmée par le connecteur destinataire.")
         elif launch and launch.mode is RunMode.PUBLIC:
+            # PUBLIC is truly finished only after restitution, mandatory feeling and final PDF generation.
+            if not st.session_state.get("restitution_presented") or not st.session_state.get("feeling"):
+                st.error("La passation ne peut pas être clôturée avant la restitution et le ressenti.")
+                return
+            if not st.session_state.get("completed_at"):
+                st.session_state.completed_at = _utcnow()
+            if st.session_state.get("study_consent"):
+                save_public_study_record(st.session_state)
+
+            identity = dict(st.session_state.get("public_identity") or {})
+            verified_email = str(identity.get("email") or "").strip() if st.session_state.get("public_access_verified") else ""
+            if verified_email and not st.session_state.get("final_report_email_sent"):
+                attachments = [("rapport_pip_riasec_clarte360.pdf", pdf_bytes, "application/pdf")]
+                if onet_pdf is not None:
+                    attachments.append(("rapport_onet_interest_profiler.pdf", onet_pdf, "application/pdf"))
+                ok, message = send_email(
+                    load_smtp_settings(st.secrets),
+                    "Clarté360 — vos rapports PIP RIASEC",
+                    "Votre parcours est terminé. Vous trouverez en pièce jointe votre rapport PIP RIASEC Clarté360" + (" et votre rapport O*NET Interest Profiler." if onet_pdf is not None else ".") + "\n\nConservez ces documents pour votre usage personnel.\n\nClarté360 — www.clarte360.com",
+                    to_email=verified_email,
+                    attachments=attachments,
+                )
+                st.session_state.final_report_email_attempted = True
+                if ok:
+                    st.session_state.final_report_email_sent = True
+                    st.session_state.final_report_email_sent_at = _utcnow()
+                    st.success(f"Vos rapports ont également été envoyés à {verified_email}.")
+                else:
+                    st.warning(f"Votre parcours est bien terminé et vos téléchargements restent disponibles. L’envoi automatique par e-mail n’a pas abouti : {message}")
+            elif st.session_state.get("final_report_email_sent"):
+                st.caption("L’envoi automatique des rapports a déjà été effectué ; aucun doublon n’est envoyé lors d’un rafraîchissement.")
+
             if st.session_state.get("public_callback_requested"):
                 st.success("Votre demande de rappel a bien été enregistrée. Vos résultats PIP/O*NET n’ont pas été transmis avec cette demande.")
-            st.caption("Vous pouvez aussi conserver la sauvegarde technique JSON pour reprendre ou archiver cette session.")
+            st.markdown("**Clarté360** — www.clarte360.com — contact@clarte360.com")
+            st.caption("Si vous souhaitez approfondir ces résultats dans le cadre de votre projet professionnel, vous pouvez contacter Clarté360. Cette invitation ne constitue ni une prescription ni une obligation d’accompagnement.")
+            st.caption("Vous pouvez aussi conserver la sauvegarde technique JSON pour archiver cette session.")
             downloaded = st.download_button("Télécharger ma sauvegarde finale (JSON)", data=snapshot_bytes(dict(st.session_state)), file_name="pip_clarte360_final.json", mime="application/json", use_container_width=True)
             if downloaded:
                 mark_public_work_saved(st.session_state)
@@ -590,8 +719,9 @@ def render_combined_results() -> None:
     if launch and launch.mode is RunMode.PUBLIC and st.session_state.get("study_consent"):
         save_public_study_record(dict(st.session_state))
     st.markdown("---")
-    _render_pip_report_preview_before_feeling()
-    if st.button("J’ai consulté ma synthèse — donner mon ressenti", type="primary", use_container_width=True):
+    restitution_ok = _render_pip_report_preview_before_feeling()
+    if restitution_ok and st.button("J’ai consulté mes résultats — donner mon ressenti", type="primary", use_container_width=True):
+        st.session_state.restitution_presented = True
         st.session_state.navigation_page="feeling"; st.rerun()
 
 
@@ -633,6 +763,9 @@ def render_timeout() -> None:
 
 
 def render_page(launch: LaunchContext) -> None:
+    notice = st.session_state.pop("resume_notice", None)
+    if notice:
+        st.success(notice)
     page = st.session_state.get("navigation_page", "accueil")
     if page == "accueil": render_home(launch)
     elif page == "rgpd": render_rgpd()

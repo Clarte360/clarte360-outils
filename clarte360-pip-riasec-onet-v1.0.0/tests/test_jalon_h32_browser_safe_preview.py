@@ -13,8 +13,8 @@ def test_h32_removes_browser_pdf_iframe():
 
 def test_h32_keeps_report_before_feeling_flow():
     assert "_render_pip_report_preview_before_feeling()" in PAGES
-    assert "J’ai consulté ma synthèse — donner mon ressenti" in PAGES
-    assert "pages essentielles de votre rapport PIP" in PAGES
+    assert "J’ai consulté mes résultats — donner mon ressenti" in PAGES
+    assert "éléments essentiels de votre restitution" in PAGES
 
 
 def test_h32_renders_pages_3_and_4_server_side():

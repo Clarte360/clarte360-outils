@@ -1,13 +1,16 @@
 {
   "tool_id": "pip-riasec-onet",
   "app_name": "PIP RIASEC / O*NET Clarte360",
-  "app_version": "1.0.10-l1-vps-hub-ready-guard-accompagnement",
+  "app_version": "H3.3-C",
   "production_url": "https://pip-riasec.clarte360.com",
-  "deployment_status": "deployed",
+  "deployment_status": "candidate",
   "hub_compatible": true,
   "hub_source": "GESTION_ACTIONS_I9",
-  "launch_modes": ["PUBLIC", "ACCOMPAGNEMENT"],
+  "launch_modes": [
+    "PUBLIC",
+    "ACCOMPAGNEMENT"
+  ],
   "service_name": "clarte360-pip-riasec-onet.service",
-  "internal_port": 8502,
-  "internal_port_status": "proposed_verify_against_current_vps_before_any_service_change"
+  "internal_port": 8503,
+  "internal_port_status": "framework_vps_v1.3_reference"
 }

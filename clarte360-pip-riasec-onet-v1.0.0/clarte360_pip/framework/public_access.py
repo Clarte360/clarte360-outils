@@ -165,7 +165,9 @@ def save_public_study_record(session_state: dict[str, Any]) -> Path | None:
         "onet_state": onet_state,
         "feeling": session_state.get("feeling", {}),
         "study_consent": True,
-        "completed_at": datetime.now().isoformat(timespec="seconds"),
+        # A study record may legitimately exist before feeling. Existence never means TERMINE.
+        "status": "TERMINE" if bool(session_state.get("completed_at") and session_state.get("feeling") and session_state.get("restitution_presented")) else "EN_COURS",
+        "completed_at": session_state.get("completed_at") if bool(session_state.get("feeling") and session_state.get("restitution_presented")) else None,
     }
     _assert_study_payload_separation(payload)
     path = STUDY_DIR / f"{payload['study_id']}.json"

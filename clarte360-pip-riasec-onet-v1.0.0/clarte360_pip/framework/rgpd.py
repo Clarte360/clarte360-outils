@@ -10,7 +10,7 @@ Le PIP RIASEC Clarté360 explore les **intérêts professionnels**. Il ne prend 
 
 Le choix de centres d’intérêt ne vaut pas consentement à la prospection. L’autorisation de recevoir des actualités, ressources ou offres Clarté360 est demandée dans une **case séparée et facultative**. Vous pouvez ne pas la cocher et accéder au PIP dans les mêmes conditions.
 
-**Études PIP / O*NET.** Avec votre accord séparé, vos réponses, scores, ressenti et données techniques utiles à la validation méthodologique peuvent alimenter une **base d’étude pseudonymisée**, séparée de vos coordonnées d’identification. Les données PIP et O*NET y restent identifiables comme deux instruments distincts. Si O*NET est choisi après consultation des résultats PIP, cette chronologie est enregistrée afin de ne pas confondre ce parcours avec un parcours sans influence préalable.
+**Études PIP / O*NET.** Dans le parcours PUBLIC, votre accord séparé à l’utilisation pseudonymisée des données d’étude fait partie des **deux consentements obligatoires avant l’envoi du code d’accès**. Vos réponses, scores, ressenti et données techniques utiles à la validation méthodologique peuvent alors alimenter une **base d’étude pseudonymisée**, séparée de vos coordonnées d’identification. Les données PIP et O*NET y restent identifiables comme deux instruments distincts. Si O*NET est choisi après consultation des résultats PIP, cette chronologie est enregistrée afin de ne pas confondre ce parcours avec un parcours sans influence préalable.
 
 **O*NET Interest Profiler.** O*NET est un outil américain distinct du PIP Clarté360. La version proposée comporte **60 activités en anglais** et utilise le service officiel O*NET Web Services. Les réponses et résultats O*NET sont conservés séparément des scores PIP ; leur rapprochement éventuel est descriptif et ne constitue pas une décision d’orientation automatique.
 
@@ -40,21 +40,28 @@ def render_rgpd() -> None:
     st.markdown(RGPD_TEXT)
     st.caption(f"Version de l'information RGPD : {RGPD_TEXT_VERSION}")
 
+    launch = st.session_state.get("launch_context")
+    is_public = getattr(getattr(launch, "mode", None), "value", None) == "PUBLIC"
+
     if rgpd_is_current(st.session_state):
         acceptance = st.session_state.get("rgpd_acceptance") or {}
-        st.success(
-            "Vous avez déjà validé cette version des informations RGPD. "
-            "Aucun nouveau consentement n'est demandé."
-        )
-        st.caption(
-            f"Consentement enregistré le {acceptance.get('date', '—')} à {acceptance.get('heure', '—')} · "
-            f"Étude pseudonymisée : {'oui' if acceptance.get('study_consent') else 'non'}"
-        )
-        if st.button("Retour à ma passation", type="primary", use_container_width=True):
-            st.session_state.navigation_page = _return_page(st)
-            st.rerun()
-        return
-
+        # H3.3-A: an older PUBLIC acceptance with optional study consent is no
+        # longer sufficient for the PUBLIC access-code flow.
+        if is_public and acceptance.get("study_consent") is not True:
+            st.info("Le parcours PUBLIC nécessite désormais deux consentements obligatoires avant l’envoi du code d’accès.")
+        else:
+            st.success(
+                "Vous avez déjà validé cette version des informations RGPD. "
+                "Aucun nouveau consentement n'est demandé."
+            )
+            st.caption(
+                f"Consentement enregistré le {acceptance.get('date', '—')} à {acceptance.get('heure', '—')} · "
+                f"Étude pseudonymisée : {'oui' if acceptance.get('study_consent') else 'non'}"
+            )
+            if st.button("Retour à ma passation", type="primary", use_container_width=True):
+                st.session_state.navigation_page = _return_page(st)
+                st.rerun()
+            return
     accepted = st.checkbox(
         "J’ai lu ces informations et j’accepte le traitement nécessaire à ma passation.",
         key="rgpd_checkbox",
@@ -64,7 +71,10 @@ def render_rgpd() -> None:
         key="study_checkbox",
         value=bool(st.session_state.get("study_consent", False)),
     )
-    if st.button("Valider et continuer", type="primary", disabled=not accepted, use_container_width=True):
+    required_ok = bool(accepted and (study if is_public else True))
+    if is_public and accepted and not study:
+        st.caption("Le consentement à l’étude pseudonymisée est obligatoire pour poursuivre le parcours PUBLIC.")
+    if st.button("Valider et continuer", type="primary", disabled=not required_ok, use_container_width=True):
         now = datetime.now()
         st.session_state.study_consent = bool(study)
         st.session_state.rgpd_acceptance = {

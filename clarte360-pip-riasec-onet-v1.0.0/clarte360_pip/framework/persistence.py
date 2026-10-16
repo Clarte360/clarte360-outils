@@ -42,6 +42,10 @@ def infer_resume_page(state: dict[str, Any]) -> str:
     pip = state.get("pip_state") or {}
     journey = state.get("journey", "PIP_SEUL")
 
+    if state.get("completed_at") and state.get("feeling"):
+        return "finished"
+    if state.get("feeling") and state.get("restitution_presented"):
+        return "finished"
     if isinstance(onet, dict) and onet.get("completed"):
         return "combined_results"
     if isinstance(onet, dict) and onet.get("questions") and not onet.get("completed"):
@@ -101,6 +105,10 @@ def build_snapshot(session_state: dict[str, Any]) -> dict[str, Any]:
         "report_documents": _jsonable(session_state.get("report_documents", [])),
         "final_event_published": bool(session_state.get("final_event_published")),
         "completed_at": session_state.get("completed_at"),
+        "restitution_presented": bool(session_state.get("restitution_presented")),
+        "final_report_email_attempted": bool(session_state.get("final_report_email_attempted")),
+        "final_report_email_sent": bool(session_state.get("final_report_email_sent")),
+        "final_report_email_sent_at": session_state.get("final_report_email_sent_at"),
     }
 
 
@@ -208,6 +216,7 @@ def restore_snapshot(payload: dict[str, Any], session_state: Any) -> None:
         "public_other_interest", "public_email_verified_at", "public_callback_requested",
         "public_callback_requested_at", "public_study_id", "study_consent", "onet_selected_timing",
         "rgpd_acceptance", "report_documents", "final_event_published", "completed_at",
+        "restitution_presented", "final_report_email_attempted", "final_report_email_sent", "final_report_email_sent_at",
     ):
         if key in payload:
             session_state[key] = payload[key]
@@ -222,6 +231,10 @@ def restore_snapshot(payload: dict[str, Any], session_state: Any) -> None:
         resume_page = last_useful
     else:
         resume_page = infer_resume_page(payload)
+    if resume_page in {"feeling", "finished"} and not bool(session_state.get("restitution_presented")):
+        resume_page = "combined_results" if bool((session_state.get("onet_state") or {}).get("completed")) else "pip_results_gate"
+    if resume_page == "finished" and not session_state.get("feeling"):
+        resume_page = "feeling" if bool(session_state.get("restitution_presented")) else ("combined_results" if bool((session_state.get("onet_state") or {}).get("completed")) else "pip_results_gate")
     session_state["navigation_page"] = resume_page
     session_state["last_useful_page"] = resume_page
 
