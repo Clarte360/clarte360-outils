@@ -465,7 +465,6 @@ def render_feeling() -> None:
             for page_number, image_bytes in enumerate(pdf_pages_as_png(preview_pdf, 3, 4), start=3):
                 st.caption(f"Restitution PIP — page {page_number}")
                 st.image(image_bytes, use_container_width=True)
-            st.download_button("Conserver cet aperçu PIP (sans ressenti final)", data=preview_pdf, file_name="apercu_pip_non_definitif.pdf", mime="application/pdf", use_container_width=True)
         except Exception as exc:
             st.warning(f"L'aperçu est temporairement indisponible : {exc}")
             st.caption("Revenez à la restitution avant de valider votre ressenti.")
