@@ -4694,7 +4694,7 @@ def _archive_pip_outbox_documents(engine, event, outbox_path, *, actor='worker')
         if document.get('size_bytes') is not None and len(content) != int(document['size_bytes']):
             raise ValueError('Taille PDF PIP incoherente.')
         archive_pip_report_pdf(engine, prescription_id, content,
-            display_name=path.name, source_event_id=event_id,
+            display_name=path.name, source_event_id=f'{event_id}:{kind}',
             source_reference=ref, document_kind=kind, actor=actor)
         archived += 1
     return archived
