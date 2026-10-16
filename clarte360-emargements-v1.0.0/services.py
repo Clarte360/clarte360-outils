@@ -4371,6 +4371,8 @@ def consume_ipip_outbox(engine, pending_dir, data_root, limit=200, actor='worker
         try:
             event=json.loads(p.read_text(encoding='utf-8'))
             result=process_ipip_accompaniment_event(engine,event,data_root,actor=actor)
+            if event.get('event_type') == 'TERMINE':
+                _archive_pip_outbox_documents(engine, event, outbox_path, actor=actor)
             if result.get('replayed'): ignored+=1
             else: processed+=1
             target=delivered/p.name
@@ -4639,6 +4641,63 @@ def process_signed_pip_event(engine, envelope, signing_key, *, actor='pip_connec
     if typ in PIP_ACCOMP_EVENT_TYPES:
         return process_pip_accompaniment_event(engine,envelope,actor=actor)
     raise ValueError('Type d’événement PIP non supporté.')
+
+
+def _archive_pip_outbox_documents(engine, event, outbox_path, *, actor='worker'):
+    """Archive only verified local PIP PDFs; retries are safe after status processing."""
+    if event.get('event_type') != 'TERMINE':
+        return 0
+    payload = event.get('payload') or {}
+    documents = payload.get('documents') or []
+    if not isinstance(documents, list):
+        raise ValueError('Liste des documents PIP invalide.')
+    if not documents:
+        return 0
+    # Outbox layout: DATA/connector_outbox/gestion_actions/events.jsonl.
+    outbox = Path(outbox_path).resolve()
+    if outbox.name != 'events.jsonl' or outbox.parent.name != 'gestion_actions' or outbox.parent.parent.name != 'connector_outbox':
+        raise ValueError('Emplacement de l outbox PIP inattendu.')
+    data_root = outbox.parent.parent.parent.resolve()
+    prescription_id = payload.get('prescription_id')
+    event_id = _pip_event_stable_id(event)
+    archived = 0
+    seen = set()
+    for document in documents:
+        if not isinstance(document, dict):
+            raise ValueError('Document PIP invalide.')
+        ref = document.get('storage_ref')
+        name = document.get('file_name')
+        digest = document.get('sha256')
+        if not isinstance(ref, str) or not isinstance(digest, str) or len(digest) != 64:
+            raise ValueError('Reference ou empreinte PDF manquante.')
+        relative = Path(ref)
+        if relative.is_absolute() or '..' in relative.parts or len(relative.parts) != 3 or relative.parts[0] != 'reports':
+            raise ValueError('Reference PDF PIP non autorisee.')
+        path = (data_root / relative).resolve()
+        if not path.is_relative_to(data_root) or not path.is_file() or path.is_symlink():
+            raise ValueError('PDF PIP introuvable ou chemin non autorise.')
+        if name is not None and (not isinstance(name, str) or name != path.name):
+            raise ValueError('Nom de document PIP incoherent.')
+        lower = path.name.lower()
+        if lower == 'rapport_pip_riasec_clarte360.pdf':
+            kind = 'PIP_REPORT'
+        elif lower == 'rapport_onet_interest_profiler.pdf':
+            kind = 'ONET_REPORT'
+        else:
+            raise ValueError('Nom de rapport PIP/O*NET non reconnu.')
+        if kind in seen:
+            raise ValueError('Rapport PIP/O*NET duplique dans le meme evenement.')
+        seen.add(kind)
+        content = path.read_bytes()
+        if not content.startswith(b'%PDF-') or hashlib.sha256(content).hexdigest() != digest.lower():
+            raise ValueError('PDF PIP corrompu ou empreinte incoherente.')
+        if document.get('size_bytes') is not None and len(content) != int(document['size_bytes']):
+            raise ValueError('Taille PDF PIP incoherente.')
+        archive_pip_report_pdf(engine, prescription_id, content,
+            display_name=path.name, source_event_id=event_id,
+            source_reference=ref, document_kind=kind, actor=actor)
+        archived += 1
+    return archived
 
 
 def consume_pip_outbox(engine, outbox_path, limit=500, actor='worker'):
