@@ -4373,8 +4373,6 @@ def consume_ipip_outbox(engine, pending_dir, data_root, limit=200, actor='worker
             result=process_ipip_accompaniment_event(engine,event,data_root,actor=actor)
             if event.get('event_type') == 'TERMINE':
                 _archive_pip_outbox_documents(engine, event, outbox_path, actor=actor)
-            if event.get('event_type') == 'TERMINE':
-                _archive_pip_outbox_documents(engine, event, outbox_path, actor=actor)
             if result.get('replayed'): ignored+=1
             else: processed+=1
             target=delivered/p.name
@@ -4724,6 +4722,8 @@ def consume_pip_outbox(engine, outbox_path, limit=500, actor='worker'):
                 result=process_pip_public_event(engine,event,raw_line=raw,actor='pip_public')
             else:
                 result=process_pip_accompaniment_event(engine,event,raw_line=raw,actor=actor)
+            if event.get('event_type') == 'TERMINE':
+                _archive_pip_outbox_documents(engine, event, outbox_path, actor=actor)
             if result.get('replayed'): ignored+=1
             else: processed+=1
             committed=after; last_event_at=event.get('timestamp') or utcnow_iso()
