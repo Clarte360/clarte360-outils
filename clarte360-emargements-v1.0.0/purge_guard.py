@@ -88,7 +88,7 @@ def _related_snapshot(conn, action_id, data_root):
     columns={t: {c['name'] for c in inspect(conn).get_columns(t)} for t in tables}
     ids={}
     for name in tables:
-        if name in ('actions','action_purge_journal'):
+        if name in ('actions','action_purge_journal','action_purge_certifications'):
             continue
         if 'action_id' in columns[name] and 'id' in columns[name]:
             ids[name]=_ids(conn,name,args={'aid':action_id})
