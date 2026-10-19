@@ -187,8 +187,12 @@ def _related_snapshot(conn, action_id, data_root):
             if other:
                 raise ValueError('Revue Qualite liee a une campagne exterieure.')
     if 'audit_log' in tables:
-        ids['audit_log']=[int(x['id']) for x in _fetch(conn,'''SELECT id FROM audit_log WHERE action_id=:a
-          OR (entity_type='action' AND entity_id=:s)''',{'a':action_id,'s':str(action_id)})]
+        # Certification attempts are purge-control metadata, not changes to the
+        # underlying action. Keep all other audit events in the fingerprint.
+        ids['audit_log']=[int(x['id']) for x in _fetch(conn,'''SELECT id FROM audit_log
+          WHERE (action_id=:a OR (entity_type='action' AND entity_id=:s))
+            AND (event_type IS NULL OR event_type <> 'ACTION_TEST_CERTIFIED')''',
+          {'a':action_id,'s':str(action_id)})]
 
     # A cross-action quality link must never be silently broken.
     if events and 'quality_review_points' in tables:
