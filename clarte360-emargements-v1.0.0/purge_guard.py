@@ -379,7 +379,13 @@ def certify_test_action(engine,action_id,actor,*,evidence,confirmation,password,
         snapshot=_related_snapshot(conn,int(action_id),data_root or DATA_ROOT)
         conn.execute(text('UPDATE action_purge_certifications SET snapshot_fingerprint=:hash WHERE action_id=:aid'),
                      {'hash':snapshot['fingerprint'],'aid':action_id})
-        return True,'Qualification explicite comme dossier fictif enregistree.'
+    # Recheck after commit: the attestation must not claim success if a concurrent
+    # application/worker write invalidated the snapshot during certification.
+    with engine.connect() as check_conn:
+        current=_related_snapshot(check_conn,int(action_id),data_root or DATA_ROOT)
+        if current is None or current['fingerprint']!=snapshot['fingerprint']:
+            return False,'Attestation enregistree mais dossier modifie simultanement : operation bloquee. Refaire un controle.'
+    return True,'Qualification explicite comme dossier fictif enregistree.'
 
 
 def _update_journal(engine,operation_id,status,error=None):
