@@ -494,6 +494,10 @@ def run_once():
             lookahead=timedelta(minutes=reminder_horizon+5))
     except Exception as ex:
         audit(eng,'TEAMS_REMINDER_SYNC_FAILED',actor='worker',entity_type='worker',details={'reason':str(ex)[:300]})
+    # GO4 is independent: its watch runs in the background and a notification
+    # failure cannot interrupt the existing connectors or Teams reminder flow.
+    from quality_jobs import run_quality_jobs
+    run_quality_jobs(eng,smtp,base,send_mail=send_mail)
     if not smtp.get('enabled'): return teams_changed + pip_changed + ipip_changed
     _process_portal_retention(eng,smtp,base)
     now=datetime.now(timezone.utc).isoformat()

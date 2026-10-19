@@ -285,6 +285,12 @@ def test_report_upload_10mb_ui_compatible_with_global_document_limit():
     conf=(Path(__file__).resolve().parents[1]/'.streamlit'/'config.toml').read_text()
     assert 'def _j4_report_file_uploader(' in src
     assert "options['max_upload_size']=10" in src
-    assert "_j4_report_file_uploader('Joindre éventuellement un document (10 Mo max)'" in src
+    # GO4 routes requests through the canonical Quality dialog. It enforces the
+    # same 10 MiB widget/server limit, without lowering other document uploads.
+    ui=(Path(__file__).resolve().parents[1]/'quality_ui.py').read_text()
+    backend=(Path(__file__).resolve().parents[1]/'quality_service.py').read_text()
+    assert 'upload_options["max_upload_size"] = 10' in ui
+    assert 'upload.size > 10 * 1024 * 1024' in ui
+    assert 'len(data) > 10 * 1024 * 1024' in backend
     assert 'maxUploadSize = 50' in conf  # Other existing upload workflows are preserved.
-    assert 'up.size>10*1024*1024' in src
+    assert 'Document (10 Mo maximum)' in ui

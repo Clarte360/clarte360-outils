@@ -47,7 +47,7 @@ def _ident(engine, account_id, *, activated=True):
 
 
 def _action(engine, action_id):
-    a=one(engine, 'SELECT id,action_no,title,status,nature,prestation_type,start_date,end_date,mode,location,client_name,archived_at FROM actions WHERE id=:a', {'a':action_id})
+    a=one(engine, 'SELECT id,organization_id,action_no,title,status,nature,prestation_type,start_date,end_date,mode,location,client_name,archived_at FROM actions WHERE id=:a', {'a':action_id})
     if not a: raise ValueError('Action introuvable.')
     return a
 
@@ -294,7 +294,11 @@ def client_action_summary(engine,account_id,action_id):
     result['can_download']=bool(grant['can_download'])
     result['can_upload']=bool(grant['can_upload'])
     result['collective_training']=False
+    # R16: calendar permission is organizational, independent of a statistical
+    # disclosure threshold. Individual BC/coaching content stays protected.
+    result['calendar_visible']=False
     if not _is_individual_action(a) and str(a.get('prestation_type') or '').upper()=='FORMATION':
+        result['calendar_visible']=True
         total=one(engine,'SELECT COUNT(*) n FROM participants WHERE action_id=:a AND active=1',{'a':action_id})['n']
         if total>=MIN_AGGREGATE:
             result['collective_training']=True
@@ -305,10 +309,30 @@ def client_action_summary(engine,account_id,action_id):
 
 def client_public_schedule(engine,account_id,action_id):
     summary=client_action_summary(engine,account_id,action_id)
-    if not summary['collective_training']:return []
+    if not summary['calendar_visible']:return []
     return q(engine,'''SELECT slot_date,start_time,end_time,status FROM slots
-        WHERE action_id=:a AND COALESCE(status,'')<>'ANNULE'
+        WHERE action_id=:a AND COALESCE(status,'') NOT IN ('ANNULE','REPORTE')
         ORDER BY slot_date,start_time,id''',{'a':action_id})
+
+
+def client_quality_satisfaction(engine,account_id,action_id,campaign_kind='HOT'):
+    """Fixed published aggregate only; never accepts free date/subgroup filters."""
+    from quality_metrics import _client_publication
+    return _client_publication(engine,account_id,action_id,campaign_kind)
+
+
+def export_client_quality_csv(engine,account_id,action_id,campaign_kind='HOT'):
+    """Export the same authorized, published aggregate, without individual data."""
+    import csv
+    result=client_quality_satisfaction(engine,account_id,action_id,campaign_kind)
+    if result['status']!='AVAILABLE':
+        raise PermissionError('Aucun agrégat communicable à exporter pour ce périmètre.')
+    output=io.StringIO(newline='');writer=csv.writer(output,delimiter=';')
+    for field in ('published_at','method_version','method','action_id','campaign_kind','period',
+                  'score','satisfaction_rate','n_global','distinct_respondents','sent','completed','return_rate','nps','n_nps'):
+        value=result.get(field)
+        writer.writerow([field,json.dumps(value,ensure_ascii=False,sort_keys=True) if isinstance(value,dict) else value])
+    return ('\ufeff'+output.getvalue()).encode('utf-8')
 
 
 def list_admin_client_grants(engine,actor,action_id=None):

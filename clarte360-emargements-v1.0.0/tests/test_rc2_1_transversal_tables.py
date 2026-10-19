@@ -96,16 +96,10 @@ def test_all_application_tables_are_actionable_or_explicitly_read_only():
 
 def test_transversal_management_ui_is_present():
     src=Path('app.py').read_text(encoding='utf-8')
-    # J2 replaced the two competing Quality editors by one canonical case.
-    # Historical CAPA services remain supported; current UI allows a CAPA to be
-    # edited, cancelled and traced without an unsafe destructive shortcut.
+    # CDC V1.0 replaces the old Quality/CAPA editors by one permanent plan and
+    # an atomic closure dialog. All unrelated administration controls remain.
     for text in [
         'OUVRIR / GÉRER CETTE ACTION',
-        'Ouvrir une fiche Qualité',
-        'Enregistrer la fiche Qualité',
-        'Modifier une action corrective',
-        'Enregistrer l’action corrective',
-        'Ajouter au plan d’action',
         "Supprimer définitivement l'organisme",
         "Supprimer définitivement l'agence",
         "Supprimer définitivement ce profil d'import",
@@ -114,6 +108,10 @@ def test_transversal_management_ui_is_present():
         assert text in src
     assert "render_quality_case_workbench(action_id=a['id']" in src
     assert 'render_quality_case_workbench(' in src
+    ui=Path('quality_ui.py').read_text(encoding='utf-8')
+    for label in ['Nouvelle action', 'Mettre à jour', 'Confier', 'Confirmer la clôture',
+                  'Ajouter l’étape', 'Rouvrir cette action', 'Historique']:
+        assert label in ui
 
 
 def test_capa_can_be_cancelled_without_deleting_history(tmp_path):
@@ -131,4 +129,4 @@ def test_capa_can_be_cancelled_without_deleting_history(tmp_path):
 
 def test_rc21_version_tests_are_aligned():
     import branding
-    assert branding.APP_VERSION=='3.0.0-P5-RECETTE-RC2'
+    assert branding.APP_VERSION=='3.0.0-P5-RC2-GO4-CANDIDAT-1'

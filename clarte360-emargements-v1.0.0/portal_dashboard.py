@@ -9,6 +9,13 @@ from zoneinfo import ZoneInfo
 from db import q, one
 
 
+def _quality_request_count(engine, role, subject_id):
+    """Count the same authorized canonical rows as the personal Quality view."""
+    from quality_service import QualityActor, available_organizations, list_actions
+    return sum(len(list_actions(engine, QualityActor(role, subject_id, org['id'])))
+               for org in available_organizations(engine, role, subject_id))
+
+
 def beneficiary_dashboard(engine, beneficiary_id, *, today=None):
     from services import beneficiary_participations, list_beneficiary_documents, list_tool_prescriptions, beneficiary_reports
     bid=int(beneficiary_id)
@@ -40,11 +47,12 @@ def beneficiary_dashboard(engine, beneficiary_id, *, today=None):
     reports=beneficiary_reports(engine,beneficiary_id=bid)
     return {'actions':actions,'upcoming':sessions,'pending_campaigns':pending,
       'pending_tools':active_tools,'signatures_to_review':int(signed['n'] or 0),
-      'documents':docs,'reports':reports}
+      'documents':docs,'reports':reports,
+      'quality_request_count':_quality_request_count(engine,'BENEFICIARY',bid)}
 
 
 def client_dashboard(engine, account_id):
-    """Only public organizational summaries, never beneficiaries, scores or free text."""
+    """Public organizational summaries and an authorized request count; no individual data."""
     from client_portal import list_client_actions, client_action_summary, client_public_schedule, list_client_documents
     aid=int(account_id)
     actions=list_client_actions(engine,aid)
@@ -54,12 +62,13 @@ def client_dashboard(engine, account_id):
         summaries.append(summary)
         if summary.get('can_download'):
             documents+=len(list_client_documents(engine,aid,a['id']))
-        if summary.get('collective_training'):
+        if summary.get('calendar_visible'):
             for slot in client_public_schedule(engine,aid,a['id']):
                 next_sessions.append({'action_no':a['action_no'],'slot_date':slot['slot_date'],
                     'start_time':slot['start_time'],'end_time':slot['end_time']})
     next_sessions.sort(key=lambda row:(row['slot_date'],row['start_time']))
     return {'actions':actions,'summaries':summaries,'shared_documents':documents,
       'collective_sessions':next_sessions[:10],
+      'quality_request_count':_quality_request_count(engine,'CLIENT',aid),
       'active_actions':sum(str(x.get('status') or '').upper() in
         ('EN_COURS','ACTIVE','ACTIF','PLANIFIEE','PLANIFIE') for x in actions)}

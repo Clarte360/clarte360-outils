@@ -22,4 +22,7 @@ def test_dashboard_no_longer_duplicates_quality_pilotage_and_countersign_private
     dash=src[src.index('def dashboard():'):src.index('def actions_list():')]
     assert "st.subheader('Pilotage qualité')" not in dash
     assert 'from services import _duration_hms, _slot_participant_states' in src
-    assert "Suivi du plan d'action général" in src
+    # CDC V1.0 / maquette V1.1 replace this descriptive legacy heading with
+    # the permanent one-action/one-line plan. Keep the two unrelated invariants.
+    assert "Plan d’actions unique" in src
+    assert 'render_quality_plan(' in src

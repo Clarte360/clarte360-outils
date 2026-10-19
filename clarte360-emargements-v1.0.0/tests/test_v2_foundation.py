@@ -1,4 +1,4 @@
-from db import make_engine,init_db,one,q,utcnow_iso
+from db import make_engine,init_db,one,q,execute,utcnow_iso
 from services import ensure_default_organization,add_agency,set_action_modules,create_action,create_questionnaire_template,create_quality_campaign,save_quality_response,archive_action
 
 def eng():
@@ -13,6 +13,8 @@ def test_v2_org_agency_and_action_modules():
 def test_v2_questionnaire_snapshot_and_campaign():
  e=eng(); oid=ensure_default_organization(e)
  aid=create_action(e,{'action_no':'V2-2','title':'BC','subtitle':None,'nature':'BC','mode':'INDIVIDUEL','client_name':None,'client_type':'PARTICULIER','group_code':None,'planned_hours':12,'expected_participants':1,'admin_email':'a@b.fr','trainer_name':None,'trainer_email':None,'location':None,'notes':None,'source':'TEST'},'admin')
+ # GO4: the fixture action belongs to the same organisation as its questionnaire.
+ execute(e,'UPDATE actions SET organization_id=:o WHERE id=:a',{'o':oid,'a':aid})
  tid=create_questionnaire_template(e,oid,'BC_FIN','1.0','BC','HOT','Fin BC',[{'question_code':'Q1','rubric_code':'R01','response_type':'SCALE','question_text':'Satisfaction ?','required':True}])
  cid,tok=create_quality_campaign(e,aid,tid,'HOT',utcnow_iso()); q1=one(e,'SELECT * FROM questionnaire_questions WHERE template_id=:t',{'t':tid}); save_quality_response(e,cid,q1['id'],{'value':5})
  r=one(e,'SELECT * FROM quality_responses WHERE campaign_id=:c',{'c':cid}); assert r['rubric_code']=='R01' and r['question_text_snapshot']=='Satisfaction ?' and tok
