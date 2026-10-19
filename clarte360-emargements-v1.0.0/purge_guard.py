@@ -354,8 +354,12 @@ def certify_test_action(engine,action_id,actor,*,evidence,confirmation,password,
     ensure_purge_schema(engine)
     with engine.begin() as conn:
         admin=_one(conn,'SELECT password_hash FROM admins WHERE LOWER(email)=:a AND active=1',{'a':actor})
-        if not admin or not verify_password(password or '',admin['password_hash']):
-            return False,'Identite administrateur non validee.'
+        if not admin:
+            return False,'Diagnostic authentification : compte administrateur de la session introuvable dans la base active.'
+        if not password:
+            return False,'Diagnostic authentification : aucun mot de passe recu depuis le formulaire.'
+        if not verify_password(password,admin['password_hash']):
+            return False,'Diagnostic authentification : mot de passe recu mais non valide pour le compte de la session.'
         row=_one(conn,'SELECT * FROM actions WHERE id=:a',{'a':int(action_id)})
         if not row:
             return False,'Action introuvable.'
