@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 import streamlit as st
@@ -25,6 +26,9 @@ from clarte360_pip.framework.smtp import send_email
 from clarte360_pip.reporting import build_pip_report_pdf, build_onet_report_pdf, PIP_REPORT_VERSION, ONET_REPORT_VERSION, REPORT_VERSION
 from clarte360_pip.pdf_preview import pdf_pages_as_png
 from clarte360_pip.version import APP_VERSION
+from clarte360_pip.delivery import accompanied_report, publish_accompanied_reports, public_report_mail, PIP_NAME, ONET_NAME
+from clarte360_pip.framework.public_access import restore_public_upload, verified_public_email
+LOG = logging.getLogger(__name__)
 
 
 
@@ -140,15 +144,10 @@ def _render_logo() -> None:
 
 
 def _restore_uploaded(uploaded) -> str:
-    """Restore a PUBLIC JSON immediately and return the useful destination."""
+    """Restore PUBLIC progress; a changed recipient must be verified again."""
     payload = decode_snapshot_bytes(uploaded.getvalue())
-    restore_snapshot(payload, st.session_state)
-    if not st.session_state.get("public_access_verified"):
-        raise ValueError("La sauvegarde ne contient pas d’accès public vérifié.")
+    target = restore_public_upload(payload, st.session_state)
     mark_public_work_saved(st.session_state)
-    target = infer_resume_page(dict(st.session_state))
-    st.session_state.navigation_page = target
-    st.session_state.public_home_choice = "resume"
     return target
 
 
@@ -233,6 +232,8 @@ Le PIP Clarté360 explore, au travers de 72 activités professionnelles, les act
             st.rerun()
         return
 
+    if st.session_state.get("public_verification_return_page"):
+        st.info("Vos réponses sont conservées. Confirmez l'adresse e-mail de cette sauvegarde avec un nouveau code avant de poursuivre.")
     st.markdown("## Accès public — découvrez gratuitement votre profil")
     st.caption("Identifiez-vous puis confirmez votre adresse e-mail avec le code reçu. Vos coordonnées ne sont pas intégrées à un dossier bénéficiaire Clarté360.")
     identity = st.session_state.get("public_identity", {})
@@ -282,9 +283,9 @@ Le PIP Clarté360 explore, au travers de 72 activités professionnelles, les act
         if st.session_state.get("public_code_state"):
             code=st.text_input("Code d’accès reçu par e-mail", max_chars=6)
             if st.button("Valider mon code", use_container_width=True):
-                if verify_public_code(code,st.session_state.public_code_state):
+                if verify_public_code(code,st.session_state.public_code_state, expected_email=st.session_state.public_identity.get("email")):
                     st.session_state.public_access_verified=True
-                    st.session_state.public_email_verified_at = st.session_state.get("public_email_verified_at") or _utcnow()
+                    st.session_state.public_email_verified_at = _utcnow()
                     save_public_lead(st.session_state.public_participant_id,st.session_state.public_identity,st.session_state.public_marketing_opt_in,True,st.session_state.get("public_interests",[]),st.session_state.get("public_other_interest",""))
                     _publish_public_contact_event("CONTACT_EMAIL_VERIFIED", {"email_verified_at": st.session_state.public_email_verified_at})
                     st.success("Adresse e-mail vérifiée. Votre accès est ouvert."); st.rerun()
@@ -293,7 +294,7 @@ Le PIP Clarté360 explore, au travers de 72 activités professionnelles, les act
         st.success(f"Accès vérifié pour {st.session_state.public_identity.get('first_name','')} {st.session_state.public_identity.get('last_name','')}.")
         label = "Reprendre mon profil RIASEC" if st.session_state.get("pip_state", {}).get("order") else "Commencer mon profil RIASEC"
         if st.button(label, type="primary", use_container_width=True):
-            st.session_state.navigation_page = infer_resume_page(dict(st.session_state))
+            st.session_state.navigation_page = st.session_state.pop("public_verification_return_page", None) or infer_resume_page(dict(st.session_state))
             st.rerun()
 
 
@@ -474,7 +475,9 @@ def render_feeling() -> None:
     labels = {1:"Pas du tout",2:"Plutôt non",3:"Partagé(e)",4:"Plutôt oui",5:"Tout à fait"}
     for key in ("global", "dominants", "nuances", "useful"):
         q = QUESTIONS[key]
-        answers[key] = st.radio(q["text"], scale, index=None, format_func=lambda x: f"{x} — {labels[x]}", key=f"feel_{key}")
+        previous = (st.session_state.get("feeling") or {}).get("answers", {}).get(key)
+        initial = scale.index(previous) if previous in scale else None
+        answers[key] = st.radio(q["text"], scale, index=initial, format_func=lambda x: f"{x} — {labels[x]}", key=f"feel_{key}")
     answers["over"] = st.selectbox(QUESTIONS["over"]["text"], ["Aucune", "R", "I", "A", "S", "E", "C"], key="feel_over")
     answers["under"] = st.selectbox(QUESTIONS["under"]["text"], ["Aucune", "R", "I", "A", "S", "E", "C"], key="feel_under")
     launch = st.session_state.get("launch_context")
@@ -491,7 +494,14 @@ def render_feeling() -> None:
         st.caption("Si vous choisissez Oui, votre demande transmet uniquement vos coordonnées et votre souhait d’être rappelé(e). Vos scores, votre profil RIASEC et vos réponses ne sont pas transmis avec cette demande.")
     required = [answers[k] for k in ("global", "dominants", "nuances", "useful")]
     callback_missing = bool(launch and launch.mode is RunMode.PUBLIC and callback_choice is None)
-    if st.button("Valider mon ressenti", type="primary", disabled=any(v is None for v in required) or callback_missing, use_container_width=True):
+    if st.button("Valider mon ressenti", type="primary", use_container_width=True):
+        missing = [k for k in ("global", "dominants", "nuances", "useful") if answers.get(k) not in scale]
+        if missing or callback_missing:
+            for key in missing:
+                st.warning("Réponse attendue : " + QUESTIONS[key]["text"])
+            if callback_missing:
+                st.warning("Indiquez si vous souhaitez être recontacté(e) : Oui ou Non.")
+            return
         launch = st.session_state.get("launch_context")
         run_mode = launch.mode.value if launch else None
         st.session_state.feeling = build_feeling_record(
@@ -500,6 +510,9 @@ def render_feeling() -> None:
             "PIP-RPT-L1-MIN",
             run_mode=run_mode,
         )
+        st.session_state.navigation_page = "finished"
+        st.session_state.last_useful_page = "finished"
+        _save_if_accompanied()
         launch=st.session_state.get("launch_context")
         if launch and launch.mode is RunMode.PUBLIC:
             st.session_state.public_callback_requested = callback_choice == "OUI"
@@ -517,9 +530,13 @@ def render_feeling() -> None:
                     "requested_at": requested_at,
                     "reason": "ECHANGER_RESULTATS_OU_PROJET",
                 }
-                GestionActionsPort(None).publish_event("CALLBACK_REQUESTED", callback_payload)
+                st.session_state.setdefault("delivery_state", {})["callback_pending"] = callback_payload
             if st.session_state.get("study_consent"):
-                save_public_study_record(st.session_state)
+                try:
+                    save_public_study_record(st.session_state)
+                except Exception as exc:
+                    LOG.error("PIP_STUDY_FAILED category=%s", type(exc).__name__)
+                    st.warning("Votre ressenti est conservé dans cette session. L'enregistrement pour l'étude sera retenté à la finalisation.")
         st.session_state.navigation_page = "finished"; st.rerun()
 
 
@@ -539,81 +556,111 @@ def _finalization_requirements_met(state: dict) -> bool:
     return True
 
 
+def _final_pdf(name, builder):
+    launch = st.session_state.get("launch_context")
+    if launch and launch.mode is RunMode.ACCOMPANIMENT:
+        return accompanied_report(st.session_state, name, builder)
+    # PUBLIC reports remain in the current session, not in the CRM/statistical store.
+    key = (st.session_state.get("passation_id"), name)
+    cache = st.session_state.setdefault("_final_pdf_cache", {})
+    if key not in cache:
+        cache[key] = builder()
+    return cache[key]
+
+
+def _render_public_mail(attachments):
+    recipient = verified_public_email(st.session_state)
+    if not recipient:
+        st.warning("Votre rapport reste disponible. Confirmez votre adresse e-mail avant l'envoi.")
+        if st.button("Vérifier mon adresse e-mail", key="final_verify_mail", use_container_width=True):
+            st.session_state.public_access_verified = False
+            st.session_state.public_verification_return_page = "finished"
+            st.session_state.navigation_page = "accueil"
+            st.rerun()
+        return
+    st.caption(f"Destinataire des rapports : {recipient}")
+    retry = False
+    if st.session_state.get("final_report_email_attempted") and not st.session_state.get("final_report_email_sent"):
+        st.caption("Après un échec, aucune nouvelle tentative automatique. Attendez une minute avant de réessayer (trois tentatives maximum).")
+        retry = st.button("Réessayer l'envoi de mes rapports", key="retry_final_email", use_container_width=True)
+    result = public_report_mail(st.session_state, attachments, load_smtp_settings(st.secrets), send_email, retry=retry)
+    if result["status"] == "SENT":
+        st.success("L'envoi de vos rapports a été accepté par le service de messagerie.")
+        st.caption("Les rapports déjà envoyés ne sont pas renvoyés lors d'un rafraîchissement.")
+    else:
+        st.warning("Votre parcours est terminé. Vos rapports sont téléchargeables. " + result["message"])
+
+
 def render_finished() -> None:
     if not _finalization_requirements_met(dict(st.session_state)):
         st.error("Rapport final indisponible : terminez le parcours choisi et validez votre ressenti PIP.")
         return
     launch = st.session_state.get("launch_context")
     try:
-        pdf_bytes = build_pip_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png")
+        pdf_bytes = _final_pdf(PIP_NAME, lambda: build_pip_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png"))
         st.session_state.report_version = PIP_REPORT_VERSION
         st.download_button("Télécharger mon rapport PIP RIASEC Clarté360 — avec mon ressenti", data=pdf_bytes, file_name="rapport_pip_riasec_clarte360.pdf", mime="application/pdf", type="primary", use_container_width=True)
         onet_pdf = None
         if st.session_state.get("onet_state", {}).get("completed"):
-            onet_pdf = build_onet_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png")
+            onet_pdf = _final_pdf(ONET_NAME, lambda: build_onet_report_pdf(dict(st.session_state), ASSETS_DIR / "logo_clarte360.png"))
             st.session_state.onet_report_version = ONET_REPORT_VERSION
             st.download_button("Télécharger mon rapport O*NET Interest Profiler", data=onet_pdf, file_name="rapport_onet_interest_profiler.pdf", mime="application/pdf", use_container_width=True)
+    except Exception as exc:
+        LOG.error("PIP_REPORT_FAILED category=%s", type(exc).__name__)
+        st.error("Le rapport n'a pas pu être préparé. Votre ressenti est conservé. Réessayez ou contactez Clarté360.")
+        if launch and launch.mode is RunMode.PUBLIC:
+            st.download_button("Conserver ma sauvegarde pour reprendre", data=snapshot_bytes(dict(st.session_state)), file_name="pip_clarte360_reprise.json", mime="application/json")
+        return
 
-        if launch and launch.mode is RunMode.ACCOMPANIMENT:
-            # TERMINE is emitted only here: after feeling and successful PDF generation.
-            if not st.session_state.get("completed_at"):
-                st.session_state.completed_at = _utcnow()
-            refs = list(st.session_state.get("report_documents") or [])
-            existing_names = {ref.get("file_name") for ref in refs}
-            if "rapport_pip_riasec_clarte360.pdf" not in existing_names:
-                refs.append(persist_report_document(st.session_state.passation_id, "rapport_pip_riasec_clarte360.pdf", pdf_bytes))
-            if onet_pdf is not None and "rapport_onet_interest_profiler.pdf" not in existing_names:
-                refs.append(persist_report_document(st.session_state.passation_id, "rapport_onet_interest_profiler.pdf", onet_pdf))
-            st.session_state.report_documents = refs
-            if not st.session_state.get("final_event_published"):
-                GestionActionsPort(None).publish_event("TERMINE", _accompanied_final_payload(refs))
-                st.session_state.final_event_published = True
+    if not st.session_state.get("completed_at"):
+        st.session_state.completed_at = _utcnow()
+    if launch and launch.mode is RunMode.ACCOMPANIMENT:
+        try:
+            # Persist feeling + immutable references before announcing them.
             _save_if_accompanied()
-            st.success("Parcours terminé : les documents PDF ont été enregistrés et leur transmission à Gestion des actions a été demandée.")
-            st.caption("La visibilité effective dans Gestion des actions doit être confirmée par le connecteur destinataire.")
-        elif launch and launch.mode is RunMode.PUBLIC:
-            # PUBLIC is truly finished only after restitution, mandatory feeling and final PDF generation.
-            if not st.session_state.get("restitution_presented") or not st.session_state.get("feeling"):
-                st.error("La passation ne peut pas être clôturée avant la restitution et le ressenti.")
-                return
-            if not st.session_state.get("completed_at"):
-                st.session_state.completed_at = _utcnow()
+            publish_accompanied_reports(st.session_state, _accompanied_final_payload)
+            _save_if_accompanied()
+            st.success("Parcours terminé : les PDF sont enregistrés dans PIP et leur transmission à Gestion des actions a été demandée.")
+            st.caption("La réception et la visibilité dans Gestion des actions ne sont pas confirmées par cet écran.")
+        except Exception as exc:
+            LOG.error("PIP_DELIVERY_FAILED category=%s", type(exc).__name__)
+            st.warning("Vos rapports sont disponibles ici. La transmission à votre espace n'est pas encore confirmée. Vous pouvez réessayer sans recommencer le questionnaire.")
+            if st.button("Réessayer la transmission", key="retry_delivery", use_container_width=True):
+                st.rerun()
+    elif launch and launch.mode is RunMode.PUBLIC:
+        # Study persistence is independent of the optional SMTP transport.
+        try:
             if st.session_state.get("study_consent"):
                 save_public_study_record(st.session_state)
-
-            identity = dict(st.session_state.get("public_identity") or {})
-            verified_email = str(identity.get("email") or "").strip() if st.session_state.get("public_access_verified") else ""
-            if verified_email and not st.session_state.get("final_report_email_sent"):
-                attachments = [("rapport_pip_riasec_clarte360.pdf", pdf_bytes, "application/pdf")]
-                if onet_pdf is not None:
-                    attachments.append(("rapport_onet_interest_profiler.pdf", onet_pdf, "application/pdf"))
-                ok, message = send_email(
-                    load_smtp_settings(st.secrets),
-                    "Clarté360 — vos rapports PIP RIASEC",
-                    "Votre parcours est terminé. Vous trouverez en pièce jointe votre rapport PIP RIASEC Clarté360" + (" et votre rapport O*NET Interest Profiler." if onet_pdf is not None else ".") + "\n\nConservez ces documents pour votre usage personnel.\n\nClarté360 — www.clarte360.com",
-                    to_email=verified_email,
-                    attachments=attachments,
-                )
-                st.session_state.final_report_email_attempted = True
-                if ok:
-                    st.session_state.final_report_email_sent = True
-                    st.session_state.final_report_email_sent_at = _utcnow()
-                    st.success(f"Vos rapports ont également été envoyés à {verified_email}.")
-                else:
-                    st.warning(f"Votre parcours est bien terminé et vos téléchargements restent disponibles. L’envoi automatique par e-mail n’a pas abouti : {message}")
-            elif st.session_state.get("final_report_email_sent"):
-                st.caption("L’envoi automatique des rapports a déjà été effectué ; aucun doublon n’est envoyé lors d’un rafraîchissement.")
-
-            if st.session_state.get("public_callback_requested"):
-                st.success("Votre demande de rappel a bien été enregistrée. Vos résultats PIP/O*NET n’ont pas été transmis avec cette demande.")
-            st.markdown("**Clarté360** — www.clarte360.com — contact@clarte360.com")
-            st.caption("Si vous souhaitez approfondir ces résultats dans le cadre de votre projet professionnel, vous pouvez contacter Clarté360. Cette invitation ne constitue ni une prescription ni une obligation d’accompagnement.")
-            st.caption("Vous pouvez aussi conserver la sauvegarde technique JSON pour archiver cette session.")
-            downloaded = st.download_button("Télécharger ma sauvegarde finale (JSON)", data=snapshot_bytes(dict(st.session_state)), file_name="pip_clarte360_final.json", mime="application/json", use_container_width=True)
-            if downloaded:
-                mark_public_work_saved(st.session_state)
-    except Exception as exc:
-        st.error(f"Le rapport PDF n’a pas pu être généré : {exc}")
+        except Exception as exc:
+            LOG.error("PIP_STUDY_FAILED category=%s", type(exc).__name__)
+            st.warning("L'enregistrement pour l'étude n'a pas pu être confirmé. Conservez votre sauvegarde pour reprendre sans perdre votre travail.")
+        pending = st.session_state.get("delivery_state", {}).get("callback_pending")
+        if pending:
+            try:
+                if verified_public_email(st.session_state) != pending.get("email"):
+                    raise ValueError("Destinataire de la demande non verifie.")
+                GestionActionsPort(None).publish_event("CALLBACK_REQUESTED", pending)
+                st.session_state.delivery_state.pop("callback_pending", None)
+                st.session_state.delivery_state["callback_published"] = True
+            except Exception as exc:
+                LOG.error("PIP_CALLBACK_FAILED category=%s", type(exc).__name__)
+                st.warning("La transmission de votre demande de rappel n'a pas encore été confirmée.")
+        attachments = [(PIP_NAME, pdf_bytes, "application/pdf")]
+        if onet_pdf is not None:
+            attachments.append((ONET_NAME, onet_pdf, "application/pdf"))
+        try:
+            _render_public_mail(attachments)
+        except Exception as exc:
+            LOG.error("PIP_EMAIL_TRACKING_FAILED category=%s", type(exc).__name__)
+            st.warning("Le suivi de l'envoi par e-mail est indisponible. Vos rapports restent téléchargeables ; aucun nouvel envoi automatique n'est forcé.")
+        if st.session_state.get("public_callback_requested") and not st.session_state.get("delivery_state", {}).get("callback_pending"):
+            st.caption("Votre demande de rappel est enregistrée. Vos résultats PIP/O*NET ne sont pas transmis avec cette demande.")
+        st.markdown("**Clarté360** — www.clarte360.com — contact@clarte360.com")
+        st.caption("Si vous souhaitez approfondir ces résultats dans le cadre de votre projet professionnel, vous pouvez contacter Clarté360. Cette invitation ne constitue ni une prescription ni une obligation d’accompagnement.")
+        downloaded = st.download_button("Télécharger ma sauvegarde finale (JSON)", data=snapshot_bytes(dict(st.session_state)), file_name="pip_clarte360_final.json", mime="application/json", use_container_width=True)
+        if downloaded:
+            mark_public_work_saved(st.session_state)
 
 
 def _onet_port() -> OnetPort:
@@ -716,8 +763,19 @@ def render_combined_results() -> None:
         st.caption("O*NET a été choisi après consultation du résultat PIP ; cette chronologie est conservée pour l’analyse méthodologique.")
     launch=st.session_state.get("launch_context")
     if launch and launch.mode is RunMode.PUBLIC and st.session_state.get("study_consent"):
-        save_public_study_record(dict(st.session_state))
+        try:
+            save_public_study_record(st.session_state)
+        except Exception as exc:
+            LOG.error("PIP_STUDY_FAILED category=%s", type(exc).__name__)
+            st.warning("Vos résultats restent consultables. L'enregistrement pour l'étude sera retenté à la finalisation.")
     st.markdown("---")
+    if st.session_state.get("completed_at") and st.session_state.get("feeling"):
+        st.caption("Votre ressenti PIP déjà validé est conservé. Aucun ressenti O*NET supplémentaire n'est demandé.")
+        if st.button("Accéder à mes rapports", type="primary", use_container_width=True):
+            st.session_state.navigation_page = "finished"
+            _save_if_accompanied()
+            st.rerun()
+        return
     restitution_ok = _render_pip_report_preview_before_feeling()
     if restitution_ok and st.button("J’ai consulté mes résultats — donner mon ressenti", type="primary", use_container_width=True):
         st.session_state.restitution_presented = True
@@ -753,7 +811,12 @@ def render_timeout() -> None:
     if uploaded is not None and st.button("Reprendre", type="primary", use_container_width=True, key="timeout_resume_button"):
         try:
             payload = decode_snapshot_bytes(uploaded.getvalue())
-            restore_snapshot(payload, st.session_state)
+            launch = st.session_state.get("launch_context")
+            if launch and launch.mode is RunMode.PUBLIC:
+                restore_public_upload(payload, st.session_state)
+            else:
+                st.error("Reprenez cette passation depuis votre espace bénéficiaire.")
+                return
             mark_public_work_saved(st.session_state)
             st.success("Sauvegarde restaurée.")
             st.rerun()

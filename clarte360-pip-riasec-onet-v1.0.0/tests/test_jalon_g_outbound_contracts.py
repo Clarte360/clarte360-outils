@@ -47,10 +47,13 @@ def test_public_contract_event_types_are_allowed(monkeypatch, tmp_path):
 
 def test_callback_payload_never_contains_results_by_contract_source():
     src = Path("clarte360_pip/ui/pages.py").read_text(encoding="utf-8")
-    block = src[src.index('callback_payload = {'):src.index('GestionActionsPort(None).publish_event("CALLBACK_REQUESTED"')]
-    forbidden = ("pip_scoring", "holland_code", "scores", "indices", "onet_state", "answers")
-    assert all(word not in block for word in forbidden)
-    assert "email" in block and "phone" in block and "requested_at" in block
+    import ast
+    module = ast.parse(src)
+    assignment = next(n for n in ast.walk(module) if isinstance(n, ast.Assign)
+                      and any(isinstance(v, ast.Name) and v.id == 'callback_payload' for v in n.targets))
+    keys = {k.value for k in assignment.value.keys}
+    assert keys == {'source', 'first_name', 'last_name', 'email', 'phone', 'requested_at', 'reason'}
+    assert not keys.intersection({'pip_scoring', 'holland_code', 'scores', 'indices', 'onet_state', 'answers'})
 
 
 def test_termine_is_only_published_after_pdf_generation_and_feeling():
@@ -58,8 +61,9 @@ def test_termine_is_only_published_after_pdf_generation_and_feeling():
     assert '_publish_if_accompanied("TERMINE")' not in src
     finished = src[src.index("def render_finished"):src.index("def _onet_port")]
     assert "build_pip_report_pdf" in finished
-    assert 'publish_event("TERMINE"' in finished
-    assert finished.index("build_pip_report_pdf") < finished.index('publish_event("TERMINE"')
+    assert 'publish_accompanied_reports(st.session_state, _accompanied_final_payload)' in finished
+    assert finished.index("build_pip_report_pdf") < finished.index('publish_accompanied_reports(')
+    assert finished.index('_finalization_requirements_met') < finished.index('build_pip_report_pdf')
     final_payload = src[src.index("def _accompanied_final_payload"):src.index("def _save_if_accompanied")]
     assert '"feeling"' in final_payload
     assert '"documents"' in final_payload

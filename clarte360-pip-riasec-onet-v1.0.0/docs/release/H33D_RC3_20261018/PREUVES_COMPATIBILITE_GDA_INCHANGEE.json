@@ -1,0 +1,70 @@
+{
+  "source_commit": "75af19dafc22141d7ca3690d5bf6c8778430b89e",
+  "gda_modified": false,
+  "execution": "local SQLite; actual receiver source unchanged; real PDF bytes; synthetic identities; no network; not VPS",
+  "results": [
+    {
+      "scenario": "PIP_SEUL",
+      "result": "PASS",
+      "documents": [
+        {
+          "kind": "PIP_REPORT",
+          "sha256": "d810676a88e7c03f5715773c84705425187ba1ce74d106d16251200b1318be7b",
+          "bytes": 69923
+        }
+      ],
+      "replay_without_duplicates": true
+    },
+    {
+      "scenario": "ONET_APRES_PIP_FINALISE",
+      "result": "PASS",
+      "documents": [
+        {
+          "kind": "PIP_REPORT",
+          "sha256": "55d7d51fc86cbbee301fd5376ae91351c2af1dcade992139426ec4f64480ede8",
+          "bytes": 69154
+        },
+        {
+          "kind": "ONET_REPORT",
+          "sha256": "b45af496830c45fff86db5bdaa237aff9359220b072cd2fea051fcd134a806cc",
+          "bytes": 59136
+        }
+      ],
+      "replay_without_duplicates": true
+    },
+    {
+      "scenario": "PIP_ONET_CHOIX_INITIAL",
+      "result": "PASS",
+      "documents": [
+        {
+          "kind": "PIP_REPORT",
+          "sha256": "9631b9053c46dbcb1eec821047e0bd2715259aa93886ed64ef046684f33ae956",
+          "bytes": 70119
+        },
+        {
+          "kind": "ONET_REPORT",
+          "sha256": "9884e0970677b3efa1c37b549a15fa7e727f13498e867d0e75fcf1ccf29746e1",
+          "bytes": 59136
+        }
+      ],
+      "replay_without_duplicates": true
+    },
+    {
+      "scenario": "REPRISE_EVENEMENT_DEJA_CONSOMME",
+      "result": "PASS",
+      "documents": [
+        {
+          "kind": "PIP_REPORT",
+          "sha256": "39d0649af66d0d6e510075acfba511f65df8de3ec782392245be56403784731f",
+          "bytes": 70176
+        },
+        {
+          "kind": "ONET_REPORT",
+          "sha256": "463497d95ab78b0b846160a2c1e0b06e4cedf5d93fefaf6c3c89531d4f942d84",
+          "bytes": 59136
+        }
+      ],
+      "replay_without_duplicates": true
+    }
+  ]
+}

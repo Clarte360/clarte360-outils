@@ -5,6 +5,7 @@ import streamlit as st
 from clarte360_pip.framework.config import ASSETS_DIR
 from clarte360_pip.framework.persistence import decode_snapshot_bytes, restore_snapshot
 from clarte360_pip.framework.unsaved_guard import mark_public_work_saved
+from clarte360_pip.framework.public_access import restore_public_upload
 from clarte360_pip.version import APP_VERSION, BUILD_INCREMENT, FRAMEWORK_VERSION
 
 
@@ -34,10 +35,8 @@ def render_sidebar(mode_label: str) -> None:
         if uploaded is not None and st.sidebar.button("Reprendre le fichier JSON", use_container_width=True):
             try:
                 payload = decode_snapshot_bytes(uploaded.getvalue())
-                restore_snapshot(payload, st.session_state)
+                restore_public_upload(payload, st.session_state)
                 mark_public_work_saved(st.session_state)
-                if not st.session_state.get("public_access_verified"):
-                    raise ValueError("La sauvegarde ne contient pas d'accès public vérifié.")
                 st.sidebar.success("Sauvegarde reconnue."); st.rerun()
             except Exception as exc:
                 st.sidebar.error(f"Sauvegarde incompatible : {exc}")

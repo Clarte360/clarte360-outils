@@ -1,7 +1,7 @@
 {
   "tool_id": "pip-riasec-onet",
   "app_name": "PIP RIASEC / O*NET Clarte360",
-  "app_version": "H3.3-C",
+  "app_version": "H3.3-D-RC3",
   "production_url": "https://pip-riasec.clarte360.com",
   "deployment_status": "candidate",
   "hub_compatible": true,

@@ -28,4 +28,4 @@ def test_1_0_10_preserves_hub_validation_layer():
 
 def test_1_0_10_version_bumped_from_real_1_0_9_base():
     from clarte360_pip.version import APP_VERSION
-    assert APP_VERSION == "H3.3-D-RC1"
+    assert APP_VERSION == "H3.3-D-RC3"

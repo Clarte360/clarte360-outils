@@ -14,6 +14,13 @@ def now_iso() -> str:
 
 
 def initialize_session(launch: LaunchContext) -> None:
+    # A different signed prescription must never inherit another person's widgets/data.
+    from clarte360_pip.framework.resume import context_key
+    old = st.session_state.get("launch_context")
+    if old is not None and (not isinstance(old, LaunchContext) or context_key(old) != context_key(launch)):
+        for key in list(st.session_state):
+            del st.session_state[key]
+    st.session_state["launch_context"] = launch
     defaults = {
         "passation_id": str(uuid4()),
         "session_id": str(uuid4()),

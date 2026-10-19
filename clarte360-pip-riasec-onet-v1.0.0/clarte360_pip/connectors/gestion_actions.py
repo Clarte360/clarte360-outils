@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 
 from clarte360_pip.domain import LaunchContext, RunMode
 from clarte360_pip.framework.config import PERSISTENT_DATA_DIR
+from clarte360_pip.framework.storage_io import atomic_json, atomic_bytes, storage_lock
 from clarte360_pip.framework.validation import (
     ValidationError, validate_epoch_window, validate_safe_id, validate_string_list,
     validate_person_name, validate_optional_short_text,
@@ -159,31 +160,64 @@ def _outbox_root() -> Path:
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    atomic_json(path, dict(payload))
+
+
+REPORT_NAMES = {'rapport_pip_riasec_clarte360.pdf', 'rapport_onet_interest_profiler.pdf'}
+MAX_REPORT_BYTES = 25 * 1024 * 1024
+
+
+def report_path(passation_id: str, file_name: str) -> Path:
+    passation_id = validate_safe_id(passation_id, 'passation_id') or ''
+    if (passation_id in {'.', '..'} or not isinstance(file_name, str)
+            or Path(file_name).name != file_name or '\\' in file_name
+            or not file_name.lower().endswith('.pdf') or len(file_name) > 180):
+        raise ValueError('Reference de rapport non autorisee.')
+    root = PERSISTENT_DATA_DIR.resolve()
+    folder = root / 'reports' / passation_id
+    path = folder / file_name
+    if any(p.is_symlink() for p in (root / 'reports', folder, path)):
+        raise ValueError('Lien symbolique de rapport non autorise.')
+    if not path.resolve().is_relative_to(root):
+        raise ValueError('Chemin de rapport hors de la racine autorisee.')
+    return path
+
+
+def report_reference(passation_id: str, file_name: str, content: bytes) -> dict[str, Any]:
+    path = report_path(passation_id, file_name)
+    if not content.startswith(b'%PDF-') or len(content) > MAX_REPORT_BYTES:
+        raise ValueError('Rapport PDF invalide ou trop volumineux.')
+    return {'file_name': file_name, 'mime_type': 'application/pdf',
+            'sha256': hashlib.sha256(content).hexdigest(), 'size_bytes': len(content),
+            'storage_ref': f'reports/{passation_id}/{path.name}'}
+
+
+def read_report_document(passation_id: str, document: Mapping[str, Any]) -> bytes:
+    name = document.get('file_name')
+    path = report_path(passation_id, name)
+    if document.get('storage_ref') != f'reports/{passation_id}/{name}':
+        raise ValueError('Le rapport ne correspond pas a la passation.')
+    if not path.is_file() or path.stat().st_size > MAX_REPORT_BYTES:
+        raise ValueError('Le rapport enregistre est indisponible.')
+    content = path.read_bytes()
+    expected = report_reference(passation_id, name, content)
+    if any(document.get(k) != expected[k] for k in ('sha256', 'size_bytes', 'mime_type')):
+        raise ValueError('L integrite du rapport enregistre ne peut pas etre confirmee.')
+    return content
 
 
 def persist_report_document(passation_id: str, file_name: str, content: bytes) -> dict[str, Any]:
-    passation_id = validate_safe_id(passation_id, "passation_id") or ""
+    # Fixed names are part of the unchanged GDA receiver contract.
     safe_name = Path(file_name).name
-    if not safe_name.lower().endswith(".pdf"):
-        raise ValueError("Le document transmis doit être un PDF.")
-    folder = PERSISTENT_DATA_DIR / "reports" / passation_id
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / safe_name
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(content)
-    tmp.replace(path)
-    digest = hashlib.sha256(content).hexdigest()
-    return {
-        "file_name": safe_name,
-        "mime_type": "application/pdf",
-        "sha256": digest,
-        "size_bytes": len(content),
-        "storage_ref": str(path.relative_to(PERSISTENT_DATA_DIR)),
-    }
+    path = report_path(passation_id, safe_name)
+    reference = report_reference(passation_id, safe_name, content)
+    with storage_lock(PERSISTENT_DATA_DIR / '.locks' / f'report-{passation_id}-{safe_name}.lock'):
+        if path.exists():
+            if path.read_bytes() != content:
+                raise ValueError('Un rapport different existe deja pour cette passation.')
+        else:
+            atomic_bytes(path, content)
+    return reference
 
 
 @dataclass(frozen=True)
@@ -220,32 +254,41 @@ class GestionActionsPort:
                 if payload.get(field) is not None:
                     validate_safe_id(payload.get(field), field, required=False)
         event_id = _event_id(event_type, payload)
-        pending = _outbox_root() / "pending" / f"{event_id}.json"
-        delivered = _outbox_root() / "delivered" / f"{event_id}.json"
-        if delivered.exists():
-            return delivered
-        if pending.exists():
-            return pending
-        envelope = {
-            "schema": OUTBOX_SCHEMA,
-            "event_id": event_id,
-            "idempotency_key": event_id,
-            "event_type": event_type,
-            "tool_id": TOOL_ID,
-            "contract_version": OUTBOUND_CONTRACT_VERSION,
-            "created_at": _utcnow(),
-            "status": "PENDING",
-            "attempts": 0,
-            "last_attempt_at": None,
-            "last_error": None,
-            "payload": payload,
-        }
-        _atomic_json(pending, envelope)
-        audit = _outbox_root() / "events.jsonl"
-        audit.parent.mkdir(parents=True, exist_ok=True)
-        with audit.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")) + "\n")
-        return pending
+        pending = _outbox_root() / 'pending' / f'{event_id}.json'
+        delivered = _outbox_root() / 'delivered' / f'{event_id}.json'
+        with storage_lock(_outbox_root() / '.publish.lock'):
+            target = delivered if delivered.exists() else pending
+            if target.exists():
+                envelope = json.loads(target.read_text(encoding='utf-8'))
+                if envelope.get('event_id') != event_id or envelope.get('payload') != payload:
+                    raise ValueError('Evenement existant incoherent.')
+            else:
+                envelope = {
+                    'schema': OUTBOX_SCHEMA, 'event_id': event_id, 'idempotency_key': event_id,
+                    'event_type': event_type, 'tool_id': TOOL_ID,
+                    'contract_version': OUTBOUND_CONTRACT_VERSION, 'created_at': _utcnow(),
+                    'status': 'PENDING', 'attempts': 0, 'last_attempt_at': None,
+                    'last_error': None, 'payload': payload,
+                }
+                _atomic_json(target, envelope)
+            # GDA consumes this journal, not pending/. Repair an interrupted append
+            # even when pending already exists. Never append after a partial record.
+            audit = _outbox_root() / "events.jsonl"
+            known = False
+            if audit.exists():
+                with audit.open('rb') as handle:
+                    for raw in handle:
+                        if not raw.endswith(b'\n'):
+                            raise ValueError('Journal du connecteur incomplet ; publication suspendue.')
+                        if raw.strip() and json.loads(raw).get('event_id') == event_id:
+                            known = True
+            if not known:
+                audit.parent.mkdir(parents=True, exist_ok=True)
+                with audit.open('a', encoding='utf-8') as handle:
+                    handle.write(json.dumps(envelope, ensure_ascii=False, separators=(',', ':')) + '\n')
+                    handle.flush()
+                    os.fsync(handle.fileno())
+        return target
 
     def signed_delivery_headers(self, envelope: Mapping[str, Any]) -> dict[str, str]:
         """Build HMAC headers for a future server-to-server delivery worker.

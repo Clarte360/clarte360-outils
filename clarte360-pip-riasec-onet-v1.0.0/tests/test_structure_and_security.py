@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_versions_and_required_layout():
-    assert APP_VERSION == "H3.3-D-RC1"
-    assert BUILD_INCREMENT == "H3.3-D-RC1-RESSENTI-PIP-RAPPORTS"
+    assert APP_VERSION == "H3.3-D-RC3"
+    assert BUILD_INCREMENT == "H3.3-D-RC3-CLOTURE-PIP-SEUL"
     assert FRAMEWORK_VERSION == "4.0"
     assert FRAMEWORK_VPS_VERSION == "1.3"
     for rel in [

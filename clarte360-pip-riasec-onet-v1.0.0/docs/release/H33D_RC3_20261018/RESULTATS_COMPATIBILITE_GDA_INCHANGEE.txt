@@ -1,0 +1,5 @@
+OK PIP_SEUL 1 PDF; replay without duplicates
+OK ONET_APRES_PIP_FINALISE 2 PDF; replay without duplicates
+OK PIP_ONET_CHOIX_INITIAL 2 PDF; replay without duplicates
+OK REPRISE_EVENEMENT_DEJA_CONSOMME 2 PDF; replay without duplicates
+GDA SOURCE UNCHANGED - 4/4 compatibility scenarios passed

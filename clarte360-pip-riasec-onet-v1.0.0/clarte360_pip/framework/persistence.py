@@ -42,6 +42,8 @@ def infer_resume_page(state: dict[str, Any]) -> str:
     pip = state.get("pip_state") or {}
     journey = state.get("journey", "PIP_SEUL")
 
+    if isinstance(onet, dict) and onet.get("questions") and not onet.get("completed"):
+        return "onet_questionnaire"
     if state.get("completed_at") and state.get("feeling"):
         return "finished"
     if state.get("feeling") and state.get("restitution_presented"):
@@ -103,6 +105,7 @@ def build_snapshot(session_state: dict[str, Any]) -> dict[str, Any]:
         "feeling": _jsonable(session_state.get("feeling", {})),
         "session_history": _jsonable(session_state.get("session_history", [])),
         "report_documents": _jsonable(session_state.get("report_documents", [])),
+        "delivery_state": _jsonable(session_state.get("delivery_state", {})),
         "final_event_published": bool(session_state.get("final_event_published")),
         "completed_at": session_state.get("completed_at"),
         "restitution_presented": bool(session_state.get("restitution_presented")),
@@ -199,6 +202,8 @@ def validate_snapshot(payload: dict[str, Any]) -> list[str]:
 
     if not isinstance(payload.get("public_identity", {}), dict):
         errors.append("Identité publique invalide.")
+    if not isinstance(payload.get("delivery_state", {}), dict):
+        errors.append("Suivi technique des livrables invalide.")
     if not isinstance(payload.get("session_history", []), list):
         errors.append("Historique de session invalide.")
     return errors
@@ -215,7 +220,7 @@ def restore_snapshot(payload: dict[str, Any], session_state: Any) -> None:
         "public_access_verified", "public_marketing_opt_in", "public_interests",
         "public_other_interest", "public_email_verified_at", "public_callback_requested",
         "public_callback_requested_at", "public_study_id", "study_consent", "onet_selected_timing",
-        "rgpd_acceptance", "report_documents", "final_event_published", "completed_at",
+        "rgpd_acceptance", "report_documents", "delivery_state", "final_event_published", "completed_at",
         "restitution_presented", "final_report_email_attempted", "final_report_email_sent", "final_report_email_sent_at",
     ):
         if key in payload:

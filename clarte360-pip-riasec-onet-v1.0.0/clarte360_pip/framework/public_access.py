@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import PERSISTENT_DATA_DIR, SmtpSettings
 from .smtp import send_email
+from .storage_io import atomic_json
 from .validation import (
     ValidationError, validate_access_code, validate_email, validate_free_text,
     validate_optional_short_text, validate_person_name, validate_phone, validate_safe_id,
@@ -52,10 +53,7 @@ def validate_public_identity(data: dict[str, Any]) -> list[str]:
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    atomic_json(path, payload)
 
 
 def save_public_lead(participant_id: str, identity: dict[str, Any], marketing_opt_in: bool, verified: bool, interests: list[str] | None = None, other_interest: str = "") -> Path:
@@ -91,7 +89,7 @@ def issue_public_code(identity: dict[str, Any], smtp: SmtpSettings, ttl_minutes:
         raise ValidationError("Durée de validité du code incohérente.")
     code = generate_access_code()
     expires = datetime.now() + timedelta(minutes=ttl_minutes)
-    state = {"digest": code_digest(code), "expires_at": expires.isoformat(timespec="seconds"), "attempts": 0}
+    state = {"digest": code_digest(code), "expires_at": expires.isoformat(timespec="seconds"), "attempts": 0, "email": normalize_email(identity["email"])}
     body = (
         f"Bonjour {str(identity.get('first_name','')).strip()},\n\n"
         f"Votre code d'accès au PIP RIASEC Clarté360 est : {code}\n\n"
@@ -102,7 +100,9 @@ def issue_public_code(identity: dict[str, Any], smtp: SmtpSettings, ttl_minutes:
     return ok, message, state
 
 
-def verify_public_code(code: str, state: dict[str, Any]) -> bool:
+def verify_public_code(code: str, state: dict[str, Any], expected_email: str | None = None) -> bool:
+    if expected_email is not None and normalize_email(state.get("email")) != normalize_email(expected_email):
+        return False
     if not state or int(state.get("attempts", 0)) >= 6: return False
     try:
         code = validate_access_code(code)
@@ -150,6 +150,9 @@ def save_public_study_record(session_state: dict[str, Any]) -> Path | None:
         return None
     pip_state = session_state.get("pip_state", {}) or {}
     study_id = str(session_state.get("public_study_id") or "").strip() or new_study_id()
+    study_id = validate_safe_id(study_id, "study_id") or ""
+    if study_id in {".", ".."}:
+        raise ValidationError("Identifiant etude invalide.")
     session_state["public_study_id"] = study_id
     pip_scoring = dict(session_state.get("pip_scoring", {}) or {})
     onet_state = dict(session_state.get("onet_state", {}) or {})
@@ -173,3 +176,55 @@ def save_public_study_record(session_state: dict[str, Any]) -> Path | None:
     path = STUDY_DIR / f"{payload['study_id']}.json"
     _atomic_json(path, payload)
     return path
+
+
+def verified_public_email(state) -> str | None:
+    """A client-imported Boolean is not an e-mail verification proof."""
+    if not state.get('public_access_verified'):
+        return None
+    try:
+        participant = validate_safe_id(state.get('public_participant_id'), 'participant_id')
+        if participant in {'.', '..'}:
+            return None
+        address = validate_email((state.get('public_identity') or {}).get('email'))
+        path = LEADS_DIR / f'{participant}.json'
+        record = json.loads(path.read_text(encoding='utf-8'))
+        if (record.get('participant_id') == participant and record.get('email_verified') is True
+                and normalize_email((record.get('identity') or {}).get('email')) == address):
+            return address
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return None
+
+
+def enforce_public_verification(state) -> None:
+    """Preserve progress but require a new code when a restored recipient is untrusted."""
+    if verified_public_email(state):
+        return
+    from .persistence import infer_resume_page
+    progress = bool((state.get('pip_state') or {}).get('order') or (state.get('onet_state') or {}).get('questions'))
+    state['public_access_verified'] = False
+    state['public_email_verified_at'] = None
+    if progress:
+        target = state.get('navigation_page')
+        if target not in {'accueil', 'rgpd', 'contact', 'timeout'}:
+            state['public_verification_return_page'] = target or infer_resume_page(dict(state))
+            state['navigation_page'] = 'accueil'
+        state['public_home_choice'] = 'resume'
+
+
+def restore_public_upload(payload, state) -> str:
+    from .persistence import restore_snapshot, infer_resume_page
+    context = payload.get('launch_context') or {}
+    if context.get('mode', 'PUBLIC') != 'PUBLIC':
+        raise ValidationError("Une sauvegarde accompagnee ne peut pas etre importee en mode public.")
+    # Clear prior e-mail challenges so they cannot authorize a changed import.
+    restored = {}
+    restore_snapshot(payload, restored)
+    for key in ('public_code_state', 'public_verification_return_page', '_final_pdf_cache'):
+        state.pop(key, None)
+    state.update(restored)
+    state['navigation_page'] = infer_resume_page(dict(state))
+    state['public_home_choice'] = 'resume'
+    enforce_public_verification(state)
+    return state['navigation_page']
