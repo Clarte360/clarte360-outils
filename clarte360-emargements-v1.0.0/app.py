@@ -1,8 +1,8 @@
 from __future__ import annotations
 import io, os, json, csv, base64, re
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import pandas as pd
 import qrcode
 from PIL import Image as PILImage
@@ -17,6 +17,7 @@ from persistent_session import create_session, resolve_session, revoke_session, 
 from ui_guard import log_ui_exception, safe_call, user_message
 from production_readiness import runtime_readiness
 from services import *
+from cp_launch import build_cp_launch
 from services import _duration_hms, _slot_participant_states
 from purge_guard import preview_action_purge, certify_test_action, recover_action_purges, legacy_quality_orphans
 from input_validation import validate_action_no, validate_short_text, validate_date_range, validate_participant_payload, validate_email, validate_full_name, InputValidationError
@@ -280,9 +281,14 @@ def _restore_client_session():
 def _p3_sidebar_section(role, *, action_id=None, action_no=None, show_title=True):
     """Contextual vertical sidebar; no access is conferred by navigation."""
     screens=screens_for_role(role,action_selected=(action_id is not None))
-    choices=[screen.key for screen in screens]
     key=f"p3_screen_{role.lower()}" if role=='BENEFICIARY' else f"p3_screen_{role.lower()}_{action_id}"
     prior=st.session_state.get(key)
+    # Projets & Compétences is entered only from the action-specific right
+    # shortcut. Keep its current label visible while inside, but do not offer
+    # it as a general left-menu route before the user enters that workspace.
+    if prior != ('action_projets_competences' if role=='ADMIN_ACTION' else 'projects_competences'):
+        screens=tuple(screen for screen in screens if screen.key not in {'projects_competences','action_projets_competences'})
+    choices=[screen.key for screen in screens]
     selected=preferred_screen(screens,prior)
     if prior!=selected:
         st.session_state[key]=selected
@@ -294,6 +300,77 @@ def _p3_sidebar_section(role, *, action_id=None, action_no=None, show_title=True
     screen=next(x for x in screens if x.key==selection)
     if show_title:st.markdown(f"### {screen.title}")
     return selection
+
+
+def _cp_prescription_open(row):
+    if str(row.get('status') or '').upper() not in {'A_FAIRE','ENVOYE','CONSULTE','EN_COURS'}:
+        return False
+    expires=row.get('expires_at')
+    if not expires:
+        return True
+    try:
+        deadline=datetime.fromisoformat(str(expires).replace('Z','+00:00'))
+        if deadline.tzinfo is None:
+            deadline=deadline.replace(tzinfo=timezone.utc)
+        return deadline>datetime.now(timezone.utc)
+    except (TypeError,ValueError):
+        return False
+
+
+def _render_cp_right_menu(action_id, *, role, beneficiary_id=None):
+    """Right-side action shortcut with a prescription-specific lock state."""
+    rows=[x for x in list_tool_prescriptions(ENGINE,action_id=action_id,beneficiary_id=beneficiary_id,include_cancelled=False)
+          if x.get('tool_code')=='COMPETENCES_PROJETS' and _cp_prescription_open(x)]
+    cols=st.columns([4,1])
+    with cols[1]:
+        unlocked=bool(rows)
+        label='📈 Projets & Compétences' if unlocked else '🔒 Projets & Compétences'
+        if role=='BENEFICIAIRE': key='p3_screen_beneficiary'
+        elif role=='ACCOMPAGNATEUR': key=f'p3_screen_trainer_{action_id}'
+        else: key=f'p3_screen_admin_action_{action_id}'
+        if st.button(label,key=f'cp_right_entry_{role}_{action_id}',use_container_width=True,disabled=not unlocked,
+                     help=('Ouvrir l’espace prescrit pour cette action.' if unlocked else 'Cet espace s’ouvrira après prescription pour cette action.')):
+            st.session_state[key]='projects_competences' if role!='ADMINISTRATEUR' else 'action_projets_competences'
+            rerun()
+        if not unlocked:
+            st.caption('Disponible après prescription sur cette action.')
+
+
+def _render_projects_competences(action_id, *, role, actor_id, beneficiary_id=None):
+    """Dedicated action-scoped entry point. UI visibility is backed by signed server authorization."""
+    st.subheader('Projets & Compétences')
+    st.caption('Cet espace est rattaché à une action précise. Les autres actions de votre parcours restent séparées.')
+    st.caption('ⓘ La prescription et les affectations sont vérifiées à chaque ouverture. Un cadenas signifie qu’aucune prescription active ne donne accès à ce dossier.')
+    rows=[x for x in list_tool_prescriptions(ENGINE,action_id=action_id,beneficiary_id=beneficiary_id,include_cancelled=False)
+          if x.get('tool_code')=='COMPETENCES_PROJETS']
+    if not rows:
+        st.info('🔒 Cet espace est verrouillé. Il sera accessible après prescription par un intervenant habilité ou un administrateur.')
+        return
+    open_rows=[x for x in rows if _cp_prescription_open(x)]
+    if not open_rows:
+        expired=any(x.get('expires_at') for x in rows)
+        reason='La prescription a expiré.' if expired else 'La prescription est annulée ou clôturée.'
+        st.info(f'🔒 {reason} Contactez votre intervenant ou l’administration si cet accès est nécessaire.')
+        return
+    for pr in open_rows:
+        st.markdown(f"**Action {pr.get('action_no') or action_id} — {pr.get('action_title') or 'Projets & Compétences'}**")
+        st.caption(f"Prescription {pr['prescription_id']} · État : {str(pr.get('status') or '').replace('_',' ')}")
+        if role == 'ADMINISTRATEUR':
+            st.info('Suivi administratif : la prescription et son état sont visibles ici. Le contenu du dossier du bénéficiaire reste réservé aux personnes autorisées dans le parcours.')
+            events=prescription_events(ENGINE,pr['prescription_id'])
+            if events:
+                last=events[-1]
+                st.caption(f"Dernière activité enregistrée dans Gestion des Actions : {last.get('event_type') or 'Mise à jour'} · {format_app_datetime(last.get('created_at'))}")
+            else:
+                st.caption('Aucun événement de suivi enregistré pour le moment.')
+            continue
+        try:
+            key=secret('COMPETENCES_PROJETS_CONNECTOR','LAUNCH_SIGNING_KEY','')
+            url=build_cp_launch(ENGINE,pr['prescription_id'],role,actor_id,key)
+            label='Ouvrir mon dossier Projets & Compétences' if role=='BENEFICIAIRE' else 'Ouvrir le dossier prescrit'
+            st.link_button(label,url,type='primary',help='Le lien est temporaire et limité à cette action et à cette prescription.')
+        except (ValueError,PermissionError) as ex:
+            st.warning(str(ex))
 
 
 def _ui_incident(context, ex, *, action_id=None, entity_type=None, entity_id=None, subject='Cette fonction', level='error'):
@@ -627,6 +704,7 @@ def render_trainer_action(action, trainer):
         st.error("Cette action ne vous est pas affectée."); return
     a=data['action']; slots=data['slots']; parts=data['participants']; next_slot=data['next_slot']
     selected_section=_p3_sidebar_section('TRAINER',action_id=aid,action_no=a['action_no'])
+    _render_cp_right_menu(aid,role='ACCOMPAGNATEUR')
     st.markdown(f"### {a['action_no']} — {a['title']}")
     c1,c2,c3,c4=st.columns(4)
     c1.metric('Prestation',(a.get('prestation_type') or a.get('nature') or '—').replace('_',' '))
@@ -908,6 +986,8 @@ def render_trainer_action(action, trainer):
             zdoc=export_action_documents_zip(ENGINE,aid,'TRAINER',tid)
             st.download_button('Télécharger les documents autorisés de cette action (ZIP)',zdoc,
                 file_name=f'documents_action_{aid}_intervenant.zip',mime='application/zip',key=f'tr_doc_zip_{aid}')
+    if selected_section=='projects_competences':
+        _render_projects_competences(aid,role='ACCOMPAGNATEUR',actor_id=tid)
     if selected_section=='tools':
         if not trainer_can_prescribe_tools(ENGINE,tid,aid):
             st.info("La prescription d'outils Clarté360 n'est pas activée pour vous sur cette action.")
@@ -916,7 +996,7 @@ def render_trainer_action(action, trainer):
             linked=q(ENGINE,"""SELECT p.id participant_id,b.id beneficiary_id,b.public_id,b.first_name,b.last_name
               FROM participants p JOIN beneficiaries b ON b.id=p.beneficiary_id
               WHERE p.action_id=:a AND p.active=1 AND b.active=1 ORDER BY b.last_name,b.first_name""",{'a':aid})
-            tools=action_allowed_tools(ENGINE,aid)
+            tools=[x for x in action_allowed_tools(ENGINE,aid) if x.get('tool_code')!='COMPETENCES_PROJETS']
             if not linked: st.warning('Les outils sont disponibles, mais aucun participant de cette action n’est encore rattaché à une identité bénéficiaire permanente. L’administrateur doit effectuer ce rattachement avant toute prescription.')
             elif not tools: st.warning("Aucun outil n'a été autorisé par l'administrateur pour cette action.")
             else:
@@ -931,7 +1011,7 @@ def render_trainer_action(action, trainer):
                         pr=create_tool_prescription(ENGINE,tx['tool_code'],bx['beneficiary_id'],aid,bx['participant_id'],prescriber_type='TRAINER',prescriber_id=tid,prescriber_role='INTERVENANT',due_at=due.isoformat() if due else None,actor=actor)
                         st.success(f"Prescription créée : {pr['prescription_id']}"); rerun()
                     except ValueError as ex: st.error(str(ex))
-            hist=[x for x in list_tool_prescriptions(ENGINE,action_id=aid,trainer_id=tid) if x.get('status')!='ANNULE']
+            hist=[x for x in list_tool_prescriptions(ENGINE,action_id=aid,trainer_id=tid) if x.get('status')!='ANNULE' and x.get('tool_code')!='COMPETENCES_PROJETS']
             if hist:
                 st.dataframe(pd.DataFrame([{'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Moi' if (x.get('prescriber_type')=='TRAINER' and str(x.get('prescriber_id'))==str(tid)) else 'Autre utilisateur','Créée':format_app_datetime(x['created_at']),'Échéance':format_app_deadline(x.get('due_at')),'Statut':x['status'].replace('_',' ')} for x in hist]),use_container_width=True,hide_index=True)
                 hmap={f"{x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']} — {x['prescription_id']}":x for x in hist}
@@ -1277,6 +1357,8 @@ def beneficiary_portal_page():
     chosen_action=act_map.get(selected_action_id)
     selected_section=_p3_sidebar_section('BENEFICIARY',action_id=selected_action_id,
         action_no=chosen_action['action_no'] if chosen_action else None)
+    if selected_action_id is not None:
+        _render_cp_right_menu(selected_action_id,role='BENEFICIAIRE',beneficiary_id=bid)
     acts=all_acts if selected_action_id is None else [chosen_action]
     docs=list_beneficiary_documents(ENGINE,bid)
     pending=q(ENGINE,"""SELECT qc.*,a.action_no,qt.title FROM quality_campaigns qc JOIN actions a ON a.id=qc.action_id JOIN questionnaire_templates qt ON qt.id=qc.template_id
@@ -1395,9 +1477,15 @@ def beneficiary_portal_page():
                     occ=ev['occurrence']; rep=ev.get('report')
                     hist.append({'Séance':f"{occ.get('slot_date')} — {occ.get('start_time')}–{occ.get('end_time')}",'Réunion Microsoft':'Constatée' if rep else 'Rapport en attente','Ma présence Teams':_duration_hms(ev.get('seconds')) if ev.get('seconds') else ('Non observée' if rep else '—')})
                 if hist: st.dataframe(pd.DataFrame(hist),use_container_width=True,hide_index=True)
+    if selected_section=='projects_competences':
+        if selected_action_id is None:
+            st.info('Choisissez d’abord l’action concernée dans « Mes actions ».')
+        else:
+            _render_projects_competences(selected_action_id,role='BENEFICIAIRE',actor_id=bid,beneficiary_id=bid)
     if selected_section=='tools':
+        prescriptions=[pr for pr in prescriptions if pr.get('tool_code')!='COMPETENCES_PROJETS']
         if not prescriptions:
-            st.info('Aucun outil Clarté360 ne vous est actuellement prescrit.')
+            st.info('Aucun outil Clarté360 ne vous est actuellement prescrit ici. Projets & Compétences s’ouvre depuis son menu dédié, pour l’action concernée.')
         else:
             for pr in prescriptions:
                 st.markdown(f"**{pr['tool_name']}** — {pr['action_no']} · Statut : {pr['status'].replace('_',' ')}")
@@ -2531,9 +2619,11 @@ def action_detail(aid):
         else: st.info(flash[2])
     c1,c2,c3,c4=st.columns(4);c1.metric('Participants',pr['participants']);c2.metric('Créneaux',pr['slots']);c3.metric('Signatures',f"{pr['signed']}/{pr['expected']}");c4.metric('Avancement',f"{pr['percent']} %")
     selected=_p3_sidebar_section('ADMIN_ACTION',action_id=aid,action_no=a['action_no'],show_title=False)
+    _render_cp_right_menu(aid,role='ADMINISTRATEUR')
     tab_specs=[
         ('action_parametres', action_settings_tab),('action_participants', participants_tab),('action_intervenants', action_trainers_tab),
         ('action_calendrier', calendar_tab),('action_teams', teams_tab),('action_outils', action_tools_tab),
+        ('action_projets_competences', action_projects_competences_tab),
         ('action_contractualisation', contractualization_tab),('action_envois', dispatch_tab),('action_suivi', tracking_tab),
         ('action_qualite', quality_tab),('action_documents', documents_tab),('action_journal', audit_tab)]
     for ctx,fn in tab_specs:
@@ -2604,6 +2694,69 @@ def action_settings_tab(a):
     elif current_status=='ARCHIVEE':
         if st.button('Réactiver depuis les archives',key=f'unarchive{a["id"]}'):
             unarchive_action(ENGINE,a['id'],st.session_state.admin_email);rerun()
+
+def _cp_connection_diagnostics():
+    """Admin-triggered, bounded health probes. Never display secrets or exception text."""
+    import urllib.request
+    checks=[]
+    key=str(secret('COMPETENCES_PROJETS_CONNECTOR','LAUNCH_SIGNING_KEY','') or '').strip()
+    checks.append({'Contrôle':'Clé CP_V1 configurée','État':'OK' if len(key)>=24 else 'À CONFIGURER'})
+    row=one(ENGINE,"SELECT base_url,active,prescription_allowed,connector_status FROM tool_catalog WHERE tool_code='COMPETENCES_PROJETS'")
+    base=str((row or {}).get('base_url') or '').strip()
+    parsed=urlsplit(base)
+    allowed_host=parsed.hostname and (parsed.hostname=='competences-projets.clarte360.com' or parsed.hostname.endswith('.clarte360.com'))
+    checks.append({'Contrôle':'Catalogue C&P actif pour la recette','État':'OK' if row and row.get('active') and row.get('prescription_allowed') and row.get('connector_status')=='CANDIDATE_TEST_ONLY' else 'À VÉRIFIER'})
+    checks.append({'Contrôle':'Adresse HTTPS C&P','État':'OK' if parsed.scheme=='https' and allowed_host else 'À CONFIGURER'})
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8765/healthz',timeout=2) as response:
+            body=json.loads(response.read(1024).decode('utf-8'))
+            bridge_ok=response.status==200 and body.get('service')=='gda-cp-bridge' and body.get('status')=='ready'
+        checks.append({'Contrôle':'Bridge documentaire GDA','État':'OK' if bridge_ok else 'INDISPONIBLE'})
+    except Exception:
+        checks.append({'Contrôle':'Bridge documentaire GDA','État':'INDISPONIBLE'})
+    if parsed.scheme=='https' and allowed_host:
+        try:
+            probe=base.rstrip('/')+'/_stcore/health'
+            request=urllib.request.Request(probe,headers={'User-Agent':'Clarte360-GDA-health-check'})
+            with urllib.request.urlopen(request,timeout=3) as response:
+                body=response.read(256).decode('utf-8','replace').strip().lower()
+                cp_ok=response.status==200 and 'ok' in body
+            checks.append({'Contrôle':'Application C&P (page de santé)','État':'OK' if cp_ok else 'INDISPONIBLE'})
+        except Exception:
+            checks.append({'Contrôle':'Application C&P (page de santé)','État':'INDISPONIBLE'})
+    else:
+        checks.append({'Contrôle':'Application C&P (page de santé)','État':'NON TESTÉE — URL invalide'})
+    return checks
+
+
+def action_projects_competences_tab(a):
+    st.subheader('Projets & Compétences — suivi de l’action')
+    st.caption('L’administrateur peut vérifier les prescriptions et les dernières activités enregistrées. Le contenu du bilan n’est pas affiché dans cet écran de contrôle.')
+    st.caption('Diagnostic technique : vérifie la clé configurée sans l’afficher, le catalogue, le bridge GDA et la page de santé C&P. Il ne consulte pas le contenu du bilan.')
+    if st.button('VÉRIFIER LA CONNEXION C&P / GDA',key=f'cp_diag_{a["id"]}'):
+        checks=_cp_connection_diagnostics()
+        st.session_state[f'_cp_diag_result_{a["id"]}']=checks
+        audit(ENGINE,'CP_CONNECTION_DIAGNOSTIC',a['id'],st.session_state.admin_email,'action',a['id'],{'states':[x['État'] for x in checks]})
+    checks=st.session_state.get(f'_cp_diag_result_{a["id"]}')
+    if checks:
+        st.dataframe(pd.DataFrame(checks),use_container_width=True,hide_index=True)
+        if all(x['État']=='OK' for x in checks): st.success('Les vérifications de connexion sont au vert. Cela ne remplace pas un test de lancement avec une prescription.')
+        else: st.warning('Au moins un contrôle est en échec. Relevez l’heure et consultez les journaux du service indiqué.')
+    rows=[x for x in list_tool_prescriptions(ENGINE,action_id=a['id'],include_cancelled=True)
+          if x.get('tool_code')=='COMPETENCES_PROJETS']
+    if not rows:
+        st.info('Aucune prescription Projets & Compétences pour cette action.')
+        return
+    for pr in rows:
+        with st.expander(f"{pr.get('beneficiary_last_name','')} {pr.get('beneficiary_first_name','')} — {pr['prescription_id']} — {str(pr.get('status') or '').replace('_',' ')}",expanded=False):
+            st.caption(f"Action {pr.get('action_no') or a['action_no']} · Créée le {format_app_datetime(pr.get('created_at'))} · Échéance : {format_app_deadline(pr.get('due_at'))}")
+            events=prescription_events(ENGINE,pr['prescription_id'])
+            if events:
+                st.dataframe(pd.DataFrame([{'Événement':e.get('event_type') or 'Mise à jour','État':e.get('new_status') or '—','Date':format_app_datetime(e.get('created_at'))} for e in events[-10:]]),use_container_width=True,hide_index=True)
+            else:
+                st.info('Aucun événement de suivi enregistré pour cette prescription.')
+            st.caption('Pour une erreur applicative C&P, relever l’heure et la référence de prescription, puis consulter les journaux techniques côté C&P.')
+
 
 def action_tools_tab(a):
     st.subheader('Hub Clarté360 — outils prescrits')
@@ -5702,6 +5855,9 @@ def tool_launch_page(token):
     if not ctx:
         st.error('Ce lien de lancement est invalide, expiré ou déjà utilisé. Retournez dans votre espace bénéficiaire pour générer un nouvel accès.')
         st.link_button('RETOUR À MON ESPACE',f"{BASE_URL.rstrip('/')}?beneficiary_portal=1")
+        footer(); return
+    if ctx.get('tool_code')=='COMPETENCES_PROJETS':
+        st.error('Projets & Compétences ne s’ouvre pas depuis « Mes outils ». Choisissez l’action concernée puis utilisez le menu Projets & Compétences.')
         footer(); return
     st.success(f"Outil prescrit : {ctx['tool_name']}")
     st.caption(f"Prescription {ctx['prescription_id']} · Statut : {ctx['status'].replace('_',' ')}")

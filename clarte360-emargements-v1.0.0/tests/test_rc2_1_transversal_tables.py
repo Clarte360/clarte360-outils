@@ -131,4 +131,4 @@ def test_capa_can_be_cancelled_without_deleting_history(tmp_path):
 
 def test_rc21_version_tests_are_aligned():
     import branding
-    assert branding.APP_VERSION=='3.0.0-P5-RECETTE-RC2'
+    assert branding.APP_VERSION=='3.0.0-P5-RECETTE-RC3-GO30-CANDIDAT'

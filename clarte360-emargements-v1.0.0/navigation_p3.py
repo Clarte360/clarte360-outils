@@ -21,6 +21,7 @@ BENEFICIARY_SCREENS = (
     Screen('planning', '\U0001f4c5 Mon planning', 'Mon planning et mes calendriers'),
     Screen('teams', '\U0001f4bb Mes r\u00e9unions Teams', 'Mes r\u00e9unions Teams'),
     Screen('tools', '\U0001f9ed Mes outils Clart\u00e9360', 'Mes outils et mes r\u00e9sultats'),
+    Screen('projects_competences', '\U0001f4c8 Projets & Comp\u00e9tences', 'Mon parcours Projets & Comp\u00e9tences'),
     Screen('documents', '\U0001f4c4 Documents administratifs', 'Mes documents administratifs'),
     Screen('courses', '\U0001f4da Cours et travaux', 'Documents de cours et d\u00e9p\u00f4ts individuels'),
     Screen('questionnaires', '\u2705 Questionnaires et actions', 'Questionnaires et actions \u00e0 r\u00e9aliser'),
@@ -37,6 +38,7 @@ TRAINER_SCREENS = (
     Screen('access', '\U0001f510 Codes participants', 'Codes de connexion des participants'),
     Screen('documents', '\U0001f4da Documents', 'Documents de l\u2019intervention'),
     Screen('tools', '\U0001f9ed Outils Clart\u00e9360', 'Prescriptions et outils Clart\u00e9360'),
+    Screen('projects_competences', '\U0001f4c8 Projets & Comp\u00e9tences', 'Dossiers Projets & Comp\u00e9tences de cette action'),
     Screen('quality', '\U0001f4cb Qualit\u00e9', 'Suivi qualit\u00e9 de l\u2019action'),
     Screen('reports', '\U0001f4e3 Signaler / informer', 'Transmissions \u00e0 l\u2019administration'),
 )
@@ -48,6 +50,7 @@ ADMIN_ACTION_SCREENS = (
     Screen('action_calendrier', '\U0001f4c5 Calendrier', 'Calendrier et cr\u00e9neaux'),
     Screen('action_teams', '\U0001f4bb Teams', 'R\u00e9unions Teams et pr\u00e9sences'),
     Screen('action_outils', '\U0001f9ed Outils Clart\u00e9360', 'Prescriptions et outils'),
+    Screen('action_projets_competences', '\U0001f4c8 Projets & Comp\u00e9tences', 'Suivi Projets & Comp\u00e9tences de cette action'),
     Screen('action_contractualisation', '\U0001f4dd Contractualisation', 'Contrats et conventions'),
     Screen('action_envois', '\U0001f4e8 Envois et relances', 'Envois, convocations et relances'),
     Screen('action_suivi', '\U0001f4ca Suivi / \u00e9margements', 'Suivi, \u00e9margements et justificatifs'),

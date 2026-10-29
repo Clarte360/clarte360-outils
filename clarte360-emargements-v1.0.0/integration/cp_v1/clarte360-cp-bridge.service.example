@@ -1,0 +1,23 @@
+[Unit]
+Description=Clarte360 GDA CP_V1 document bridge
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0
+Environment=CLARTE360_SECRET_FILE=/opt/clarte360/secrets/secrets.toml
+Environment=CP_GDA_BIND=127.0.0.1
+Environment=CP_GDA_PORT=8765
+ExecStart=/opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0/.venv/bin/python /opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0/integration/cp_v1/cp_hub_api.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/clarte360/clarte360-outils/clarte360-emargements-v1.0.0/data
+
+[Install]
+WantedBy=multi-user.target

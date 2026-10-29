@@ -27,7 +27,7 @@ def test_structured_row_update_and_delete(tmp_path):
 
 def test_rc21_version_and_live_table_ui():
     import branding
-    assert branding.APP_VERSION=='3.0.0-P5-RECETTE-RC2'
+    assert branding.APP_VERSION=='3.0.0-P5-RECETTE-RC3-GO30-CANDIDAT'
     src=open('app.py',encoding='utf-8').read()
     assert 'Gérer un dossier de la liste' in src
     assert 'Ouvrir / étudier' in src

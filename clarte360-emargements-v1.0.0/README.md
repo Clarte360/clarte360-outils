@@ -1,4 +1,4 @@
-# Clarté360 — Gestion des actions / Émargements — P5-RECETTE-RC2
+# Clarté360 — Gestion des actions / Émargements — P5-RECETTE-RC3-GO30-CANDIDAT
 
 > **Livrable J11 pour recette sur VPS, pas validation d'exploitation définitive.**
 > Le seul guide de déploiement à considérer est `DEPLOIEMENT_VPS.md` (Framework VPS V1.4).

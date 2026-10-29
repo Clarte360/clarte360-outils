@@ -38,7 +38,7 @@ def _direct_section_keys(name):
 
 
 @pytest.mark.parametrize('role,expected',[
-    ('BENEFICIARY',12),('TRAINER',9),('ADMIN_ACTION',12)
+    ('BENEFICIARY',13),('TRAINER',10),('ADMIN_ACTION',13)
 ])
 def test_p3_all_portal_screens_registered(role,expected):
     sections=screens_for_role(role)
@@ -179,3 +179,17 @@ def test_newly_created_action_is_selected_in_context():
     source=ast.get_source_segment(APP,_fn('create_action_screen'))
     assert "st.session_state['p3_admin_action_id']=aid" in source
     assert "st.session_state.selected_action=aid" in source
+
+
+def test_projects_competences_has_dedicated_action_scoped_navigation():
+    assert 'projects_competences' in [x.key for x in screens_for_role('BENEFICIARY', action_selected=True)]
+    assert 'projects_competences' not in [x.key for x in screens_for_role('BENEFICIARY', action_selected=False)]
+    assert 'projects_competences' in [x.key for x in screens_for_role('TRAINER')]
+    assert 'action_projets_competences' in [x.key for x in screens_for_role('ADMIN_ACTION')]
+
+def test_projects_competences_is_not_opened_from_generic_beneficiary_tools():
+    app=Path('app.py').read_text(encoding='utf-8')
+    assert "_render_projects_competences(selected_action_id,role='BENEFICIAIRE'" in app
+    assert "if ctx.get('tool_code')=='COMPETENCES_PROJETS':" in app
+    assert "prescriptions=[pr for pr in prescriptions if pr.get('tool_code')!='COMPETENCES_PROJETS']" in app
+    assert "build_cp_launch(ENGINE,pr['prescription_id'],role,actor_id,key)" in app
