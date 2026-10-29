@@ -267,14 +267,12 @@ def test_histories_remain_after_short_decision(ctx):
     assert case['messages'][0]['message']=='Suivi'
 
 
-def test_ui_global_and_action_share_plan_surveys_history_without_legacy_edits():
-    # CDC V1.0 / maquette V1.1: the visible permanent plan replaces the old
-    # "À traiter" entry; it is no longer hidden inside History. Same controls.
+def test_ui_global_and_action_share_three_views_without_duplicated_legacy_edits():
     s=(Path(__file__).resolve().parents[1]/'app.py').read_text(encoding='utf8')
     assert s.count('def render_quality_case_workbench(')==1
     action=s[s.index('def quality_tab(a):'):s.index('def documents_tab(a):')]
     general=s[s.index('def quality_management_screen():'):s.index('def studies_screen():')]
-    for view in ('Plan d’actions unique','Enquêtes et indicateurs','Historique'):
+    for view in ('À traiter','Enquêtes et indicateurs','Historique'):
         assert view in action and view in general
     assert 'update_quality_issue(' not in action and 'update_user_report(' not in action
     assert 'render_quality_case_workbench(action_id=a[\'id\']' in action
@@ -302,22 +300,9 @@ def test_beneficiary_scores_do_not_mix_intervenant_questionnaires(ctx):
     assert quality_dashboard_v31(e,action_id=a)['by_kind']['TRAINER']['score']==5.0
 
 
-def test_general_quality_actions_and_legacy_review_remain_visible_in_org(ctx):
-    # GO4 uses an explicit authorized organization instead of an unscoped
-    # display filter. General requests stay visible without guessing a training.
-    import quality_service as go4
-    engine,oid,*_=ctx
-    execute(engine,"INSERT INTO admins(email,password_hash,active,role,created_at) VALUES(:e,'fictive',1,'ADMIN',:n)",
-            {'e':ADMIN,'n':utcnow_iso()})
-    actor=go4.QualityActor('ADMIN',ADMIN,oid)
-    event_id=go4.create_action(engine,actor,'Prévention générale fictive',command_id='j3-general-go4')
-    general=go4.list_actions(engine,actor)
-    assert event_id in {row['id'] for row in general}
-    assert next(row for row in general if row['id']==event_id)['action_id'] is None
+def test_historical_orphan_quality_cases_remain_visible_to_unfiltered_admin():
     s=(Path(__file__).resolve().parents[1]/'app.py').read_text(encoding='utf8')
-    assert "quality_v1.available_organizations(ENGINE,'ADMIN',st.session_state.admin_email)" in s
-    assert 'Toutes, y compris les actions générales' in s
-    assert "render_quality_legacy(ENGINE,actor,key='quality_global_legacy')" in s
+    assert "scope_ids=None if action_id is None and org_id is None and kind is None else filtered_ids" in s
     assert 'Aucun rattachement automatique' in s
 
 

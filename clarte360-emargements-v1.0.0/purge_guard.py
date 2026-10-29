@@ -88,7 +88,7 @@ def _related_snapshot(conn, action_id, data_root):
     columns={t: {c['name'] for c in inspect(conn).get_columns(t)} for t in tables}
     ids={}
     for name in tables:
-        if name in ('actions','action_purge_journal','action_purge_certifications'):
+        if name in ('actions','action_purge_journal'):
             continue
         if 'action_id' in columns[name] and 'id' in columns[name]:
             ids[name]=_ids(conn,name,args={'aid':action_id})
@@ -187,12 +187,8 @@ def _related_snapshot(conn, action_id, data_root):
             if other:
                 raise ValueError('Revue Qualite liee a une campagne exterieure.')
     if 'audit_log' in tables:
-        # Certification attempts are purge-control metadata, not changes to the
-        # underlying action. Keep all other audit events in the fingerprint.
-        ids['audit_log']=[int(x['id']) for x in _fetch(conn,'''SELECT id FROM audit_log
-          WHERE (action_id=:a OR (entity_type='action' AND entity_id=:s))
-            AND (event_type IS NULL OR event_type <> 'ACTION_TEST_CERTIFIED')''',
-          {'a':action_id,'s':str(action_id)})]
+        ids['audit_log']=[int(x['id']) for x in _fetch(conn,'''SELECT id FROM audit_log WHERE action_id=:a
+          OR (entity_type='action' AND entity_id=:s)''',{'a':action_id,'s':str(action_id)})]
 
     # A cross-action quality link must never be silently broken.
     if events and 'quality_review_points' in tables:
@@ -354,12 +350,8 @@ def certify_test_action(engine,action_id,actor,*,evidence,confirmation,password,
     ensure_purge_schema(engine)
     with engine.begin() as conn:
         admin=_one(conn,'SELECT password_hash FROM admins WHERE LOWER(email)=:a AND active=1',{'a':actor})
-        if not admin:
-            return False,'Diagnostic authentification : compte administrateur de la session introuvable dans la base active.'
-        if not password:
-            return False,'Diagnostic authentification : aucun mot de passe recu depuis le formulaire.'
-        if not verify_password(password,admin['password_hash']):
-            return False,'Diagnostic authentification : mot de passe recu mais non valide pour le compte de la session.'
+        if not admin or not verify_password(password or '',admin['password_hash']):
+            return False,'Identite administrateur non validee.'
         row=_one(conn,'SELECT * FROM actions WHERE id=:a',{'a':int(action_id)})
         if not row:
             return False,'Action introuvable.'

@@ -1639,15 +1639,6 @@ def init_db(engine: Engine):
         # J8 - mission assignment proof, separate from legal/economic master applications.
         from mission_engagements import MISSION_SCHEMA
         for sql in MISSION_SCHEMA: c.execute(text(sql))
-        # GO4 is additive: one canonical Quality row, existing history retained.
-        from quality_service import init_quality_schema
-        from quality_notifications import init_notification_schema
-        init_quality_schema(c)
-        init_notification_schema(c)
-        from quality_metrics import init_metrics_schema
-        init_metrics_schema(c)
-        from quality_watch import init_watch_schema
-        init_watch_schema(c)
 
 def q(engine, sql, params=None):
     with engine.connect() as c:

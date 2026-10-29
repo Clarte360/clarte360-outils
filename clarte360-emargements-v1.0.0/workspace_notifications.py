@@ -64,16 +64,6 @@ def _role(role,key):
 
 def _authorized(engine,role,key,action_id=None,target_kind=None,target_id=None,*,allow_pending_client=False):
     """Every listing and acknowledgment is checked against *current* permissions."""
-    if target_kind == 'QUALITY':
-        event=one(engine,'SELECT organization_id,go4_managed,action_id FROM quality_events WHERE id=:i',{'i':target_id})
-        if event and event.get('go4_managed'):
-            if event.get('action_id') != action_id: return False
-            from quality_service import QualityActor, get_action
-            try:
-                get_action(engine,QualityActor(role,key,event['organization_id']),int(target_id))
-                return True
-            except (PermissionError,ValueError,TypeError):
-                return False
     if role=='ADMIN':
         if not one(engine,"SELECT id FROM admins WHERE lower(email)=:e AND active=1",{'e':key}):return False
     elif role=='TRAINER':

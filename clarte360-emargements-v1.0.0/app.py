@@ -18,10 +18,6 @@ from ui_guard import log_ui_exception, safe_call, user_message
 from production_readiness import runtime_readiness
 from services import *
 from services import _duration_hms, _slot_participant_states
-import quality_service as quality_v1
-from quality_ui import (actor_for_space, render_quality_workspace, render_quality_plan,
-    render_quality_satisfaction, render_quality_watch, render_quality_legacy,
-    render_watch_decisions, render_quality_settings)
 from purge_guard import preview_action_purge, certify_test_action, recover_action_purges, legacy_quality_orphans
 from input_validation import validate_action_no, validate_short_text, validate_date_range, validate_participant_payload, validate_email, validate_full_name, InputValidationError
 from excel_import import read_action_xlsm, list_action_numbers_for_profile, read_clarte360_xlsm, read_adca_xlsm, list_action_numbers
@@ -60,7 +56,7 @@ from client_portal import (
 )
 
 
-st.set_page_config(page_title=APP_NAME,page_icon=str(ICON_PATH),layout='wide',initial_sidebar_state='auto')
+st.set_page_config(page_title=APP_NAME,page_icon=str(ICON_PATH),layout='wide',initial_sidebar_state='expanded')
 st.markdown(CSS,unsafe_allow_html=True)
 
 def secret(section,key,default=None):
@@ -979,13 +975,45 @@ def render_trainer_action(action, trainer):
                     except Exception: val=x.get('answer_json')
                     view.append({'Question':x['question_text'],'Réponse':val})
                 if view: st.dataframe(pd.DataFrame(view),use_container_width=True,hide_index=True)
-            st.caption('Les réponses des bénéficiaires et les petits groupes restent protégés. Votre affectation à la formation n’ouvre pas leur satisfaction individuelle.')
+            # J3: only beneficiary HOT/COLD results, never TRAINER/NPS as a /5 average.
+            bstats=quality_question_stats(ENGINE,action_id=aid,campaign_kinds=('HOT','COLD'))
+            bcamps=q(ENGINE,"SELECT campaign_kind,status FROM quality_campaigns WHERE action_id=:a AND campaign_kind IN ('HOT','COLD')",{'a':aid})
+            completed=sum(1 for x in bcamps if x['status']=='COMPLETED')
+            if bcamps:
+                st.markdown('#### Résultats des bénéficiaires de cette action')
+                total_notes=sum(x['Notes valides 1-5'] for x in bstats)
+                total_score=sum(x['_sum_1_5'] for x in bstats)
+                c1,c2=st.columns(2)
+                c1.metric('Moyenne des réponses',f"{total_score/total_notes:.2f}/5" if total_notes else '—')
+                c2.metric('Questionnaires reçus',f"{completed}/{len(bcamps)}")
+                if bstats:
+                    st.dataframe(pd.DataFrame([{'Thème':x['Rubrique'],'Question':x['Question'],'Réponses':x['Réponses'],'Moyenne':x['Moyenne'] if x['Moyenne'] is not None else '—'} for x in bstats]),use_container_width=True,hide_index=True)
         else:
             st.info(f"Questionnaire disponible : {camp.get('questionnaire_title') or 'Retour intervenant'}")
             st.link_button('OUVRIR LE QUESTIONNAIRE',quality_token_url(camp['token'],BASE_URL),type='primary')
     if selected_section=='reports':
-        render_quality_workspace(ENGINE,'TRAINER',tid,action_id=aid,key=f'trainer_action_{aid}')
-
+        st.caption("Vous pouvez transmettre une observation, une difficulté, un incident, un problème logistique ou une demande de contact à l'administration.")
+        with st.form(f'tr_report_{aid}',clear_on_submit=True):
+            rt=st.selectbox('Nature',['Observation','Difficulté','Incident','Problème logistique','Besoin de contact','Autre'])
+            subject=st.text_input('Objet *'); desc=st.text_area('Description *',height=150)
+            st.caption('Ce signalement sera automatiquement intégré au suivi qualité, avec la nature sélectionnée ci-dessus.')
+            up=_j4_report_file_uploader('Joindre éventuellement un document (10 Mo max)',types=['pdf','docx','xlsx','png','jpg','jpeg','txt'],key=f'tr_report_file_{aid}')
+            submit=st.form_submit_button('TRANSMETTRE À L’ADMINISTRATION',type='primary')
+        if submit:
+            if not subject.strip() or not desc.strip(): st.error('Objet et description sont obligatoires.')
+            elif up is not None and up.size>10*1024*1024: st.error('Le fichier dépasse 10 Mo.')
+            else:
+                ap=an=None
+                if up is not None:
+                    safe=re.sub(r'[^A-Za-z0-9._-]+','_',up.name)[:120]; an=up.name; ap=str(TRAINER_REPORT_DIR/f"{aid}_{tid}_{int(datetime.now().timestamp())}_{safe}"); Path(ap).write_bytes(up.getvalue())
+                rid=create_trainer_report(ENGINE,aid,tid,rt,subject.strip(),desc.strip(),True,ap,an)
+                if rid: st.success('Votre message a été transmis à l’administration et journalisé.')
+                else: st.error('Transmission impossible : action non autorisée.')
+        history=trainer_reports(ENGINE,aid,tid)
+        if history:
+            _j4_portal_threads('TRAINER',tid,history)
+            st.markdown('#### Mes transmissions récentes')
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x['created_at']),'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status'].replace('_',' '),'Réponse administration':x.get('admin_response') or ''} for x in history]),use_container_width=True,hide_index=True)
 
 def trainer_portal_page():
     _restore_trainer_session()
@@ -1069,7 +1097,19 @@ def trainer_portal_page():
         st.info('Les versions et preuves des engagements restent historisées, y compris après remplacement.')
         footer();return
     if selected_view=='Mes échanges':
-        render_quality_workspace(ENGINE,'TRAINER',tid,key='trainer_personal')
+        st.markdown('### Mes échanges avec Clarté360')
+        myids=[int(a['id']) for a in acts]
+        # Filter on both the authenticated trainer AND his currently authorized actions.
+        all_reports=[]
+        for aid in myids:all_reports.extend(trainer_reports(ENGINE,aid,tid))
+        all_reports.sort(key=lambda x:(x.get('created_at') or '',int(x.get('id') or 0)),reverse=True)
+        if all_reports:
+            _j4_portal_threads('TRAINER',tid,all_reports)
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x.get('created_at')),
+                'Objet':x['subject'],'Statut':str(x.get('status') or '').replace('_',' '),
+                'Réponse administration':x.get('admin_response') or ''} for x in all_reports[:80]]),use_container_width=True,hide_index=True)
+        else:st.info('Aucune transmission enregistrée pour vos actions actuellement accessibles.')
+        st.caption("Pour envoyer un nouveau signalement, ouvrez l'action concernée, puis « Signaler / informer ».")
         footer();return
     if selected_view=='Mes interventions':
         if not acts:
@@ -1265,7 +1305,7 @@ def beneficiary_portal_page():
         b4,b5,b6=st.columns(3)
         b4.metric('Rendez-vous à venir',len(overview['upcoming']))
         b5.metric('Signatures à régulariser',overview['signatures_to_review'])
-        b6.metric('Demandes envoyées',overview['quality_request_count'])
+        b6.metric('Demandes envoyées',len(overview['reports']))
         personal_view=st.radio('Mon espace personnel',['Mon activité','Mes documents','Mes échanges'],
             horizontal=True,key='j7_benef_home_view')
         if personal_view=='Mon activité':
@@ -1293,7 +1333,11 @@ def beneficiary_portal_page():
             if not overview['documents']:st.info('Aucun document partagé.')
             st.caption('Ouvrez le dossier concerné dans le menu pour télécharger le document autorisé.')
         if personal_view=='Mes échanges':
-            render_quality_workspace(ENGINE,'BENEFICIARY',bid,key='beneficiary_personal')
+            st.caption('Retrouvez vos signalements, les réponses de l’administration et leur état.')
+            for report in overview['reports'][:20]:
+                st.write(f"{report.get('action_no') or 'Action'} — {report['subject']} · {report['status']}")
+                if report.get('admin_response'):st.caption(f"Réponse : {report['admin_response']}")
+            if not overview['reports']:st.info('Aucune demande envoyée.')
         st.markdown('#### Mes formations et accompagnements')
         if all_acts:
             st.dataframe(pd.DataFrame([{'Action':a['action_no'],'Intitulé':a['title'],
@@ -1451,7 +1495,32 @@ def beneficiary_portal_page():
             st.divider()
 
     if selected_section=='reports':
-        render_quality_workspace(ENGINE,'BENEFICIARY',bid,action_id=selected_action_id,key='beneficiary_reports')
+        st.caption("Vous pouvez transmettre une observation, une difficulté, un incident, un problème logistique ou une demande de contact à l'administration. Votre historique reste visible après traitement.")
+        if acts:
+            amap={f"{aa['action_no']} — {aa['title']}":aa for aa in acts}
+            with st.form('beneficiary_report_form',clear_on_submit=True):
+                al=st.selectbox('Action concernée',list(amap),key='benef_report_action'); aa=amap[al]
+                rt=st.selectbox('Nature',['Observation','Difficulté','Incident','Problème logistique','Besoin de contact','Autre'],key='benef_report_type')
+                subject=st.text_input('Objet *',key='benef_report_subject'); desc=st.text_area('Description *',height=150,key='benef_report_desc')
+                st.caption('Ce signalement sera automatiquement intégré au suivi qualité, avec la nature sélectionnée ci-dessus.')
+                up=_j4_report_file_uploader('Joindre éventuellement un document (10 Mo max)',types=['pdf','docx','xlsx','png','jpg','jpeg','txt','json'],key='benef_report_file')
+                submit=st.form_submit_button('TRANSMETTRE À L’ADMINISTRATION',type='primary')
+            if submit:
+                if not subject.strip() or not desc.strip(): st.error('Objet et description sont obligatoires.')
+                elif up is not None and up.size>10*1024*1024: st.error('Le fichier dépasse 10 Mo.')
+                else:
+                    ap=an=None
+                    if up is not None:
+                        safe=re.sub(r'[^A-Za-z0-9._-]+','_',up.name)[:120]; an=up.name; ap=str(TRAINER_REPORT_DIR/f"benef_{aa['id']}_{bid}_{int(datetime.now().timestamp())}_{safe}"); Path(ap).write_bytes(up.getvalue())
+                    rid=create_beneficiary_report(ENGINE,aa['id'],bid,rt,subject.strip(),desc.strip(),True,ap,an)
+                    if rid: st.success("Votre signalement a été transmis à l'administration et journalisé."); rerun()
+                    else: st.error('Transmission impossible pour cette action.')
+        hist=beneficiary_reports(ENGINE,beneficiary_id=bid)
+        if hist:
+            _j4_portal_threads('BENEFICIARY',bid,hist)
+            st.markdown('#### Mes signalements')
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x['created_at']),'Action':x['action_no'],'Nature':x['report_type'],'Objet':x['subject'],'Statut':x['status'].replace('_',' '),'Réponse administration':x.get('admin_response') or ''} for x in hist]),use_container_width=True,hide_index=True)
+        else: st.info('Aucun signalement transmis.')
     if selected_section=='archives':
         st.caption('Vous pouvez télécharger à tout moment une copie des documents actuellement mis à disposition dans votre portail.')
         if acts:
@@ -1778,23 +1847,16 @@ def _j4_notification_destination(role,notice):
         if kind=='PROFESSIONAL_DOCUMENT':
             st.session_state['_j6_next_trainer_view']='Mon dossier professionnel'
             return
-        if kind=='QUALITY':
-            st.session_state['j4_focus_event_id']=int(notice['target_id'])
-            if aid is None:
-                st.session_state.pop('j4_trainer_action',None)
-                st.session_state['_j6_next_trainer_view']='Mes échanges'
-                return
-        if aid is None:return
+        if kind=='QUALITY':st.session_state['j4_focus_event_id']=int(notice['target_id'])
         st.session_state['j4_trainer_action']=int(aid)
         st.session_state[f'p3_screen_trainer_{aid}']='reports' if kind=='QUALITY' else 'documents' if kind=='DOCUMENT' else 'planning' if notice['event_code']=='PLANNING_CHANGED' else 'overview'
     elif role=='BENEFICIARY':
         if kind=='QUALITY':st.session_state['j4_focus_event_id']=int(notice['target_id'])
-        st.session_state['p3_beneficiary_action_id']=int(aid) if aid is not None else None
+        st.session_state['p3_beneficiary_action_id']=int(aid)
         st.session_state['p3_screen_beneficiary']='reports' if kind=='QUALITY' else 'documents' if kind=='DOCUMENT' else 'planning' if notice['event_code']=='PLANNING_CHANGED' else 'journey'
     elif role=='CLIENT':
-        if kind=='QUALITY':st.session_state['j4_focus_event_id']=int(notice['target_id'])
-        st.session_state['p4_client_action_id']=int(aid) if aid is not None else None
-        st.session_state[f'p3_screen_client_{aid}']='quality' if kind=='QUALITY' else 'documents' if kind=='DOCUMENT' else 'actions'
+        st.session_state['p4_client_action_id']=int(aid)
+        st.session_state[f'p3_screen_client_{aid}']='documents' if kind=='DOCUMENT' else 'actions'
 
 def _j4_portal_threads(role,subject_id,reports):
     from services import quality_portal_thread
@@ -3506,15 +3568,134 @@ def tracking_tab(a):
 
 # J2 : one administrative workbench for one canonical Quality case.
 # Called identically from the general dashboard and an action's Quality tab.
-def render_quality_case_workbench(action_id=None, action_ids=None, key='quality', status_filter=None, focus_event_id=None, actor=None, prestation_type=None):
-    # GO4 uses the same server-authorized canonical plan in all entry points.
-    # action_ids was an RC2 display-only filter; authorization now comes from
-    # the active account and explicit organization, including general actions.
-    actor=actor or actor_for_space(ENGINE,'ADMIN',st.session_state.admin_email,action_id=action_id,key=key)
-    if actor is None:return
-    render_quality_plan(ENGINE,actor,action_id=action_id,key=key,
-        status='OPEN' if status_filter=='open' else status_filter,
-        prestation_type=prestation_type,focus_event_id=focus_event_id)
+def render_quality_case_workbench(action_id=None, action_ids=None, key='quality', status_filter=None, focus_event_id=None):
+    events=list_quality_events(ENGINE,action_id=action_id)
+    if focus_event_id is not None: events=[event for event in events if event['id']==int(focus_event_id)]
+    if action_ids is not None:
+        permitted=set(action_ids)
+        events=[x for x in events if x.get('action_id') in permitted]
+    if status_filter=='open':
+        events=[x for x in events if x.get('status') not in {'CLOTURE','REFUSE','CLASSE_SANS_SUITE'}]
+    st.markdown('### Fiches Qualité et actions correctives')
+    if not events:
+        st.info('Aucune fiche Qualité dans ce périmètre.')
+        return
+    closed={'CLOTURE','REFUSE','CLASSE_SANS_SUITE'}
+    st.caption('Une fiche commune aux deux niveaux de navigation. Les réponses et les changements de statut restent historisés ; les destinataires concernés reçoivent une notification interne.')
+    st.dataframe(pd.DataFrame([{'Réf.':x['public_id'],'Action':x.get('action_no') or '—',
+        'Origine':x.get('origin') or '—','Nature':x.get('event_type') or '—','Objet':x.get('subject') or '',
+        'Statut':x.get('status') or '—','Responsable':x.get('owner_name') or '—'} for x in events]),use_container_width=True,hide_index=True)
+    labels={f"{ev['public_id']} — {ev.get('action_no') or 'sans action'} — {ev.get('subject') or ''}":ev for ev in events}
+    selected=st.selectbox('Ouvrir une fiche Qualité',list(labels),key=f'{key}_j2_case_select')
+    ev=labels[selected]; case=quality_case(ENGINE,ev['id'])
+    st.markdown(f"#### {ev['public_id']} — {ev.get('subject') or ''}")
+    st.caption(f"Action : {ev.get('action_no') or 'non rattachée'} · Source : {ev.get('origin') or '—'} · Statut : {ev['status']}")
+    st.write(ev.get('description') or 'Aucune description enregistrée.')
+    # J3: concise triage for a questionnaire's R12/I06 comment, same canonical case.
+    if ev.get('family')=='QUESTIONNAIRES' and ev.get('origin') in ('QUESTIONNAIRE_R12_I06','QUESTIONNAIRE_POINT_FAIBLE','QUESTIONNAIRE') and ev.get('status') not in {'CLOTURE','REFUSE','CLASSE_SANS_SUITE'}:
+        with st.expander('Traitement court de cette remarque questionnaire',expanded=False):
+            decisions={'Prendre en compte':'PRISE_EN_COMPTE','Demander des précisions':'RETOUR_DEMANDE',
+                'Classer avec justification':'CLASSE','Ouvrir une action corrective':'PLAN_ACTION'}
+            with st.form(f'{key}_j3_short_event_{ev["id"]}'):
+                decision_label=st.selectbox('Décision rapide',list(decisions))
+                short_comment=st.text_area('Motif / réponse — toujours historisé')
+                submitted=st.form_submit_button('Valider le traitement court')
+            if submitted:
+                try:
+                    quality_short_treatment(ENGINE,st.session_state.admin_email,decisions[decision_label],short_comment,event_id=ev['id'])
+                    st.success('Décision ajoutée à la chronologie. Les notifications internes sont disponibles.');rerun()
+                except ValueError as ex:st.error(str(ex))
+    with st.form(f'{key}_quality_edit_{ev["id"]}'):
+        state_list=list(QUALITY_EVENT_STATUSES)
+        c1,c2,c3=st.columns(3)
+        new_status=c1.selectbox('Statut Qualité',state_list,index=state_list.index(ev['status']) if ev['status'] in state_list else 0)
+        choices=quality_owner_choices(ENGINE)
+        labels_owner=['— Non affecté —']+[x['label'] for x in choices]
+        old_label=next((x['label'] for x in choices if x['owner_name']==(ev.get('owner_name') or '')),'— Non affecté —')
+        selected_owner=c2.selectbox('Responsable',labels_owner,index=labels_owner.index(old_label))
+        old_date=None
+        try:old_date=date.fromisoformat(str(ev.get('due_at') or '')[:10]) if ev.get('due_at') else None
+        except ValueError:pass
+        new_date=c3.date_input('Échéance',value=old_date,format=app_date_input_format())
+        severity=['MINEURE','MAJEURE','CRITIQUE']; urgency=['NORMALE','HAUTE','URGENTE']
+        col1,col2=st.columns(2)
+        new_severity=col1.selectbox('Gravité',severity,index=severity.index(ev['severity']) if ev.get('severity') in severity else 0)
+        new_urgency=col2.selectbox('Urgence',urgency,index=urgency.index(ev['urgency']) if ev.get('urgency') in urgency else 0)
+        qual=st.text_area('Qualification / analyse',value=ev.get('qualification') or '')
+        immediate=st.text_area('Mesure immédiate',value=ev.get('immediate_action') or '')
+        cause=st.text_area('Analyse des causes',value=ev.get('cause_analysis') or '')
+        criteria=st.text_area('Vérification d’efficacité attendue',value=ev.get('effectiveness_criteria') or '')
+        effective=st.text_area('Résultat de la vérification',value=ev.get('effectiveness_result') or '')
+        closure=st.text_area('Décision et motif de clôture / classement',value=ev.get('closure_comment') or '')
+        saved=st.form_submit_button('Enregistrer la fiche Qualité',type='primary')
+    if saved:
+        try:
+            owner=next((x['owner_name'] for x in choices if x['label']==selected_owner),None)
+            updated=update_quality_event(ENGINE,ev['id'],st.session_state.admin_email,status=new_status,
+                owner_name=owner,severity=new_severity,urgency=new_urgency,due_at=new_date.isoformat() if new_date else None,
+                qualification=qual,immediate_action=immediate,cause_analysis=cause,
+                effectiveness_criteria=criteria,effectiveness_result=effective,closure_comment=closure)
+            st.success('Fiche enregistrée, décision historisée.' if updated else 'Aucune modification à enregistrer.');rerun()
+        except ValueError as ex:st.error(str(ex))
+    st.markdown('#### Notes, réponses et historique de correspondance')
+    links=case['sources']
+    directions={'Note interne (administration)':'INTERNE'}
+    if any(x['source_kind']=='TRAINER_REPORT' for x in links):directions['Réponse à l’intervenant']='VERS_INTERVENANT'
+    if any(x['source_kind']=='BENEFICIARY_REPORT' for x in links):directions['Réponse au bénéficiaire']='VERS_BENEFICIAIRE'
+    with st.form(f'{key}_quality_message_{ev["id"]}',clear_on_submit=True):
+        channel_label=st.selectbox('Destinataire de la note / réponse',list(directions))
+        message=st.text_area('Nouveau message — conserve les réponses précédentes')
+        send=st.form_submit_button('Enregistrer le message')
+    if send:
+        try:
+            add_quality_case_message(ENGINE,ev['id'],st.session_state.admin_email,message,directions[channel_label])
+            st.success('Message ajouté à la chronologie de la fiche.');rerun()
+        except ValueError as ex:st.error(str(ex))
+    messages=case['messages']
+    if messages:
+        st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x['created_at']),'Auteur':x['author'],'Type':x['direction'],
+            'Destinataire':x.get('recipient') or '—','Message':x['message']} for x in messages]),use_container_width=True,hide_index=True)
+    else:st.caption('Aucun échange enregistré pour cette fiche.')
+    with st.expander('Historique immuable des décisions et changements',expanded=False):
+        histories=case['history']
+        if histories:
+            st.dataframe(pd.DataFrame([{'Date':format_app_datetime(x['created_at']),'Auteur':x['actor'],'Modification':x['change_kind'],
+               'Avant':x.get('before_json') or '—','Après':x.get('after_json') or '—'} for x in histories]),
+               use_container_width=True,hide_index=True)
+        else:st.caption('Fiche issue d’une version antérieure : historique des changements non encore disponible.')
+        if links:
+            st.caption('Sources d’origine conservées : '+', '.join(f"{x['source_kind']} #{x['source_id']}" for x in links))
+    st.markdown('#### Actions correctives et préventives')
+    capas=case['actions']
+    if capas:
+        st.dataframe(pd.DataFrame([{'N°':x['id'],'Action':x['title'],'Responsable':x.get('owner_name') or '—',
+            'Échéance':format_app_deadline(x.get('due_at')),'Statut':x['status']} for x in capas]),use_container_width=True,hide_index=True)
+        ca_map={f"#{x['id']} — {x['title']}":x for x in capas}
+        csel=st.selectbox('Modifier une action corrective',list(ca_map),key=f'{key}_capa_sel_{ev["id"]}')
+        ca=ca_map[csel]
+        with st.form(f'{key}_capa_update_{ca["id"]}'):
+            capa_statuses=['A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE']
+            c1,c2=st.columns(2)
+            cst=c1.selectbox('Statut CAPA',capa_statuses,index=capa_statuses.index(ca['status']))
+            cowner=c2.text_input('Responsable CAPA',value=ca.get('owner_name') or '')
+            evidence=st.text_input('Référence de preuve',value=ca.get('evidence_ref') or '')
+            effic=st.text_area('Résultat d’efficacité',value=ca.get('effectiveness_result') or '')
+            csave=st.form_submit_button('Enregistrer l’action corrective')
+        if csave:
+            update_quality_event_action(ENGINE,ca['id'],st.session_state.admin_email,status=cst,
+                owner_name=cowner,evidence_ref=evidence,effectiveness_result=effic)
+            st.success('Action corrective mise à jour et historisée.');rerun()
+    with st.expander('Ajouter une action corrective ou préventive',expanded=False):
+        with st.form(f'{key}_new_capa_{ev["id"]}',clear_on_submit=True):
+            title=st.text_input('Action à réaliser')
+            description=st.text_area('Description')
+            responsible=st.text_input('Responsable de l’action')
+            due=st.date_input('Échéance',value=None,format=app_date_input_format())
+            create=st.form_submit_button('Ajouter au plan d’action')
+        if create and title.strip():
+            add_quality_event_action(ENGINE,ev['id'],title.strip(),st.session_state.admin_email,
+               description,owner_name=responsible,due_at=due.isoformat() if due else None)
+            st.success('CAPA ajoutée à la fiche de référence.');rerun()
 
 
 def quality_legacy_reconciliation_widget(action_id=None,scope_ids=None,key='quality_reconcile'):
@@ -3545,9 +3726,21 @@ def quality_legacy_reconciliation_widget(action_id=None,scope_ids=None,key='qual
 def render_quality_campaign_pilotage(action_id=None,organization_id=None,prestation_type=None,key='quality_j3'):
     overview=quality_campaign_pilotage(ENGINE,organization_id=organization_id,
         prestation_type=prestation_type,action_id=action_id)
-    actor=quality_v1.QualityActor('ADMIN',st.session_state.admin_email,organization_id) if organization_id is not None else actor_for_space(ENGINE,'ADMIN',st.session_state.admin_email,action_id=action_id,key=key)
-    if actor is None:return
-    render_quality_satisfaction(ENGINE,actor,action_id=action_id,prestation_type=prestation_type,key=key+'_metrics')
+    dashboard=quality_dashboard_v31(ENGINE,organization_id=organization_id,
+        prestation_type=prestation_type,action_id=action_id)
+    st.markdown('### Indicateurs questionnaires — échelles séparées')
+    st.caption('Les notes /5 utilisent exclusivement les réponses 1–5 valides. NPS (0–10), N/A et textes ne sont jamais mélangés aux moyennes sur 5.')
+    cols=st.columns(5)
+    groups=[('HOT','À chaud'),('COLD','À froid'),('TRAINER','Intervenant'),('CLIENT','Client / prescripteur'),('OPCO','OPCO')]
+    for col,(kind,label) in zip(cols,groups):
+        record=dashboard['by_kind'].get(kind,{})
+        if kind=='CLIENT':
+            other=dashboard['by_kind'].get('PRESCRIBER',{})
+            first=quality_campaign_pilotage_summary(ENGINE,organization_id,prestation_type,action_id,('CLIENT','PRESCRIBER'))
+            val=first.get('score');completed=first['completed'];total=first['invitations']
+        else:
+            val=record.get('score');completed=record.get('responses',0);total=record.get('invitations',0)
+        col.metric(label, '—' if val is None else f'{val:.2f}/5',f'{completed}/{total} réponse(s)' if total else 'Aucune campagne')
     st.markdown('### Campagnes, échéances, envois et relances')
     rows=overview['rows']
     if not rows:
@@ -3567,20 +3760,6 @@ def render_quality_campaign_pilotage(action_id=None,organization_id=None,prestat
         choice=st.selectbox('Ouvrir une campagne',list(selector),key=f'{key}_campaign')
         camp=selector[choice]
         st.caption(f"Statut : {camp['status']} · Envois : {camp['sent_reminders']} relance(s) réalisée(s) · Échéance : {camp.get('due_at') or '—'}")
-        with st.expander('Qualification TEST / RÉEL de cette campagne'):
-            from quality_metrics import classify_campaign
-            contract=one(ENGINE,'SELECT data_classification FROM quality_campaign_contracts WHERE campaign_id=:c',{'c':camp['id']}) or {}
-            classifications=['A_EXAMINER','REAL','TEST']
-            with st.form(f'{key}_classify_campaign_{camp["id"]}'):
-                classification=st.selectbox('Qualification de la campagne',classifications,
-                    index=classifications.index(contract.get('data_classification','A_EXAMINER')),
-                    format_func=lambda value:{'A_EXAMINER':'À examiner','REAL':'RÉEL','TEST':'TEST'}[value])
-                classified=st.form_submit_button('Enregistrer la qualification de cette campagne')
-            if classified:
-                try:
-                    classify_campaign(ENGINE,actor,camp['id'],classification)
-                    st.success('Qualification enregistrée ; la formation et les réponses sont conservées.');rerun()
-                except (ValueError,PermissionError) as ex:st.error(str(ex))
         c1,c2=st.columns(2)
         if c1.button('Préparer une relance manuelle',key=f'{key}_remind_{camp["id"]}',disabled=camp['status']=='COMPLETED'):
             try:
@@ -3596,6 +3775,30 @@ def render_quality_campaign_pilotage(action_id=None,organization_id=None,prestat
             hist=quality_campaign_email_history(ENGINE,camp['id'])
             if hist:st.dataframe(pd.DataFrame([{k:v for k,v in h.items() if k!='last_error'} for h in hist]),use_container_width=True,hide_index=True)
             else:st.caption('Aucun envoi enregistré.')
+    st.markdown('### Analyses des réponses par rubrique')
+    summary=quality_management_summary(ENGINE,organization_id=organization_id,
+        prestation_type=prestation_type,action_id=action_id)
+    if summary.get('nps_score') is not None:
+        st.caption(f"NPS : {summary['nps_score']:+g} (calculé séparément à partir des réponses de 0 à 10 ; non affiché sur 5).")
+    stats=quality_question_stats(ENGINE,organization_id=organization_id,
+        prestation_type=prestation_type,action_id=action_id)
+    if not stats:st.info('Aucune réponse reçue pour les filtres sélectionnés.')
+    else:
+        groups={}
+        for row in stats:groups.setdefault(row['Rubrique'],[]).append(row)
+        summaries=[]
+        for rubric,records in groups.items():
+            valid=sum(x['Notes valides 1-5'] for x in records)
+            total=sum(x['_sum_1_5'] for x in records)
+            summaries.append({'Thème':rubric,'Questions':len(records),
+                'Réponses enregistrées':sum(x['Réponses'] for x in records),
+                'Notes 1–5':valid,'Moyenne /5':round(total/valid,2) if valid else None})
+        st.dataframe(pd.DataFrame(summaries),use_container_width=True,hide_index=True)
+        selected_rubric=st.selectbox('Explorer un thème',list(groups),key=f'{key}_rubric')
+        with st.expander(f'Détail — {selected_rubric}',expanded=False):
+            data=[{'Question':x['Question'],'Échelle':x['Échelle'],'Réponses':x['Réponses'],
+                'Notes 1–5':x['Notes valides 1-5'],'Moyenne /5':x['Moyenne']} for x in groups[selected_rubric]]
+            st.dataframe(pd.DataFrame(data),use_container_width=True,hide_index=True)
 
 
 def render_quality_short_review(action_id=None,scope_ids=None,key='quality_j3'):
@@ -3666,17 +3869,16 @@ def render_quality_history(action_id=None,scope_ids=None,key='quality_j3'):
 
 def quality_tab(a):
     st.subheader('Qualité de l’action')
-    actor=actor_for_space(ENGINE,'ADMIN',st.session_state.admin_email,action_id=a['id'],key=f'quality_action_{a["id"]}')
-    if actor is None:return
     enabled=[]
     if a.get('use_quality_hot'):enabled.append('à chaud')
     if a.get('use_quality_cold'):enabled.append('à froid')
     if a.get('use_trainer_feedback'):enabled.append('retour intervenant')
-    st.caption('Modules activés : '+(', '.join(enabled) if enabled else 'aucun')+'. La même action Qualité et son historique sont accessibles dans le plan général.')
-    render_quality_satisfaction(ENGINE,actor,action_id=a['id'],key=f'quality_action_summary_{a["id"]}',detailed=False)
-    views=st.tabs(['Plan d’actions unique','Enquêtes et indicateurs','Historique'])
+    st.caption('Modules activés : '+(', '.join(enabled) if enabled else 'aucun')+'. Une même fiche et un même historique sont utilisés dans la Qualité générale et dans cette action.')
+    views=st.tabs(['À traiter','Enquêtes et indicateurs','Historique'])
     with views[0]:
-        render_quality_case_workbench(action_id=a['id'],key=f'quality_action_{a["id"]}',actor=actor)
+        render_quality_short_review(action_id=a['id'],key=f'quality_action_{a["id"]}')
+        # J2 common administrative Quality case; no legacy competing edit screen.
+        render_quality_case_workbench(action_id=a['id'],key=f"quality_action_{a['id']}",status_filter='open')
     with views[1]:
         try:
             due=standard_quality_due(ENGINE,a['id'],'HOT')
@@ -3691,13 +3893,10 @@ def quality_tab(a):
                 except ValueError as ex:st.error(str(ex))
         except ValueError:
             st.warning('Renseigner la date de fin ou le planning avant de préparer les campagnes standard.')
-        render_quality_campaign_pilotage(action_id=a['id'],organization_id=actor.organization_id,key=f'quality_action_{a["id"]}')
-        render_quality_short_review(action_id=a['id'],key=f'quality_action_{a["id"]}')
-        render_quality_settings(ENGINE,actor,action_id=a['id'],key=f'quality_action_settings_{a["id"]}')
+        render_quality_campaign_pilotage(action_id=a['id'],key=f'quality_action_{a["id"]}')
     with views[2]:
-        st.caption('Les anciennes conclusions et réouvertures restent dans la chronologie de la même action. Aucun rattachement automatique par ressemblance.')
-        render_quality_plan(ENGINE,actor,action_id=a['id'],key=f'quality_action_history_{a["id"]}',create=False)
-        render_quality_legacy(ENGINE,actor,key=f'quality_action_legacy_{a["id"]}')
+        render_quality_history(action_id=a['id'],key=f'quality_action_{a["id"]}')
+        quality_legacy_reconciliation_widget(action_id=a['id'],key=f"quality_legacy_action_{a['id']}")
 
 
 def documents_tab(a):
@@ -3896,59 +4095,83 @@ def reminders_screen():
     footer()
 
 def quality_management_screen():
-    header('Clarté360 — Pilotage Qualité','Satisfaction, plan d’actions unique et veille utile')
-    orgs=quality_v1.available_organizations(ENGINE,'ADMIN',st.session_state.admin_email)
-    if not orgs:
-        st.info('Aucun organisme actif accessible.');footer();return
-    orgmap={row['name']:row['id'] for row in orgs}
+    header('Clarté360 — Pilotage Qualité','Suivi transversal des enquêtes, difficultés, signalements et plans d’amélioration')
     direct=st.session_state.get('j4_jump_quality')
-    direct_actor=None
     if direct:
-        for row in orgs:
-            candidate=quality_v1.QualityActor('ADMIN',st.session_state.admin_email,row['id'])
-            try:
-                quality_v1.get_action(ENGINE,candidate,direct)
-                direct_actor=candidate
-                st.session_state['qm_org']=row['name']
-                break
-            except (PermissionError,ValueError):continue
-        if direct_actor is None:
-            st.warning('Cette action Qualité est introuvable ou ne vous est plus accessible.')
-            st.session_state.pop('j4_jump_quality',None)
+        case=one(ENGINE,'SELECT id,action_id FROM quality_events WHERE id=:i',{'i':direct})
+        if case:
+            st.info('Ouverture directe de la fiche Qualité depuis une notification ; le dossier reste ouvert jusqu’à sa clôture métier, indépendamment de la notification lue.')
+            if st.button('Retour au pilotage Qualité',key='j4_return_quality'):
+                st.session_state.pop('j4_jump_quality',None);rerun()
+            render_quality_case_workbench(action_id=case.get('action_id'),key='j4_direct',focus_event_id=direct)
+            return
+        st.session_state.pop('j4_jump_quality',None)
+
+    orgs=list_organizations(ENGINE,active_only=True)
+    orgmap={'Tous':None,**{x['name']:x['id'] for x in orgs}}
     c1,c2,c3=st.columns(3)
-    if st.session_state.get('qm_org') not in orgmap:st.session_state['qm_org']=next(iter(orgmap))
     org_label=c1.selectbox('Organisme',list(orgmap),key='qm_org')
-    org_id=orgmap[org_label]
-    actor=quality_v1.QualityActor('ADMIN',st.session_state.admin_email,org_id)
-    quality_v1.require_admin(ENGINE,actor)
     prestation=c2.selectbox('Prestation',['Tous','FORMATION','BILAN_COMPETENCES','VAE','COACHING','MENTORAT','AUTRE'],key='qm_pt')
-    kind=None if prestation=='Tous' else prestation
-    actions=quality_v1.available_trainings(ENGINE,actor)
-    if kind:actions=[a for a in actions if (a.get('prestation_type') or a.get('nature') or '').upper()==kind]
-    options={'Toutes, y compris les actions générales':None,**{f"{a['action_no']} — {a['title']}":a['id'] for a in actions}}
-    if st.session_state.get('qm_action') not in options:st.session_state['qm_action']=next(iter(options))
-    selected=c3.selectbox('Formation ou bilan',list(options),key='qm_action')
+    org_id=orgmap[org_label];kind=None if prestation=='Tous' else prestation
+    actions=q(ENGINE,'SELECT id,action_no,title,organization_id,prestation_type FROM actions ORDER BY action_no')
+    if org_id:actions=[a for a in actions if a.get('organization_id')==org_id]
+    if kind:actions=[a for a in actions if (a.get('prestation_type') or '').upper()==kind]
+    options={'Toutes les actions':None,**{f"{a['action_no']} — {a['title']}":a['id'] for a in actions}}
+    selected=c3.selectbox('Action',list(options),key='qm_action')
     action_id=options[selected]
-    if direct and direct_actor:
-        if st.button('Retour au pilotage Qualité',key='j4_return_quality'):
-            st.session_state.pop('j4_jump_quality',None);rerun()
-        render_quality_case_workbench(action_id=None,key='j4_direct',focus_event_id=direct,actor=direct_actor)
-        footer();return
-    render_quality_satisfaction(ENGINE,actor,action_id=action_id,prestation_type=kind,key='quality_global_summary',detailed=False)
-    views=st.tabs(['Plan d’actions unique','Enquêtes et indicateurs','Veille','Historique'])
+    filtered_ids=[action_id] if action_id is not None else [a['id'] for a in actions]
+    # When no filter is active, allow visibility of historical orphan QE cases in
+    # read-only history (never attach them to an action by assumption).
+    scope_ids=None if action_id is None and org_id is None and kind is None else filtered_ids
+    counts=quality_source_counts(ENGINE,filtered_ids)
+    plan=quality_plan_counts(ENGINE,filtered_ids)
+    if scope_ids is None:
+        orphans=[x for x in list_quality_events(ENGINE) if x.get('action_id') is None]
+        if orphans:
+            st.warning(f'{len(orphans)} fiche(s) Qualité historique(s) sans action : consultables dans Historique. Aucun rattachement automatique.')
+    views=st.tabs(['À traiter','Enquêtes et indicateurs','Historique'])
     with views[0]:
-        render_quality_case_workbench(action_id=action_id,key='quality_global',actor=actor,prestation_type=kind)
-        if action_id is None:render_watch_decisions(ENGINE,actor,key='quality_global_decisions')
+        st.markdown('### Points Qualité à traiter')
+        stats=st.columns(4)
+        for col,(label,key) in zip(stats,[('Notes ≤ 3/5','review_points'),('Difficultés / aléas','difficulties'),
+            ('Réclamations','complaints'),('Signalements / contacts','reports')]):col.metric(label,counts[key])
+        stats2=st.columns(4)
+        for col,(label,key) in zip(stats2,[('Non-conformités','nonconformities'),('Incidents','incidents'),
+            ('Suggestions','suggestions'),('Autres','other')]):col.metric(label,counts[key])
+        st.markdown('### Plan d’action Qualité')
+        pcols=st.columns(5)
+        for col,(label,key) in zip(pcols,[('Total','total'),('En cours','in_progress'),('À vérifier','to_verify'),
+            ('Clôturées','closed'),('En retard','overdue')]):col.metric(label,plan[key])
+        render_quality_short_review(action_id=action_id,scope_ids=scope_ids,key='quality_global')
+        # J2 case is identical here and in action Quality; only the scope differs.
+        render_quality_case_workbench(action_id=action_id,action_ids=scope_ids,key='quality_global',status_filter='open')
+        with st.expander('Créer un événement Qualité',expanded=False):
+            if actions:
+                amap={f"{x['action_no']} — {x['title']}":x['id'] for x in actions}
+                selected_action=st.selectbox('Action concernée',list(amap),key='qm_ev_action')
+                family=st.selectbox('Famille',['EXPRESSION','CONFORMITE','QUESTIONNAIRES','AUDIT','TECHNIQUE','AMELIORATION'],key='qm_ev_family')
+                event_type=st.selectbox('Nature',['INFORMATION','OBSERVATION','SUGGESTION','DIFFICULTE','RECLAMATION','NON_CONFORMITE','INCIDENT','ECART_DOCUMENTAIRE','ECART_ORGANISATIONNEL','OPPORTUNITE'],key='qm_ev_type')
+                subject=st.text_input('Objet',key='qm_ev_subject')
+                details=st.text_area('Description',key='qm_ev_details')
+                severity=st.selectbox('Gravité',['MINEURE','MAJEURE','CRITIQUE'],key='qm_ev_severity')
+                if st.button('Créer la fiche Qualité',disabled=not subject.strip(),key='qm_ev_create'):
+                    create_quality_event(ENGINE,family,event_type,subject.strip(),details.strip(),st.session_state.admin_email,action_id=amap[selected_action],severity=severity)
+                    st.success('Fiche créée et historisée.');rerun()
+            else:st.caption('Aucune action dans ce périmètre.')
     with views[1]:
         render_quality_campaign_pilotage(action_id=action_id,organization_id=org_id,prestation_type=kind,key='quality_global')
-        render_quality_short_review(action_id=action_id,scope_ids=[action_id] if action_id is not None else [a['id'] for a in actions],key='quality_global')
-        render_quality_settings(ENGINE,actor,action_id=action_id,key='quality_global_settings')
     with views[2]:
-        render_quality_watch(ENGINE,actor,key='quality_global_watch')
-    with views[3]:
-        st.caption('Les actions générales restent incluses. Aucun rattachement automatique par ressemblance ; chaque référence conserve son historique.')
-        render_quality_plan(ENGINE,actor,action_id=action_id,prestation_type=kind,key='quality_global_history',create=False)
-        render_quality_legacy(ENGINE,actor,key='quality_global_legacy')
+        render_quality_history(action_id=action_id,scope_ids=scope_ids,key='quality_global')
+        quality_legacy_reconciliation_widget(action_id=action_id,
+            scope_ids=scope_ids,key='quality_legacy_global')
+        plan_rows=quality_general_action_plan(ENGINE,action_id=action_id)
+        if scope_ids is not None and action_id is None:plan_rows=[x for x in plan_rows if x.get('action_no') in {a['action_no'] for a in actions}]
+        if plan_rows:
+            with st.expander("Suivi du plan d'action général — consolidé et preuves",expanded=False):
+                st.dataframe(pd.DataFrame([{'Événement':x['event_ref'],'Action':x.get('action_no') or '—',
+                    'Décision':x.get('action_title_capa') or '', 'Responsable':x.get('owner_name') or '',
+                    'Échéance':format_app_deadline(x.get('due_at')), 'Statut':x.get('status') or '',
+                    'Efficacité':x.get('effectiveness_result') or ''} for x in plan_rows]),use_container_width=True,hide_index=True)
     footer()
 
 
@@ -5587,7 +5810,6 @@ def client_portal_page():
         d1.metric('Actions autorisées',len(dashboard['actions']))
         d2.metric('Actions en cours',dashboard['active_actions'])
         d3.metric('Documents explicitement partagés',dashboard['shared_documents'])
-        st.metric('Mes demandes Qualité',dashboard['quality_request_count'])
         st.markdown('##### Mes prestations')
         st.caption('Vue de restitution en lecture seule ; les habilitations se gèrent uniquement par l’administrateur.')
         if acts:
@@ -5600,7 +5822,7 @@ def client_portal_page():
                 if right.button('Ouvrir',key=f"j7_client_open_{action['id']}"):
                     st.session_state['_j7_client_open_action']=action['id'];rerun()
             if dashboard['collective_sessions']:
-                st.markdown('##### Prochains créneaux de formation communicables')
+                st.markdown('##### Prochains créneaux collectifs communicables')
                 st.dataframe(pd.DataFrame(dashboard['collective_sessions']),use_container_width=True,hide_index=True)
         else:st.info('Aucune action ne vous est actuellement attribuée.')
         st.caption('Votre tableau ne donne jamais accès aux résultats individuels, réponses BC, scores ou documents non habilités.')
@@ -5627,7 +5849,7 @@ def client_portal_page():
             slots=client_public_schedule(ENGINE,account_id,selected_action_id)
             # Tableau de restitution en lecture seule; accès et édition par commandes métiers dédiées.
             if slots:st.dataframe(pd.DataFrame([{'Date':format_app_date(x['slot_date']),'Début':format_app_time(x['start_time']),'Fin':format_app_time(x['end_time'])} for x in slots]),use_container_width=True,hide_index=True)
-            else:st.info('Aucun créneau de formation communicable pour cette action.')
+            else:st.info('Aucun calendrier collectif communicable pour cette action.')
     if section=='documents':
         if selected_action_id is None:st.info('Sélectionnez une action.')
         else:
@@ -5656,19 +5878,11 @@ def client_portal_page():
                     st.dataframe(pd.DataFrame([{'Document':r['display_name'],'Date':format_app_datetime(r['created_at']),
                         'Traitement':'Reçu / en revue' if r['validation_status']=='A_VERIFIER' else 'Vérifié'} for r in submitted]),use_container_width=True,hide_index=True)
     if section=='quality':
-        render_quality_workspace(ENGINE,'CLIENT',account_id,action_id=selected_action_id,key='client_quality')
-        if selected_action_id is not None:
-            from client_portal import client_quality_satisfaction
-            st.markdown('#### Résultats de satisfaction communicables')
-            for family,label in [('HOT','À chaud'),('COLD','À froid')]:
-                result=client_quality_satisfaction(ENGINE,account_id,selected_action_id,campaign_kind=family)
-                st.markdown(f'**{label}**')
-                if result.get('status')=='AVAILABLE':
-                    score=result.get('score')
-                    st.write('Moyenne globale : '+('non disponible' if score is None else f'{score:.2f}/5'))
-                    st.caption(f"{result.get('n_global',0)} notes globales valides · Méthode {result.get('method_version') or 'renseignée dans la publication'}")
-                    st.write(result.get('method') or '')
-                else:st.info(result.get('message') or 'Résultats non publiés ou effectif insuffisant pour protéger les réponses individuelles.')
+        if selected_action_id is None:st.info('Sélectionnez une action.')
+        else:
+            summary=client_action_summary(ENGINE,account_id,selected_action_id)
+            st.write(f"**Suivi administratif :** {summary.get('status') or '—'}")
+            st.info('Seules les informations de suivi autorisées sont accessibles. Les réponses aux questionnaires, avis individuels, notes et résultats personnels restent confidentiels.')
     if section=='contact':
         st.write('Pour toute question administrative concernant une action, contactez votre interlocuteur Clarté360.')
         st.link_button('CONTACTER CLARTÉ360','mailto:contact@clarte360.com')

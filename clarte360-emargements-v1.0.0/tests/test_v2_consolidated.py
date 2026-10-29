@@ -27,8 +27,6 @@ def test_organization_agency_and_action_modules():
 
 def test_modules_locked_after_sent_quality_campaign():
     e=eng(); oid=ensure_default_organization(e); aid=action(e)
-    # GO4: the fixture action belongs to the same organisation as its questionnaire.
-    execute(e,'UPDATE actions SET organization_id=:o WHERE id=:a',{'o':oid,'a':aid})
     tid=create_questionnaire_template(e,oid,'HOT','1','FORMATION','HOT','Test',[{'question_code':'Q1','rubric_code':'R01','response_type':'TEXT','question_text':'Avis ?'}])
     cid,_=create_quality_campaign(e,aid,tid,'HOT',utcnow_iso(),actor='test')
     execute(e,"UPDATE quality_campaigns SET status='SENT' WHERE id=:i",{'i':cid})

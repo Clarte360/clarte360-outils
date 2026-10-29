@@ -59,9 +59,9 @@ ADMIN_ACTION_SCREENS = (
 CLIENT_SCREENS = (
     Screen('home', '🏠 Mes actions', 'Tableau de bord Client / DRH'),
     Screen('actions', '📁 Dossiers autorisés', 'Suivi de mon action'),
-    Screen('planning', '📅 Calendrier formation', 'Calendrier de la formation'),
+    Screen('planning', '📅 Planning collectif', 'Planning des séances collectives'),
     Screen('documents', '📄 Mes documents', 'Justificatifs et dépôts administratifs'),
-    Screen('quality', '📋 Mes demandes et qualité', 'Mes demandes Qualité et résultats communicables'),
+    Screen('quality', '📋 Suivi qualité', 'Suivi qualité non nominatif'),
     Screen('contact', '✉️ Contacter Clarté360', 'Contacter votre interlocuteur'),
     Screen('profile', '👤 Mon compte', 'Mon identité de contact'),
     Screen('archives', '🗂️ Téléchargements', 'Mes justificatifs téléchargeables'),
@@ -86,11 +86,11 @@ def screens_for_role(role: str, *, action_selected: bool = True) -> tuple[Screen
     """P4 offre quatre espaces; aucun droit ne provient de la navigation."""
     role = str(role).strip().upper()
     if role == 'BENEFICIARY':
-        return BENEFICIARY_SCREENS if action_selected else (*BENEFICIARY_SCREENS[:2], BENEFICIARY_SCREENS[10])
+        return BENEFICIARY_SCREENS if action_selected else BENEFICIARY_SCREENS[:2]
     if role == 'TRAINER':
         return TRAINER_SCREENS
     if role == 'CLIENT':
-        return CLIENT_SCREENS if action_selected else (CLIENT_SCREENS[0], CLIENT_SCREENS[4], CLIENT_SCREENS[6])
+        return CLIENT_SCREENS if action_selected else (CLIENT_SCREENS[0], CLIENT_SCREENS[6])
     if role == 'ADMIN_ACTION':
         return ADMIN_ACTION_SCREENS
     raise ValueError('Role de navigation inconnu : ' + role)

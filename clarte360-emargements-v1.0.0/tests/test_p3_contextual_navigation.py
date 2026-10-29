@@ -48,14 +48,8 @@ def test_p3_all_portal_screens_registered(role,expected):
 
 
 def test_beneficiary_needs_an_action_for_private_sections():
-    # GO4 adds personal general requests; unrelated private training sections
-    # still require the contextual action and their server-side authorization.
-    assert [s.key for s in screens_for_role('BENEFICIARY',action_selected=False)]==['home','profile','reports']
+    assert [s.key for s in screens_for_role('BENEFICIARY',action_selected=False)]==['home','profile']
     assert {s.key for s in screens_for_role('BENEFICIARY',action_selected=True)} >= {'teams','tools','documents','courses','signatures','archives'}
-
-
-def test_go4_client_general_requests_do_not_open_private_training_sections():
-    assert [screen.key for screen in screens_for_role('CLIENT',action_selected=False)] == ['home','quality','profile']
 
 
 @pytest.mark.parametrize('role', ['BENEFICIARY','TRAINER','ADMIN_ACTION'])

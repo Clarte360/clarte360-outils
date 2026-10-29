@@ -1,8 +1,6 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
-import pytest
-import services
 
 from db import make_engine, init_db, one, q
 from services import (
@@ -14,17 +12,6 @@ from services import (
     store_teams_attendance_report, teams_occurrences,
 )
 from worker import _sync_teams_trainer_identities
-
-
-@pytest.fixture(autouse=True)
-def _fixed_teams_scenario_clock(monkeypatch):
-    # RC2 scenarios require October 15 to be future, independently of execution date.
-    class FixtureDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            value=cls(2026,10,1,tzinfo=ZoneInfo('UTC'))
-            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
-    monkeypatch.setattr(services,'datetime',FixtureDateTime)
 
 
 class FakeGraph:

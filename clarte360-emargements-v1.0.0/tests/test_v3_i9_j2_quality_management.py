@@ -13,8 +13,6 @@ def base_action(e):
 
 def campaign(e,due):
     aid=base_action(e); oid=get_organization(e)['id'];seed_standard_questionnaires(e,oid)
-    # GO4: the fixture action belongs to the same organisation as its questionnaire.
-    execute(e,'UPDATE actions SET organization_id=:o WHERE id=:a',{'o':oid,'a':aid})
     pid,_=add_participant(e,aid,dict(individual_action_no='J2',last_name='D',birth_name=None,first_name='J',birth_date=None,email='j@x.fr',employee_id=None,company_name=None,phone=None),'test')
     tpl=get_standard_template(e,oid,'FORMATION','HOT')
     cid,_=create_quality_campaign(e,aid,tpl['id'],'HOT',due.isoformat(),participant_id=pid,actor='test')

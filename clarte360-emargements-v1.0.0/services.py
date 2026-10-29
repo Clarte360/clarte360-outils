@@ -1291,23 +1291,6 @@ QUALITY_FINAL_STATUSES={'CLOTURE','REFUSE','CLASSE_SANS_SUITE'}
 QUALITY_EVENT_STATUSES=('NOUVEAU','A_ANALYSER','EN_TRAITEMENT','EN_ATTENTE','A_VERIFIER','CLOTURE','CLASSE_SANS_SUITE','REFUSE')
 _QUALITY_SOURCE_TABLES={'TRAINER_REPORT':'trainer_reports','BENEFICIARY_REPORT':'beneficiary_reports','QUALITY_ISSUE':'quality_issues'}
 
-def _guard_quality_go4_legacy_mutation(engine,event_id):
-    """Old Q/PA helpers cannot bypass GO4 version, audience or closure checks.
-
-    Unadopted RC2 records retain their historical compatibility API. Once adopted,
-    every mutation goes through the authenticated single-action service.
-    """
-    event=one(engine,'SELECT go4_managed FROM quality_events WHERE id=:e',{'e':event_id})
-    if event and event.get('go4_managed'):
-        raise ValueError('Cette action utilise le plan unique Qualité. Ouvrez sa fiche pour mettre à jour ou clôturer dans une seule fenêtre.')
-
-def _guard_quality_go4_legacy_source(engine,kind,source_id):
-    linked=one(engine,'SELECT quality_event_id FROM quality_source_links WHERE source_kind=:k AND source_id=:i',{'k':kind,'i':source_id})
-    if not linked and kind=='IMPROVEMENT_ACTION':
-        linked=one(engine,'''SELECT s.quality_event_id FROM quality_capa_source_links l JOIN quality_event_actions s ON s.id=l.quality_event_action_id
-          WHERE l.source_kind=:k AND l.source_id=:i''',{'k':kind,'i':source_id})
-    if linked: _guard_quality_go4_legacy_mutation(engine,linked['quality_event_id'])
-
 def _quality_report_status(status):
     return {'NOUVEAU':'NOUVEAU','CLOTURE':'CLOTURE','CLASSE_SANS_SUITE':'TRAITE','REFUSE':'TRAITE','A_VERIFIER':'TRAITE'}.get(status,'EN_COURS')
 
@@ -1406,7 +1389,6 @@ def suggest_quality_links(engine,action_id=None):
     return [p for p in proposals if pair_counts[(p['source_kind'],p['id'])]==1]
 
 def add_quality_case_message(engine,event_id,actor,message,direction='INTERNE',recipient=None):
-    _guard_quality_go4_legacy_mutation(engine,event_id)
     message=(message or '').strip()
     if not message: raise ValueError('Le contenu du message est obligatoire.')
     if len(message)>10000: raise ValueError('Message trop long.')
@@ -1603,30 +1585,9 @@ def create_questionnaire_template(engine, organization_id, code, version, presta
           VALUES(:t,:q,:r,:y,:x,:p,:req)""",{'t':tid,'q':item['question_code'],'r':item['rubric_code'],'y':item['response_type'],'x':item['question_text'],'p':pos,'req':int(bool(item.get('required')))})
     audit(engine,'QUESTIONNAIRE_TEMPLATE_CREATED',actor=actor,entity_type='questionnaire_template',entity_id=tid,details={'code':code,'version':version}); return tid
 
-def create_quality_campaign(engine, action_id, template_id, campaign_kind, due_at, participant_id=None, trainer_id=None, actor='system', *, classification='REAL'):
-    # GO4 freezes the questionnaire with its invitation; future template edits
-    # cannot silently change the questions or statistics of this campaign.
-    from quality_metrics import _snapshot_campaign_tx
-    token=new_token(24)
-    with engine.begin() as conn:
-        action=conn.execute(text('SELECT organization_id FROM actions WHERE id=:a'),{'a':action_id}).mappings().first()
-        template=conn.execute(text('SELECT organization_id FROM questionnaire_templates WHERE id=:t'),{'t':template_id}).mappings().first()
-        if not action or not template or template['organization_id'] not in (None,action['organization_id']):
-            raise PermissionError('Questionnaire non autorisé pour cet organisme.')
-        if participant_id is not None and not conn.execute(text('SELECT id FROM participants WHERE id=:p AND action_id=:a AND active=1'),{'p':participant_id,'a':action_id}).first():
-            raise PermissionError('Destinataire non inscrit à cette formation.')
-        if trainer_id is not None:
-            active=conn.execute(text('SELECT id FROM trainers WHERE id=:t AND active=1'),{'t':trainer_id}).first()
-            assigned=conn.execute(text('''SELECT a.id FROM actions a WHERE a.id=:a AND (a.trainer_id=:t
-              OR EXISTS(SELECT 1 FROM action_trainers at WHERE at.action_id=a.id AND at.trainer_id=:t AND at.active=1)
-              OR EXISTS(SELECT 1 FROM slots s JOIN slot_trainers st ON st.slot_id=s.id WHERE s.action_id=a.id
-                AND st.trainer_id=:t AND st.active=1 AND st.assignment_status='ACTIVE'))'''),{'a':action_id,'t':trainer_id}).first()
-            if not active or not assigned:
-                raise PermissionError('Intervenant non habilité sur cette formation.')
-        result=conn.execute(text("""INSERT INTO quality_campaigns(action_id,participant_id,trainer_id,template_id,campaign_kind,due_at,token,created_at)
-          VALUES(:a,:p,:tr,:t,:k,:d,:x,:c)"""),{'a':action_id,'p':participant_id,'tr':trainer_id,'t':template_id,'k':campaign_kind,'d':due_at,'x':token,'c':utcnow_iso()})
-        cid=int(result.lastrowid)
-        _snapshot_campaign_tx(conn,cid,classification)
+def create_quality_campaign(engine, action_id, template_id, campaign_kind, due_at, participant_id=None, trainer_id=None, actor='system'):
+    token=new_token(24); cid=execute(engine,"""INSERT INTO quality_campaigns(action_id,participant_id,trainer_id,template_id,campaign_kind,due_at,token,created_at)
+      VALUES(:a,:p,:tr,:t,:k,:d,:x,:c)""",{'a':action_id,'p':participant_id,'tr':trainer_id,'t':template_id,'k':campaign_kind,'d':due_at,'x':token,'c':utcnow_iso()})
     audit(engine,'QUALITY_CAMPAIGN_CREATED',action_id,actor,'quality_campaign',cid,{'kind':campaign_kind}); return cid,token
 
 def _validate_quality_answer(response_type,answer):
@@ -1641,8 +1602,7 @@ def _validate_quality_answer(response_type,answer):
 
 
 def save_quality_response(engine,campaign_id,question_id,answer,actor='beneficiary'):
-    from quality_metrics import campaign_question
-    qu=campaign_question(engine,campaign_id,question_id); camp=one(engine,'SELECT * FROM quality_campaigns WHERE id=:c',{'c':campaign_id})
+    qu=one(engine,'SELECT * FROM questionnaire_questions WHERE id=:q',{'q':question_id}); camp=one(engine,'SELECT * FROM quality_campaigns WHERE id=:c',{'c':campaign_id})
     if not qu or not camp: raise ValueError('Campagne ou question introuvable')
     _validate_quality_answer(qu.get('response_type'),answer)
     execute(engine,"""INSERT INTO quality_responses(campaign_id,question_id,rubric_code,response_type,question_text_snapshot,answer_json,answered_at)
@@ -2089,22 +2049,15 @@ def queue_quality_manual_reminder(engine,campaign_id,actor='system'):
     return et
 
 def quality_campaign_context(engine, token):
-    context=one(engine,"""SELECT c.*,qt.title questionnaire_title,qt.version questionnaire_version,qt.prestation_type,
+    return one(engine,"""SELECT c.*,qt.title questionnaire_title,qt.version questionnaire_version,qt.prestation_type,
       a.action_no,a.title action_title,a.subtitle,a.client_name,a.trainer_name,a.organization_id,a.agency_id,
       p.first_name,p.last_name,p.email participant_email,t.full_name trainer_full_name,t.email trainer_email
       FROM quality_campaigns c JOIN questionnaire_templates qt ON qt.id=c.template_id JOIN actions a ON a.id=c.action_id
       LEFT JOIN participants p ON p.id=c.participant_id LEFT JOIN trainers t ON t.id=c.trainer_id WHERE c.token=:x""",{'x':token})
-    if context:
-        contract=one(engine,'SELECT template_version,snapshot_json FROM quality_campaign_contracts WHERE campaign_id=:c',{'c':context['id']})
-        if contract:
-            snapshot=json.loads(contract['snapshot_json'])
-            context['questionnaire_version']=contract['template_version']
-            context['questionnaire_title']=snapshot.get('template_title') or context['questionnaire_title']
-    return context
 
 def quality_questions(engine,campaign_id):
-    from quality_metrics import campaign_questions
-    return campaign_questions(engine,campaign_id)
+    return q(engine,"""SELECT qq.* FROM questionnaire_questions qq JOIN quality_campaigns c ON c.template_id=qq.template_id
+      WHERE c.id=:c AND qq.active=1 ORDER BY qq.position,qq.id""",{'c':campaign_id})
 
 def quality_existing_answers(engine,campaign_id):
     rows=q(engine,'SELECT question_id,answer_json FROM quality_responses WHERE campaign_id=:c',{'c':campaign_id})
@@ -2202,7 +2155,6 @@ def _quality_numeric_answer(raw, response_type):
 
 # ---- V2 increment 3: quality steering, issues and improvement actions ----
 def quality_dashboard(engine, organization_id=None, agency_id=None, prestation_type=None, date_from=None, date_to=None, action_id=None):
-    """Compatibility view of RC2 items; use quality_metrics.survey_dashboard for V1 global satisfaction."""
     wh=[];p={}
     if organization_id: wh.append('a.organization_id=:o');p['o']=organization_id
     if agency_id: wh.append('a.agency_id=:g');p['g']=agency_id
@@ -2212,8 +2164,7 @@ def quality_dashboard(engine, organization_id=None, agency_id=None, prestation_t
     if action_id is not None: wh.append('a.id=:aid');p['aid']=action_id
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
     actions=q(engine,'SELECT a.id FROM actions a'+where,p); aids=[a['id'] for a in actions]
-    legacy_meta={'method_version':'RC2_ITEMS_LEGACY','metric_semantics':'Items et ratio historiques RC2 ; ne représentent pas la satisfaction globale V1.'}
-    empty={**legacy_meta,'actions':0,'campaigns':0,'completed':0,'response_rate':0,'issues_open':0,'improvements_open':0,'scores':[],'nps':[]}
+    empty={'actions':0,'campaigns':0,'completed':0,'response_rate':0,'issues_open':0,'improvements_open':0,'scores':[],'nps':[]}
     if not aids:return empty
     marks=','.join(':a'+str(i) for i in range(len(aids))); pp={f'a{i}':v for i,v in enumerate(aids)}
     camps=q(engine,f'SELECT id,status FROM quality_campaigns WHERE action_id IN ({marks})',pp)
@@ -2228,7 +2179,7 @@ def quality_dashboard(engine, organization_id=None, agency_id=None, prestation_t
     issues=one(engine,f"""SELECT COUNT(*) n FROM quality_issues qi WHERE qi.action_id IN ({marks}) AND qi.status<>'CLOTUREE'
       AND NOT EXISTS (SELECT 1 FROM quality_source_links lk WHERE lk.source_kind='QUALITY_ISSUE' AND lk.source_id=qi.id)""",pp)['n']
     improvements=one(engine,f"SELECT COUNT(*) n FROM improvement_actions WHERE action_id IN ({marks}) AND status<>'TERMINEE'",pp)['n']
-    return {**legacy_meta,'actions':len(actions),'campaigns':len(camps),'completed':completed,
+    return {'actions':len(actions),'campaigns':len(camps),'completed':completed,
       'response_rate':round(100*completed/len(camps),1) if camps else 0,'issues_open':issues,
       'improvements_open':improvements,'scores':scores,'nps':nps}
 
@@ -2245,14 +2196,14 @@ def quality_question_stats(engine, organization_id=None, agency_id=None, prestat
         wh.append(f'c.campaign_kind IN ({holders})')
         p.update({f'type_{i}':kind for i,kind in enumerate(campaign_kinds)})
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
-    rows=q(engine,"""SELECT qq.question_code,r.rubric_code,r.question_text_snapshot question_text,r.response_type,r.answer_json FROM quality_responses r
+    rows=q(engine,"""SELECT qq.question_code,qq.rubric_code,qq.question_text,r.response_type,r.answer_json FROM quality_responses r
       JOIN questionnaire_questions qq ON qq.id=r.question_id JOIN quality_campaigns c ON c.id=r.campaign_id
       JOIN actions a ON a.id=c.action_id"""+where,p)
     rubric_labels={'R01':'Information et objectifs','R02':'Organisation','R03':'Moyens et environnement','R04':'Supports et ressources','R05':'Intervenant / animation','R06':'Adaptation et accompagnement','R07':'Accessibilité','R08':'Atteinte des objectifs','R09':'Utilité / transfert','R10':'Satisfaction globale','R11':'Recommandation','R12':'Difficultés / réclamations','I01':'Information, préparation et coordination','I02':'Locaux, accès et moyens techniques','I03':'Ressources, supports et traçabilité','I04':'Organisation et conditions de réalisation','I05':'Adaptation et accessibilité','I06':'Difficultés / aléas','I07':'Améliorations proposées'}
     agg={}
     for r in rows:
-        k=(r['rubric_code'],r['question_code'],r.get('response_type'),r.get('question_text'))
-        x=agg.setdefault(k,{'method_version':'RC2_ITEMS_LEGACY','Rubrique':rubric_labels.get(k[0],k[0]),'Code rubrique':k[0],
+        k=(r['rubric_code'],r['question_code'],r.get('response_type'))
+        x=agg.setdefault(k,{'Rubrique':rubric_labels.get(k[0],k[0]),'Code rubrique':k[0],
             'Question':r.get('question_text') or k[1],'Code question':k[1],
             'Échelle':{'SCALE_1_5':'1-5','NPS_0_10':'NPS 0-10'}.get(k[2],'Texte / choix'),
             'Réponses':0,'Notes valides 1-5':0,'Moyenne':None,'_sum_1_5':0.0})
@@ -2307,7 +2258,6 @@ def create_quality_issue(engine, action_id, issue_type, title, description='', o
     return iid
 
 def update_quality_issue(engine, issue_id, status, owner=None, actor='system'):
-    _guard_quality_go4_legacy_source(engine,'QUALITY_ISSUE',issue_id)
     issue=one(engine,'SELECT * FROM quality_issues WHERE id=:i',{'i':issue_id})
     if not issue: raise ValueError('Fiche historique introuvable.')
     if status not in {'OUVERTE','EN_COURS','CLOTUREE','MIGRE'}: raise ValueError('Statut historique invalide.')
@@ -2321,7 +2271,6 @@ def update_quality_issue(engine, issue_id, status, owner=None, actor='system'):
     audit(engine,'QUALITY_ISSUE_UPDATED',issue.get('action_id'),actor,'quality_issue',issue_id,{'status':status})
 
 def create_improvement_action(engine, action_id, title, description='', owner=None, due_at=None, issue_id=None, actor='system'):
-    if issue_id: _guard_quality_go4_legacy_source(engine,'QUALITY_ISSUE',issue_id)
     iid=execute(engine,"INSERT INTO improvement_actions(issue_id,action_id,title,description,owner,due_at,status,created_at) VALUES(:i,:a,:t,:d,:o,:due,'A_FAIRE',:c)",{'i':issue_id,'a':action_id,'t':title,'d':description or None,'o':owner or None,'due':due_at or None,'c':utcnow_iso()});linked=one(engine,"SELECT quality_event_id FROM quality_source_links WHERE source_kind='QUALITY_ISSUE' AND source_id=:i",{'i':issue_id}) if issue_id else None
     if linked:
         capa_id=add_quality_event_action(engine,linked['quality_event_id'],title,actor,description,owner,due_at)
@@ -2331,7 +2280,6 @@ def create_improvement_action(engine, action_id, title, description='', owner=No
     return iid
 
 def update_improvement_action(engine, improvement_id, status, actor='system', title=None, description=None, owner=None, due_at=None):
-    _guard_quality_go4_legacy_source(engine,'IMPROVEMENT_ACTION',improvement_id)
     x=one(engine,'SELECT * FROM improvement_actions WHERE id=:i',{'i':improvement_id})
     if not x: raise ValueError("Action d'amélioration introuvable.")
     allowed={'A_FAIRE','EN_COURS','EN_ATTENTE','A_VERIFIER','TERMINEE','ANNULEE'}
@@ -2355,7 +2303,6 @@ def update_improvement_action(engine, improvement_id, status, actor='system', ti
 
 
 def delete_improvement_action(engine, improvement_id, actor='system'):
-    _guard_quality_go4_legacy_source(engine,'IMPROVEMENT_ACTION',improvement_id)
     x=one(engine,'SELECT * FROM improvement_actions WHERE id=:i',{'i':improvement_id})
     if not x: raise ValueError("Action d'amélioration introuvable.")
     link=one(engine,"SELECT quality_event_action_id FROM quality_capa_source_links WHERE source_kind='IMPROVEMENT_ACTION' AND source_id=:i",{'i':improvement_id})
@@ -4424,6 +4371,8 @@ def consume_ipip_outbox(engine, pending_dir, data_root, limit=200, actor='worker
         try:
             event=json.loads(p.read_text(encoding='utf-8'))
             result=process_ipip_accompaniment_event(engine,event,data_root,actor=actor)
+            if event.get('event_type') == 'TERMINE':
+                _archive_pip_outbox_documents(engine, event, outbox_path, actor=actor)
             if result.get('replayed'): ignored+=1
             else: processed+=1
             target=delivered/p.name
@@ -4694,6 +4643,63 @@ def process_signed_pip_event(engine, envelope, signing_key, *, actor='pip_connec
     raise ValueError('Type d’événement PIP non supporté.')
 
 
+def _archive_pip_outbox_documents(engine, event, outbox_path, *, actor='worker'):
+    """Archive only verified local PIP PDFs; retries are safe after status processing."""
+    if event.get('event_type') != 'TERMINE':
+        return 0
+    payload = event.get('payload') or {}
+    documents = payload.get('documents') or []
+    if not isinstance(documents, list):
+        raise ValueError('Liste des documents PIP invalide.')
+    if not documents:
+        return 0
+    # Outbox layout: DATA/connector_outbox/gestion_actions/events.jsonl.
+    outbox = Path(outbox_path).resolve()
+    if outbox.name != 'events.jsonl' or outbox.parent.name != 'gestion_actions' or outbox.parent.parent.name != 'connector_outbox':
+        raise ValueError('Emplacement de l outbox PIP inattendu.')
+    data_root = outbox.parent.parent.parent.resolve()
+    prescription_id = payload.get('prescription_id')
+    event_id = _pip_event_stable_id(event)
+    archived = 0
+    seen = set()
+    for document in documents:
+        if not isinstance(document, dict):
+            raise ValueError('Document PIP invalide.')
+        ref = document.get('storage_ref')
+        name = document.get('file_name')
+        digest = document.get('sha256')
+        if not isinstance(ref, str) or not isinstance(digest, str) or len(digest) != 64:
+            raise ValueError('Reference ou empreinte PDF manquante.')
+        relative = Path(ref)
+        if relative.is_absolute() or '..' in relative.parts or len(relative.parts) != 3 or relative.parts[0] != 'reports':
+            raise ValueError('Reference PDF PIP non autorisee.')
+        path = (data_root / relative).resolve()
+        if not path.is_relative_to(data_root) or not path.is_file() or path.is_symlink():
+            raise ValueError('PDF PIP introuvable ou chemin non autorise.')
+        if name is not None and (not isinstance(name, str) or name != path.name):
+            raise ValueError('Nom de document PIP incoherent.')
+        lower = path.name.lower()
+        if lower == 'rapport_pip_riasec_clarte360.pdf':
+            kind = 'PIP_REPORT'
+        elif lower == 'rapport_onet_interest_profiler.pdf':
+            kind = 'ONET_REPORT'
+        else:
+            raise ValueError('Nom de rapport PIP/O*NET non reconnu.')
+        if kind in seen:
+            raise ValueError('Rapport PIP/O*NET duplique dans le meme evenement.')
+        seen.add(kind)
+        content = path.read_bytes()
+        if not content.startswith(b'%PDF-') or hashlib.sha256(content).hexdigest() != digest.lower():
+            raise ValueError('PDF PIP corrompu ou empreinte incoherente.')
+        if document.get('size_bytes') is not None and len(content) != int(document['size_bytes']):
+            raise ValueError('Taille PDF PIP incoherente.')
+        archive_pip_report_pdf(engine, prescription_id, content,
+            display_name=path.name, source_event_id=f'{event_id}:{kind}',
+            source_reference=ref, document_kind=kind, actor=actor)
+        archived += 1
+    return archived
+
+
 def consume_pip_outbox(engine, outbox_path, limit=500, actor='worker'):
     """Consume the current PIP E1 outbox and the frozen future PUBLIC envelope.
 
@@ -4716,6 +4722,8 @@ def consume_pip_outbox(engine, outbox_path, limit=500, actor='worker'):
                 result=process_pip_public_event(engine,event,raw_line=raw,actor='pip_public')
             else:
                 result=process_pip_accompaniment_event(engine,event,raw_line=raw,actor=actor)
+            if event.get('event_type') == 'TERMINE':
+                _archive_pip_outbox_documents(engine, event, outbox_path, actor=actor)
             if result.get('replayed'): ignored+=1
             else: processed+=1
             committed=after; last_event_at=event.get('timestamp') or utcnow_iso()
@@ -5295,7 +5303,6 @@ def update_quality_event(engine,event_id,actor,status=None,owner_name=None,sever
     A historical source has only four statuses. Its coarse status is a projection,
     never an alternative authority over the canonical event status.
     """
-    _guard_quality_go4_legacy_mutation(engine,event_id)
     with engine.begin() as conn:
         ev=conn.execute(text('SELECT * FROM quality_events WHERE id=:i'),{'i':event_id}).mappings().first()
         if not ev: raise ValueError('Événement qualité introuvable.')
@@ -5345,7 +5352,6 @@ def update_quality_event(engine,event_id,actor,status=None,owner_name=None,sever
     return True
 
 def add_quality_event_action(engine,event_id,title,actor,description='',owner_name=None,due_at=None,action_kind='CORRECTIVE'):
-    _guard_quality_go4_legacy_mutation(engine,event_id)
     now=utcnow_iso()
     with engine.begin() as conn:
         if not conn.execute(text('SELECT id FROM quality_events WHERE id=:i'),{'i':event_id}).first():
@@ -5363,8 +5369,6 @@ def quality_event_actions(engine,event_id):
     return q(engine,'SELECT * FROM quality_event_actions WHERE quality_event_id=:e ORDER BY id',{'e':event_id})
 
 def update_quality_event_action(engine, action_id, actor, status=None, owner_name=None, due_at=None, evidence_ref=None, effectiveness_result=None):
-    parent=one(engine,'SELECT quality_event_id FROM quality_event_actions WHERE id=:i',{'i':action_id})
-    if parent: _guard_quality_go4_legacy_mutation(engine,parent['quality_event_id'])
     with engine.begin() as conn:
         row=conn.execute(text('''SELECT qa.*,qe.action_id parent_action_id FROM quality_event_actions qa
           JOIN quality_events qe ON qe.id=qa.quality_event_id WHERE qa.id=:i'''),{'i':action_id}).mappings().first()
@@ -5446,8 +5450,6 @@ def quality_short_treatment(engine,actor,decision,comment,point_id=None,event_id
                     'action_id':point['action_id'],'campaign_id':point['campaign_id'],'review_point_id':point_id})
         ev=conn.execute(text('SELECT * FROM quality_events WHERE id=:i'),{'i':event_id}).mappings().first()
         if not ev:raise ValueError('Fiche Qualité introuvable.')
-        if ev.get('go4_managed'):
-            raise ValueError('Utilisez la fiche du plan unique pour suivre ou clôturer cette action.')
         if point is not None and (ev['action_id']!=point['action_id'] or ev['campaign_id']!=point['campaign_id']):
             raise ValueError('Lien entre action, questionnaire et fiche Qualité incohérent.')
         if point is None and not (ev['family']=='QUESTIONNAIRES' and ev['origin'] in {'QUESTIONNAIRE_R12_I06','QUESTIONNAIRE_POINT_FAIBLE','QUESTIONNAIRE'}):
@@ -5606,7 +5608,7 @@ def quality_campaign_pilotage(engine, organization_id=None, agency_id=None, pres
 
 
 def quality_campaign_pilotage_summary(engine,organization_id=None,prestation_type=None,action_id=None,kinds=('CLIENT','PRESCRIBER')):
-    """RC2 item-average compatibility; V1 reports each family and its global item separately."""
+    """A combined average weighted by valid 1-5 answers, not an average of averages."""
     view=quality_campaign_pilotage(engine,organization_id=organization_id,
         prestation_type=prestation_type,action_id=action_id)
     selected=[r for r in view['rows'] if r['campaign_kind'] in kinds]
@@ -5616,14 +5618,11 @@ def quality_campaign_pilotage_summary(engine,organization_id=None,prestation_typ
         for row in q(engine,f"SELECT response_type,answer_json FROM quality_responses WHERE campaign_id IN ({marks})",{f'i{i}':v for i,v in enumerate(ids)}):
             val=_quality_numeric_answer(row['answer_json'],row['response_type'])
             if val is not None and row['response_type']=='SCALE_1_5':scores.append(val)
-    return {'method_version':'RC2_ITEMS_LEGACY','combined_families':list(kinds),
-        'metric_semantics':'Moyenne historique des items ; aucune équivalence avec une globale V1.',
-        'invitations':len(selected),'completed':sum(r['status']=='COMPLETED' for r in selected),
+    return {'invitations':len(selected),'completed':sum(r['status']=='COMPLETED' for r in selected),
         'score':round(sum(scores)/len(scores),2) if scores else None,'valid_scores':len(scores)}
 
 
 def quality_dashboard_v31(engine, organization_id=None, agency_id=None, prestation_type=None, action_id=None):
-    """Legacy RC2 compatibility. The GO4 interface uses the actor-checked V1 metrics API."""
     wh=[];p={}
     if organization_id: wh.append('a.organization_id=:o');p['o']=organization_id
     if agency_id: wh.append('a.agency_id=:g');p['g']=agency_id
@@ -5631,7 +5630,7 @@ def quality_dashboard_v31(engine, organization_id=None, agency_id=None, prestati
     if action_id: wh.append('a.id=:aid');p['aid']=action_id
     where=(' WHERE '+' AND '.join(wh)) if wh else ''
     actions=q(engine,'SELECT a.id FROM actions a'+where,p);aids=[x['id'] for x in actions]
-    kinds=['HOT','COLD','TRAINER','CLIENT','PRESCRIBER','OPCO']; out={'method_version':'RC2_ITEMS_LEGACY','metric_semantics':'Moyennes des items RC2 ; utiliser survey_dashboard pour les indicateurs globaux V1.','actions':len(aids),'by_kind':{},'events_open':0,'complaints_open':0,'nc_open':0,'overdue_actions':0,'review_points':0,'critical_major':0}
+    kinds=['HOT','COLD','TRAINER','CLIENT','PRESCRIBER','OPCO']; out={'actions':len(aids),'by_kind':{},'events_open':0,'complaints_open':0,'nc_open':0,'overdue_actions':0,'review_points':0,'critical_major':0}
     if not aids:
         for k in kinds: out['by_kind'][k]={'score':None,'responses':0,'invitations':0,'response_rate':None}
         return out
@@ -5682,8 +5681,6 @@ def create_stakeholder_campaign(engine,action_id,contact_id,campaign_kind,due_at
     if campaign_kind not in {'CLIENT','PRESCRIBER','OPCO'}: raise ValueError('Type de campagne partie prenante invalide.')
     a=one(engine,'SELECT * FROM actions WHERE id=:a',{'a':action_id});ct=one(engine,'SELECT * FROM external_quality_contacts WHERE id=:i AND active=1',{'i':contact_id})
     if not a or not ct: raise ValueError('Action ou contact externe introuvable.')
-    if ct.get('organization_id') not in (None,a.get('organization_id')):
-        raise PermissionError('Contact externe non habilité dans cet organisme.')
     org=a.get('organization_id');ensure_stakeholder_questionnaires(engine,org,actor);kind='OPCO' if campaign_kind=='OPCO' else 'CLIENT'
     tpl=one(engine,'SELECT * FROM questionnaire_templates WHERE organization_id IS :o AND campaign_kind=:k AND active=1 ORDER BY id DESC LIMIT 1',{'o':org,'k':kind})
     cid,token=create_quality_campaign(engine,action_id,tpl['id'],campaign_kind,due_at,actor=actor)

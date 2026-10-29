@@ -1,8 +1,6 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
-import pytest
-import services
 
 from db import make_engine, init_db, one, q, execute
 from services import (
@@ -12,18 +10,6 @@ from services import (
     store_teams_attendance_report, teams_attendance_reconciliation,
 )
 from graph_client import graph_config_from_mapping, graph_config_missing
-
-
-@pytest.fixture(autouse=True)
-def _fixed_teams_scenario_clock(monkeypatch):
-    # RC2 scenarios have an August past slot and an October 15 future slot.
-    # Keep that ordering deterministic without changing any product behaviour.
-    class FixtureDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            value=cls(2026,10,1,tzinfo=ZoneInfo('UTC'))
-            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
-    monkeypatch.setattr(services,'datetime',FixtureDateTime)
 
 
 class FakeGraph:
