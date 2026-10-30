@@ -1,63 +1,71 @@
-# GO30 D5 — retour terrain et décisions UX pour la suite de la 0.4.36
+# Mini-cahier des charges — prochaine version du parcours D5 Documents
 
 Date : 30 octobre 2026  
-Contexte : essai intervenant après remise à zéro du dossier, version D5 0.4.36.
+Base terrain : essai intervenant après RAZ sur D5 0.4.36 et captures/PDF fournis.
 
-## Retour observé
+## 1. Objectif
 
-Après la RAZ, le dossier GDA contient les sept documents obligatoires attendus. Les propositions de rapprochement tombent juste : le CV est proposé pour le CV et l’APS pour l’APS; l’intervenant constate que les autres associations sont également cohérentes.
+Permettre à l’intervenant de sélectionner, vérifier et qualifier une seule fois les sept documents obligatoires du dossier, puis d’ouvrir directement le brouillon du questionnaire. La consultation d’une pièce doit rester facultative et ne doit pas déformer ni répéter la page.
 
-L’aperçu intégré est utile si le nom du fichier ne suffit pas, mais il doit rester facultatif. Le téléchargement est facultatif également.
+## 2. Parcours des sept pièces
 
-## Comment fonctionne actuellement la proposition automatique
+Écran unique **Documents**, dans cet ordre :
 
-Dans le code de la 0.4.36, le rapprochement initial n’est pas une lecture IA des PDF :
+1. CV
+2. APS + objectif du bilan
+3. Boussole des valeurs
+4. Moteurs professionnels
+5. Préférences professionnelles
+6. PIP RIASEC — accompagnement
+7. IPIP — profil de fonctionnement professionnel
 
-1. D5 récupère l’inventaire des pièces GDA visibles pour l’action.
-2. Pour chaque rubrique, le code cherche une pièce publiée dont le nom contient un mot-clé : CV (« cv »), APS (« aps »), Boussole (« boussole », « valeur »), Moteurs (« moteur »), Préférences (« preference », « préférence »), PIP (« pip », « riasec »), IPIP (« ipip », « neo »).
-3. Il privilégie le premier mot-clé, puis accepte un autre mot-clé de la rubrique. Une pièce déjà proposée à une rubrique n’est pas proposée une seconde fois dans cette passe.
-4. Une association précédemment enregistrée pour cette rubrique est prioritaire sur la suggestion par nom.
-5. La correspondance par nom reste une suggestion : elle n’est enregistrée qu’après la confirmation globale de l’intervenant.
+Pour chaque rubrique :
 
-Le bon résultat observé vient donc de règles déterministes sur les noms de fichiers et d’une affectation sans doublon. Le contenu des PDF n’est pas analysé pour suggérer les rubriques.
+- proposer automatiquement le document GDA dont le nom correspond, sans empêcher l’intervenant de remplacer cette proposition;
+- exiger une pièce : supprimer entièrement **« Ne pas sélectionner de pièce pour ce besoin »**. Les sept pièces sont obligatoires. Si une pièce manque, nommer la rubrique à compléter dans GDA et bloquer l’enregistrement. Ne pas griser le pavé et ne pas permettre une rubrique vide;
+- conserver seulement deux décisions explicites :
+  1. confirmer que le document choisi correspond à la rubrique;
+  2. répondre **Oui/Non** à : « Prendre ce document en compte dans l’étude et la préparation du questionnaire ? »;
+- garder l’aperçu et le téléchargement facultatifs.
 
-## Ce que montrent les captures
+Le terme « besoin » signifie ici la rubrique documentaire du bilan. Éviter ce terme seul dans les libellés, car il est compris comme un besoin du bénéficiaire.
 
-- Le menu de gauche contient **« Vérifier les sources et le CV »**. Cette page affiche les sept rubriques avec leur état « Pas encore relié » et demande de choisir les documents dans GDA. Elle fait donc refaire ou vérifier ailleurs le travail qui est maintenant regroupé dans **Documents**.
-- Dans l’écran **Documents**, chaque pavé de rubrique affiche déjà une pièce suggérée, un aperçu facultatif, puis la confirmation de correspondance et la décision d’utilisation.
-- Le même pavé contient aussi **« Ne pas sélectionner de pièce pour ce besoin »**. Cette option permet de laisser une rubrique vide et entre en contradiction avec la règle métier confirmée par l’intervenant : les sept pièces sont obligatoires.
-- Une rubrique laissée vide ne doit pas être présentée comme un choix normal, ni griser le reste du pavé. L’interface doit exiger le choix d’un document pour chacune des sept rubriques.
+## 3. Aperçu d’une pièce
 
-## Sens des deux options négatives actuelles
+Les captures fournies montrent que l’aperçu actuel est ajouté directement dans le long écran Documents, au milieu des sept pavés. Cela allonge et perturbe la page; l’utilisateur signale que la visualisation fait doublon avec le questionnaire et ramène l’affichage en haut.
 
-Elles ne veulent pas dire la même chose, mais leur présence simultanée prête à confusion :
+Comportement attendu :
 
-- **« Ne pas sélectionner de pièce pour ce besoin »** signifie ne rattacher aucun document à cette rubrique. Exemple : ne choisir aucun fichier dans la case APS.
-- **« Ne pas prendre cette pièce en compte dans l’étude ni dans le questionnaire »** signifie choisir et rattacher un document, tout en l’excluant ensuite de l’étude.
+- Le bouton **Voir l’aperçu** ouvre une fenêtre modale centrée, par-dessus la page.
+- La fenêtre affiche uniquement la pièce sélectionnée dans le pavé concerné, dans une zone de taille limitée à l’écran. Le PDF est consulté page par page (commandes précédente/suivante et indication « page x sur y »), sans afficher toutes ses pages à la suite dans la page principale.
+- La zone de défilement du document reste dans la fenêtre; elle ne fait pas défiler l’écran de sélection derrière.
+- La fenêtre comporte une fermeture visible **×** et un bouton **Fermer**. La fermeture ramène à la même rubrique et à la même position de défilement.
+- Ouvrir puis fermer l’aperçu ne duplique pas le questionnaire, ne répète pas les pavés, ne modifie aucune sélection/coche et ne valide/enregistre rien.
+- Le téléchargement reste facultatif, accessible depuis la fenêtre d’aperçu.
+- Une seule fenêtre de prévisualisation est ouverte à la fois. Pour un format non prévisualisable, afficher un message dans cette fenêtre et garder le téléchargement facultatif.
 
-Dans le parcours demandé, le premier choix n’a pas lieu d’exister : les sept documents sont obligatoires. Il faut le supprimer complètement. Il ne faut ni le remplacer par un bouton équivalent, ni griser le pavé lorsqu’il est activé, ni autoriser la validation d’un dossier avec une rubrique vide. Si une pièce requise manque, signaler clairement la rubrique à compléter dans GDA et bloquer l’enregistrement global.
+## 4. Navigation et enregistrement
 
-## Changements demandés pour la prochaine version
+- **Documents** est le seul écran de sélection et de validation des sept pièces.
+- Retirer du menu de gauche **« Vérifier les sources et le CV »** et sa page de rapprochement redondante. Les captures montrent que cette page affiche les sept rubriques « Pas encore relié » et renvoie vers GDA alors que le travail documentaire est regroupé dans Documents. Toute analyse ultérieure du CV qui demeure nécessaire doit se trouver à son étape de parcours, sans redemander le lien ni la validation.
+- Enregistrer ensemble les sept associations, les confirmations de correspondance et les réponses Oui/Non à l’utilisation.
+- Afficher un succès explicite, par exemple **« Les 7 documents sont enregistrés »**, puis ouvrir directement le brouillon du questionnaire. Ne pas reposer la sélection documentaire et ne pas ajouter une question intermédiaire pour accéder au questionnaire.
+- Garder à la fin l’ajout facultatif d’un autre document pour une analyse IA, avec choix Oui/Non et consentement explicite. L’analyse produit des pistes à examiner; elle ne décide pas et n’insère rien automatiquement dans le questionnaire.
 
-- Faire de **Documents** l’unique écran de sélection, rapprochement, vérification et décision d’utilisation des sept pièces.
-- Retirer du menu de gauche **« Vérifier les sources et le CV »** ainsi que sa page de rapprochement redondante, comme le montrent les captures. Toute fonction réellement distincte, par exemple une analyse ultérieure du CV, doit rester à son étape de parcours et ne pas créer une seconde validation des documents.
-- Dans chacun des sept pavés, garder seulement :
-  1. une confirmation que la pièce sélectionnée correspond à la rubrique affichée;
-  2. un choix explicite Oui/Non pour indiquer si la pièce doit être prise en compte dans l’étude et la préparation du questionnaire. Formuler ce choix positivement, sans case négative à double lecture.
-- Supprimer définitivement **« Ne pas sélectionner de pièce pour ce besoin »**. Exiger un document pour chacune des sept rubriques; en cas d’absence, nommer la rubrique manquante et indiquer qu’il faut compléter le dossier GDA. Ne pas désactiver ou griser le contenu du pavé.
-- Garder l’aperçu intégré facultatif. Le nom de fichier peut suffire à l’intervenant; aucun téléchargement ne doit être requis.
-- Enregistrer les sept sélections et décisions en un seul clic. Montrer un message de succès explicite, puis ouvrir directement le brouillon du questionnaire, sans nouvelle sélection des sources ni confirmation intermédiaire.
-- Conserver à la fin l’ajout facultatif d’une pièce libre pour analyse IA, seulement après choix Oui et consentement explicite. L’analyse est une aide à examiner, jamais une décision automatique ni une insertion automatique dans le questionnaire.
+## 5. Critères de recette
 
-## Critères de recette
+- Les sept rubriques et leur ordre sont ceux définis ci-dessus.
+- Avec sept pièces publiées dans GDA, les sept propositions sont distinctes et cohérentes; chacune peut être remplacée.
+- Une rubrique sans document bloque l’enregistrement avec un message précis; aucun contrôle ne permet de l’ignorer.
+- Chaque pavé contient seulement la confirmation de correspondance, puis le choix Oui/Non de prise en compte.
+- L’aperçu apparaît dans une fenêtre modale fermable, page par page; fermer la fenêtre restitue le même écran, les mêmes coches et la même position.
+- L’ouverture de l’aperçu ne répète ni le questionnaire ni les pavés et ne provoque pas de retour en haut.
+- Un clic global enregistre les sept décisions, donne un message de succès et ouvre directement le brouillon, sans nouvelle sélection des sources.
+- Le menu ne propose plus une seconde page de rapprochement.
+- L’analyse d’un document complémentaire reste facultative, consentie et sans insertion automatique.
 
-- Les sept rubriques apparaissent dans l’ordre : CV, APS + objectif du bilan, Boussole des valeurs, Moteurs professionnels, Préférences professionnelles, PIP RIASEC, IPIP.
-- Les sept documents requis sont pré-suggérés de manière distincte et cohérente lorsque leurs noms sont explicites; l’intervenant peut remplacer une suggestion.
-- Aucun chemin d’interface ne permet de laisser volontairement une rubrique vide; une pièce manquante bloque la validation et est signalée clairement.
-- Chaque pièce offre exactement la confirmation de correspondance et le choix Oui/Non de prise en compte dans l’étude.
-- L’aperçu et le téléchargement restent facultatifs.
-- Un seul enregistrement global confirme le succès et ouvre le brouillon du questionnaire, sans saisie répétée des associations.
-- Le menu de gauche n’expose plus une seconde page de rapprochement concurrente.
-- L’analyse d’une pièce libre reste facultative et soumise au consentement.
+## 6. Explication du rapprochement actuel en 0.4.36
 
-Ce PR consigne le retour terrain et le périmètre de la prochaine version. Il ne modifie pas la version 0.4.36 actuellement installée.
+La suggestion actuelle est déterministe, pas une lecture IA des PDF : D5 récupère les pièces GDA publiées, puis recherche dans leur nom des mots-clés propres à chaque rubrique (CV, APS, Boussole/valeur, moteur, préférence, PIP/RIasec, IPIP/NEO). Il privilégie le premier mot-clé, ne repropose pas une pièce déjà affectée dans cette passe et donne priorité à un lien déjà enregistré. L’intervenant confirme ensuite les choix groupés. Le contenu du PDF n’est pas lu pour proposer les associations.
+
+Ce cahier des charges consigne les retours pour la prochaine version; il ne modifie pas la 0.4.36 actuellement installée.
