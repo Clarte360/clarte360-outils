@@ -201,22 +201,6 @@ def create_questionnaire_v2(ctx, case_id, sources: dict, *, context="AUTRE", int
                               database_url=database_url, allow_source_refresh=True)
 
 
-def record_questionnaire_source_analysis_consent(ctx, case_id, source_refs, *, database_url=None):
-    """Audit the one-time beneficiary consent before selected source text is sent to AI."""
-    refs = list(dict.fromkeys(str(ref).strip() for ref in source_refs if str(ref).strip()))
-    if not refs or len(refs) > 7 or any(len(ref) > 240 for ref in refs):
-        raise ValueError("Les références des pièces à analyser sont invalides.")
-    session = _begin(ctx, case_id, role=ActorRole.ACCOMPAGNATEUR, scope="CP_CASE_WRITE", database_url=database_url)
-    try:
-        _audit(session, ctx, case_id, "QUESTIONNAIRE_SOURCE_ANALYSIS_CONSENT_RECORDED",
-               f"Q-SOURCE-ANALYSIS:{case_id}", 1,
-               {"provider": "openai", "store": False, "source_refs": refs,
-                "consent": "BENEFICIARY_INFORMED_AND_ACCEPTED"})
-        session.commit()
-    finally:
-        session.close()
-
-
 def save_questionnaire(ctx, case_id, questionnaire, *, expected_row_version, database_url=None,
                        allow_source_refresh=False) -> PreparationView:
     data = valid_questionnaire(questionnaire)
