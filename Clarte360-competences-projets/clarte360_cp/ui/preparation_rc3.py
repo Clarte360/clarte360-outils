@@ -110,6 +110,65 @@ def _current_document_gate(ctx, case_id):
         return {"connected": True, "pending": [], "verified_sources": {}, "error": str(exc), "has_inventory": True}
 
 
+def _create_questionnaire_from_documents(ctx, case_id, view, verified_sources, coach_observation=""):
+    """Read the seven already-validated GDA references and save an AI-assisted draft."""
+    import streamlit as st
+    from clarte360_cp.connectors.cav3_ai import Cav3AISettings
+    from clarte360_cp.connectors.gda_documents import GDADocumentClient, load_gda_settings
+    from clarte360_cp.connectors.questionnaire_source_ai import analyze_questionnaire_sources
+    from clarte360_cp.ui.preparation import SOURCE_LABELS
+    from clarte360_cp.application.preparation import record_questionnaire_source_analysis_consent
+
+    purpose_codes = tuple(item for item in (
+        ("CV_SOURCE", "CV_SOURCE"), ("APS_OBJECTIF", "APS_OBJECTIF"),
+        ("BOUSSOLE_VALEURS", "BOUSSOLE_VALEURS"), ("MOTEURS_PRO", "MOTEURS_PRO"),
+        ("PREFERENCES_PRO", "PREFERENCES_PRO"), ("PIP_REPORT", "PIP_REPORT"),
+        ("IPIP_REPORT", "IPIP_REPORT"),
+    ) if item[0] in verified_sources)
+    if not any(purpose == "APS_OBJECTIF" for purpose, _code in purpose_codes):
+        raise ValueError("L’APS doit être retenue dans Documents pour générer les pistes du questionnaire.")
+    settings = load_gda_settings(st.secrets)
+    token = str(st.session_state.get("gda_launch_token", ""))
+    gda = GDADocumentClient(settings, token)
+    ai_sources, sources = [], {}
+    for purpose, code in purpose_codes:
+        doc = verified_sources[purpose]["document"]
+        metadata, content = gda.get_source(str(doc.source_ref))
+        label = "CV" if code == "CV_SOURCE" else SOURCE_LABELS[code]
+        ai_sources.append({"purpose": purpose, "source_ref": doc.source_ref,
+                           "label": label, "name": metadata.get("display_name") or doc.display_name,
+                           "mime_type": metadata.get("mime_type") or doc.mime_type,
+                           "content": content})
+    record_questionnaire_source_analysis_consent(
+        ctx, case_id, [source["source_ref"] for source in ai_sources])
+    analysis = analyze_questionnaire_sources(ai_sources, Cav3AISettings.from_streamlit_secrets(),
+                                             coach_observation=coach_observation)
+    for purpose, code in purpose_codes:
+        if purpose == "CV_SOURCE":
+            doc = verified_sources[purpose]["document"]
+            sources["CV_SOURCE"] = {"authorized": True, "source_ref": doc.source_ref, "label": "CV"}
+            continue  # CV informs the APS context question; it is not a questionnaire report.
+        doc = verified_sources[purpose]["document"]
+        data = {"authorized": True, "source_ref": doc.source_ref, "label": SOURCE_LABELS[code]}
+        if code in {"PIP_REPORT", "IPIP_REPORT"}:
+            data["status"] = "REEL"
+        if code == "APS_OBJECTIF":
+            data["idea_details"] = analysis["ideas"]
+        evidence_key = {"BOUSSOLE_VALEURS":"valeurs", "MOTEURS_PRO":"moteurs",
+                        "PREFERENCES_PRO":"preferences", "PIP_REPORT":"pip",
+                        "IPIP_REPORT":"ipip"}.get(code)
+        if evidence_key:
+            data["result_summary"] = analysis["evidence"].get(evidence_key,
+                {"scale":"", "note":"Aucun résultat exploitable détecté dans le document.",
+                 "rows":[], "profile_code":"", "status":"REEL"})
+        if code == "PREFERENCES_PRO":
+            data["dimensions"] = analysis["preference_dimensions"]
+        sources[code] = data
+    create_questionnaire_v2(ctx, case_id, sources, context="AUTRE", intro="",
+                             expected_row_version=view.row_version)
+    return len(analysis["ideas"])
+
+
 def _lines(raw):
     return list(dict.fromkeys(v.strip() for v in raw.splitlines() if v.strip()))
 
@@ -196,6 +255,9 @@ def render_builder(ctx, case_id):
     st.caption("Vous préparez les deux parties avant de les mettre à disposition du bénéficiaire.")
     if st.session_state.pop(f"gda_cp_documents_saved_{case_id}", False):
         st.success("Les sept choix ont été enregistrés ensemble et le brouillon est ouvert ci-dessous. Vous n’avez pas à re-sélectionner les pièces.")
+    analyzed_ideas = st.session_state.pop(f"rc3_source_analysis_success_{case_id}", None)
+    if analyzed_ideas is not None:
+        st.success(f"Brouillon enregistré : {analyzed_ideas} piste(s) issue(s) de l’APS, questions de contexte adaptées au CV et repères extraits des rapports. Vérifiez le contenu avant publication.")
     extra_analysis = st.session_state.get(f"gda_d5_optional_ai_result_{case_id}")
     if extra_analysis:
         with st.expander("Analyse IA de la pièce complémentaire à examiner", expanded=True):
@@ -215,6 +277,27 @@ def render_builder(ctx, case_id):
     st.info("Vous pourrez modifier les questions et revenir aux étapes précédentes jusqu’à la publication. La publication verrouille cette version du questionnaire.")
     if st.session_state.pop(f"rc3_q_saved_{case_id}", False):
         st.success("Modification du questionnaire enregistrée sur le serveur.")
+    if view.questionnaire and not view.questionnaire_locked and not view.questionnaire.get("ideas_active"):
+        with st.expander("Le brouillon actuel ne contient aucune piste APS", expanded=True):
+            st.caption("Reprenez le brouillon depuis les pièces retenues. Cette action crée une nouvelle version et conserve l’historique; les rapprochements ne sont pas à refaire.")
+            with st.form(f"rc3_regenerate_sources_{case_id}"):
+                observation = st.text_area("Observation privée de l’intervenant (facultatif)", max_chars=380,
+                    key=f"rc3_regenerate_observation_{case_id}",
+                    help="Elle aide à formuler la question de contexte. Elle reste une hypothèse de l’intervenant, jamais une réponse attribuée au bénéficiaire.")
+                consent = st.checkbox(
+                    "J’ai informé le bénéficiaire et il consent à l’analyse temporaire par l’IA des pièces retenues afin de préparer le brouillon du questionnaire.",
+                    key=f"rc3_regenerate_source_consent_{case_id}")
+                regenerate = st.form_submit_button("Créer une nouvelle version depuis les pièces", type="primary", disabled=not consent)
+            if regenerate:
+                from clarte360_cp.connectors.cav3_ai import Cav3AIError
+                from clarte360_cp.connectors.gda_documents import GDAError
+                try:
+                    with st.spinner("Lecture temporaire et analyse des pièces retenues…"):
+                        ideas_count = _create_questionnaire_from_documents(ctx, case_id, view, verified_sources, observation)
+                    st.session_state[f"rc3_source_analysis_success_{case_id}"] = ideas_count
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc) if isinstance(exc, (Cav3AIError, GDAError, ValueError, PermissionError)) else "L’analyse n’a pas abouti. Aucun nouveau questionnaire vide n’a été enregistré; votre version actuelle et les choix de documents sont conservés.")
     if view.questionnaire and not (view.questionnaire_locked and view.invitation_open) and (gate.get("error") or pending):
         st.warning("L’envoi est suspendu : le dossier documentaire doit être à jour avant de verrouiller cette version.")
         if gate.get("error"):
@@ -249,40 +332,32 @@ def render_builder(ctx, case_id):
             return
         auto_key = f"gda_cp_autocreate_questionnaire_{case_id}"
         if st.session_state.get(auto_key):
-            source_purpose = (
-                ("APS_OBJECTIF", "APS_OBJECTIF"),
-                ("BOUSSOLE_VALEURS", "BOUSSOLE_VALEURS"),
-                ("MOTEURS_PRO", "MOTEURS_PRO"),
-                ("PREFERENCES_PRO", "PREFERENCES_PRO"),
-                ("PIP_REPORT", "PIP_REPORT"),
-                ("IPIP_REPORT", "IPIP_REPORT"),
-            )
-            sources = {}
-            for code, purpose in source_purpose:
-                record = verified_sources.get(purpose)
-                if not record:
-                    continue
-                doc = record["document"]
-                data = {"authorized": True, "source_ref": doc.source_ref,
-                        "label": SOURCE_LABELS[code]}
-                if code in {"PIP_REPORT", "IPIP_REPORT"}:
-                    data["status"] = "REEL"
-                sources[code] = data
-            try:
-                create_questionnaire_v2(
-                    ctx, case_id, sources, context="AUTRE", intro="",
-                    expected_row_version=view.row_version,
-                )
-                st.session_state[auto_key] = False
-                st.session_state[f"gda_cp_documents_saved_{case_id}"] = True
-                st.rerun()
-            except Exception as exc:
-                st.session_state[auto_key] = False
-                st.error("Les choix des sept besoins sont enregistrés, mais le brouillon n’a pas pu être créé. " + str(exc))
-                if st.button("Réessayer la création du brouillon", type="primary"):
-                    st.session_state[auto_key] = True
+            st.subheader("Créer le questionnaire à partir des pièces retenues")
+            st.info("C&P va lire temporairement les pièces GDA retenues, préparer les pistes et les repères réellement présents dans les rapports, puis enregistrer un brouillon à relire. Rien n’est publié ni envoyé au bénéficiaire à cette étape.")
+            st.caption("Le texte extrait est envoyé au service IA Clarté360 configuré pour l’application. L’appel utilise store=false; C&P ne conserve pas le texte extrait après l’analyse. Une lecture humaine et une validation restent obligatoires avant publication.")
+            with st.form(f"rc3_source_analysis_consent_{case_id}"):
+                observation = st.text_area("Observation privée de l’intervenant (facultatif)", max_chars=380,
+                    key=f"rc3_source_observation_{case_id}",
+                    help="Elle aide à formuler la question de contexte. Elle reste une hypothèse de l’intervenant, jamais une réponse attribuée au bénéficiaire.")
+                consent = st.checkbox(
+                    "J’ai informé le bénéficiaire et il consent à l’analyse temporaire par l’IA des pièces retenues afin de préparer le brouillon du questionnaire.",
+                    key=f"rc3_source_analysis_consent_{case_id}")
+                analyze = st.form_submit_button("Analyser les pièces et créer le brouillon", type="primary", disabled=not consent)
+            if analyze:
+                try:
+                    from clarte360_cp.connectors.cav3_ai import Cav3AIError
+                    from clarte360_cp.connectors.gda_documents import GDAError
+                    with st.spinner("Lecture temporaire et analyse des pièces retenues…"):
+                        ideas_count = _create_questionnaire_from_documents(ctx, case_id, view, verified_sources, observation)
+                    st.session_state[auto_key] = False
+                    st.session_state[f"gda_cp_documents_saved_{case_id}"] = True
+                    st.session_state[f"rc3_source_analysis_success_{case_id}"] = ideas_count
                     st.rerun()
-                return
+                except Exception as exc:
+                    from clarte360_cp.connectors.cav3_ai import Cav3AIError
+                    from clarte360_cp.connectors.gda_documents import GDAError
+                    st.error(str(exc) if isinstance(exc, (Cav3AIError, GDAError, ValueError, PermissionError)) else "L’analyse n’a pas abouti. Aucun brouillon vide n’a été enregistré; vos choix de documents sont conservés.")
+            return
         st.subheader("Étape 1 — Préparer un brouillon à partir des pièces vérifiées")
         st.info("Le brouillon est créé directement à partir des choix enregistrés dans Documents. Il n’est pas envoyé : relisez-le, ajustez-le et prévisualisez-le avant sa publication dans l’espace bénéficiaire.")
         if verified_sources:
@@ -338,8 +413,13 @@ def render_builder(ctx, case_id):
                     n=copy.deepcopy(q);item=new_idea(label.strip(),"ECHANGES_ACCOMPAGNATEUR")
                     if item["id"] not in {v["id"] for v in n["ideas_active"]}:
                         n["ideas_active"].append(item)
-                    try:save_questionnaire(ctx,case_id,n,expected_row_version=view.row_version);st.rerun()
+                    try:
+                        save_questionnaire(ctx,case_id,n,expected_row_version=view.row_version)
+                        st.session_state[f"rc3_idea_added_{case_id}"] = True
+                        st.rerun()
                     except Exception as exc:_err(exc)
+        if st.session_state.pop(f"rc3_idea_added_{case_id}", False):
+            st.success("Piste enregistrée dans le brouillon. Elle apparaît ci-dessous et sera incluse dans l’aperçu.")
         if q["ideas_active"]:
             names={x["id"]:x["wording"] for x in q["ideas_active"]}
             which=st.selectbox("Examiner les questions d'une seule piste",list(names),format_func=lambda x:names[x])

@@ -35,7 +35,7 @@ CV_SCHEMA = {
 }
 
 
-def extract_cv_text(content: bytes, filename: str, mime_type: str = "") -> str:
+def extract_cv_text(content: bytes, filename: str, mime_type: str = "", *, redact_header: bool = True) -> str:
     """Extract selectable text in memory. Scanned/image PDFs are not OCR'd."""
     if not isinstance(content, bytes) or not content or len(content) > MAX_CV_BYTES:
         raise Cav3AIError("Le CV est vide ou dépasse la taille autorisée pour l’analyse.")
@@ -81,7 +81,7 @@ def extract_cv_text(content: bytes, filename: str, mime_type: str = "") -> str:
             continue
         # The first substantive header line is commonly the person's name.
         # Remove it even when the CV has no email/phone block.
-        if not name_redacted and index < 5 and len(normalized) <= 100 and normalized not in {"[COORDONNÉE RETIRÉE]", "[LIEN RETIRÉ]", "[ADRESSE RETIRÉE]", "[IDENTITÉ RETIRÉE]"}:
+        if redact_header and not name_redacted and index < 5 and len(normalized) <= 100 and normalized not in {"[COORDONNÉE RETIRÉE]", "[LIEN RETIRÉ]", "[ADRESSE RETIRÉE]", "[IDENTITÉ RETIRÉE]"}:
             lines[index] = "[IDENTITÉ RETIRÉE]"
             name_redacted = True
     text = "\n".join(lines)

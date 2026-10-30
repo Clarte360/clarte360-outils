@@ -84,7 +84,8 @@ def _render_gda_document_preview_dialog(case_id: str, purpose: str) -> None:
                            key=f"gda_d5_download_v2_{case_id}_{purpose}_{preview.get('document_id', 'document')}")
         if st.button("Fermer", key=f"gda_d5_preview_close_{case_id}_{purpose}"):
             st.session_state[active_key] = None
-            st.rerun()
+            # The dialog button reruns only this dialog fragment; avoid a full
+            # page rerun that resets the long document-list scroll position.
 
     show_preview()
 

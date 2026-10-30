@@ -19,7 +19,7 @@ from clarte360_cp.domain.preparation import (
 from clarte360_cp.framework.navigation import set_page
 
 SOURCE_LABELS = {
-    "APS_OBJECTIF": "APS initiale", "APS_P1": "APS renforcée", "BOUSSOLE_VALEURS": "Boussole des valeurs",
+    "CV_SOURCE": "CV", "APS_OBJECTIF": "APS initiale", "APS_P1": "APS renforcée", "BOUSSOLE_VALEURS": "Boussole des valeurs",
     "MOTEURS_PRO": "Moteurs professionnels", "PREFERENCES_PRO": "Préférences professionnelles",
     "IPIP_REPORT": "IPIP-NEO-120", "PIP_REPORT": "PIP RIASEC", "ENTREPRISE_PERSPECTIVE": "Perspective employeur autorisée",
 }
