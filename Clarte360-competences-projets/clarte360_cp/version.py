@@ -1,4 +1,4 @@
-APP_VERSION = "0.4.40-go30-seven-source-volume"
+APP_VERSION = "0.4.41-go30-generation-diagnostics"
 SCHEMA_VERSION = "13"
 FRAMEWORK_VERSION = "5.0"
 ADDENDUM_VERSION = "4.2"
