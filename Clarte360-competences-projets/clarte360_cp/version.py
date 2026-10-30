@@ -1,4 +1,4 @@
-APP_VERSION = "0.4.29-go29-work"
+APP_VERSION = "0.4.37-go30-d5-required-documents-modal-preview"
 SCHEMA_VERSION = "13"
 FRAMEWORK_VERSION = "5.0"
 ADDENDUM_VERSION = "4.2"
