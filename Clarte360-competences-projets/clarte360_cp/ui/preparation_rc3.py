@@ -45,44 +45,129 @@ def _err(exc):
     st.error(str(exc))
 
 
+def _current_document_gate(ctx, case_id):
+    """Refresh GDA inventory and return the D5 decisions required before Q."""
+    import streamlit as st
+    from clarte360_cp.connectors.gda_documents import GDAError, GDADocumentClient, load_gda_settings
+    from clarte360_cp.repositories.db import build_engine, session_factory
+    from clarte360_cp.repositories.gda_documents import (
+        current_document_review_snapshot, list_current_gda_purpose_links,
+        save_external_reference, unlinked_document_review_status,
+    )
+
+    settings = load_gda_settings(st.secrets)
+    token = str(st.session_state.get("gda_launch_token", ""))
+    if not settings.configured and not token:
+        return {"connected": False, "pending": [], "verified_sources": {}, "error": None}
+    if not settings.configured or not token or not ctx.has_scope("CP_SOURCE_GDA_READ"):
+        return {"connected": True, "pending": [], "verified_sources": {},
+                "error": "L’inventaire Gestion des Actions n’est pas accessible. Rouvrez Documents depuis l’action prescrite.", "has_inventory": True}
+    try:
+        external = GDADocumentClient(settings, token).list_sources()
+        engine = build_engine()
+        with session_factory(engine)() as session:
+            live_docs = {str(item["source_ref"]): save_external_reference(session, ctx, case_id, item)
+                         for item in external}
+            links = list_current_gda_purpose_links(session, case_id)
+            reviews = current_document_review_snapshot(session, case_id)
+            verified = {}
+            pending = []
+            for purpose, row in reviews.items():
+                doc = row["document"]
+                live_doc = live_docs.get(doc.source_ref)
+                if not live_doc:
+                    pending.append(f"{doc.display_name} : pièce absente de l’inventaire partagé; vérifiez-la dans Documents")
+                elif live_doc.external_document_id != doc.external_document_id:
+                    if unlinked_document_review_status(session, case_id, live_doc) == "D5_DOCUMENT_NON_UTILISE":
+                        continue
+                    pending.append(f"{doc.display_name} : une nouvelle version est disponible; corrigez le rapprochement dans Documents")
+                elif row["status"] == "A_VERIFIER":
+                    pending.append(f"{doc.display_name} : vérification à faire pour {purpose}")
+                elif row["status"] == "D5_DOCUMENT_VALIDE":
+                    live = next((item for item in external if str(item["source_ref"]) == doc.source_ref), {})
+                    if str(live.get("publication_status") or "").upper() == "PUBLIE":
+                        verified[purpose] = row
+            for ref, doc in live_docs.items():
+                live = next((item for item in external if str(item["source_ref"]) == ref), {})
+                active_purposes = [purpose for purpose, (linked_doc, _link) in links.items()
+                                   if linked_doc.external_document_id == doc.external_document_id]
+                stale_purposes = [purpose for purpose, (linked_doc, _link) in links.items()
+                                  if linked_doc.source_ref == ref and linked_doc.external_document_id != doc.external_document_id
+                                  and reviews.get(purpose, {}).get("status") not in {"D5_DOCUMENT_NON_UTILISE", "D5_DOCUMENT_VERIFIE_NON_UTILISE"}]
+                current_excluded = unlinked_document_review_status(session, case_id, doc) == "D5_DOCUMENT_NON_UTILISE"
+                if stale_purposes and not current_excluded:
+                    pending.append(f"{doc.display_name} : remplacez la version reliée dans Documents")
+                elif not active_purposes and not current_excluded:
+                    pending.append(f"{doc.display_name} : à rapprocher ou à écarter dans Documents")
+                elif active_purposes and str(live.get("publication_status") or "").upper() != "PUBLIE":
+                    pending.append(f"{doc.display_name} : en attente de publication dans l’espace partagé")
+            for purpose, (doc, _link) in links.items():
+                if doc.source_ref not in live_docs:
+                    pending.append(f"{doc.display_name} : pièce absente de l’inventaire partagé; vérifiez-la dans Documents")
+            return {"connected": True, "pending": list(dict.fromkeys(pending)),
+                    "verified_sources": verified, "error": None, "has_inventory": bool(external)}
+    except GDAError as exc:
+        return {"connected": True, "pending": [], "verified_sources": {}, "error": str(exc), "has_inventory": True}
+
+
+def _create_questionnaire_from_documents(ctx, case_id, view, verified_sources, coach_observation=""):
+    """Read the retained, verified GDA references in one pass and save a draft."""
+    import streamlit as st
+    from clarte360_cp.connectors.cav3_ai import Cav3AISettings
+    from clarte360_cp.connectors.gda_documents import GDADocumentClient, load_gda_settings
+    from clarte360_cp.connectors.questionnaire_source_ai import analyze_questionnaire_sources
+    from clarte360_cp.ui.preparation import SOURCE_LABELS
+
+    purpose_codes = tuple(item for item in (
+        ("CV_SOURCE", "CV_SOURCE"), ("APS_OBJECTIF", "APS_OBJECTIF"),
+        ("BOUSSOLE_VALEURS", "BOUSSOLE_VALEURS"), ("MOTEURS_PRO", "MOTEURS_PRO"),
+        ("PREFERENCES_PRO", "PREFERENCES_PRO"), ("PIP_REPORT", "PIP_REPORT"),
+        ("IPIP_REPORT", "IPIP_REPORT"),
+    ) if item[0] in verified_sources)
+    if not purpose_codes:
+        raise ValueError("Aucune pièce vérifiée n’est disponible. Rapprochez les documents dans Documents avant de générer le questionnaire.")
+    settings = load_gda_settings(st.secrets)
+    token = str(st.session_state.get("gda_launch_token", ""))
+    gda = GDADocumentClient(settings, token)
+    ai_sources, sources = [], {}
+    for purpose, code in purpose_codes:
+        doc = verified_sources[purpose]["document"]
+        metadata, content = gda.get_source(str(doc.source_ref))
+        label = "CV" if code == "CV_SOURCE" else SOURCE_LABELS[code]
+        ai_sources.append({"purpose": purpose, "source_ref": doc.source_ref,
+                           "label": label, "name": metadata.get("display_name") or doc.display_name,
+                           "mime_type": metadata.get("mime_type") or doc.mime_type,
+                           "content": content})
+    analysis = analyze_questionnaire_sources(ai_sources, Cav3AISettings.from_streamlit_secrets(),
+                                             coach_observation=coach_observation)
+    for purpose, code in purpose_codes:
+        if purpose == "CV_SOURCE":
+            doc = verified_sources[purpose]["document"]
+            sources["CV_SOURCE"] = {"authorized": True, "source_ref": doc.source_ref, "label": "CV"}
+            continue  # CV informs the APS context question; it is not a questionnaire report.
+        doc = verified_sources[purpose]["document"]
+        data = {"authorized": True, "source_ref": doc.source_ref, "label": SOURCE_LABELS[code]}
+        if code in {"PIP_REPORT", "IPIP_REPORT"}:
+            data["status"] = "REEL"
+        if code == "APS_OBJECTIF":
+            data["idea_details"] = analysis["ideas"]
+        evidence_key = {"BOUSSOLE_VALEURS":"valeurs", "MOTEURS_PRO":"moteurs",
+                        "PREFERENCES_PRO":"preferences", "PIP_REPORT":"pip",
+                        "IPIP_REPORT":"ipip"}.get(code)
+        if evidence_key:
+            data["result_summary"] = analysis["evidence"].get(evidence_key,
+                {"scale":"", "note":"Aucun résultat exploitable détecté dans le document.",
+                 "rows":[], "profile_code":"", "status":"REEL"})
+        if code == "PREFERENCES_PRO":
+            data["dimensions"] = analysis["preference_dimensions"]
+        sources[code] = data
+    create_questionnaire_v2(ctx, case_id, sources, context="AUTRE", intro="",
+                             expected_row_version=view.row_version)
+    return len(analysis["ideas"])
+
+
 def _lines(raw):
     return list(dict.fromkeys(v.strip() for v in raw.splitlines() if v.strip()))
-
-
-def _source_form():
-    import streamlit as st
-    from clarte360_cp.ui.preparation import SOURCE_LABELS
-    sources={}
-    st.caption("Renseignez les références des sources déjà autorisées. Aucune pièce n'est copiée dans C&P. Cet écran n'importe pas automatiquement le contenu des documents partagés; ouvrez « Vérifier les sources et le CV » pour les consulter et les relier au besoin du bilan.")
-    for code in ("APS_OBJECTIF", "APS_P1", "BOUSSOLE_VALEURS", "MOTEURS_PRO", "PREFERENCES_PRO", "IPIP_REPORT", "PIP_REPORT", "ENTREPRISE_PERSPECTIVE"):
-        with st.expander(SOURCE_LABELS[code]):
-            present=st.checkbox("Document contrôlé et autorisé",key=f"rc3_source_{code}")
-            ref=st.text_input("Référence dans l'espace documentaire existant",key=f"rc3_ref_{code}")
-            data={"authorized":True,"source_ref":ref,"label":SOURCE_LABELS[code]}
-            if code in ("APS_OBJECTIF","APS_P1"):
-                data["idea_list"]=_lines(st.text_area("Idées effectivement citées, une par ligne",key=f"rc3_ideas_{code}"))
-            if code == "BOUSSOLE_VALEURS":
-                data["items"]=_lines(st.text_area("Valeurs figurant dans le rapport, sans présélection",key="rc3_values"))
-            if code == "MOTEURS_PRO":
-                st.caption("Les dix intitulés canoniques Moteurs sont prévus ; aucune importance n'est déduite des scores.")
-            if code == "PREFERENCES_PRO":
-                st.caption("Une ligne par dimension : dimension | premier pôle | second pôle. Si les libellés exacts manquent, proposez une réponse libre au bénéficiaire.")
-                raw=st.text_area("Continuums réels, séparés par |",key="rc3_pref_dims",height=145)
-                dims=[]
-                for idx,line in enumerate(raw.splitlines()):
-                    if not line.strip(): continue
-                    parts=[s.strip() for s in line.split("|")]
-                    if len(parts)!=3: raise ValueError("Chaque dimension Préférences doit comporter 3 champs séparés par |.")
-                    dims.append({"code":f"PP{idx+1}", "label":parts[0], "pole_1":parts[1], "pole_2":parts[2]})
-                data["dimensions"]=dims
-            if code in ("IPIP_REPORT","PIP_REPORT"):
-                is_fake=st.checkbox("RAPPORT DE SIMULATION FICTIF",key=f"rc3_fictif_{code}")
-                data["status"]="FICTIF" if is_fake else "REEL"
-                if is_fake: st.warning("Fictif : utilisable en recette, jamais comme résultat réel du bénéficiaire.")
-            if code=="ENTREPRISE_PERSPECTIVE":
-                data["wording"]=st.text_area("Perspective institutionnelle explicitement autorisée",key="rc3_employer")
-            if present: sources[code]=data
-    return sources
 
 
 def _setup_page_nav(case_id, prefix, pages):
@@ -160,38 +245,120 @@ def _preview_questionnaire(q):
 def render_builder(ctx, case_id):
     import streamlit as st
     view=read_preparation(ctx,case_id)
+    gate=_current_document_gate(ctx,case_id)
+    pending=gate["pending"]
+    verified_sources=gate["verified_sources"]
     st.title("Préparer le questionnaire du bénéficiaire")
     st.caption("Vous préparez les deux parties avant de les mettre à disposition du bénéficiaire.")
+    if st.session_state.pop(f"gda_cp_documents_saved_{case_id}", False):
+        st.success("Les sept choix ont été enregistrés ensemble et le brouillon est ouvert ci-dessous. Vous n’avez pas à re-sélectionner les pièces.")
+    analyzed_ideas = st.session_state.pop(f"rc3_source_analysis_success_{case_id}", None)
+    generated_this_turn = analyzed_ideas is not None
+    if analyzed_ideas is not None:
+        st.success(f"Questionnaire généré et enregistré en brouillon : {analyzed_ideas} piste(s) proposée(s). Vous pouvez maintenant relire, modifier ou supprimer les questions avant publication.")
+    extra_analysis = st.session_state.get(f"gda_d5_optional_ai_result_{case_id}")
+    if extra_analysis:
+        with st.expander("Analyse IA de la pièce complémentaire à examiner", expanded=True):
+            st.markdown(f"**Pièce :** {extra_analysis.get('document_name', 'Document complémentaire')}")
+            st.markdown(f"**Influence possible : {extra_analysis.get('pertinent', 'À vérifier')}** — {extra_analysis.get('motif', '')}")
+            if extra_analysis.get("elements_utiles"):
+                st.markdown("**Éléments à examiner**")
+                for line in extra_analysis["elements_utiles"]:
+                    st.markdown(f"- {line}")
+            if extra_analysis.get("pistes_questionnaire"):
+                st.markdown("**Pistes de questions, à valider par l’intervenant**")
+                for line in extra_analysis["pistes_questionnaire"]:
+                    st.markdown(f"- {line}")
+            if extra_analysis.get("limites"):
+                st.caption("Limites : " + " · ".join(extra_analysis["limites"]))
+            st.caption("L’analyse n’ajoute aucune réponse et ne modifie pas seule le questionnaire.")
     st.info("Vous pourrez modifier les questions et revenir aux étapes précédentes jusqu’à la publication. La publication verrouille cette version du questionnaire.")
     if st.session_state.pop(f"rc3_q_saved_{case_id}", False):
         st.success("Modification du questionnaire enregistrée sur le serveur.")
-    with st.popover("ⓘ Comment préparer le questionnaire ?"):
-        st.write("1. Vérifiez les sources autorisées. 2. Relisez les idées professionnelles et leurs questions. 3. Vérifiez les repères personnels proposés. 4. Prévisualisez tout, puis publiez le questionnaire.")
-        st.caption("Les sources d’origine restent conservées. Après publication, cette version ne peut plus être modifiée.")
-    if not view.questionnaire:
-        st.subheader("Étape 1 — Créer le questionnaire à partir des sources vérifiées")
-        st.warning("Les informations de cette fiche ne sont enregistrées sur le serveur qu’au clic sur « Créer le brouillon ». Après cette création, vos modifications sont sauvegardées au fil des champs.")
-        with st.form("rc3_generate"):
-            context=st.selectbox("Contexte contractuel",list(CONTEXTS),format_func=lambda x:CONTEXT_LABELS[x])
-            intro=st.text_area("Introduction destinée au bénéficiaire (modifiable)",value="Lors de votre APS et/ou au cours de votre parcours, certaines envies ou pistes ont peut-être émergé. Ce questionnaire vous aide à préciser ce que vous souhaitez explorer, sans imposer de métier. Vous pourrez modifier vos réponses jusqu'à leur validation définitive.")
-            try: sources=_source_form(); issue=None
-            except ValueError as exc: sources={};issue=str(exc)
-            submit=st.form_submit_button("Créer et enregistrer le brouillon",type="primary")
-            if submit:
-                if issue:st.error(issue)
-                else:
-                    try:create_questionnaire_v2(ctx,case_id,sources,context=context,intro=intro,expected_row_version=view.row_version);st.rerun()
-                    except Exception as exc:_err(exc)
+    auto_key = f"gda_cp_autocreate_questionnaire_{case_id}"
+    if view.questionnaire and not (view.questionnaire_locked and view.invitation_open) and (gate.get("error") or pending):
+        st.warning("L’envoi est suspendu : le dossier documentaire doit être à jour avant de verrouiller cette version.")
+        if gate.get("error"):
+            st.error(gate["error"])
+        for item in pending:
+            st.write("• " + item)
+        if st.button("Ouvrir Documents pour terminer",type="primary"):
+            from clarte360_cp.framework.navigation import set_page
+            set_page(st.session_state,"documents")
+            st.rerun()
         return
+    with st.popover("ⓘ Comment préparer le questionnaire ?"):
+        st.write("1. Les pièces retenues dans Documents sont reprises comme sources. 2. Reportez les éléments utiles dans le brouillon. 3. Relisez les questions et les repères personnels. 4. Prévisualisez tout, puis publiez le questionnaire.")
+        st.caption("Les sources d’origine restent conservées. Après publication, cette version ne peut plus être modifiée.")
+    if (not generated_this_turn and (not view.questionnaire
+            or (not view.questionnaire_locked and not view.questionnaire.get("ideas_active")))):
+        if gate.get("error"):
+            st.error("La préparation est suspendue : " + gate["error"])
+            if st.button("Ouvrir Documents pour rétablir l’accès aux pièces"):
+                from clarte360_cp.framework.navigation import set_page
+                set_page(st.session_state,"documents")
+                st.rerun()
+            return
+        if pending:
+            st.warning(f"Avant de commencer, traitez dans Documents les {len(pending)} pièce(s) encore en attente. Rapprochez-les, vérifiez-les ou indiquez qu’elles ne seront pas utilisées.")
+            for item in pending:
+                st.write("• " + item)
+            if st.button("Ouvrir Documents pour terminer la vérification",type="primary"):
+                from clarte360_cp.framework.navigation import set_page
+                set_page(st.session_state,"documents")
+                st.rerun()
+            return
+        generation_panel = st.empty()
+        with generation_panel.container():
+            st.subheader("Générer le questionnaire")
+            st.info("Une seule génération analyse ensemble les pièces déjà retenues dans Documents, puis prépare toutes les parties du questionnaire en brouillon. Vous pourrez relire, modifier ou supprimer les questions avant de publier. Rien n’est envoyé au bénéficiaire automatiquement.")
+            if verified_sources:
+                st.caption(f"{len(verified_sources)} pièce(s) vérifiée(s) seront analysées ensemble. Vous n’avez pas à les sélectionner de nouveau ni à répondre à une question pour chaque document.")
+            else:
+                st.warning("Aucune pièce vérifiée n’est disponible. Retournez dans Documents pour enregistrer les choix avant de lancer la génération.")
+            if st.session_state.get(auto_key):
+                st.success("Les choix de documents sont enregistrés. Lancez maintenant la génération du questionnaire.")
+            with st.form(f"rc3_generate_from_sources_{case_id}"):
+                observation = st.text_area(
+                    "Souhaitez-vous ajouter quelque chose ? (facultatif)", max_chars=380,
+                    key=f"rc3_source_observation_{case_id}",
+                    help="Cette remarque privée aide à contextualiser les questions. Elle ne sera jamais présentée comme une réponse du bénéficiaire.")
+                generate = st.form_submit_button(
+                    "Générer le questionnaire", type="primary", disabled=not bool(verified_sources))
+        if generate:
+            generation_panel.empty()
+            with generation_panel.container():
+                try:
+                    from clarte360_cp.connectors.cav3_ai import Cav3AIError
+                    from clarte360_cp.connectors.gda_documents import GDAError
+                    with st.spinner("Analyse des pièces retenues et génération du questionnaire en brouillon…"):
+                        ideas_count = _create_questionnaire_from_documents(
+                            ctx, case_id, view, verified_sources, observation)
+                    st.session_state[auto_key] = False
+                    st.session_state[f"gda_cp_documents_saved_{case_id}"] = True
+                    st.session_state[f"rc3_source_analysis_success_{case_id}"] = ideas_count
+                    st.session_state[f"rc3_coach_nav_{case_id}"] = "1. Préparer les idées et pistes"
+                    st.rerun()
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).exception("Questionnaire draft generation failed")
+                    from clarte360_cp.connectors.cav3_ai import Cav3AIError
+                    from clarte360_cp.connectors.gda_documents import GDAError
+                    if isinstance(exc, (Cav3AIError, GDAError, ValueError, PermissionError)):
+                        st.error(str(exc))
+                    else:
+                        st.error(f"La génération a échoué ({type(exc).__name__}). Les sept pièces restent enregistrées; le détail est dans le journal D5.")
+        if not view.questionnaire:
+            return
     q=view.questionnaire
     if view.questionnaire_locked:
-        st.success(f"Questionnaire publié — version {view.questionnaire_version}.")
+        st.success(f"Questionnaire verrouillé — version {view.questionnaire_version}.")
         if not view.invitation_open:
-            st.warning("Ce questionnaire a été verrouillé sans être rendu accessible. L’ouverture ci-dessous ne modifie pas son contenu.")
-            if st.button("Rendre le questionnaire disponible maintenant",type="primary"):
+            st.warning("Le questionnaire est verrouillé mais pas encore disponible pour le bénéficiaire.")
+            if st.button("Envoyer dans l’espace bénéficiaire",type="primary"):
                 try:open_beneficiary_access(ctx,case_id,expected_row_version=view.row_version);st.rerun()
                 except Exception as exc:_err(exc)
-        else: st.success("Questionnaire publié et disponible dans l’espace Bénéficiaire. Le bénéficiaire peut répondre à ses idées, puis à ses repères personnels.")
+        else: st.success("Questionnaire disponible dans l’espace bénéficiaire. Il pourra répondre puis transmettre une seule fois ses réponses. Aucun e-mail automatique n’est envoyé par D5.")
         st.subheader("Contenu approuvé — aperçu des questions")
         st.caption("Voici les formulations enregistrées dans le questionnaire validé. Les remarques privées de l'accompagnateur ne sont pas affichées au bénéficiaire. Ce contenu verrouillé ne peut plus être modifié ici.")
         _preview_questionnaire(q)
@@ -211,8 +378,13 @@ def render_builder(ctx, case_id):
                     n=copy.deepcopy(q);item=new_idea(label.strip(),"ECHANGES_ACCOMPAGNATEUR")
                     if item["id"] not in {v["id"] for v in n["ideas_active"]}:
                         n["ideas_active"].append(item)
-                    try:save_questionnaire(ctx,case_id,n,expected_row_version=view.row_version);st.rerun()
+                    try:
+                        save_questionnaire(ctx,case_id,n,expected_row_version=view.row_version)
+                        st.session_state[f"rc3_idea_added_{case_id}"] = True
+                        st.rerun()
                     except Exception as exc:_err(exc)
+        if st.session_state.pop(f"rc3_idea_added_{case_id}", False):
+            st.success("Piste enregistrée dans le brouillon. Elle apparaît ci-dessous et sera incluse dans l’aperçu.")
         if q["ideas_active"]:
             names={x["id"]:x["wording"] for x in q["ideas_active"]}
             which=st.selectbox("Examiner les questions d'une seule piste",list(names),format_func=lambda x:names[x])
@@ -301,11 +473,11 @@ def render_builder(ctx, case_id):
         _preview_questionnaire(q)
     else:
         st.subheader("Publier le questionnaire")
-        st.warning("La publication rend le questionnaire accessible au bénéficiaire et verrouille cette version. Relisez les deux parties avant de continuer.")
+        st.warning("L’envoi verrouille cette version et la rend accessible au bénéficiaire dans D5. Relisez les deux parties avant de continuer ; vous ne pourrez plus modifier cette version.")
         st.caption("Vérifiez les questions et réponses proposées dans l’aperçu, y compris la question de contexte de chaque piste.")
         st.write(f"{len(q['ideas_active'])} piste(s) conservée(s), {len(q['ideas_archived'])} écartée(s). Les trois familles de repères sont configurées.")
         confirm=st.checkbox("J’ai relu le questionnaire complet et je confirme sa publication.")
-        if st.button("Publier et verrouiller le questionnaire",disabled=not confirm,type="primary"):
+        if st.button("Envoyer au bénéficiaire dans D5 et verrouiller",disabled=not confirm,type="primary"):
             try:lock_and_publish_questionnaire(ctx,case_id,expected_row_version=view.row_version);st.rerun()
             except Exception as exc:_err(exc)
 

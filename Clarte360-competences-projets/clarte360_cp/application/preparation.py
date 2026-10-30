@@ -169,11 +169,40 @@ def create_questionnaire(ctx, case_id, sources: dict, *, context="AUTRE", intro=
 
 def create_questionnaire_v2(ctx, case_id, sources: dict, *, context="AUTRE", intro="", expected_row_version=0, database_url=None) -> PreparationView:
     """Generation deterministe de la Q unique RC3, sans import d'autres PDF."""
+    from clarte360_cp.repositories.gda_documents import current_document_review_snapshot
+    source_purpose = {
+        "CV_SOURCE": "CV_SOURCE",
+        "APS_OBJECTIF": "APS_OBJECTIF", "APS_P1": "APS_OBJECTIF",
+        "BOUSSOLE_VALEURS": "BOUSSOLE_VALEURS", "MOTEURS_PRO": "MOTEURS_PRO",
+        "PREFERENCES_PRO": "PREFERENCES_PRO", "IPIP_REPORT": "IPIP_REPORT",
+        "PIP_REPORT": "PIP_REPORT",
+    }
+    session = session_factory(build_engine(database_url))()
+    try:
+        _context(session, ctx, case_id, role=ActorRole.ACCOMPAGNATEUR, scope="CP_CASE_WRITE")
+        snapshot = current_document_review_snapshot(session, case_id)
+        pending = [row["document"].display_name for row in snapshot.values() if row["status"] == "A_VERIFIER"]
+        if pending:
+            raise ValueError("Avant de préparer le questionnaire, vérifiez dans Documents les pièces encore en attente : " + ", ".join(pending))
+        if snapshot:
+            for code, purpose in source_purpose.items():
+                selected = sources.get(code) if isinstance(sources, dict) else None
+                ref = str(selected.get("source_ref") or "").strip() if isinstance(selected, dict) else ""
+                if not ref:
+                    continue
+                current = snapshot.get(purpose)
+                if (not current or current["status"] != "D5_DOCUMENT_VALIDE"
+                        or current["document"].source_ref != ref):
+                    raise ValueError(f"La source « {code} » doit être reliée et vérifiée dans Documents avant de préparer le questionnaire.")
+    finally:
+        session.close()
     q = generate_questionnaire_v2(sources, context=context, intro=intro)
-    return save_questionnaire(ctx, case_id, q, expected_row_version=expected_row_version, database_url=database_url)
+    return save_questionnaire(ctx, case_id, q, expected_row_version=expected_row_version,
+                              database_url=database_url, allow_source_refresh=True)
 
 
-def save_questionnaire(ctx, case_id, questionnaire, *, expected_row_version, database_url=None) -> PreparationView:
+def save_questionnaire(ctx, case_id, questionnaire, *, expected_row_version, database_url=None,
+                       allow_source_refresh=False) -> PreparationView:
     data = valid_questionnaire(questionnaire)
     session = _begin(ctx, case_id, role=ActorRole.ACCOMPAGNATEUR, scope="CP_CASE_WRITE", database_url=database_url)
     try:
@@ -185,7 +214,7 @@ def save_questionnaire(ctx, case_id, questionnaire, *, expected_row_version, dat
             if old and old.get("schema") == SCHEMA_Q_V2:
                 # Les résumés de résultats proviennent des rapports autorisés ;
                 # on ne les réécrit pas manuellement en modifiant une question.
-                if old.get("evidence", {}) != data.get("evidence", {}):
+                if old.get("evidence", {}) != data.get("evidence", {}) and not allow_source_refresh:
                     raise ValueError("Résultats sources immuables : recréez une nouvelle Q depuis les rapports vérifiés.")
                 before = {x["id"]: x for x in old["ideas_active"] + old["ideas_archived"]}
                 after = {x["id"]: x for x in data["ideas_active"] + data["ideas_archived"]}
@@ -221,6 +250,26 @@ def lock_questionnaire(ctx, case_id, *, expected_row_version, database_url=None,
                 raise ValueError("La mise a disposition simultanee concerne seulement la Q unifiee RC3.")
             if not ctx.has_scope("CP_PUBLISH"):
                 raise OrientationAccessDenied("Droit de publication manquant.")
+            from clarte360_cp.repositories.gda_documents import current_document_review_snapshot
+            snapshot = current_document_review_snapshot(session, case_id)
+            pending = [row["document"].display_name for row in snapshot.values() if row["status"] == "A_VERIFIER"]
+            if pending:
+                raise ValueError("Envoi bloqué : vérifiez ou écartez d’abord les pièces en attente dans Documents.")
+            purpose_by_source = {
+                "APS_OBJECTIF": "APS_OBJECTIF", "APS_P1": "APS_OBJECTIF",
+                "BOUSSOLE_VALEURS": "BOUSSOLE_VALEURS", "MOTEURS_PRO": "MOTEURS_PRO",
+                "PREFERENCES_PRO": "PREFERENCES_PRO", "IPIP_REPORT": "IPIP_REPORT",
+                "PIP_REPORT": "PIP_REPORT",
+            }
+            if snapshot:
+                for source in _doc(q).get("source_refs", []):
+                    purpose = purpose_by_source.get(str(source.get("code") or ""))
+                    if not purpose:
+                        continue
+                    current = snapshot.get(purpose)
+                    if (not current or current["status"] != "D5_DOCUMENT_VALIDE"
+                            or current["document"].source_ref != source.get("source_ref")):
+                        raise ValueError("Envoi bloqué : une source du questionnaire n’est plus reliée et vérifiée dans Documents. Reprenez le brouillon avant de l’envoyer.")
         locked = _version_q(session, state, ctx, _doc(q), "VERROUILLE")
         _audit(session, ctx, case_id, "CAV_Q_LOCKED", locked.questionnaire_id, locked.version_no)
         if publish_to_beneficiary:

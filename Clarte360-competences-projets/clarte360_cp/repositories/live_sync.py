@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .models import AuditEvent, Case, IntersessionTask, PhaseState, PublicationEvent, Validation
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize database datetimes before comparing mixed legacy values.
+
+    Older rows may be returned without tzinfo while new Python-generated rows
+    are UTC-aware. Naive values in this repository represent UTC.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -33,7 +44,7 @@ class LiveSyncRepository:
         if case is None:
             raise KeyError(case_id)
 
-        timestamps = [case.updated_at]
+        timestamps = [_as_utc(case.updated_at)]
         for model, column in (
             (PhaseState, PhaseState.updated_at),
             (Validation, Validation.at),
@@ -43,7 +54,7 @@ class LiveSyncRepository:
         ):
             value = self.session.scalar(select(func.max(column)).where(model.case_id == case_id))
             if value is not None:
-                timestamps.append(value)
+                timestamps.append(_as_utc(value))
         latest = max(timestamps) if timestamps else None
 
         counts = []

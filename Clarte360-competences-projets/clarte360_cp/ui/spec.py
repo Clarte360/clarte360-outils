@@ -89,7 +89,7 @@ class NextAction:
     page: str
 
 
-def choose_next_action(snapshot) -> NextAction:
+def choose_next_action(snapshot, *, linked_source_codes=None) -> NextAction:
     if snapshot.submitted_tasks:
         return NextAction("Débriefer le retour interséance",
                           f"{snapshot.submitted_tasks} retour(s) attendent un débrief avec le bénéficiaire.", "phase_5")
@@ -100,12 +100,16 @@ def choose_next_action(snapshot) -> NextAction:
         return NextAction("Commencer par « Mes idées à moi »",
                           "Accueillir les idées du bénéficiaire, y compris sans CV, puis relire les cinq repères et choisir les premières directions.",
                           "entry_ideas")
-    cv = next((d for d in snapshot.document_summaries if d.artifact_type == "CV_SOURCE"), None)
-    if cv is None or not cv.present:
+    if linked_source_codes is None:
+        cv = next((d for d in snapshot.document_summaries if d.artifact_type == "CV_SOURCE"), None)
+        cv_linked = bool(cv and cv.present)
+    else:
+        cv_linked = "CV_SOURCE" in set(linked_source_codes)
+    if not cv_linked:
         return NextAction(
-            "Ajouter le CV pour démarrer",
-            "Le CV est la seule pièce requise pour engager la phase 0. Les autres sources amont restent utiles mais ne sont pas toutes bloquantes.",
-            "entry_sources",
+            "Compléter les sept documents obligatoires",
+            "Sélectionnez et vérifiez les sept pièces dans Documents avant de préparer le questionnaire.",
+            "documents",
         )
     phase = snapshot.current_phase if snapshot.current_phase is not None else 0
     spec = PHASE_BY_NO.get(phase, PHASE_BY_NO[0])

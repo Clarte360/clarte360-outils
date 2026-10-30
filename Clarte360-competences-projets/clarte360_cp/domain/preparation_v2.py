@@ -116,6 +116,19 @@ def generate_questionnaire_v2(sources, context="AUTRE", intro=""):
         for wording in require_list(verified.get(code, {}).get("idea_list", []), "Idées APS", 100, 300):
             if wording.casefold() not in {i["wording"].casefold() for i in ideas}:
                 ideas.append(new_idea(wording, code))
+    for code in ("APS_OBJECTIF", "APS_P1"):
+        for detail in verified.get(code, {}).get("idea_details", []):
+            if not isinstance(detail, dict):
+                raise ValueError("Détail de piste APS invalide.")
+            wording = require_text(detail.get("wording", ""), "Piste APS", 300, True)
+            if wording.casefold() in {i["wording"].casefold() for i in ideas}:
+                item = next(i for i in ideas if i["wording"].casefold() == wording.casefold())
+            else:
+                item = new_idea(wording, code)
+                ideas.append(item)
+            item["source_wording"] = require_text(detail.get("source_quote", ""), "Extrait APS", 300, True)
+            item["context_prompt"] = require_text(detail.get("context_prompt", ""), "Question de contexte", 700, True)
+            item["context_note"] = require_text(detail.get("context_note", ""), "Observation de l'intervenant", 380)
     employer = verified.get("ENTREPRISE_PERSPECTIVE")
     if employer and context not in ENTERPRISE_CONTEXTS:
         raise ValueError("Perspective employeur non autorisée hors cadre contractuel.")
@@ -125,6 +138,10 @@ def generate_questionnaire_v2(sources, context="AUTRE", intro=""):
     values = require_list(val.get("items", []), "Valeurs", 60)
     motors_list = require_list(motors.get("items", list(MOTOR_LABELS)) if motors else [], "Moteurs", 30)
     dims = pref.get("dimensions", [])
+    if not dims and isinstance(pref.get("result_summary"), dict):
+        dims = [{"code": row["key"], "label": row["label"], "pole_1": row.get("pole_1", ""),
+                 "pole_2": row.get("pole_2", "")}
+                for row in pref["result_summary"].get("rows", []) if row.get("pole_1") and row.get("pole_2")]
     if not isinstance(dims, list) or len(dims) > 10:
         raise ValueError("Dix dimensions Préférences maximum.")
     valid_dims = []
@@ -140,7 +157,7 @@ def generate_questionnaire_v2(sources, context="AUTRE", intro=""):
     doc = {
         "schema": SCHEMA_Q_V2, "context": context,
         "intro": require_text(intro, "Introduction", 1400) or (
-            "Lors de votre APS et/ou au cours de votre parcours, certaines envies ou idées ont peut-être émergé. "
+            "Au cours de votre parcours, certaines envies ou idées ont peut-être émergé. "
             "Ce questionnaire vous invite à préciser librement ce que vous souhaitez explorer. "
             "Vous pourrez modifier vos réponses jusqu'à leur validation définitive."
         ),
@@ -162,6 +179,10 @@ def generate_questionnaire_v2(sources, context="AUTRE", intro=""):
                         for code in ("IPIP_REPORT", "PIP_REPORT") if code in verified],
     }
     from clarte360_cp.domain.preparation_evidence import extract_evidence
+    for code, source in (("BOUSSOLE_VALEURS", val), ("MOTEURS_PRO", motors)):
+        summary = source.get("result_summary") if isinstance(source, dict) else None
+        if isinstance(summary, dict):
+            source["items"] = [row["label"] for row in summary.get("rows", []) if row.get("label")]
     doc["evidence"] = extract_evidence(verified, refs)
     return valid_questionnaire_v2(doc)
 
