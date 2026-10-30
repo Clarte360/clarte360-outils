@@ -157,7 +157,7 @@ def generate_questionnaire_v2(sources, context="AUTRE", intro=""):
     doc = {
         "schema": SCHEMA_Q_V2, "context": context,
         "intro": require_text(intro, "Introduction", 1400) or (
-            "Lors de votre APS et/ou au cours de votre parcours, certaines envies ou idées ont peut-être émergé. "
+            "Au cours de votre parcours, certaines envies ou idées ont peut-être émergé. "
             "Ce questionnaire vous invite à préciser librement ce que vous souhaitez explorer. "
             "Vous pourrez modifier vos réponses jusqu'à leur validation définitive."
         ),
