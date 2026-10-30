@@ -1,4 +1,4 @@
-APP_VERSION = "0.4.38-go30-questionnaire-source-engine"
+APP_VERSION = "0.4.39-go30-one-click-questionnaire"
 SCHEMA_VERSION = "13"
 FRAMEWORK_VERSION = "5.0"
 ADDENDUM_VERSION = "4.2"
