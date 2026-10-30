@@ -68,4 +68,4 @@ Comportement attendu :
 
 La suggestion actuelle est déterministe, pas une lecture IA des PDF : D5 récupère les pièces GDA publiées, puis recherche dans leur nom des mots-clés propres à chaque rubrique (CV, APS, Boussole/valeur, moteur, préférence, PIP/RIasec, IPIP/NEO). Il privilégie le premier mot-clé, ne repropose pas une pièce déjà affectée dans cette passe et donne priorité à un lien déjà enregistré. L’intervenant confirme ensuite les choix groupés. Le contenu du PDF n’est pas lu pour proposer les associations.
 
-Ce cahier des charges consigne les retours pour la prochaine version; il ne modifie pas la 0.4.36 actuellement installée.
+Ce PR associe le cahier des charges à une implémentation candidate 0.4.37 dans la branche de travail. Elle n’est pas encore fusionnée ni déployée; la version actuellement installée reste distincte.
