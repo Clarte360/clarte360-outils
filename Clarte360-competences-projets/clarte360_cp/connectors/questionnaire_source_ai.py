@@ -14,7 +14,10 @@ from .cav3_ai import Cav3AIError, Cav3AISettings, api_client
 from .cv_enrichment_ai import extract_cv_text
 
 MAX_SOURCE_TEXT = 18_000
-MAX_TOTAL_TEXT = 70_000
+# The workflow can include all seven validated document purposes. Keep the
+# combined allowance equal to seven per-source excerpts so selecting the full
+# dossier does not fail on an arbitrary 70k aggregate cap.
+MAX_TOTAL_TEXT = 126_000
 PROMPT_VERSION = "go30_questionnaire_sources_v1_20261030"
 
 
