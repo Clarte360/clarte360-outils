@@ -7,6 +7,7 @@ and returns only bounded, source-linked draft data for human review.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -19,6 +20,7 @@ MAX_SOURCE_TEXT = 18_000
 # dossier does not fail on an arbitrary 70k aggregate cap.
 MAX_TOTAL_TEXT = 126_000
 PROMPT_VERSION = "go30_questionnaire_sources_v1_20261030"
+LOGGER = logging.getLogger(__name__)
 
 
 def _schema() -> dict[str, Any]:
@@ -132,8 +134,22 @@ def analyze_questionnaire_sources(sources: list[dict[str, Any]], settings: Cav3A
         result = json.loads(getattr(response, "output_text", ""))
     except Cav3AIError:
         raise
-    except Exception:
-        raise Cav3AIError("L’analyse des pièces n’a pas abouti. Le brouillon n’a pas été créé; vos choix de documents sont conservés.") from None
+    except Exception as exc:
+        # Keep document text, references and provider response bodies out of
+        # logs. The exception class/status is enough to diagnose auth, quota,
+        # context-window and connection failures from the service journal.
+        status = getattr(exc, "status_code", None)
+        code = getattr(exc, "code", None)
+        LOGGER.exception("Questionnaire source analysis failed: model=%s source_count=%s input_chars=%s",
+                         settings.model, len(sources), total)
+        reason = type(exc).__name__
+        if status:
+            reason += f" HTTP {status}"
+        if code and str(code)[:80] not in reason:
+            reason += f" ({str(code)[:80]})"
+        raise Cav3AIError(
+            f"Échec du service IA ({reason}). Les documents sont conservés; consultez le journal D5 pour le détail."
+        ) from None
 
     if not isinstance(result, dict) or set(result) != set(_schema()["properties"]):
         raise Cav3AIError("La réponse d’analyse des pièces est invalide; aucun brouillon vide n’a été enregistré.")
