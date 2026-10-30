@@ -308,37 +308,46 @@ def render_builder(ctx, case_id):
                 set_page(st.session_state,"documents")
                 st.rerun()
             return
-        st.subheader("Générer le questionnaire")
-        st.info("Une seule génération analyse ensemble les pièces déjà retenues dans Documents, puis prépare toutes les parties du questionnaire en brouillon. Vous pourrez relire, modifier ou supprimer les questions avant de publier. Rien n’est envoyé au bénéficiaire automatiquement.")
-        if verified_sources:
-            st.caption(f"{len(verified_sources)} pièce(s) vérifiée(s) seront analysées ensemble. Vous n’avez pas à les sélectionner de nouveau ni à répondre à une question pour chaque document.")
-        else:
-            st.warning("Aucune pièce vérifiée n’est disponible. Retournez dans Documents pour enregistrer les choix avant de lancer la génération.")
-        if st.session_state.get(auto_key):
-            st.success("Les choix de documents sont enregistrés. Lancez maintenant la génération du questionnaire.")
-        with st.form(f"rc3_generate_from_sources_{case_id}"):
-            observation = st.text_area(
-                "Souhaitez-vous ajouter quelque chose ? (facultatif)", max_chars=380,
-                key=f"rc3_source_observation_{case_id}",
-                help="Cette remarque privée aide à contextualiser les questions. Elle ne sera jamais présentée comme une réponse du bénéficiaire.")
-            generate = st.form_submit_button(
-                "Générer le questionnaire", type="primary", disabled=not bool(verified_sources))
+        generation_panel = st.empty()
+        with generation_panel.container():
+            st.subheader("Générer le questionnaire")
+            st.info("Une seule génération analyse ensemble les pièces déjà retenues dans Documents, puis prépare toutes les parties du questionnaire en brouillon. Vous pourrez relire, modifier ou supprimer les questions avant de publier. Rien n’est envoyé au bénéficiaire automatiquement.")
+            if verified_sources:
+                st.caption(f"{len(verified_sources)} pièce(s) vérifiée(s) seront analysées ensemble. Vous n’avez pas à les sélectionner de nouveau ni à répondre à une question pour chaque document.")
+            else:
+                st.warning("Aucune pièce vérifiée n’est disponible. Retournez dans Documents pour enregistrer les choix avant de lancer la génération.")
+            if st.session_state.get(auto_key):
+                st.success("Les choix de documents sont enregistrés. Lancez maintenant la génération du questionnaire.")
+            with st.form(f"rc3_generate_from_sources_{case_id}"):
+                observation = st.text_area(
+                    "Souhaitez-vous ajouter quelque chose ? (facultatif)", max_chars=380,
+                    key=f"rc3_source_observation_{case_id}",
+                    help="Cette remarque privée aide à contextualiser les questions. Elle ne sera jamais présentée comme une réponse du bénéficiaire.")
+                generate = st.form_submit_button(
+                    "Générer le questionnaire", type="primary", disabled=not bool(verified_sources))
         if generate:
-            try:
-                from clarte360_cp.connectors.cav3_ai import Cav3AIError
-                from clarte360_cp.connectors.gda_documents import GDAError
-                with st.spinner("Analyse des pièces retenues et génération du questionnaire en brouillon…"):
-                    ideas_count = _create_questionnaire_from_documents(
-                        ctx, case_id, view, verified_sources, observation)
-                st.session_state[auto_key] = False
-                st.session_state[f"gda_cp_documents_saved_{case_id}"] = True
-                st.session_state[f"rc3_source_analysis_success_{case_id}"] = ideas_count
-                st.session_state[f"rc3_coach_nav_{case_id}"] = "1. Préparer les idées et pistes"
-                st.rerun()
-            except Exception as exc:
-                from clarte360_cp.connectors.cav3_ai import Cav3AIError
-                from clarte360_cp.connectors.gda_documents import GDAError
-                st.error(str(exc) if isinstance(exc, (Cav3AIError, GDAError, ValueError, PermissionError)) else "La génération a échoué. Aucun questionnaire vide n’a été enregistré; vos choix de documents sont conservés.")
+            generation_panel.empty()
+            with generation_panel.container():
+                try:
+                    from clarte360_cp.connectors.cav3_ai import Cav3AIError
+                    from clarte360_cp.connectors.gda_documents import GDAError
+                    with st.spinner("Analyse des pièces retenues et génération du questionnaire en brouillon…"):
+                        ideas_count = _create_questionnaire_from_documents(
+                            ctx, case_id, view, verified_sources, observation)
+                    st.session_state[auto_key] = False
+                    st.session_state[f"gda_cp_documents_saved_{case_id}"] = True
+                    st.session_state[f"rc3_source_analysis_success_{case_id}"] = ideas_count
+                    st.session_state[f"rc3_coach_nav_{case_id}"] = "1. Préparer les idées et pistes"
+                    st.rerun()
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).exception("Questionnaire draft generation failed")
+                    from clarte360_cp.connectors.cav3_ai import Cav3AIError
+                    from clarte360_cp.connectors.gda_documents import GDAError
+                    if isinstance(exc, (Cav3AIError, GDAError, ValueError, PermissionError)):
+                        st.error(str(exc))
+                    else:
+                        st.error(f"La génération a échoué ({type(exc).__name__}). Les sept pièces restent enregistrées; le détail est dans le journal D5.")
         if not view.questionnaire:
             return
     q=view.questionnaire
