@@ -257,7 +257,7 @@ def render_builder(ctx, case_id):
         st.success("Les sept choix ont été enregistrés ensemble et le brouillon est ouvert ci-dessous. Vous n’avez pas à re-sélectionner les pièces.")
     analyzed_ideas = st.session_state.pop(f"rc3_source_analysis_success_{case_id}", None)
     if analyzed_ideas is not None:
-        st.success(f"Brouillon enregistré : {analyzed_ideas} piste(s) issue(s) de l’APS, questions de contexte adaptées au CV et repères extraits des rapports. Vérifiez le contenu avant publication.")
+        st.success(f"Brouillon enregistré : {analyzed_ideas} piste(s) issue(s) de l’APS, questions de contexte et repères préparés depuis les pièces retenues. Vérifiez le contenu avant publication.")
     extra_analysis = st.session_state.get(f"gda_d5_optional_ai_result_{case_id}")
     if extra_analysis:
         with st.expander("Analyse IA de la pièce complémentaire à examiner", expanded=True):
