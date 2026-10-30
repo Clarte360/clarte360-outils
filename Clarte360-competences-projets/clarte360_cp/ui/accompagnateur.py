@@ -84,7 +84,7 @@ def _render_gda_document_preview_dialog(case_id: str, purpose: str) -> None:
                            key=f"gda_d5_download_v2_{case_id}_{purpose}_{preview.get('document_id', 'document')}")
         if st.button("Fermer", key=f"gda_d5_preview_close_{case_id}_{purpose}"):
             st.session_state[active_key] = None
-            st.rerun(scope="fragment")
+            st.rerun()
 
     show_preview()
 
@@ -216,11 +216,9 @@ def _render_gda_document_workspace(ctx, case_id: str, gda):
                         }
                         st.session_state[f"gda_d5_preview_page_{case_id}_{purpose}"] = 0
                         st.session_state[active_preview_key] = purpose
+                        _render_gda_document_preview_dialog(case_id, purpose)
                     except Exception as exc:
                         st.error(str(exc) if isinstance(exc, GDAError) else "L’aperçu n’a pas pu être chargé depuis Gestion des Actions.")
-                preview = st.session_state.get(preview_key) or {}
-                if preview.get("document_id") == selected_id and st.session_state.get(active_preview_key) == purpose:
-                    _render_gda_document_preview_dialog(case_id, purpose)
                 st.caption(f"Partage GDA : publié · {doc.size_bytes} octets · {doc.mime_type}")
                 confirmation_key = f"gda_d5_doc_confirm_v3_{case_id}_{purpose}"
                 use_key = f"gda_d5_doc_use_v4_{case_id}_{purpose}"
