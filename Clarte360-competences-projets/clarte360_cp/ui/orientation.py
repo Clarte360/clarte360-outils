@@ -246,8 +246,8 @@ def render_directions(ctx, case_id: str) -> None:
         else:
             st.success("Nouvelle version publiée dans l'espace bénéficiaire.")
             st.rerun()
-    if st.button("Poursuivre vers l'analyse du parcours / CV"):
-        _open("entry_sources")
+    if st.button("Poursuivre vers l’analyse du parcours"):
+        _open("phase_0")
 
 
 def render_beneficiary_orientation(ctx, case_id: str) -> None:
