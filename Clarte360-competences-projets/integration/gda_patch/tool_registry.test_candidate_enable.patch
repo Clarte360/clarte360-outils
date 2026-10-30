@@ -1,0 +1,24 @@
+--- a/config/tool_registry.json
++++ b/config/tool_registry.json
+@@ -238,10 +238,10 @@
+       "tool_code": "COMPETENCES_PROJETS",
+       "name": "Compétences / Projets",
+       "category": "COMPETENCES",
+       "base_url": "https://competences-projets.clarte360.com",
+       "tool_version": "0.4.29-go29-work",
+-      "active": false,
+-      "prescription_allowed": false,
++      "active": true,
++      "prescription_allowed": true,
+       "allowed_publics": [
+         "BENEFICIAIRE"
+       ],
+@@ -254,7 +254,7 @@
+       "access_validity_hours": 168,
+       "connector_code": "GESTION_ACTIONS_CP_V1",
+-      "connector_status": "CANDIDATE_NOT_VERIFIED",
++      "connector_status": "CANDIDATE_TEST_ONLY",
+       "metadata": {
+         "deployment_status": "candidate",
+         "connector": "cp_v1",
+         "scope_vocab": "CP_V1",

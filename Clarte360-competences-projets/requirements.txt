@@ -1,5 +1,7 @@
-streamlit>=1.40
-streamlit-autorefresh>=1.0.1
-pandas>=2.2
-openpyxl>=3.1
-reportlab>=4.2
+streamlit>=1.40,<2
+SQLAlchemy>=2.0,<3
+pytest>=8,<10
+openai>=1.99,<3
+reportlab>=4.2,<5
+pypdf>=5,<7
+python-docx>=1.1,<2

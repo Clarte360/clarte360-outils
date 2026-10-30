@@ -1,0 +1,45 @@
+POINT DE REPRISE — ROME, API ET CONTINUITÉ GO25–GO31
+Clarté360 Compétences & Projets professionnels
+24 octobre 2026 — candidate locale 0.4.26-go26-work, schéma 13
+
+## Décision fonctionnelle ROME
+
+Le choix de 1 à 3 métiers se fait dans l’application, accompagné par l’intervenant. Le bénéficiaire ne doit pas effectuer de recherche ROME externe. Les métiers sont examinés et confirmés explicitement en séance; l’IA prépare des pistes mais ne valide rien.
+
+Le cœur du travail est de confronter les savoirs, savoir-faire et savoir-être ROME aux éléments du parcours élargi, expérience par expérience. L’intervenant peut cocher plusieurs attendus, relier chacun à une ou plusieurs expériences/études/formations/apprentissages personnels, puis enregistrer le statut et le niveau discutés avec le bénéficiaire. Un diplôme n’est présenté comme obligatoire que si une source officielle établit cette obligation; une rubrique « accès au métier » du ROME ne suffit pas.
+
+## API ROME — état exact
+
+- GO-11/GO-12 demandent les quatre familles souscrites séparément : Métiers, Compétences, Contextes de travail et Fiches métiers. Les clients présents utilisent des scopes distincts et contrôlent les codes retournés. Le chargement d’une fiche par code passe par l’API Fiches métiers.
+- La recherche textuelle appelle maintenant les deux opérations officielles ROME Métiers d’autocomplétion : métiers `GET /v1/metiers/metier/requete` (`q`, `champs=code,libelle`) et appellations `GET /v1/metiers/appellation/requete` (`q`, `champs=libelle,code,metier(code,libelle)`). Les appellations sont reliées au code et au libellé du métier parent. Si l’API échoue ou ne retourne rien, le snapshot local v61 / 26M06, publié le 15/06/2026, sert de secours (1 911 codes issus du `05-RefRomeXml.zip`). Ce snapshot est daté et n’est pas présenté comme complet/courant. France Travail affichait 1 923 fiches dans sa publication du 19/10/2026, avec une prochaine actualisation prévue en mars 2027.
+- La recherche s’envoie avec un bouton; les appels GET du client sont espacés d’au moins 1,05 seconde pour respecter la limite ROME d’un appel par seconde.
+- Un champ « Code ROME direct » appelle l’API Fiches métiers, même lorsque le code n’existe pas dans le snapshot local. Les deux opérations de recherche textuelle sont raccordées à partir de la documentation officielle; les routes et sélecteurs `champs` suivent leurs réponses respectives.
+- La fiche ROME/RIASEC Excel est une table de correspondance d’intérêts, pas le catalogue des compétences. Le ROME doit servir au rapprochement métier; les ressources d’investigation du bénéficiaire restent disponibles, sans recherche externe imposée pour le choix de code.
+- Aucun appel France Travail réel n’a été effectué depuis cette candidate : le coffre VPS et les scopes configurés ne sont pas accessibles dans cet espace. Le diagnostic synthétique des quatre familles est `tools/test_france_travail_rome_all.py`.
+
+## Vérifications locales
+
+- Suite complète : 327 tests réussis; compilation Python application/outils/patch réussie.
+- Des AppTests vérifient la recherche API prioritaire et le chargement d’un code synthétique absent du snapshot local. Les tests ROME Métiers/Compétences/Contextes et les autres tests n’utilisent que des réponses synthétiques.
+- GO26 : les validateurs IA C‑AV3 et ROME imposent maintenant les champs autorisés, les longueurs maximales et les références attendues; des tests rejettent les champs supplémentaires et sorties hors limites. Les essais live restent à lancer dans le VPS.
+- Le parcours de rapprochement comporte déjà la sélection par cases à cocher, le lien de plusieurs attendus à des expériences, les niveaux discutés et la validation humaine.
+- Aucun GO22–GO31 n’est déclaré validé par cette note.
+
+## Hub Gestion des Actions / GDA
+
+- Le dépôt source est accessible en lecture via `Clarte360/clarte360-outils/clarte360-emargements-v1.0.0`; il n’est pas cloné dans l’espace local.
+- Sur une copie temporaire du `main` GitHub, `git apply --check --recount` puis l’application d’essai ont validé le patch de lancement et les patches du registre. Le patch normal garde l’outil inactif/non prescriptible; l’overlay d’essai porte `CANDIDATE_TEST_ONLY`. `app.py`, `cp_launch.py` et `cp_hub_api.py` compilent, et le registre est du JSON valide.
+- Cela ne vaut pas installation ou appel réel GDA : base de test, clé serveur, routes HTTPS, révocations, droits des trois rôles et aller-retour documentaire restent à vérifier.
+- Les fichiers sources ne sont pas modifiés dans GitHub. Dominique gère les commits et push.
+
+## Jalons suivants et livraison
+
+GO26 : exécuter les diagnostics IA C‑AV3/CV/ROME sur données synthétiques dans le VPS et relire les résultats. GO27–GO28 : installer et tester GDA, les cinq documents/APS, les trois rôles, liens manuels, PDFs et retour idempotent. GO29 : campagne complète réelle avec navigateur, base, persistance et restauration. GO30 : recette finale sans anomalie bloquante, procédure d’installation/retour arrière et ZIP. GO31 : essai métier de Dominique, accompagnateur puis bénéficiaire sur 3–4 séances.
+
+Aucun ZIP final, commit, push ou déploiement n’a été effectué. Le ZIP de recette sera déposé à la racine de `000000 OUTILS DE TRAVAIL CLARTE360/5 COMP ET PROJET PRO ST/1 JALONS INTERMEDIAIRES` au GO30/31, pas dans le fil.
+
+## Sources officielles consultées
+
+- Catalogue API ROME 4.0 : https://www.data.gouv.fr/dataservices/api-repertoire-operationnel-des-metiers-et-des-emplois-rome-4-0
+- Répertoire ROME France Travail : https://www.francetravail.org/opendata/repertoire-operationnel-des-meti.html?type=article
+- Catalogue API GO-11 et procédure GO-12 : dossier SharePoint `5 COMP ET PROJET PRO ST/1 JALONS INTERMEDIAIRES`.

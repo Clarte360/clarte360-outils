@@ -1,0 +1,17 @@
+{
+  "tool_id": "competences-projets",
+  "tool_code": "COMPETENCES_PROJETS",
+  "app_name": "Clarté360 - Compétences & Projets professionnels",
+  "app_version": "0.4.30-go30-dual-candidate",
+  "target_url": "https://competences-projets.clarte360.com",
+  "production_url": "https://competences-projets.clarte360.com",
+  "internal_port": 8514,
+  "service": "clarte360-competences-projets.service",
+  "service_name": "clarte360-competences-projets.service",
+  "stable_path": "/opt/clarte360/clarte360-outils/clarte360-competences-projets/",
+  "data_path": "/var/lib/clarte360/competences-projets/",
+  "deployment_status": "candidate-not-deployed",
+  "mode": "ACCOMPAGNEMENT",
+  "scope_vocab": "CP_V1",
+  "hub_source": "GESTION_ACTIONS"
+}

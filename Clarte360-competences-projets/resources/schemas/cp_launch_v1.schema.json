@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CLARTE360 C&P launch CP_V1",
+  "type": "object",
+  "required": [
+    "v",
+    "iat",
+    "exp",
+    "beneficiary_id",
+    "action_id",
+    "prescription_id",
+    "tool_id",
+    "hub_source",
+    "scope_vocab",
+    "actor_role",
+    "actor_id",
+    "scopes"
+  ],
+  "properties": {
+    "v": {
+      "type": "integer",
+      "const": 1
+    },
+    "iat": {
+      "type": "integer"
+    },
+    "exp": {
+      "type": "integer"
+    },
+    "beneficiary_id": {
+      "type": "string"
+    },
+    "action_id": {
+      "type": "string"
+    },
+    "prescription_id": {
+      "type": "string"
+    },
+    "participant_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tool_id": {
+      "type": "string",
+      "const": "COMPETENCES_PROJETS"
+    },
+    "hub_source": {
+      "type": "string",
+      "const": "GESTION_ACTIONS"
+    },
+    "scope_vocab": {
+      "type": "string",
+      "const": "CP_V1"
+    },
+    "actor_role": {
+      "enum": [
+        "ACCOMPAGNATEUR",
+        "BENEFICIAIRE"
+      ]
+    },
+    "actor_id": {
+      "type": "string"
+    },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "action_no": {
+      "type": "string",
+      "maxLength": 64
+    }
+  },
+  "additionalProperties": true
+}

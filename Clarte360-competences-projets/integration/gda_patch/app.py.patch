@@ -1,0 +1,67 @@
+--- a/app.py
++++ b/app.py
+@@ -17,6 +17,7 @@
+ from ui_guard import log_ui_exception, safe_call, user_message
+ from production_readiness import runtime_readiness
+ from services import *
++from cp_launch import build_cp_launch, build_cp_admin_upload_launch
+ from services import _duration_hms, _slot_participant_states
+ import quality_service as quality_v1
+ from quality_ui import (actor_for_space, render_quality_workspace, render_quality_plan,
+@@ -912,4 +913,16 @@
+     if selected_section=='tools':
++        # Launch an existing C&P prescription for any trainer assigned to this
++        # action. Prescription permission controls creating prescriptions, not
++        # access to an already prescribed shared case.
++        cp_hist=[x for x in list_tool_prescriptions(ENGINE,action_id=aid) if x.get('status')!='ANNULE' and x.get('tool_code')=='COMPETENCES_PROJETS']
++        if cp_hist:
++            cp_map={f"{x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['prescription_id']}":x for x in cp_hist}
++            cp_label=st.selectbox('Dossiers Compétences & Projets',list(cp_map),key=f'cp_existing_{aid}')
++            try:
++                cp_key=secret('COMPETENCES_PROJETS_CONNECTOR','LAUNCH_SIGNING_KEY','')
++                st.link_button('OUVRIR COMPÉTENCES & PROJETS',build_cp_launch(ENGINE,cp_map[cp_label]['prescription_id'],'ACCOMPAGNATEUR',tid,cp_key),type='primary')
++            except (ValueError,PermissionError) as ex:
++                st.warning(str(ex))
+         if not trainer_can_prescribe_tools(ENGINE,tid,aid):
+             st.info("La prescription d'outils Clarté360 n'est pas activée pour vous sur cette action.")
+         else:
+@@ -940,6 +955,13 @@
+                 st.dataframe(pd.DataFrame([{'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Moi' if (x.get('prescriber_type')=='TRAINER' and str(x.get('prescriber_id'))==str(tid)) else 'Autre utilisateur','Créée':format_app_datetime(x['created_at']),'Échéance':format_app_deadline(x.get('due_at')),'Statut':x['status'].replace('_',' ')} for x in hist]),use_container_width=True,hide_index=True)
+                 hmap={f"{x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']} — {x['prescription_id']}":x for x in hist}
+                 hh=hmap[st.selectbox('Prescription existante',list(hmap),key=f'tr_tool_existing_{aid}')]
++                if hh.get('tool_code')=='COMPETENCES_PROJETS':
++                    try:
++                        cp_key=secret('COMPETENCES_PROJETS_CONNECTOR','LAUNCH_SIGNING_KEY','')
++                        cp_url=build_cp_launch(ENGINE,hh['prescription_id'],'ACCOMPAGNATEUR',tid,cp_key)
++                        st.link_button('OUVRIR COMPÉTENCES & PROJETS',cp_url,type='primary')
++                    except (ValueError,PermissionError) as ex:
++                        st.warning(str(ex))
+                 # J6 - follow-up allowed for an action-authorized trainer even if another user created it.
+                 choices=trainer_tool_followup_choices(ENGINE,tid,hh['prescription_id'])
+                 if choices:
+@@ -1371,6 +1379,9 @@
+                     elif pr.get('tool_code')=='IPIP_NEO120':
+                         key=secret('IPIP_CONNECTOR','LAUNCH_SIGNING_KEY','')
+                         launch_url=build_ipip_prescription_launch(ENGINE,pr['prescription_id'],key,valid_seconds=3600)
++                    elif pr.get('tool_code')=='COMPETENCES_PROJETS':
++                        key=secret('COMPETENCES_PROJETS_CONNECTOR','LAUNCH_SIGNING_KEY','')
++                        launch_url=build_cp_launch(ENGINE,pr['prescription_id'],'BENEFICIAIRE',bid,key)
+                     else:
+                         launch_url=(pr.get('base_url') or '').strip()
+                         if not launch_url:
+@@ -2629,6 +2640,15 @@
+         st.markdown('#### Prescriptions de cette action')
+         st.dataframe(pd.DataFrame([{'Prescription':x['prescription_id'],'Bénéficiaire':f"{x['beneficiary_last_name']} {x['beneficiary_first_name']}",'Outil':x['tool_name'],'Créateur':'Administrateur' if x.get('prescriber_type')=='ADMIN' else 'Intervenant','Statut':x['status'].replace('_',' '),'Créée':format_app_datetime(x['created_at']),'Échéance':format_app_deadline(x.get('due_at'))} for x in rows if x.get('status')!='ANNULE']),use_container_width=True,hide_index=True)
+         rmap={f"{x['prescription_id']} — {x['beneficiary_last_name']} {x['beneficiary_first_name']} — {x['tool_name']}":x for x in rows}; rl=st.selectbox('Prescription à gérer',list(rmap),key=f'presc_manage_{a["id"]}'); rr=rmap[rl]
++        if rr.get('tool_code')=='COMPETENCES_PROJETS':
++            try:
++                admin_row=one(ENGINE,'SELECT id FROM admins WHERE lower(email)=lower(:e) AND active=1',{'e':st.session_state.admin_email})
++                cp_key=secret('COMPETENCES_PROJETS_CONNECTOR','LAUNCH_SIGNING_KEY','')
++                upload_url=build_cp_admin_upload_launch(ENGINE,rr['prescription_id'],admin_row['id'],cp_key)
++                st.link_button('DÉPOSER UN DOCUMENT POUR CE DOSSIER',upload_url)
++                st.caption('Accès limité au dépôt : aucune liste de documents ni aucun contenu du bilan ne sera affiché à l’administrateur.')
++            except (ValueError,PermissionError,TypeError) as ex:
++                st.warning(str(ex))
+         if rr.get('tool_code')=='PIP_RIASEC_ONET':
+             try: _meta=json.loads(rr.get('metadata_json') or '{}')
+             except Exception: _meta={}

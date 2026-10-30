@@ -1,6 +1,17 @@
 [theme]
 primaryColor = "#008080"
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F1F8F8"
-textColor = "#1F2937"
+secondaryBackgroundColor = "#F6FAFA"
+textColor = "#243A3A"
 font = "sans serif"
+
+[server]
+headless = true
+address = "127.0.0.1"
+port = 8514
+
+# Une interaction attend le prochain point de reprise du rendu courant.
+# Evite deux sauvegardes concurrentes du meme buffer lors de clics rapproches.
+# Le verrou optimiste SQL reste applique entre onglets/sessions distincts.
+[runner]
+fastReruns = false

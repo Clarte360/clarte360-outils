@@ -1,0 +1,34 @@
+--- a/config/tool_registry.json
++++ b/config/tool_registry.json
+@@ -238,25 +238,25 @@
+       "tool_code": "COMPETENCES_PROJETS",
+       "name": "Compétences / Projets",
+       "category": "COMPETENCES",
+       "base_url": "https://competences-projets.clarte360.com",
+-      "tool_version": "1.3.3",
+-      "active": false,
+-      "prescription_allowed": false,
++      "tool_version": "0.4.29-go29-work",
++      "active": false,
++      "prescription_allowed": false,
+       "allowed_publics": [
+         "BENEFICIAIRE"
+       ],
+       "compatible_prestations": [],
+       "launch_type": "HUB_REDIRECT",
+       "access_validity_hours": 168,
+-      "connector_code": "HUB_GENERIC",
+-      "connector_status": "NOT_CONFIGURED",
++      "connector_code": "GESTION_ACTIONS_CP_V1",
++      "connector_status": "CANDIDATE_NOT_VERIFIED",
+       "metadata": {
+-        "deployment_status": "planned"
++        "deployment_status": "candidate",
++        "connector": "cp_v1",
++        "scope_vocab": "CP_V1",
++        "signature_mode": "payload_b64_hmac",
++        "api_base_path": "/api/cp/v1",
++        "source_operations": ["SOURCE_LIST", "SOURCE_GET", "SOURCE_PUT"],
++        "deliverable_operation": "CP_DELIVERABLE_READY"
+       }
+     },
